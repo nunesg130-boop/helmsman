@@ -1,0 +1,37 @@
+# Local deployment configuration and runtime state
+.env
+.env.*
+!.env.example
+data/
+.helmsman-data/
+state.json
+sessions.json
+credentials.json
+credentials.key
+master-key.hex
+*.corrupt-*
+*.unrecoverable-*
+
+# Credentials and local certificates
+*.key
+*.pem
+*.crt
+*.cer
+*.p12
+*.pfx
+
+# Dependencies, test output, logs, and editor files
+node_modules/
+coverage/
+.nyc_output/
+*.log
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Locally assembled release archives
+*.zip
+*.tar
+*.tar.gz
+*.tgz

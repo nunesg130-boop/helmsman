@@ -1,0 +1,17 @@
+# Optional override for deployments whose /data volume and backups are not
+# already encrypted. Export HELMSMAN_MASTER_KEY from an operator-owned
+# 64-character hex key before each Compose create/recreate operation.
+services:
+  helmsman:
+    environment:
+      HELMSMAN_MASTER_KEY_FILE: /run/secrets/helmsman_master_key
+    secrets:
+      - source: helmsman_master_key
+        target: helmsman_master_key
+        uid: "10001"
+        gid: "10001"
+        mode: 0400
+
+secrets:
+  helmsman_master_key:
+    environment: HELMSMAN_MASTER_KEY

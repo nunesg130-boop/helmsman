@@ -1,0 +1,40 @@
+name: helmsman
+
+services:
+  helmsman:
+    image: "${HELMSMAN_IMAGE:-ghcr.io/OWNER/REPOSITORY:0.10.0-beta.8}"
+    restart: unless-stopped
+    user: "10001:10001"
+    ports:
+      - "${HELMSMAN_BIND_IP:-${JELLOFIN_COMMAND_BIND_IP:-127.0.0.1}}:${HELMSMAN_PORT:-${JELLOFIN_COMMAND_PORT:-4180}}:8080/tcp"
+    environment:
+      HELMSMAN_HOST: "0.0.0.0"
+      HELMSMAN_PORT: "8080"
+      HELMSMAN_DATA_DIR: "/data"
+    volumes:
+      - helmsman-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 256m
+    cpus: "0.50"
+    stop_grace_period: 10s
+    healthcheck:
+      test: ["CMD", "node", "server/index.mjs", "healthcheck"]
+      interval: 30s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "2"
+
+volumes:
+  helmsman-data:

@@ -1,0 +1,38 @@
+# Optional Helmsman v0.10 HTTPS edge for directly connected private/Tailscale clients.
+# Replace helmsman.example.com and 192.0.2.10:4180. The latter is a reserved
+# documentation address and will not reach a real container.
+#
+# This is a complete example. If adding the site block to an existing Caddyfile,
+# merge the request-redaction rule into that file's one global options block.
+# Do not place this LAN matcher behind a tunnel or load balancer that hides the
+# real client behind a private source address.
+
+{
+	log default {
+		format filter {
+			wrap json
+			fields {
+				request delete
+			}
+		}
+	}
+}
+
+helmsman.example.com {
+	encode zstd gzip
+
+	@outsideTrustedNetwork {
+		not remote_ip private_ranges 100.64.0.0/10
+	}
+	respond @outsideTrustedNetwork "Private access only" 403
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+	}
+
+	# Proxy every path unchanged. The broker authenticates and authorizes its API.
+	reverse_proxy 192.0.2.10:4180 {
+		header_up -X-Authentik-*
+	}
+}

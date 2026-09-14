@@ -1,0 +1,7 @@
+# Upgrade-only override for reusing an existing Jellofin Command v0.5 volume.
+# Set HELMSMAN_DATA_VOLUME to the exact existing volume name before using this
+# file. Compose must fail closed if the operator does not provide that name.
+volumes:
+  helmsman-data:
+    external: true
+    name: "${HELMSMAN_DATA_VOLUME:?Set HELMSMAN_DATA_VOLUME to the exact existing v0.5 volume name}"

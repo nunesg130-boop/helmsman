@@ -1,0 +1,11 @@
+# Developer-only override. Production deployments use the GitHub Release's
+# digest-pinned compose.yaml without this local build definition.
+services:
+  helmsman:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        HELMSMAN_VERSION: "0.10.0-beta.8"
+        HELMSMAN_REVISION: "local"
+    image: "helmsman:0.10.0-beta.8"

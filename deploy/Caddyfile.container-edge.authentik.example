@@ -1,0 +1,67 @@
+# Optional Helmsman v0.10 HTTPS edge with Authentik forward authentication.
+# Replace helmsman.example.com, auth.example.com, and 192.0.2.10:4180. The IP is
+# reserved for documentation and will not reach a real container.
+#
+# Protect every application path, including setup and control-plane APIs.
+# Helmsman still enforces its own browser-session authentication if
+# the edge is bypassed.
+#
+# The Cookie replacements deliberately keep JFC_SESSION and known legacy
+# upstream session names out of Authentik subrequests while preserving the
+# Authentik login cookie it needs. If a migrated deployment used customized upstream cookie names,
+# add them to both filters. Deleting Cookie wholesale is
+# safer from disclosure but normally breaks Authentik's browser session.
+
+{
+	log default {
+		format filter {
+			wrap json
+			fields {
+				request delete
+			}
+		}
+	}
+}
+
+helmsman.example.com {
+	encode zstd gzip
+
+	route {
+		@authentikOutpost path /outpost.goauthentik.io /outpost.goauthentik.io/*
+		reverse_proxy @authentikOutpost https://auth.example.com {
+			header_up Host {http.reverse_proxy.upstream.host}
+			header_up -Authorization
+			header_up -X-Jellofin-*
+			header_up -X-Api-Key
+			header_up -X-Emby-Token
+			header_up -X-MediaBrowser-Token
+			header_up Cookie "(?i)(^[[:space:]]*|;[[:space:]]*)(JFC_SESSION|JFC_(SEERR|QBIT)_[0-9a-f]{32}|SID|QBT_SID(_[0-9]+)?|connect[.]sid)=[^;]*" ""
+			header_up Cookie "^[;[:space:]]+" ""
+		}
+
+		forward_auth https://auth.example.com {
+			uri /outpost.goauthentik.io/auth/caddy
+			header_up Host {http.reverse_proxy.upstream.host}
+			header_up X-Forwarded-Uri {http.request.uri.path}
+			header_up -Authorization
+			header_up -X-Jellofin-*
+			header_up -X-Api-Key
+			header_up -X-Emby-Token
+			header_up -X-MediaBrowser-Token
+			header_up Cookie "(?i)(^[[:space:]]*|;[[:space:]]*)(JFC_SESSION|JFC_(SEERR|QBIT)_[0-9a-f]{32}|SID|QBT_SID(_[0-9]+)?|connect[.]sid)=[^;]*" ""
+			header_up Cookie "^[;[:space:]]+" ""
+		}
+
+		header {
+			Strict-Transport-Security "max-age=31536000"
+			X-Content-Type-Options "nosniff"
+		}
+
+		# Preserve paths and the browser's legacy JFC_SESSION cookie toward Helmsman
+		# only after Authentik admits the request. Client-supplied identity headers
+		# are removed.
+		reverse_proxy 192.0.2.10:4180 {
+			header_up -X-Authentik-*
+		}
+	}
+}
