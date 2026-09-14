@@ -14,7 +14,7 @@ digest after backing up the data volume.
 Use GitHub's private vulnerability-reporting feature for this repository when
 it is enabled. Otherwise contact the repository owner privately. Do not open a
 public issue containing credentials, tokens, setup links, internal addresses,
-logs, state files, or exploit details.
+Helmsman access keys, logs, state files, or exploit details.
 
 Include the affected version, deployment topology, reproducible steps using
 sanitized data, impact, and any proposed mitigation. Never attach a real
@@ -27,3 +27,12 @@ edge, protect the data volume and backups, use read-only upstream credentials,
 and never mount the Docker socket. Authentik or another identity-aware proxy
 protects browser entry only; it does not replace the credentials Helmsman uses
 for upstream services.
+
+The reusable 256-bit Helmsman access key is a bearer secret. Store it in a
+password manager and enter it only in Helmsman's unlock form. Never place it in
+`.env`, Compose YAML, a URL, browser storage, issue text, or application logs.
+Helmsman persists only a SHA-256 verifier and issues one-year, origin-bound
+HttpOnly browser sessions. Rotate the key immediately if it may have been
+exposed; rotation revokes every prior Helmsman session without deleting service
+configuration or encrypted upstream credentials. Rotation in Settings issues
+the initiating browser a replacement session; offline CLI rotation does not.

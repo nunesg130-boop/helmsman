@@ -165,6 +165,194 @@ test("opaque sessions persist only hashes and authenticate with Origin plus CSRF
   }
 });
 
+test("new browser sessions use the one-year default lifetime", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "helmsman-session-one-year-"));
+  const dataDir = path.join(root, "data");
+  const clock = Date.parse("2026-09-12T12:00:00.000Z");
+  const store = new SessionAuthStore(dataDir, { now: () => clock });
+  try {
+    await store.initialize();
+    const issued = await store.issue({ name: "Long-lived browser", origin: "https://command.example.test" });
+    assert.equal(issued.session.expiresAt, "2027-09-12T12:00:00.000Z");
+    assert.match(issued.cookie, /; Max-Age=31536000;/u);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("valid v1 session state migrates to v2 without revoking existing sessions", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "helmsman-session-v1-migration-"));
+  const dataDir = path.join(root, "data");
+  const store = new SessionAuthStore(dataDir);
+  try {
+    await store.initialize();
+    const issued = await store.issue({ name: "Beta 8 browser", origin: "https://command.example.test" });
+    const token = cookieValue(issued.cookie);
+    const legacy = JSON.parse(await readFile(store.filePath, "utf8"));
+    legacy.version = 1;
+    delete legacy.accessKeyHash;
+    await writeFile(store.filePath, `${JSON.stringify(legacy)}\n`, { encoding: "utf8", mode: 0o600 });
+
+    const restarted = new SessionAuthStore(dataDir);
+    assert.deepEqual(await restarted.initialize(), [issued.session]);
+    assert.equal((await restarted.authenticateToken(token)).session.id, issued.session.id);
+    assert.equal(restarted.accessKeyConfigured(), false);
+    const migrated = JSON.parse(await readFile(store.filePath, "utf8"));
+    assert.equal(migrated.version, 2);
+    assert.equal(migrated.accessKeyHash, null);
+    assert.deepEqual(migrated.sessions, legacy.sessions);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("access keys are hashed, reusable for login, and atomically rotated with sessions", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "helmsman-access-key-"));
+  const dataDir = path.join(root, "data");
+  const store = new SessionAuthStore(dataDir);
+  try {
+    await store.initialize();
+    assert.equal(store.accessKeyConfigured(), false);
+    await expectCodeAsync(
+      () => store.login({
+        accessKey: "x".repeat(43),
+        name: "Unavailable",
+        origin: "https://command.example.test"
+      }),
+      "ACCESS_KEY_NOT_CONFIGURED"
+    );
+
+    const claimed = await store.claimAccess({ name: "Primary", origin: "https://command.example.test" });
+    assert.match(claimed.accessKey, /^[A-Za-z0-9_-]{43}$/u);
+    assert.equal(store.accessKeyConfigured(), true);
+    const claimedToken = cookieValue(claimed.cookie);
+    const persistedAfterClaim = await readFile(store.filePath, "utf8");
+    assert.equal(persistedAfterClaim.includes(claimed.accessKey), false);
+    assert.equal(persistedAfterClaim.includes(claimedToken), false);
+    assert.match(JSON.parse(persistedAfterClaim).accessKeyHash, /^[a-f0-9]{64}$/u);
+
+    await expectCodeAsync(
+      () => store.login({
+        accessKey: "y".repeat(43),
+        name: "Wrong key",
+        origin: "https://command.example.test"
+      }),
+      "ACCESS_KEY_INVALID"
+    );
+    const second = await store.login({
+      accessKey: claimed.accessKey,
+      name: "Second browser",
+      origin: "https://command.example.test"
+    });
+    const secondToken = cookieValue(second.cookie);
+    assert.notEqual(secondToken, claimedToken);
+    assert.equal(store.list().length, 2);
+
+    const rotated = await store.rotateAccessKeyAndIssue({
+      name: "Primary after rotation",
+      origin: "https://command.example.test",
+      currentSessionId: second.session.id
+    });
+    assert.notEqual(rotated.accessKey, claimed.accessKey);
+    assert.equal(store.list().length, 1);
+    await expectCodeAsync(() => store.authenticateToken(claimedToken), "SESSION_INVALID");
+    await expectCodeAsync(() => store.authenticateToken(secondToken), "SESSION_INVALID");
+    await expectCodeAsync(
+      () => store.login({
+        accessKey: claimed.accessKey,
+        name: "Old key",
+        origin: "https://command.example.test"
+      }),
+      "ACCESS_KEY_INVALID"
+    );
+    const replacement = await store.login({
+      accessKey: rotated.accessKey,
+      name: "Replacement browser",
+      origin: "https://command.example.test"
+    });
+    assert.equal((await store.authenticateToken(cookieValue(replacement.cookie))).session.name, "Replacement browser");
+
+    assert.equal(await store.clearAccess(), 2);
+    assert.equal(store.accessKeyConfigured(), false);
+    assert.deepEqual(store.list(), []);
+    const cleared = JSON.parse(await readFile(store.filePath, "utf8"));
+    assert.equal(cleared.accessKeyHash, null);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("queued access-key login and rotation cannot preserve a session minted by an old key", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "helmsman-access-key-race-"));
+  const dataDir = path.join(root, "data");
+  const store = new SessionAuthStore(dataDir);
+  try {
+    await store.initialize();
+    const claimed = await store.claimAccess({ name: "Primary", origin: "https://command.example.test" });
+
+    const loginBeforeRotation = store.login({
+      accessKey: claimed.accessKey,
+      name: "Queued before rotation",
+      origin: "https://command.example.test"
+    });
+    const firstRotation = store.rotateAccessKey();
+    const [issuedBeforeRotation, firstReplacementKey] = await Promise.all([loginBeforeRotation, firstRotation]);
+    await expectCodeAsync(
+      () => store.authenticateToken(cookieValue(issuedBeforeRotation.cookie)),
+      "SESSION_INVALID"
+    );
+    assert.deepEqual(store.list(), []);
+
+    const secondRotation = store.rotateAccessKey();
+    const staleLogin = store.login({
+      accessKey: firstReplacementKey,
+      name: "Queued after rotation",
+      origin: "https://command.example.test"
+    });
+    const staleLoginRejected = expectCodeAsync(() => staleLogin, "ACCESS_KEY_INVALID");
+    const secondReplacementKey = await secondRotation;
+    await staleLoginRejected;
+    const current = await store.login({
+      accessKey: secondReplacementKey,
+      name: "Current key",
+      origin: "https://command.example.test"
+    });
+    assert.equal((await store.authenticateToken(cookieValue(current.cookie))).session.name, "Current key");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("only one concurrent authenticated access-key rotation can succeed", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "helmsman-concurrent-key-rotation-"));
+  const dataDir = path.join(root, "data");
+  const store = new SessionAuthStore(dataDir);
+  try {
+    await store.initialize();
+    const claimed = await store.claimAccess({ name: "Primary", origin: "https://command.example.test" });
+    const options = {
+      name: claimed.session.name,
+      origin: claimed.session.origin,
+      currentSessionId: claimed.session.id
+    };
+    const winnerPromise = store.rotateAccessKeyAndIssue(options);
+    const loserPromise = store.rotateAccessKeyAndIssue(options);
+    const loserRejected = expectCodeAsync(() => loserPromise, "SESSION_INVALID");
+    const winner = await winnerPromise;
+    await loserRejected;
+    assert.equal(store.list().length, 1);
+    assert.equal(store.list()[0].id, winner.session.id);
+    const login = await store.login({
+      accessKey: winner.accessKey,
+      name: "Winner key browser",
+      origin: "https://command.example.test"
+    });
+    assert.equal(login.session.name, "Winner key browser");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("sessions are individually revocable and access reset can revoke all", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "jellofin-session-revoke-"));
   const dataDir = path.join(root, "data");
@@ -213,6 +401,15 @@ test("session state validation fails closed on plaintext or malformed records", 
     }), { encoding: "utf8" });
     const restarted = new SessionAuthStore(dataDir);
     await assert.rejects(() => restarted.initialize(), /Malformed browser session state/u);
+
+    await writeFile(store.filePath, JSON.stringify({
+      version: 2,
+      revision: 2,
+      accessKeyHash: "plaintext-access-key",
+      sessions: {}
+    }), { encoding: "utf8" });
+    const invalidKeyState = new SessionAuthStore(dataDir);
+    await assert.rejects(() => invalidKeyState.initialize(), /Unsupported or malformed session state/u);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -172,7 +172,8 @@ async function claim(context, deviceName = "Control-plane browser", policy = PRI
   return {
     response,
     cookie: cookiePair(response),
-    csrf: response.json.csrfToken
+    csrf: response.json.csrfToken,
+    accessKey: response.json.accessKey
   };
 }
 
@@ -246,6 +247,7 @@ test("v2 control plane keeps browser and service secrets out of public and persi
       assert.equal(status.status, 200);
       assert.equal(status.json.version, context.broker.version);
       assert.equal(status.json.setupRequired, true);
+      assert.equal(status.json.accessKeyConfigured, false);
       assert.equal(status.json.authenticated, false);
       assert.equal(status.json.session, null);
       assert.equal(status.json.csrfToken, null);
@@ -253,13 +255,15 @@ test("v2 control plane keeps browser and service secrets out of public and persi
       assert.equal(JSON.stringify(status.json).includes(context.broker.setupToken), false);
     });
 
-    await suite.test("legacy browser-credential and bridge surfaces are not exposed", async () => {
+    await suite.test("legacy browser-credential, pairing, and bridge surfaces are not exposed", async () => {
       const paths = [
         "/api/v1/status",
         "/api/v1/setup/claim",
         "/api/v1/config",
         "/api/v1/connections/radarr",
-        "/bridge/radarr/api/v3/system/status"
+        "/bridge/radarr/api/v3/system/status",
+        "/api/v2/session/invite",
+        "/api/v2/session/pair"
       ];
       for (const pathname of paths) {
         const response = await getRequest(context, pathname);
@@ -285,26 +289,104 @@ test("v2 control plane keeps browser and service secrets out of public and persi
       }
     });
 
-    await suite.test("claim issues an HttpOnly Strict cookie without returning its bearer token in JSON", async () => {
+    await suite.test("claim returns the access key once and issues an HttpOnly Strict cookie", async () => {
       authentication = await claim(context);
       const setCookie = authentication.response.headers["set-cookie"][0];
       const token = cookieToken(authentication.cookie);
 
       assert.match(authentication.cookie, /^JFC_SESSION=[A-Za-z0-9_-]{43}$/u);
+      assert.match(setCookie, /; Max-Age=31536000;/u);
       assert.match(setCookie, /; HttpOnly; SameSite=Strict$/u);
       assert.doesNotMatch(setCookie, /; Secure(?:;|$)/u, "localhost HTTP cookies must remain usable");
       assert.match(authentication.csrf, /^[A-Za-z0-9_-]{43}$/u);
+      assert.match(authentication.accessKey, /^[A-Za-z0-9_-]{43}$/u);
       assert.equal(Object.hasOwn(authentication.response.json, "deviceToken"), false);
       assert.equal(Object.hasOwn(authentication.response.json, "token"), false);
       assert.equal(Object.hasOwn(authentication.response.json, "sessionToken"), false);
       assert.equal(JSON.stringify(authentication.response.json).includes(token), false);
 
+      const sessionsState = await readFile(path.join(dataDir, "sessions.json"), "utf8");
+      assert.equal(sessionsState.includes(authentication.accessKey), false);
+      assert.equal(JSON.parse(sessionsState).version, 2);
+      assert.match(JSON.parse(sessionsState).accessKeyHash, /^[a-f0-9]{64}$/u);
+
       const publicStatus = await getRequest(context, "/api/v2/status");
       assert.equal(publicStatus.json.setupRequired, false);
+      assert.equal(publicStatus.json.accessKeyConfigured, true);
       assert.equal(publicStatus.json.authenticated, false);
       const privateStatus = await getRequest(context, "/api/v2/status", { cookie: authentication.cookie });
       assert.equal(privateStatus.json.authenticated, true);
       assert.equal(privateStatus.json.csrfToken, authentication.csrf);
+    });
+
+    await suite.test("the reusable key signs in new browsers and rotation revokes every prior session", async () => {
+      const initial = authentication;
+      const rejected = await jsonRequest(context, "/api/v2/access/login", "POST", {
+        accessKey: "z".repeat(43),
+        deviceName: "Rejected browser",
+        origin: context.origin
+      });
+      assert.equal(rejected.status, 401);
+      assert.equal(rejected.json.code, "ACCESS_KEY_INVALID");
+
+      const mismatchedOrigin = await jsonRequest(context, "/api/v2/access/login", "POST", {
+        accessKey: initial.accessKey,
+        deviceName: "Wrong origin",
+        origin: `http://localhost:${context.port}`
+      });
+      assert.equal(mismatchedOrigin.status, 400);
+      assert.equal(mismatchedOrigin.json.code, "SECURE_ORIGIN_REQUIRED");
+
+      const signedIn = await jsonRequest(context, "/api/v2/access/login", "POST", {
+        accessKey: initial.accessKey,
+        deviceName: "Second browser",
+        origin: context.origin
+      });
+      assert.equal(signedIn.status, 201, JSON.stringify(signedIn.json));
+      assert.equal(Object.hasOwn(signedIn.json, "accessKey"), false);
+      assert.match(signedIn.headers["set-cookie"][0], /; Max-Age=31536000;/u);
+      const second = {
+        cookie: cookiePair(signedIn),
+        csrf: signedIn.json.csrfToken
+      };
+
+      const missingCsrf = await jsonRequest(context, "/api/v2/access/rotate", "POST", {}, {
+        cookie: second.cookie
+      });
+      assert.equal(missingCsrf.status, 403);
+      assert.equal(missingCsrf.json.code, "CSRF_TOKEN_REQUIRED");
+
+      const rotated = await jsonRequest(context, "/api/v2/access/rotate", "POST", {}, second);
+      assert.equal(rotated.status, 200, JSON.stringify(rotated.json));
+      assert.match(rotated.json.accessKey, /^[A-Za-z0-9_-]{43}$/u);
+      assert.notEqual(rotated.json.accessKey, initial.accessKey);
+      const rotatedCookie = cookiePair(rotated);
+
+      for (const cookie of [initial.cookie, second.cookie]) {
+        const revoked = await getRequest(context, "/api/v2/config", { cookie });
+        assert.equal(revoked.status, 401);
+        assert.equal(revoked.json.code, "SESSION_INVALID");
+      }
+      const oldKey = await jsonRequest(context, "/api/v2/access/login", "POST", {
+        accessKey: initial.accessKey,
+        deviceName: "Old key browser",
+        origin: context.origin
+      });
+      assert.equal(oldKey.status, 401);
+      assert.equal(oldKey.json.code, "ACCESS_KEY_INVALID");
+
+      const persisted = await readFile(path.join(dataDir, "sessions.json"), "utf8");
+      assert.equal(persisted.includes(initial.accessKey), false);
+      assert.equal(persisted.includes(rotated.json.accessKey), false);
+      assert.equal(logs.join("\n").includes(initial.accessKey), false);
+      assert.equal(logs.join("\n").includes(rotated.json.accessKey), false);
+
+      authentication = {
+        response: rotated,
+        cookie: rotatedCookie,
+        csrf: rotated.json.csrfToken,
+        accessKey: rotated.json.accessKey
+      };
     });
 
     await suite.test("configuration and service mutations require the bound session and CSRF token", async () => {
@@ -403,6 +485,89 @@ test("v2 control plane keeps browser and service secrets out of public and persi
       assert.equal(revoked.status, 401);
       assert.equal(revoked.json.code, "SESSION_INVALID");
     });
+  } finally {
+    await stopBroker(context).catch(() => {});
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("access-key login is unavailable before setup and has a bounded failure budget", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "helmsman-access-login-limit-"));
+  const dataDir = path.join(root, "data");
+  let context;
+  try {
+    context = await startBroker(dataDir, []);
+    const beforeSetup = await jsonRequest(context, "/api/v2/access/login", "POST", {
+      accessKey: "x".repeat(43),
+      deviceName: "Before setup",
+      origin: context.origin
+    });
+    assert.equal(beforeSetup.status, 409);
+    assert.equal(beforeSetup.json.code, "SETUP_REQUIRED");
+
+    const authentication = await claim(context);
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const rejected = await jsonRequest(context, "/api/v2/access/login", "POST", {
+        accessKey: "x".repeat(43),
+        deviceName: `Rejected ${attempt}`,
+        origin: context.origin
+      });
+      assert.equal(rejected.status, 401, `attempt ${attempt + 1}`);
+      assert.equal(rejected.json.code, "ACCESS_KEY_INVALID");
+    }
+    const limited = await jsonRequest(context, "/api/v2/access/login", "POST", {
+      accessKey: "x".repeat(43),
+      deviceName: "Rate limited",
+      origin: context.origin
+    });
+    assert.equal(limited.status, 429);
+    assert.equal(limited.json.code, "ACCESS_LOGIN_RATE_LIMITED");
+
+    const valid = await jsonRequest(context, "/api/v2/access/login", "POST", {
+      accessKey: authentication.accessKey,
+      deviceName: "Valid browser behind shared proxy",
+      origin: context.origin
+    });
+    assert.equal(valid.status, 201, JSON.stringify(valid.json));
+    const resetBudget = await jsonRequest(context, "/api/v2/access/login", "POST", {
+      accessKey: "x".repeat(43),
+      deviceName: "First rejected after success",
+      origin: context.origin
+    });
+    assert.equal(resetBudget.status, 401);
+    assert.equal(resetBudget.json.code, "ACCESS_KEY_INVALID");
+  } finally {
+    await stopBroker(context).catch(() => {});
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a valid setup claim reconciles orphaned access state from an interrupted prior claim", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "helmsman-interrupted-claim-"));
+  const dataDir = path.join(root, "data");
+  let context;
+  try {
+    context = await startBroker(dataDir, []);
+    const orphanedKey = await context.broker.controlPlane.sessionStore.rotateAccessKey();
+    const orphanedSession = await context.broker.controlPlane.sessionStore.issue({
+      name: "Interrupted claim",
+      origin: context.origin
+    });
+    const orphanedCookie = cookiePair({ headers: { "set-cookie": [orphanedSession.cookie] } });
+    assert.equal(context.broker.store.snapshot().claimed, false);
+
+    const recovered = await claim(context, "Recovered claim");
+    assert.notEqual(recovered.accessKey, orphanedKey);
+    assert.equal(context.broker.store.snapshot().claimed, true);
+    const staleSession = await getRequest(context, "/api/v2/config", { cookie: orphanedCookie });
+    assert.equal(staleSession.status, 401);
+    assert.equal(staleSession.json.code, "SESSION_INVALID");
+    const currentSession = await getRequest(context, "/api/v2/config", { cookie: recovered.cookie });
+    assert.equal(currentSession.status, 200);
+
+    const persisted = await readFile(path.join(dataDir, "sessions.json"), "utf8");
+    assert.equal(persisted.includes(orphanedKey), false);
+    assert.equal(persisted.includes(recovered.accessKey), false);
   } finally {
     await stopBroker(context).catch(() => {});
     await rm(root, { recursive: true, force: true });
@@ -655,6 +820,8 @@ test("reset-access revokes sessions while preserving targets and encrypted crede
     assert.equal(resetState.setupTokenHash, null);
     assert.equal(resetState.instanceId, originalInstanceId);
     assert.equal(resetState.connections.radarr.url, "http://media.test:7878");
+    assert.equal(resetSessions.version, 2);
+    assert.equal(resetSessions.accessKeyHash, null);
     assert.deepEqual(resetSessions.sessions, {});
     await assertFilesDoNotContain(dataDir, [SERVICE_SECRET, cookieToken(originalCookie)]);
 
@@ -1223,10 +1390,8 @@ test("service login attempts are rate limited across browser sessions per servic
       }
     });
     const authentication = await claim(context);
-    const invite = await jsonRequest(context, "/api/v2/session/invite", "POST", {}, authentication);
-    assert.equal(invite.status, 201, JSON.stringify(invite.json));
-    const pairedResponse = await jsonRequest(context, "/api/v2/session/pair", "POST", {
-      pairingToken: invite.json.pairingToken,
+    const pairedResponse = await jsonRequest(context, "/api/v2/access/login", "POST", {
+      accessKey: authentication.accessKey,
       deviceName: "Second browser",
       origin: context.origin
     });

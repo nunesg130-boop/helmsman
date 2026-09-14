@@ -1,6 +1,6 @@
 # Publish Helmsman through GitHub
 
-This repository is prepared so the exact tag `v0.10.0-beta.8` tests the
+This repository is prepared so the exact tag `v0.10.0-beta.9` tests the
 application, builds Linux AMD64 and ARM64 images, publishes them to GitHub
 Container Registry, and creates deployable GitHub Release assets.
 
@@ -17,7 +17,7 @@ Unix shell:
 git init
 git branch -M main
 git add .
-git commit -m "Release Helmsman v0.10.0-beta.8"
+git commit -m "Release Helmsman v0.10.0-beta.9"
 gh auth login
 gh repo create OWNER/REPOSITORY --private --source . --remote origin --push
 ```
@@ -35,14 +35,14 @@ Do not add `.env`, state files, credential stores, master keys, logs, or volume
 backups. The supplied `.gitignore` excludes their normal names, but review
 `git status` before every commit.
 
-## Publish beta.8
+## Publish beta.9
 
 Wait for the **Container** workflow on `main` to pass, then create the exact
 annotated release tag:
 
 ```sh
-git tag -a v0.10.0-beta.8 -m "Helmsman v0.10.0-beta.8"
-git push origin v0.10.0-beta.8
+git tag -a v0.10.0-beta.9 -m "Helmsman v0.10.0-beta.9"
+git push origin v0.10.0-beta.9
 ```
 
 The tagged workflow refuses a tag that does not match `package.json`. A
@@ -79,5 +79,6 @@ with `read:packages` and access to the package. Never place that token in
 `.env` or Compose YAML.
 
 See `deploy/DOCKER.md` for private-release downloads, volume preservation,
-backups, rollbacks, the optional external encryption key, and reverse-proxy
-examples.
+backups, rollbacks, reusable access-key recovery, the optional external
+encryption key, and reverse-proxy examples. The access key is created by the
+running application, never by GitHub Actions, Compose, or `.env`.

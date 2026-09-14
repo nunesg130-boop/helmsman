@@ -111,7 +111,7 @@ if (existsSync(join(root, "Dockerfile"))) {
   );
 
   record(
-    /^ARG HELMSMAN_VERSION=0\.10\.0-beta\.8$/mu.test(dockerfile)
+    /^ARG HELMSMAN_VERSION=0\.10\.0-beta\.9$/mu.test(dockerfile)
       && /^ARG HELMSMAN_REVISION=unknown$/mu.test(dockerfile)
       && /org\.opencontainers\.image\.title="Helmsman"/u.test(dockerfile)
       && !/org\.opencontainers\.image\.title="Jellofin Command"/u.test(dockerfile),
@@ -174,10 +174,45 @@ if (existsSync(join(root, "Dockerfile"))) {
 if (existsSync(join(root, "server/broker.mjs"))) {
   const broker = read("server/broker.mjs");
   record(
-    /const DEFAULT_VERSION = "0\.10\.0-beta\.8"/u.test(broker)
+    /const DEFAULT_VERSION = "0\.10\.0-beta\.9"/u.test(broker)
       && /process\.env\.HELMSMAN_VERSION/u.test(broker)
       && /\^\[0-9A-Za-z\]\[0-9A-Za-z\.\+-\]\{0,63\}\$/u.test(broker),
     "runtime version follows the validated immutable v0.10 image metadata"
+  );
+}
+
+if (existsSync(join(root, "server/index.mjs"))
+  && existsSync(join(root, "server/session-auth.mjs"))
+  && existsSync(join(root, "server/control-plane.mjs"))) {
+  const index = read("server/index.mjs");
+  const sessionAuth = read("server/session-auth.mjs");
+  const controlPlane = read("server/control-plane.mjs");
+  record(
+    /const SESSION_STATE_VERSION = 2;/u.test(sessionAuth)
+      && /const ACCESS_KEY_BYTES = 32;/u.test(sessionAuth)
+      && /const DEFAULT_TTL_MS = 365 \* 24 \* 60 \* 60 \* 1_000;/u.test(sessionAuth)
+      && /accessKeyHash: null/u.test(sessionAuth)
+      && /async claimAccess\(options\)/u.test(sessionAuth)
+      && /async login\(options\)/u.test(sessionAuth)
+      && /async rotateAccessKeyAndIssue\(options\)/u.test(sessionAuth)
+      && /async rotateAccessKey\(\)/u.test(sessionAuth),
+    "access control persists only a 256-bit key verifier and issues one-year origin-bound browser sessions"
+  );
+  record(
+    /url[.]pathname === "\/api\/v2\/access\/login"/u.test(controlPlane)
+      && /url[.]pathname === "\/api\/v2\/access\/rotate"/u.test(controlPlane)
+      && /accessKey: issued[.]accessKey/u.test(controlPlane)
+      && /First-time setup completed, and reusable access was configured[.]/u.test(controlPlane)
+      && !/log\([^\n]*accessKey/iu.test(controlPlane),
+    "claim, universal-key login, and authenticated rotation expose the key only in direct responses"
+  );
+  record(
+    /command === "rotate-access-key"/u.test(index)
+      && /process[.]argv[.]length !== 4 \|\| process[.]argv\[3\] !== "--confirm"/u.test(index)
+      && /accessKey = await sessions[.]rotateAccessKey\(\)/u.test(index)
+      && /Helmsman access key: \$\{accessKey\}/u.test(index)
+      && /All existing browser sessions were revoked[.] Saved services, network policy, and encrypted credentials were preserved[.]/u.test(index),
+    "the confirmed offline access-key CLI prints its replacement once and preserves application configuration"
   );
 }
 
@@ -215,7 +250,7 @@ if (existsSync(join(root, "compose.yaml"))) {
   record(
     /^name:\s*helmsman\s*$/mu.test(compose)
       && /^services:\s*\n\s{2}helmsman:\s*$/mu.test(compose)
-      && compose.includes('${HELMSMAN_IMAGE:-ghcr.io/OWNER/REPOSITORY:0.10.0-beta.8}')
+      && compose.includes('${HELMSMAN_IMAGE:-ghcr.io/OWNER/REPOSITORY:0.10.0-beta.9}')
       && !/^\s{4}build:/mu.test(compose),
     "production Compose has a stable project name and pulls the versioned GHCR image without a local build"
   );
@@ -274,9 +309,9 @@ if (existsSync(join(root, "compose.dev.yaml"))) {
       && /^\s{4}build:\s*$/mu.test(developmentCompose)
       && /^\s{6}context:\s*[.]\s*$/mu.test(developmentCompose)
       && /^\s{6}dockerfile:\s*Dockerfile\s*$/mu.test(developmentCompose)
-      && /HELMSMAN_VERSION:\s*["']0\.10\.0-beta\.8["']/u.test(developmentCompose)
+      && /HELMSMAN_VERSION:\s*["']0\.10\.0-beta\.9["']/u.test(developmentCompose)
       && /HELMSMAN_REVISION:\s*["']local["']/u.test(developmentCompose)
-      && /image:\s*["']helmsman:0\.10\.0-beta\.8["']/u.test(developmentCompose),
+      && /image:\s*["']helmsman:0\.10\.0-beta\.9["']/u.test(developmentCompose),
     "developer Compose override keeps source builds separate from the production pull contract"
   );
 }
@@ -404,7 +439,7 @@ if (existsSync(join(root, "container.env.example"))) {
   const allowed = new Set(["HELMSMAN_IMAGE", "HELMSMAN_BIND_IP", "HELMSMAN_PORT"]);
   const unexpected = keys.filter((key) => !allowed.has(key));
   record(
-    assignments.includes("HELMSMAN_IMAGE=ghcr.io/OWNER/REPOSITORY:0.10.0-beta.8")
+    assignments.includes("HELMSMAN_IMAGE=ghcr.io/OWNER/REPOSITORY:0.10.0-beta.9")
       && assignments.includes("HELMSMAN_BIND_IP=127.0.0.1")
       && assignments.includes("HELMSMAN_PORT=4180")
       && !assignments.some((line) => line.startsWith("HELMSMAN_DATA_VOLUME="))
@@ -659,7 +694,7 @@ if (existsSync(join(root, "package.json"))) {
     const packageJson = JSON.parse(read("package.json"));
     record(
       packageJson.name === "helmsman"
-        && packageJson.version === "0.10.0-beta.8"
+        && packageJson.version === "0.10.0-beta.9"
         && packageJson.scripts?.serve === "node server/index.mjs serve"
         && packageJson.scripts?.["check:broker"] === "node --test tests/control-plane.test.mjs"
         && /tests\/secrets[.]test[.]mjs/u.test(packageJson.scripts?.["check:security"] || "")
@@ -828,7 +863,7 @@ if (existsSync(join(root, "deploy/DOCKER.md"))) {
       && /Authentik is optional/iu.test(guide)
       && /Select the Media workspace/iu.test(guide)
       && /Select Infrastructure/iu.test(guide)
-      && /Do not add media, Proxmox, or Portainer URLs, API keys, passwords, token IDs, token secrets, access tokens, cookies, setup tokens, or Authentik secrets to `[.]env`/iu.test(guide),
+      && /Do not add media, Proxmox, or Portainer URLs, API keys, passwords, token IDs, token secrets, access tokens, Helmsman access keys, cookies, setup tokens, or Authentik secrets to `[.]env`/iu.test(guide),
     "deployment guide keeps media and infrastructure setup in the UI and makes Caddy and Authentik optional"
   );
   record(
@@ -858,11 +893,10 @@ if (existsSync(join(root, "deploy/DOCKER.md"))) {
 
   const recoveryCommands = [
     "docker compose stop helmsman",
-    "docker compose run --rm --no-deps helmsman reset-access --confirm",
-    "docker compose up -d",
-    "docker compose logs helmsman"
+    "docker compose run --rm --no-deps helmsman rotate-access-key --confirm",
+    "docker compose up -d"
   ];
-  const recoverySectionStart = guide.indexOf("If every browser session is lost");
+  const recoverySectionStart = guide.indexOf("If the access key is lost");
   const recoverySection = recoverySectionStart >= 0 ? guide.slice(recoverySectionStart) : "";
   record(
     recoveryCommands.every((command) => recoverySection.includes(command))
@@ -871,8 +905,21 @@ if (existsSync(join(root, "deploy/DOCKER.md"))) {
       && /network policy/iu.test(recoverySection)
       && /registered targets/iu.test(recoverySection)
       && /encrypted credentials/iu.test(recoverySection)
-      && /revokes all browser sessions/iu.test(recoverySection),
-    "access-recovery guide stops the broker before resetting sessions and preserves configured services"
+      && /revokes all browser sessions/iu.test(recoverySection)
+      && /standard output/iu.test(recoverySection)
+      && /not placed in subsequent application logs/iu.test(recoverySection),
+    "access-key recovery stops the broker, prints the replacement once, revokes sessions, and preserves configured services"
+  );
+  record(
+    /reusable 256-bit Helmsman access key/iu.test(guide)
+      && /one-year session/iu.test(guide)
+      && /bound to the exact scheme, host, and port/iu.test(guide)
+      && /stores only its SHA-256 verifier/iu.test(guide)
+      && /never reads the access key from `[.]env` or a URL, writes it to browser storage, or records it in application logs/iu.test(guide)
+      && /upgrading from v0[.]10[.]0-beta[.]8/iu.test(guide)
+      && /existing browser sessions migrate and remain valid/iu.test(guide)
+      && /Settings and create the first access key/iu.test(guide),
+    "deployment guide documents universal access-key login, one-year origin-bound sessions, secret handling, and beta.8 migration"
   );
   record(
     /Upgrade from Jellofin Command v0\.4 or v0\.5/iu.test(guide)

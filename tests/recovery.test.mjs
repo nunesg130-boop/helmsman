@@ -77,7 +77,7 @@ async function createState(dataDir) {
 async function createSession(dataDir) {
   const sessions = new SessionAuthStore(dataDir);
   await sessions.initialize();
-  await sessions.issue({
+  return sessions.claimAccess({
     name: "Recovery test browser",
     origin: "http://127.0.0.1:4180",
     host: "127.0.0.1:4180"
@@ -116,6 +116,8 @@ test("reset-access quarantines malformed sessions while preserving topology and 
     assert.equal(resetState.instanceId, instanceId);
     assert.deepEqual(resetState.policy.allowedCidrs, ["192.168.50.12/32"]);
     assert.equal(resetState.connections.radarr.url, "http://192.168.50.12:7878");
+    assert.equal(resetSessions.version, 2);
+    assert.equal(resetSessions.accessKeyHash, null);
     assert.deepEqual(resetSessions.sessions, {});
     assert.deepEqual(await readFile(path.join(dataDir, "credentials.json")), credentialDocument);
     assert.deepEqual(await readFile(path.join(dataDir, "credentials.key")), credentialKey);
@@ -123,6 +125,78 @@ test("reset-access quarantines malformed sessions while preserving topology and 
     const quarantined = await quarantineFiles(dataDir, "sessions.json.corrupt-");
     assert.equal(quarantined.length, 1);
     assert.deepEqual(await readFile(path.join(dataDir, quarantined[0])), malformedSessions);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("rotate-access-key revokes sessions and preserves claimed configuration and credentials", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "helmsman-recover-access-key-"));
+  const dataDir = path.join(root, "data");
+  try {
+    const state = await createState(dataDir);
+    const instanceId = state.snapshot().instanceId;
+    const credentials = new CredentialStore(dataDir, { instanceId });
+    await credentials.initialize();
+    await credentials.setCredential("radarr", "apiKey", SERVICE_SECRET);
+    const previous = await createSession(dataDir);
+    const previousToken = previous.cookie.split(";", 1)[0].split("=", 2)[1];
+
+    const originalState = await readFile(path.join(dataDir, "state.json"));
+    const originalCredentials = await readFile(path.join(dataDir, "credentials.json"));
+    const originalCredentialKey = await readFile(path.join(dataDir, "credentials.key"));
+    const result = await runRecovery("rotate-access-key", dataDir);
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    assert.equal(result.signal, null);
+    const matches = [...result.stdout.matchAll(/Helmsman access key: ([A-Za-z0-9_-]{43})/gu)];
+    assert.equal(matches.length, 1);
+    const replacementKey = matches[0][1];
+    assert.doesNotMatch(result.stderr, new RegExp(replacementKey, "u"));
+    assert.match(result.stdout, /All existing browser sessions were revoked/u);
+
+    assert.deepEqual(await readFile(path.join(dataDir, "state.json")), originalState);
+    assert.deepEqual(await readFile(path.join(dataDir, "credentials.json")), originalCredentials);
+    assert.deepEqual(await readFile(path.join(dataDir, "credentials.key")), originalCredentialKey);
+    const sessionDocument = await readFile(path.join(dataDir, "sessions.json"), "utf8");
+    assert.equal(sessionDocument.includes(replacementKey), false);
+    assert.equal(sessionDocument.includes(previous.accessKey), false);
+    assert.equal(sessionDocument.includes(previousToken), false);
+    const persisted = JSON.parse(sessionDocument);
+    assert.equal(persisted.version, 2);
+    assert.match(persisted.accessKeyHash, /^[a-f0-9]{64}$/u);
+    assert.deepEqual(persisted.sessions, {});
+
+    const sessions = new SessionAuthStore(dataDir);
+    await sessions.initialize();
+    await assert.rejects(
+      () => sessions.login({
+        accessKey: previous.accessKey,
+        name: "Old key",
+        origin: "http://127.0.0.1:4180"
+      }),
+      { code: "ACCESS_KEY_INVALID" }
+    );
+    const replacement = await sessions.login({
+      accessKey: replacementKey,
+      name: "Replacement",
+      origin: "http://127.0.0.1:4180"
+    });
+    assert.equal(replacement.session.name, "Replacement");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("rotate-access-key refuses an unclaimed instance", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "helmsman-recover-unclaimed-key-"));
+  const dataDir = path.join(root, "data");
+  try {
+    const state = new StateStore(dataDir);
+    await state.initialize();
+    const result = await runRecovery("rotate-access-key", dataDir);
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /requires a claimed Helmsman instance/u);
+    assert.doesNotMatch(result.stdout, /Helmsman access key:/u);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

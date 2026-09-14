@@ -14,14 +14,15 @@ import {
   SessionAuthError,
   SessionAuthStore
 } from "./session-auth.mjs";
-import { generateSecretToken, hashToken, tokenMatches } from "./state.mjs";
+import { tokenMatches } from "./state.mjs";
 
 const MAX_JSON_BODY_BYTES = 64 * 1024;
 const SAFE_SECRET = /^[^\u0000-\u001f\u007f-\u009f]{1,4096}$/u;
-const PAIRING_TTL_MS = 10 * 60 * 1000;
-const MAX_PAIRING_INVITES = 16;
 const LOGIN_WINDOW_MS = 10 * 60 * 1000;
 const MAX_LOGIN_ATTEMPTS_PER_WINDOW = 10;
+const ACCESS_LOGIN_WINDOW_MS = 10 * 60 * 1000;
+const MAX_ACCESS_LOGIN_ATTEMPTS_PER_WINDOW = 10;
+const MAX_ACCESS_LOGIN_BUCKETS = 256;
 // Keep enough encrypted-store headroom to stage every destination-bound
 // credential during an atomic network-policy migration (seven media
 // connectors, 25 Proxmox endpoints, and eight infrastructure services).
@@ -866,9 +867,10 @@ export async function createControlPlane(options) {
   await migrateLegacyCredentialBindings();
 
   let monitor = options.monitor || null;
-  const pairingInvites = new Map();
   const loginAttempts = new Map();
+  const accessLoginAttempts = new Map();
   let serviceMutationChain = Promise.resolve();
+  let claimMutationChain = Promise.resolve();
 
   async function serializeServiceMutation(operation) {
     const pending = serviceMutationChain.catch(() => {}).then(operation);
@@ -876,15 +878,15 @@ export async function createControlPlane(options) {
     return pending;
   }
 
-  function prunePairingInvites(now = Date.now()) {
-    for (const [verifier, invite] of pairingInvites) {
-      if (invite.expiresAt <= now) pairingInvites.delete(verifier);
-    }
+  async function serializeClaimMutation(operation) {
+    const pending = claimMutationChain.catch(() => {}).then(operation);
+    claimMutationChain = pending.then(() => {}, () => {});
+    return pending;
   }
 
   function consumeLoginAttempt(service, now = Date.now()) {
     // Deliberately scope this to the service, not the browser session. A new
-    // pairing or renewed session must not reset the upstream password-guessing
+    // access-key login or renewed session must not reset the upstream password-guessing
     // budget. Since `service` is a validated SERVICE_IDS value, this map is
     // strictly bounded by the number of supported services.
     const current = loginAttempts.get(service);
@@ -896,6 +898,37 @@ export async function createControlPlane(options) {
       fail(429, "LOGIN_RATE_LIMITED", "Too many service sign-in attempts. Wait a few minutes and try again.");
     }
     current.attempts += 1;
+  }
+
+  function accessLoginBucket(request) {
+    const remoteAddress = typeof request?.socket?.remoteAddress === "string"
+      ? request.socket.remoteAddress.slice(0, 128)
+      : "unknown";
+    return remoteAddress || "unknown";
+  }
+
+  function pruneAccessLoginAttempts(now = Date.now()) {
+    for (const [bucket, attempt] of accessLoginAttempts) {
+      if (attempt.startedAt + ACCESS_LOGIN_WINDOW_MS <= now) accessLoginAttempts.delete(bucket);
+    }
+  }
+
+  function consumeAccessLoginAttempt(request, now = Date.now()) {
+    pruneAccessLoginAttempts(now);
+    const bucket = accessLoginBucket(request);
+    const current = accessLoginAttempts.get(bucket);
+    if (!current) {
+      while (accessLoginAttempts.size >= MAX_ACCESS_LOGIN_BUCKETS) {
+        accessLoginAttempts.delete(accessLoginAttempts.keys().next().value);
+      }
+      accessLoginAttempts.set(bucket, { startedAt: now, attempts: 1 });
+      return bucket;
+    }
+    if (current.attempts >= MAX_ACCESS_LOGIN_ATTEMPTS_PER_WINDOW) {
+      fail(429, "ACCESS_LOGIN_RATE_LIMITED", "Too many access-key attempts. Wait a few minutes and try again.");
+    }
+    current.attempts += 1;
+    return bucket;
   }
 
   async function connectionsForPolicy(state, policy) {
@@ -1173,6 +1206,7 @@ export async function createControlPlane(options) {
       version,
       instanceId: state.instanceId,
       setupRequired: !state.claimed,
+      accessKeyConfigured: sessionStore.accessKeyConfigured(),
       authenticated: Boolean(authenticated),
       session: authenticated?.session || null,
       csrfToken: authenticated?.csrfToken || null,
@@ -1213,27 +1247,50 @@ export async function createControlPlane(options) {
 
     let issued;
     try {
-      issued = await sessionStore.issue({ name, origin: body.origin, host: binding.host });
-      await stateStore.mutate((next) => {
-        if (next.claimed || !tokenMatches(next.setupTokenHash, body.setupToken)) {
+      issued = await serializeClaimMutation(async () => {
+        const current = stateStore.snapshot();
+        if (current.claimed || !tokenMatches(current.setupTokenHash, body.setupToken)) {
           fail(409, "SETUP_TOKEN_USED", "The one-time setup token has already been used.");
         }
-        next.claimed = true;
-        next.claimedAt = new Date().toISOString();
-        next.setupTokenHash = null;
-        next.policy = { ...policy, revision: next.policy.revision + 1 };
-        next.connections = connections;
-        next.infrastructureTargets = infrastructureTargets;
-        next.infrastructureServices = infrastructureServices;
-        next.devices = {};
+        // An abrupt stop after sessions.json was committed but before
+        // state.json was claimed can leave orphaned access state. The broker
+        // claim state is authoritative, so a valid setup-token holder may
+        // safely reconcile that interrupted attempt before retrying.
+        if (sessionStore.accessKeyConfigured() || sessionStore.list().length) {
+          await sessionStore.clearAccess();
+        }
+        const provisional = await sessionStore.claimAccess({
+          name,
+          origin: body.origin,
+          host: binding.host
+        });
+        try {
+          await stateStore.mutate((next) => {
+            if (next.claimed || !tokenMatches(next.setupTokenHash, body.setupToken)) {
+              fail(409, "SETUP_TOKEN_USED", "The one-time setup token has already been used.");
+            }
+            next.claimed = true;
+            next.claimedAt = new Date().toISOString();
+            next.setupTokenHash = null;
+            next.policy = { ...policy, revision: next.policy.revision + 1 };
+            next.connections = connections;
+            next.infrastructureTargets = infrastructureTargets;
+            next.infrastructureServices = infrastructureServices;
+            next.devices = {};
+          });
+          return provisional;
+        } catch (error) {
+          await sessionStore.clearAccess().catch(() => {});
+          throw error;
+        }
       });
     } catch (error) {
-      if (issued?.session?.id) await sessionStore.revoke(issued.session.id).catch(() => {});
       throw translateStoreError(error);
     }
     response.setHeader("Set-Cookie", issued.cookie);
-    log("First-time setup completed and a browser session was issued.");
+    log("First-time setup completed, and reusable access was configured.");
     sendJson(response, 201, {
+      accessKey: issued.accessKey,
       session: issued.session,
       csrfToken: issued.csrfToken,
       config: publicConfiguration(stateStore.snapshot(), credentialStore)
@@ -1256,58 +1313,62 @@ export async function createControlPlane(options) {
     fail(405, "METHOD_NOT_ALLOWED", "That method is not allowed.");
   }
 
-  async function createPairingInvite(request, response) {
+  async function accessLogin(request, response) {
     if (request.method !== "POST") fail(405, "METHOD_NOT_ALLOWED", "That method is not allowed.");
-    const authenticated = await authenticate(request, true);
-    const body = await readBoundedJson(request);
-    requireExactKeys(body, []);
-    const now = Date.now();
-    prunePairingInvites(now);
-    if (pairingInvites.size >= MAX_PAIRING_INVITES) {
-      fail(409, "PAIRING_LIMIT_REACHED", "Wait for an unused browser invite to expire before creating another.");
+    if (!stateStore.snapshot().claimed) {
+      request.resume();
+      fail(409, "SETUP_REQUIRED", "Complete first-time setup before signing in with an access key.");
     }
-    const pairingToken = generateSecretToken();
-    const expiresAt = now + PAIRING_TTL_MS;
-    pairingInvites.set(hashToken(pairingToken), {
-      origin: authenticated.session.origin,
-      expiresAt
-    });
-    sendJson(response, 201, {
-      pairingToken,
-      expiresAt: new Date(expiresAt).toISOString()
-    });
-  }
-
-  async function pairSession(request, response) {
-    if (request.method !== "POST") fail(405, "METHOD_NOT_ALLOWED", "That method is not allowed.");
     const body = await readBoundedJson(request);
-    requireExactKeys(body, ["pairingToken", "deviceName", "origin"]);
+    requireExactKeys(body, ["accessKey", "deviceName", "origin"]);
     let binding;
     try {
       binding = claimRequestBinding(request, body.origin);
     } catch (error) {
       throw translateStoreError(error);
     }
-    const now = Date.now();
-    prunePairingInvites(now);
-    const verifier = hashToken(body.pairingToken);
-    const invite = pairingInvites.get(verifier);
-    if (!invite || !tokenMatches(verifier, body.pairingToken) || invite.origin !== body.origin) {
-      fail(401, "PAIRING_TOKEN_INVALID", "The one-time browser invite is invalid or expired.");
-    }
-    pairingInvites.delete(verifier);
+    const bucket = accessLoginBucket(request);
     let issued;
     try {
-      issued = await sessionStore.issue({
+      issued = await sessionStore.login({
+        accessKey: body.accessKey,
         name: safeDeviceName(body.deviceName),
         origin: body.origin,
         host: binding.host
       });
     } catch (error) {
+      if (error instanceof SessionAuthError && error.code === "ACCESS_KEY_INVALID") {
+        consumeAccessLoginAttempt(request);
+      }
+      throw translateStoreError(error);
+    }
+    accessLoginAttempts.delete(bucket);
+    response.setHeader("Set-Cookie", issued.cookie);
+    sendJson(response, 201, { session: issued.session, csrfToken: issued.csrfToken });
+  }
+
+  async function rotateAccessKey(request, response) {
+    if (request.method !== "POST") fail(405, "METHOD_NOT_ALLOWED", "That method is not allowed.");
+    const authenticated = await authenticate(request, true);
+    const body = await readBoundedJson(request);
+    requireExactKeys(body, []);
+    let issued;
+    try {
+      issued = await sessionStore.rotateAccessKeyAndIssue({
+        name: authenticated.session.name,
+        origin: authenticated.session.origin,
+        currentSessionId: authenticated.session.id
+      });
+    } catch (error) {
       throw translateStoreError(error);
     }
     response.setHeader("Set-Cookie", issued.cookie);
-    sendJson(response, 201, { session: issued.session, csrfToken: issued.csrfToken });
+    log("The reusable access key was rotated, and prior browser sessions were revoked.");
+    sendJson(response, 200, {
+      accessKey: issued.accessKey,
+      session: issued.session,
+      csrfToken: issued.csrfToken
+    });
   }
 
   async function sessions(request, response, sessionId) {
@@ -2720,12 +2781,12 @@ export async function createControlPlane(options) {
         await session(request, response);
         return true;
       }
-      if (url.pathname === "/api/v2/session/invite") {
-        await createPairingInvite(request, response);
+      if (url.pathname === "/api/v2/access/login") {
+        await accessLogin(request, response);
         return true;
       }
-      if (url.pathname === "/api/v2/session/pair") {
-        await pairSession(request, response);
+      if (url.pathname === "/api/v2/access/rotate") {
+        await rotateAccessKey(request, response);
         return true;
       }
       const sessionMatch = url.pathname.match(/^\/api\/v2\/sessions\/([a-f0-9-]+)$/u);

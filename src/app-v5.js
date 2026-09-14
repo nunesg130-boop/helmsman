@@ -204,7 +204,8 @@ const state = {
   fatalError: "",
   pollTimer: null,
   lastMarkup: "",
-  invite: null,
+  accessKeyReveal: "",
+  accessKeyMutation: false,
   sessions: {
     loaded: false,
     currentSessionId: "",
@@ -704,7 +705,7 @@ function renderNetworkPolicyFields(policy = {}, idPrefix = "network") {
 function renderSetup() {
   return `
     <section class="setup-v5" aria-labelledby="setup-title">
-      ${renderGateHeader("First-time setup", "Claim this container", "Define what the broker may reach, then create this browser's revocable session. No extra unlock step is required.", "setup-title")}
+      ${renderGateHeader("First-time setup", "Claim this container", "Define what the broker may reach, then create the reusable access key that unlocks Helmsman on your browsers.", "setup-title")}
       <div class="setup-v5__steps" aria-hidden="true">
         <span class="is-active"><b>01</b> Claim</span><span><b>02</b> Network</span><span><b>03</b> Connect</span>
       </div>
@@ -728,32 +729,42 @@ function renderSetup() {
             ${renderNetworkPolicyFields({ allowedCidrs: [], allowPublicHttps: false }, "setup")}
           </div>
         </div>
-        <div class="security-note security-note--good">${icon("lock")}<div><strong>Credentials stay out of the browser</strong><span>They are encrypted in the container data volume. The interface only reports whether a secret exists.</span></div></div>
+        <div class="security-note security-note--good">${icon("lock")}<div><strong>Credentials stay out of the browser</strong><span>Service credentials are encrypted in the container data volume. After setup, save the generated Helmsman access key in your password manager.</span></div></div>
         <p class="form-error" id="setup-error" role="alert"></p>
         <div class="form-actions"><button class="button button--primary" type="submit">Claim and continue</button></div>
       </form>
     </section>`;
 }
 
-function renderPairing() {
+function renderAccessLogin() {
   return `
-    <section class="setup-v5" aria-labelledby="pair-title">
-      ${renderGateHeader("Browser authorization", "This container is already claimed", "Use a one-time browser invite from an authorized device. If every session is lost, reset access from the Docker console; service settings and encrypted credentials are preserved.", "pair-title")}
-      <form class="glass-form glass-form--compact" id="pair-form" autocomplete="off" data-form-type="other">
+    <section class="setup-v5" aria-labelledby="access-title">
+      ${renderGateHeader("Browser access", "Unlock Helmsman", "Enter the reusable access key for this container. This browser receives its own revocable, one-year session on this secure origin.", "access-title")}
+      <form class="glass-form glass-form--compact" id="access-login-form" autocomplete="off" data-form-type="other">
         <div class="form-section">
           <div class="form-section__number">01</div>
           <div class="form-section__body">
-            <h3>Pair this browser</h3>
+            <h3>Sign in to this browser</h3>
             <div class="form-grid form-grid--two">
-              <label><span>One-time browser invite</span><input name="pairingToken" type="password" autocomplete="one-time-code" autocapitalize="off" spellcheck="false" data-1p-ignore="true" data-bwignore="true" data-lpignore="true" data-protonpass-ignore="true" data-form-type="other" required /></label>
+              <label><span>Helmsman access key</span><input name="accessKey" type="password" autocomplete="current-password" autocapitalize="off" spellcheck="false" data-1p-ignore="true" data-bwignore="true" data-lpignore="true" data-protonpass-ignore="true" data-form-type="other" required /></label>
               <label><span>This browser name</span><input name="deviceName" value="${escapeHtml(navigator.platform || "Browser")}" maxlength="80" required /></label>
             </div>
           </div>
         </div>
-        <p class="form-error" id="pair-error" role="alert"></p>
-        <div class="form-actions"><button class="button button--primary" type="submit">Authorize browser</button></div>
+        <div class="security-note security-note--good">${icon("lock")}<div><strong>The access key is never saved by Helmsman in this browser</strong><span>It is sent once over this HTTPS or localhost origin and exchanged for an HttpOnly session cookie.</span></div></div>
+        <p class="form-error" id="access-login-error" role="alert"></p>
+        <div class="form-actions"><button class="button button--primary" type="submit">Unlock Helmsman</button></div>
       </form>
-      <div class="recovery-command"><strong>No authorized browser?</strong><code>docker compose stop helmsman<br>docker compose run --rm --no-deps helmsman reset-access --confirm<br>docker compose up -d<br>docker compose logs helmsman</code><span>Stop the running service first, reset access, then start the stack and use the new setup token from its logs.</span></div>
+      <div class="recovery-command"><strong>Lost the access key?</strong><code>docker compose stop helmsman<br>docker compose run --rm --no-deps helmsman rotate-access-key --confirm<br>docker compose up -d</code><span>An existing signed-in browser can rotate it from Settings. If none remain, run this recovery command and save the newly printed key.</span></div>
+    </section>`;
+}
+
+function renderAccessRecovery() {
+  return `
+    <section class="setup-v5" aria-labelledby="access-recovery-title">
+      ${renderGateHeader("Browser access", "Create an access key", "This claimed container does not have a universal access key yet. Create one from an existing signed-in browser or from the Docker console.", "access-recovery-title")}
+      <div class="recovery-command"><strong>If another browser is signed in</strong><span>Open Settings → Security and access, then select Create access key. The new key is shown only once.</span></div>
+      <div class="recovery-command"><strong>If no browser is signed in</strong><code>docker compose stop helmsman<br>docker compose run --rm --no-deps helmsman rotate-access-key --confirm<br>docker compose up -d</code><span>The command prints the new reusable key without changing service connections or encrypted credentials.</span></div>
     </section>`;
 }
 
@@ -2118,9 +2129,20 @@ function renderBrowserSessions() {
   }).join("")}</div>`;
 }
 
+function renderAccessKeyReveal() {
+  if (!state.accessKeyReveal) return "";
+  return `<div class="invite-token" role="status" aria-live="polite">
+    <span>New Helmsman access key · shown once</span>
+    <code data-access-key-output>${escapeHtml(state.accessKeyReveal)}</code>
+    <small>Copy it now and save it in your password manager. Helmsman stores only its hash and cannot recover it. Rotating the key replaces the previous key and signs out other browsers.</small>
+    <div class="button-row"><button class="button button--primary" type="button" data-action="copy-access-key">Copy access key</button><button class="button" type="button" data-action="dismiss-access-key">I saved it</button></div>
+  </div>`;
+}
+
 function renderSettingsPage() {
   const policy = state.config?.policy || { allowedCidrs: [], allowPublicHttps: false };
   const networkMode = Array.isArray(policy.allowedCidrs) && policy.allowedCidrs.length ? "manual" : "exact";
+  const accessKeyConfigured = Boolean(state.status?.accessKeyConfigured);
   return `
     <section class="detail-page settings-page-v5">
       <header class="detail-hero"><div><span class="section-kicker">Control plane</span><h2>Security and access</h2><p>Local mode stays simple; HTTPS and Authentik remain optional deployment layers for LAN or external access.</p></div></header>
@@ -2129,10 +2151,12 @@ function renderSettingsPage() {
           ${renderNetworkPolicyFields(policy, "settings")}
           <div class="form-actions"><button class="button button--primary" type="submit">Save network policy</button></div>
         </div></form>
-        <section class="glass-panel settings-card-v5"><header><div><span class="section-kicker">Browser access</span><h3>Authorized browsers</h3></div>${icon("lock")}</header><div class="settings-card-v5__body">
-          <p>This browser uses a revocable HttpOnly cookie. Create a ten-minute, single-use invite to authorize another browser.</p>
-          ${state.invite ? `<div class="invite-token"><span>One-time browser invite</span><code>${escapeHtml(state.invite.pairingToken)}</code><small>Expires ${escapeHtml(formatTime(state.invite.expiresAt))}. It will not be shown again.</small></div>` : ""}
-          <div class="button-row"><button class="button" type="button" data-action="create-invite">Create browser invite</button><button class="button" type="button" data-action="refresh-sessions">Refresh list</button></div>
+        <section class="glass-panel settings-card-v5"><header><div><span class="section-kicker">Browser access</span><h3>Universal access key</h3></div>${icon("lock")}</header><div class="settings-card-v5__body">
+          <p>Enter the same reusable key on any HTTPS or localhost browser. Each successful unlock creates a separate revocable session trusted for one year.</p>
+          ${renderAccessKeyReveal()}
+          <div class="security-note security-note--good">${icon("check")}<div><strong>${accessKeyConfigured ? "Access key configured" : "Access key not configured"}</strong><span>${accessKeyConfigured ? "The saved key itself cannot be viewed again. Rotate it to create a replacement and revoke other browser sessions." : "Create the first reusable key now; it will be displayed only once."}</span></div></div>
+          <div class="button-row"><button class="button ${accessKeyConfigured ? "button--danger" : "button--primary"}" type="button" data-action="rotate-access-key" ${state.accessKeyMutation ? "disabled" : ""}>${state.accessKeyMutation ? "Creating…" : accessKeyConfigured ? "Rotate access key" : "Create access key"}</button><button class="button" type="button" data-action="refresh-sessions">Refresh browser list</button></div>
+          <h4>Authorized browsers</h4>
           ${renderBrowserSessions()}
         </div></section>
         <section class="glass-panel settings-card-v5"><header><div><span class="section-kicker">At rest</span><h3>Credential encryption</h3></div>${icon("shield")}</header><div class="settings-card-v5__body"><p>Secrets use AES-256-GCM and never return through the API. ${state.status?.storage?.externalKey ? "This deployment uses an external key file." : "This local deployment uses an automatically generated key in its protected data volume."}</p><div class="security-note security-note--good">${icon("check")}<div><strong>No extra unlock step</strong><span>The container keeps monitoring after every browser closes.</span></div></div></div></section>
@@ -2566,7 +2590,7 @@ function renderPage({ force = false, preserveFocus = false } = {}) {
   if (state.starting) markup = renderStarting();
   else if (state.fatalError) markup = renderFatal();
   else if (state.status?.setupRequired) markup = renderSetup();
-  else if (!state.status?.authenticated) markup = renderPairing();
+  else if (!state.status?.authenticated) markup = state.status?.accessKeyConfigured ? renderAccessLogin() : renderAccessRecovery();
   else markup = renderAuthenticatedRoute();
 
   if (!force && markup === state.lastMarkup) return;
@@ -3853,39 +3877,51 @@ async function submitSetup(form) {
         allowPublicHttps: data.get("allowPublicHttps") === "on"
       }
     });
+    const accessKey = typeof result?.accessKey === "string" ? result.accessKey : "";
+    if (!accessKey || accessKey.length > 1024) {
+      throw new ApiError(502, "INVALID_RESPONSE", "The container did not return a valid access key.");
+    }
     state.csrfToken = result.csrfToken;
-    state.status = { ...state.status, setupRequired: false, authenticated: true, session: result.session };
+    state.status = { ...state.status, setupRequired: false, authenticated: true, accessKeyConfigured: true, session: result.session };
     state.config = result.config;
+    state.accessKeyReveal = accessKey;
     state.lastMarkup = "";
     await Promise.all([loadOperations(), loadSessions()]);
-    location.hash = "#/services";
+    location.hash = "#/settings";
     renderPage({ force: true });
-    showToast("Container claimed. Add your services next.", "success");
+    showToast("Container claimed. Save the new access key now.", "success");
   } catch (caught) {
     error.textContent = caught.message;
   }
 }
 
-async function submitPair(form) {
-  const error = form.querySelector("#pair-error");
+async function submitAccessLogin(form) {
+  const error = form.querySelector("#access-login-error");
   const data = new FormData(form);
+  const accessKeyInput = form.querySelector("input[name='accessKey']");
   error.textContent = "";
   try {
-    const result = await api("/api/v2/session/pair", {
+    const result = await api("/api/v2/access/login", {
       method: "POST",
       csrf: false,
       body: {
-        pairingToken: String(data.get("pairingToken") || ""),
+        accessKey: String(data.get("accessKey") || ""),
         deviceName: String(data.get("deviceName") || "Browser"),
         origin: location.origin
       }
     });
     state.csrfToken = result.csrfToken;
-    state.status = { ...state.status, authenticated: true, session: result.session };
+    state.status = { ...state.status, authenticated: true, accessKeyConfigured: true, session: result.session };
+    state.accessKeyReveal = "";
     await loadAuthenticatedData();
     renderPage({ force: true });
   } catch (caught) {
-    error.textContent = caught.message;
+    if (caught?.status === 401) error.textContent = "The access key was not accepted. Check the key and try again.";
+    else if (caught?.status === 429) error.textContent = "Too many unlock attempts. Wait a moment, then try again.";
+    else if (caught?.status === 0) error.textContent = "Helmsman could not be reached. Check the connection and try again.";
+    else error.textContent = "This browser could not be unlocked. Use the same HTTPS or localhost origin and try again.";
+  } finally {
+    if (accessKeyInput) accessKeyInput.value = "";
   }
 }
 
@@ -4437,11 +4473,43 @@ function clearAuthenticatedState() {
   state.csrfToken = "";
   state.config = null;
   state.snapshot = null;
-  state.invite = null;
+  state.accessKeyReveal = "";
+  state.accessKeyMutation = false;
   state.sessions = { loaded: false, currentSessionId: "", items: [], error: "" };
   state.sessionMutation = "";
   state.infrastructure = emptyInfrastructureState();
   state.lastMarkup = "";
+}
+
+async function rotateAccessKey() {
+  if (state.accessKeyMutation) return;
+  if (state.status?.accessKeyConfigured
+    && typeof globalThis.confirm === "function"
+    && !globalThis.confirm("Rotate the universal access key? The current key will stop working and every other browser will be signed out.")) {
+    return;
+  }
+  state.accessKeyMutation = true;
+  state.lastMarkup = "";
+  renderPage({ force: true, preserveFocus: true });
+  try {
+    const result = await api("/api/v2/access/rotate", { method: "POST", body: {} });
+    const accessKey = typeof result?.accessKey === "string" ? result.accessKey : "";
+    if (!accessKey || accessKey.length > 1024) {
+      throw new ApiError(502, "INVALID_RESPONSE", "The container did not return a valid access key.");
+    }
+    state.csrfToken = result.csrfToken;
+    state.status = { ...state.status, authenticated: true, accessKeyConfigured: true, session: result.session };
+    state.accessKeyReveal = accessKey;
+    state.sessions = { loaded: false, currentSessionId: "", items: [], error: "" };
+    await loadSessions();
+    showToast("New access key created. Save it now; the previous key no longer works.", "success");
+  } catch (error) {
+    showToast(error.message, "danger");
+  } finally {
+    state.accessKeyMutation = false;
+    state.lastMarkup = "";
+    renderPage({ force: true, preserveFocus: true });
+  }
 }
 
 async function revokeBrowserSession(sessionId) {
@@ -4503,7 +4571,8 @@ async function initialize() {
     else {
       state.config = null;
       state.snapshot = null;
-      state.invite = null;
+      state.accessKeyReveal = "";
+      state.accessKeyMutation = false;
       state.sessions = { loaded: false, currentSessionId: "", items: [], error: "" };
       state.sessionMutation = "";
       state.infrastructure = emptyInfrastructureState();
@@ -4572,14 +4641,19 @@ document.addEventListener("click", async (event) => {
     await loadInfrastructureTargets({ render: true });
     if (target.isConnected) target.disabled = false;
   }
-  if (action === "create-invite") {
+  if (action === "rotate-access-key") await rotateAccessKey();
+  if (action === "copy-access-key" && state.accessKeyReveal) {
     try {
-      state.invite = await api("/api/v2/session/invite", { method: "POST", body: {} });
-      state.lastMarkup = "";
-      renderPage({ force: true, preserveFocus: true });
-    } catch (error) {
-      showToast(error.message, "danger");
+      await navigator.clipboard.writeText(state.accessKeyReveal);
+      showToast("Access key copied. Save it in your password manager.", "success");
+    } catch {
+      showToast("Copy failed. Select and copy the displayed access key manually.", "danger");
     }
+  }
+  if (action === "dismiss-access-key") {
+    state.accessKeyReveal = "";
+    state.lastMarkup = "";
+    renderPage({ force: true, preserveFocus: true });
   }
   if (action === "refresh-sessions") {
     target.disabled = true;
@@ -4703,7 +4777,7 @@ document.addEventListener("submit", (event) => {
     location.hash = "#/library";
   }
   if (event.target.id === "setup-form") submitSetup(event.target);
-  if (event.target.id === "pair-form") submitPair(event.target);
+  if (event.target.id === "access-login-form") submitAccessLogin(event.target);
   if (event.target.id === "service-form") submitService(event.target);
   if (event.target.id === "portainer-form") submitPortainerService(event.target);
   if (event.target.id === "proxmox-form") submitInfrastructureTarget(event.target);
@@ -4713,6 +4787,7 @@ document.addEventListener("submit", (event) => {
 
 window.addEventListener("hashchange", () => {
   closeMediaDrawer({ restoreFocus: false });
+  if (rawRoute() !== "settings") state.accessKeyReveal = "";
   state.lastMarkup = "";
   renderPage({ force: true });
   resetRouteScroll();

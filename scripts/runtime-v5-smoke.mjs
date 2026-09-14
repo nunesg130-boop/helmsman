@@ -160,6 +160,8 @@ function installFakeBrowser(fetchHandler, suffix) {
   const intervalCallbacks = [];
   const requestLog = [];
   const scrollCalls = [];
+  const confirmCalls = [];
+  const confirmResponses = [];
   const body = new FakeElement();
   const location = {
     hash: "#/overview",
@@ -193,14 +195,24 @@ function installFakeBrowser(fetchHandler, suffix) {
     }
   };
   const localStorageValues = new Map();
-  const localStorage = {
+  const sessionStorageValues = new Map();
+  const storageFor = (values) => ({
     getItem(key) {
-      return localStorageValues.has(String(key)) ? localStorageValues.get(String(key)) : null;
+      return values.has(String(key)) ? values.get(String(key)) : null;
     },
     setItem(key, value) {
-      localStorageValues.set(String(key), String(value));
+      values.set(String(key), String(value));
+    },
+    removeItem(key) {
+      values.delete(String(key));
+    },
+    clear() {
+      values.clear();
     }
-  };
+  });
+  const localStorage = storageFor(localStorageValues);
+  const sessionStorage = storageFor(sessionStorageValues);
+  const clipboardWrites = [];
 
   const fetch = async (path, options = {}) => {
     const call = { path: String(path), options };
@@ -212,7 +224,17 @@ function installFakeBrowser(fetchHandler, suffix) {
     document: { value: document, configurable: true },
     fetch: { value: fetch, configurable: true },
     location: { value: location, configurable: true },
-    navigator: { value: { platform: "Runtime test" }, configurable: true },
+    navigator: {
+      value: {
+        platform: "Runtime test",
+        clipboard: {
+          async writeText(value) {
+            clipboardWrites.push(String(value));
+          }
+        }
+      },
+      configurable: true
+    },
     requestAnimationFrame: { value: (callback) => callback(), configurable: true },
     FormData: {
       value: class FakeFormData {
@@ -242,7 +264,15 @@ function installFakeBrowser(fetchHandler, suffix) {
       configurable: true
     },
     window: { value: globalThis, configurable: true },
-    localStorage: { value: localStorage, configurable: true }
+    localStorage: { value: localStorage, configurable: true },
+    sessionStorage: { value: sessionStorage, configurable: true }
+  });
+  Object.defineProperty(globalThis, "confirm", {
+    value: (message) => {
+      confirmCalls.push(String(message));
+      return confirmResponses.length ? Boolean(confirmResponses.shift()) : true;
+    },
+    configurable: true
   });
 
   globalThis.addEventListener = (type, listener) => {
@@ -282,6 +312,10 @@ function installFakeBrowser(fetchHandler, suffix) {
     infrastructureOnly,
     infrastructureIncidentCounts,
     localStorageValues,
+    sessionStorageValues,
+    clipboardWrites,
+    confirmCalls,
+    confirmResponses,
     dispatchDocument,
     dispatchWindow,
     main: elements.get("#main-content")
@@ -292,12 +326,38 @@ async function importShell(environment) {
   await import(`../src/app-v5.js?runtime-v5-smoke=${environment.suffix}-${Date.now()}`);
 }
 
+function assertSecretAbsentFromBrowserStorage(environment, secret) {
+  const persisted = [
+    ...environment.localStorageValues.entries(),
+    ...environment.sessionStorageValues.entries()
+  ];
+  assert.ok(
+    persisted.every(([key, value]) => !String(key).includes(secret) && !String(value).includes(secret)),
+    "access keys must never be written to localStorage or sessionStorage"
+  );
+  assert.doesNotMatch(`${environment.location.origin}${environment.location.hash}`, new RegExp(secret.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "u"), "access keys must never enter the URL");
+}
+
+function minimalOperationsSnapshot() {
+  return {
+    version: 1,
+    generatedAt: "2026-09-14T12:00:00.000Z",
+    overall: { state: "healthy", headline: "Ready", summary: "Ready." },
+    services: [],
+    pipeline: { state: "healthy", stages: [] },
+    incidents: { open: [], recent: [] },
+    workload: {},
+    events: []
+  };
+}
+
 async function setupGateContract() {
   const environment = installFakeBrowser(({ path }) => {
     if (path === "/api/v2/status") {
       return jsonResponse({
         setupRequired: true,
         authenticated: false,
+        accessKeyConfigured: false,
         csrfToken: null,
         storage: { credentialsEncrypted: true, externalKey: false }
       });
@@ -323,12 +383,13 @@ async function setupGateContract() {
   assert.equal(environment.requestLog.filter(({ path }) => path === "/api/v2/status").length, 1);
 }
 
-async function pairingGateHeadingContract() {
+async function accessKeyGateContract() {
   const environment = installFakeBrowser(({ path }) => {
     if (path === "/api/v2/status") {
       return jsonResponse({
         setupRequired: false,
         authenticated: false,
+        accessKeyConfigured: true,
         csrfToken: null,
         storage: { credentialsEncrypted: true, externalKey: false }
       });
@@ -337,13 +398,245 @@ async function pairingGateHeadingContract() {
   }, "pairing-heading");
 
   await importShell(environment);
-  await waitFor(() => environment.main.innerHTML.includes("already claimed"), "browser pairing gate");
-  assert.match(environment.main.innerHTML, /aria-labelledby="pair-title"/u);
+  await waitFor(() => environment.main.innerHTML.includes("Unlock Helmsman"), "access-key gate");
+  assert.match(environment.main.innerHTML, /aria-labelledby="access-title"/u);
   assert.match(
     environment.main.innerHTML,
-    /<h2 id="pair-title">This container is already claimed<\/h2>/u,
-    "the pairing heading reference must resolve"
+    /<h2 id="access-title">Unlock Helmsman<\/h2>/u,
+    "the access-key heading reference must resolve"
   );
+  assert.match(environment.main.innerHTML, /id="access-login-form"/u);
+  assert.match(environment.main.innerHTML, /name="accessKey" type="password"/u, "the reusable key must remain masked");
+  assert.match(environment.main.innerHTML, /one-year session/u);
+  assert.match(environment.main.innerHTML, /rotate-access-key --confirm/u);
+  assert.doesNotMatch(environment.main.innerHTML, /one-time browser invite|pair this browser/iu);
+}
+
+async function accessKeyRecoveryGateContract() {
+  const environment = installFakeBrowser(({ path }) => {
+    if (path === "/api/v2/status") {
+      return jsonResponse({
+        setupRequired: false,
+        authenticated: false,
+        accessKeyConfigured: false,
+        csrfToken: null,
+        storage: { credentialsEncrypted: true, externalKey: false }
+      });
+    }
+    return jsonResponse({ code: "NOT_FOUND", message: "Unexpected test route." }, 404);
+  }, "access-key-recovery");
+
+  await importShell(environment);
+  await waitFor(() => environment.main.innerHTML.includes("Create an access key"), "access-key recovery gate");
+  assert.match(environment.main.innerHTML, /aria-labelledby="access-recovery-title"/u);
+  assert.match(environment.main.innerHTML, /Settings → Security and access/u);
+  assert.match(environment.main.innerHTML, /rotate-access-key --confirm/u);
+  assert.doesNotMatch(environment.main.innerHTML, /id="access-login-form"/u, "a missing key must not render an unusable login form");
+  assert.doesNotMatch(environment.main.innerHTML, /reset-access|session\/invite|session\/pair/u);
+}
+
+async function setupClaimAccessKeyContract() {
+  const generatedKey = "hm-generated-<script>claim-xss</script>";
+  const setupToken = "one-time-setup-token";
+  const csrfToken = "claim-csrf-token";
+  const config = { policy: { allowedCidrs: [], allowPublicHttps: false }, services: [] };
+  const snapshot = minimalOperationsSnapshot();
+  const environment = installFakeBrowser(({ path, options }) => {
+    if (path === "/api/v2/status") {
+      return jsonResponse({
+        setupRequired: true,
+        authenticated: false,
+        accessKeyConfigured: false,
+        csrfToken: null,
+        storage: { credentialsEncrypted: true, externalKey: false }
+      });
+    }
+    if (path === "/api/v2/setup/claim" && options.method === "POST") {
+      return jsonResponse({
+        accessKey: generatedKey,
+        csrfToken,
+        session: { id: "161f1a48-b46d-43cd-bdd0-e921438f61be", name: "Claim Browser" },
+        config: clone(config)
+      }, 201);
+    }
+    if (path === "/api/v2/operations/snapshot") return jsonResponse(clone(snapshot));
+    if (path === "/api/v2/sessions") {
+      return jsonResponse({
+        currentSessionId: "161f1a48-b46d-43cd-bdd0-e921438f61be",
+        sessions: []
+      });
+    }
+    return jsonResponse({ code: "NOT_FOUND", message: "Unexpected test route." }, 404);
+  }, "setup-claim-access-key");
+
+  await importShell(environment);
+  await waitFor(() => environment.main.innerHTML.includes("Claim this container"), "claim form");
+  const form = new FakeElement({ id: "setup-form" });
+  form.dataset.networkMode = "exact";
+  form.formDataValues = new Map([
+    ["setupToken", setupToken],
+    ["deviceName", "Claim Browser"],
+    ["networkMode", "exact"],
+    ["allowPublicHttps", null]
+  ]);
+  form.registerSelector("#setup-error", new FakeElement());
+  await environment.dispatchDocument("submit", { target: form, preventDefault() {} });
+  await waitFor(() => environment.main.innerHTML.includes("New Helmsman access key"), "one-time access-key reveal");
+
+  const claim = environment.requestLog.find(({ path }) => path === "/api/v2/setup/claim");
+  assert.ok(claim, "first-time setup must use the claim route");
+  assert.equal(claim.options.credentials, "same-origin");
+  assert.equal(claim.options.headers.has("X-Jellofin-CSRF"), false, "claim must not require an existing CSRF token");
+  assert.deepEqual(JSON.parse(claim.options.body), {
+    setupToken,
+    deviceName: "Claim Browser",
+    origin: "http://127.0.0.1:4180",
+    allowedCidrs: [],
+    allowPublicHttps: false
+  });
+  assert.equal(environment.location.hash, "#/settings", "a successful claim must open Settings so the generated key cannot be missed");
+  assert.match(environment.main.innerHTML, /hm-generated-&lt;script&gt;claim-xss&lt;\/script&gt;/u);
+  assert.doesNotMatch(environment.main.innerHTML, /<script>claim-xss<\/script>/u, "the one-time key reveal must be escaped");
+  assert.equal((environment.main.innerHTML.match(/hm-generated-/gu) || []).length, 1, "the generated key must appear only once in the rendered page");
+  assert.match(environment.main.innerHTML, /save it in your password manager/iu);
+  assert.match(environment.main.innerHTML, /cannot recover it/iu);
+  assertSecretAbsentFromBrowserStorage(environment, generatedKey);
+
+  const actionTarget = (action) => {
+    const element = { dataset: { action }, disabled: false, isConnected: true };
+    element.closest = () => element;
+    return element;
+  };
+  await environment.dispatchDocument("click", { target: actionTarget("copy-access-key") });
+  assert.deepEqual(environment.clipboardWrites, [generatedKey], "copy must use the in-memory reveal without persisting it");
+  await environment.dispatchDocument("click", { target: actionTarget("dismiss-access-key") });
+  assert.doesNotMatch(environment.main.innerHTML, /hm-generated-/u, "dismissing the one-time reveal must remove the key from the page");
+}
+
+async function firstAccessKeyCreationContract() {
+  const csrfToken = "legacy-session-csrf";
+  const generatedKey = "hm-first-universal-access-key";
+  const currentSessionId = "56565656-5656-4565-8565-565656565656";
+  const config = { policy: { allowedCidrs: [], allowPublicHttps: false }, services: [] };
+  const snapshot = minimalOperationsSnapshot();
+  const environment = installFakeBrowser(({ path, options }) => {
+    if (path === "/api/v2/status") {
+      return jsonResponse({
+        setupRequired: false,
+        authenticated: true,
+        accessKeyConfigured: false,
+        csrfToken,
+        session: { id: currentSessionId, name: "Migrated Browser" },
+        storage: { credentialsEncrypted: true, externalKey: false }
+      });
+    }
+    if (path === "/api/v2/config") return jsonResponse(clone(config));
+    if (path === "/api/v2/operations/snapshot") return jsonResponse(clone(snapshot));
+    if (path === "/api/v2/sessions") {
+      return jsonResponse({
+        currentSessionId,
+        sessions: [{
+          id: currentSessionId,
+          name: "Migrated Browser",
+          origin: "http://127.0.0.1:4180",
+          createdAt: "2026-09-14T12:00:00.000Z",
+          expiresAt: "2027-09-14T12:00:00.000Z"
+        }]
+      });
+    }
+    if (path === "/api/v2/access/rotate" && options.method === "POST") {
+      return jsonResponse({
+        accessKey: generatedKey,
+        csrfToken: "first-key-csrf",
+        session: { id: currentSessionId, name: "Migrated Browser" }
+      });
+    }
+    return jsonResponse({ code: "NOT_FOUND", message: "Unexpected test route." }, 404);
+  }, "first-access-key-creation");
+
+  environment.location.hash = "#/settings";
+  await importShell(environment);
+  await waitFor(() => environment.main.innerHTML.includes("Access key not configured"), "first-key Settings state");
+  assert.match(environment.main.innerHTML, />Create access key<\/button>/u);
+  const target = { dataset: { action: "rotate-access-key" }, disabled: false, isConnected: true };
+  target.closest = () => target;
+  await environment.dispatchDocument("click", { target });
+  await waitFor(() => environment.requestLog.some(({ path }) => path === "/api/v2/access/rotate"), "first access-key creation");
+
+  assert.deepEqual(environment.confirmCalls, [], "creating the first key must not show a destructive-rotation confirmation");
+  const request = environment.requestLog.find(({ path }) => path === "/api/v2/access/rotate");
+  assert.equal(request.options.headers.get("X-Jellofin-CSRF"), csrfToken);
+  assert.match(environment.main.innerHTML, /hm-first-universal-access-key/u);
+}
+
+async function accessKeyLoginContract() {
+  const rejectedKey = "hm-rejected-secret";
+  const acceptedKey = "hm-accepted-secret";
+  const csrfToken = "login-csrf-token";
+  const config = { policy: { allowedCidrs: [], allowPublicHttps: false }, services: [] };
+  const snapshot = minimalOperationsSnapshot();
+  let attempts = 0;
+  const environment = installFakeBrowser(({ path, options }) => {
+    if (path === "/api/v2/status") {
+      return jsonResponse({
+        setupRequired: false,
+        authenticated: false,
+        accessKeyConfigured: true,
+        csrfToken: null,
+        storage: { credentialsEncrypted: true, externalKey: false }
+      });
+    }
+    if (path === "/api/v2/access/login" && options.method === "POST") {
+      attempts += 1;
+      if (attempts === 1) {
+        return jsonResponse({ code: "ACCESS_DENIED", message: `Rejected ${rejectedKey}` }, 401);
+      }
+      return jsonResponse({
+        csrfToken,
+        session: { id: "467f10c9-7f8c-4164-aa34-a1c87f69670c", name: "Remote Browser" },
+        config: clone(config)
+      });
+    }
+    if (path === "/api/v2/config") return jsonResponse(clone(config));
+    if (path === "/api/v2/operations/snapshot") return jsonResponse(clone(snapshot));
+    if (path === "/api/v2/sessions") {
+      return jsonResponse({ currentSessionId: "467f10c9-7f8c-4164-aa34-a1c87f69670c", sessions: [] });
+    }
+    return jsonResponse({ code: "NOT_FOUND", message: "Unexpected test route." }, 404);
+  }, "access-key-login");
+
+  await importShell(environment);
+  await waitFor(() => environment.main.innerHTML.includes("Unlock Helmsman"), "access-key login form");
+  const form = new FakeElement({ id: "access-login-form" });
+  const error = new FakeElement();
+  const accessKeyInput = new FakeElement();
+  form.registerSelector("#access-login-error", error);
+  form.registerSelector("input[name='accessKey']", accessKeyInput);
+  form.formDataValues = new Map([["accessKey", rejectedKey], ["deviceName", "Remote Browser"]]);
+  accessKeyInput.value = rejectedKey;
+  await environment.dispatchDocument("submit", { target: form, preventDefault() {} });
+  await waitFor(() => attempts === 1, "rejected access-key login");
+  await waitFor(() => error.textContent.length > 0, "redacted login error");
+  assert.equal(error.textContent, "The access key was not accepted. Check the key and try again.");
+  assert.doesNotMatch(error.textContent, new RegExp(rejectedKey, "u"), "a backend error must not echo a rejected key");
+  assert.equal(accessKeyInput.value, "", "the access-key input must be cleared after an attempt");
+  assertSecretAbsentFromBrowserStorage(environment, rejectedKey);
+
+  form.formDataValues = new Map([["accessKey", acceptedKey], ["deviceName", "Remote Browser"]]);
+  accessKeyInput.value = acceptedKey;
+  await environment.dispatchDocument("submit", { target: form, preventDefault() {} });
+  await waitFor(() => environment.main.innerHTML.includes("operations-page"), "successful access-key login");
+  const login = environment.requestLog.filter(({ path }) => path === "/api/v2/access/login").at(-1);
+  assert.equal(login.options.credentials, "same-origin");
+  assert.equal(login.options.headers.has("X-Jellofin-CSRF"), false, "login must not require an existing CSRF token");
+  assert.deepEqual(JSON.parse(login.options.body), {
+    accessKey: acceptedKey,
+    deviceName: "Remote Browser",
+    origin: "http://127.0.0.1:4180"
+  });
+  assert.equal(accessKeyInput.value, "", "the accepted key must be cleared from the detached form");
+  assert.doesNotMatch(environment.main.innerHTML, new RegExp(acceptedKey, "u"), "the submitted key must not enter authenticated markup");
+  assertSecretAbsentFromBrowserStorage(environment, acceptedKey);
 }
 
 async function networkPolicyInteractionContract() {
@@ -518,6 +811,10 @@ async function emptyStateLayoutContract() {
   }
   assert.match(application, /function safeMediaFocusKey[\s\S]*?\^m-\[a-z0-9\]/u, "media focus restoration must validate its stable DOM key");
   assert.match(application, /\[data-media-key='\$\{focusedMediaKey\}'\]\[data-action='\$\{focusedMediaAction\}'\]/u, "structural media refreshes must restore a focused card by safe key and action");
+  assert.match(application, /api\("\/api\/v2\/access\/login"/u, "the unauthenticated gate must use the reusable access-key login route");
+  assert.match(application, /api\("\/api\/v2\/access\/rotate"/u, "Settings must use the authenticated access-key rotation route");
+  assert.doesNotMatch(application, /\/api\/v2\/session\/(?:invite|pair)/u, "the retired browser-invite routes must not remain reachable from the runtime");
+  assert.doesNotMatch(application, /(?:localStorage|sessionStorage)\?\.setItem\([^\n]*accessKey/iu, "access keys must not be persisted in web storage");
   assert.match(application, /contains\("media-art-image"\)[\s\S]*?contains\("hero-art-image"\)/u, "failed poster and hero artwork must both reveal their CSS fallback");
 }
 
@@ -2383,7 +2680,10 @@ async function portainerInfrastructureContract() {
 
 async function authenticatedRuntimeContract() {
   const csrfToken = "runtime-csrf-token";
+  const rotatedCsrfToken = "rotated-runtime-csrf-token";
+  const rotatedAccessKey = "hm-rotated-<script>rotation-xss</script>";
   const currentSessionId = "11111111-1111-4111-8111-111111111111";
+  const rotatedSessionId = "33333333-3333-4333-8333-333333333333";
   const otherSessionId = "22222222-2222-4222-8222-222222222222";
   const hostileSessionName = 'Kitchen <img src=x onerror="session-xss">';
   const hostileSessionOrigin = 'http://kitchen.test/\"><svg/onload=session-xss>';
@@ -2492,11 +2792,13 @@ async function authenticatedRuntimeContract() {
     events: []
   };
 
+  let accessRotated = false;
   const environment = installFakeBrowser(({ path, options }) => {
     if (path === "/api/v2/status") {
       return jsonResponse({
         setupRequired: false,
         authenticated: true,
+        accessKeyConfigured: true,
         csrfToken,
         session: { id: currentSessionId, name: "Runtime Browser" },
         storage: { credentialsEncrypted: true, externalKey: false }
@@ -2506,6 +2808,18 @@ async function authenticatedRuntimeContract() {
     if (path === "/api/v2/operations/snapshot") return jsonResponse(clone(snapshot));
     if (path === "/api/v2/operations/refresh") return jsonResponse(clone(snapshot));
     if (path === "/api/v2/sessions" && String(options.method || "GET") === "GET") {
+      if (accessRotated) {
+        return jsonResponse({
+          currentSessionId: rotatedSessionId,
+          sessions: [{
+            id: rotatedSessionId,
+            name: "Rotated Runtime Browser",
+            origin: "http://127.0.0.1:4180",
+            createdAt: "2026-09-14T12:00:00.000Z",
+            expiresAt: "2027-09-14T12:00:00.000Z"
+          }]
+        });
+      }
       return jsonResponse({
         currentSessionId,
         sessions: [
@@ -2514,14 +2828,14 @@ async function authenticatedRuntimeContract() {
             name: hostileSessionName,
             origin: hostileSessionOrigin,
             createdAt: "2026-09-12T20:00:00.000Z",
-            expiresAt: "2026-10-12T20:00:00.000Z"
+            expiresAt: "2027-09-12T20:00:00.000Z"
           },
           {
             id: currentSessionId,
             name: "Runtime Browser",
             origin: "http://127.0.0.1:4180",
             createdAt: "2026-09-12T21:00:00.000Z",
-            expiresAt: "2026-10-12T21:00:00.000Z"
+            expiresAt: "2027-09-12T21:00:00.000Z"
           }
         ]
       });
@@ -2529,8 +2843,16 @@ async function authenticatedRuntimeContract() {
     if (path === `/api/v2/sessions/${otherSessionId}` && String(options.method || "GET") === "DELETE") {
       return new Response(null, { status: 204 });
     }
-    if (path === "/api/v2/session/invite") {
-      return jsonResponse({ pairingToken: "invite-<script>alert(1)</script>", expiresAt: "2026-09-12T21:19:14.000Z" }, 201);
+    if (path === "/api/v2/session" && options.method === "DELETE") {
+      return new Response(null, { status: 204 });
+    }
+    if (path === "/api/v2/access/rotate" && options.method === "POST") {
+      accessRotated = true;
+      return jsonResponse({
+        accessKey: rotatedAccessKey,
+        csrfToken: rotatedCsrfToken,
+        session: { id: rotatedSessionId, name: "Rotated Runtime Browser" }
+      });
     }
     return jsonResponse({ code: "NOT_FOUND", message: "Unexpected test route." }, 404);
   }, "authenticated");
@@ -2620,6 +2942,10 @@ async function authenticatedRuntimeContract() {
   assert.match(environment.main.innerHTML, /name="networkMode" type="radio" value="manual"[^>]*checked/u, "saved CIDRs must reopen in manual mode");
   assert.match(environment.main.innerHTML, /name="allowedCidrs"[^>]*required/u, "manual mode must require its CIDR textarea");
   assert.doesNotMatch(environment.main.innerHTML, /name="allowedCidrs"[^>]*disabled/u, "manual mode must enable its CIDR textarea");
+  assert.match(environment.main.innerHTML, /Universal access key/u);
+  assert.match(environment.main.innerHTML, /trusted for one year/u);
+  assert.match(environment.main.innerHTML, /data-action="rotate-access-key"/u);
+  assert.doesNotMatch(environment.main.innerHTML, /Create browser invite|one-time browser invite/iu);
   assert.match(environment.main.innerHTML, /Authorized browsers/u);
   assert.match(environment.main.innerHTML, /data-current-session="true"/u, "the active session must be marked structurally");
   assert.match(environment.main.innerHTML, /Current browser/u, "the active session must have a visible label");
@@ -2734,13 +3060,42 @@ async function authenticatedRuntimeContract() {
   assert.doesNotMatch(environment.main.innerHTML, /Kitchen &lt;img/u, "a revoked browser must leave the rendered session list");
   assert.match(environment.main.innerHTML, /Current browser/u, "revoking another browser must preserve the current session");
 
-  const inviteTarget = actionTarget("create-invite");
-  await environment.dispatchDocument("click", { target: inviteTarget });
-  await waitFor(() => environment.requestLog.some(({ path }) => path === "/api/v2/session/invite"), "session invite mutation");
+  const rotateTarget = actionTarget("rotate-access-key");
+  const rotationsBeforeConfirmation = environment.requestLog.filter(({ path }) => path === "/api/v2/access/rotate").length;
+  environment.confirmResponses.push(false);
+  await environment.dispatchDocument("click", { target: rotateTarget });
+  assert.equal(
+    environment.requestLog.filter(({ path }) => path === "/api/v2/access/rotate").length,
+    rotationsBeforeConfirmation,
+    "cancelling rotation must not send a request"
+  );
+  assert.equal(environment.confirmCalls.length, 1, "an already-configured key must require confirmation");
+  assert.match(environment.confirmCalls[0], /current key will stop working[\s\S]*every other browser will be signed out/iu);
+
+  environment.confirmResponses.push(true);
+  await environment.dispatchDocument("click", { target: rotateTarget });
+  await waitFor(() => environment.requestLog.some(({ path }) => path === "/api/v2/access/rotate"), "access-key rotation mutation");
+  assert.equal(environment.confirmCalls.length, 2, "approving the confirmation must continue through the same rotation boundary");
+  await waitFor(() => environment.main.innerHTML.includes("hm-rotated-"), "rotated access-key reveal");
+  assert.match(environment.main.innerHTML, /hm-rotated-&lt;script&gt;rotation-xss&lt;\/script&gt;/u);
+  assert.doesNotMatch(environment.main.innerHTML, /<script>rotation-xss<\/script>/u, "a rotated access key must be escaped");
+  assert.equal((environment.main.innerHTML.match(/hm-rotated-/gu) || []).length, 1, "the rotated key must appear once");
+  assert.equal(environment.requestLog.filter(({ path }) => path === "/api/v2/sessions").length, 2, "rotation must refresh the authorized-browser list");
+  assert.match(environment.main.innerHTML, /Rotated Runtime Browser/u, "rotation must display the refreshed current session");
+  assert.doesNotMatch(environment.main.innerHTML, /Kitchen &lt;img/u, "rotation must not restore revoked browser sessions");
+  assertSecretAbsentFromBrowserStorage(environment, rotatedAccessKey);
+
+  await environment.dispatchDocument("click", { target: actionTarget("copy-access-key") });
+  assert.deepEqual(environment.clipboardWrites, [rotatedAccessKey]);
+  environment.location.hash = "#/overview";
+  await environment.dispatchWindow("hashchange", { type: "hashchange" });
+  environment.location.hash = "#/settings";
+  await environment.dispatchWindow("hashchange", { type: "hashchange" });
+  assert.doesNotMatch(environment.main.innerHTML, /hm-rotated-/u, "the one-time reveal must not return after leaving Settings");
 
   const mutations = environment.requestLog.filter(({ path }) => [
     "/api/v2/operations/refresh",
-    "/api/v2/session/invite",
+    "/api/v2/access/rotate",
     `/api/v2/sessions/${otherSessionId}`
   ].includes(path));
   assert.equal(mutations.length, 3);
@@ -2749,15 +3104,25 @@ async function authenticatedRuntimeContract() {
     assert.equal(mutation.options.headers.get("X-Jellofin-CSRF"), csrfToken, `${mutation.path} must carry the authenticated CSRF token`);
     assert.equal(mutation.options.method, mutation.path.startsWith("/api/v2/sessions/") ? "DELETE" : "POST");
   }
-  assert.doesNotMatch(environment.main.innerHTML, /<script>alert\(1\)<\/script>/u, "the one-time invite must remain escaped when rendered");
-  assert.match(environment.main.innerHTML, /invite-&lt;script&gt;alert\(1\)&lt;\/script&gt;/u);
+  const rotation = mutations.find(({ path }) => path === "/api/v2/access/rotate");
+  assert.deepEqual(JSON.parse(rotation.options.body), {});
+  assert.equal(rotation.options.headers.get("X-Jellofin-CSRF"), csrfToken, "rotation must use the pre-rotation authenticated CSRF token");
+
+  await environment.dispatchDocument("click", { target: actionTarget("logout") });
+  const logout = environment.requestLog.find(({ path }) => path === "/api/v2/session");
+  assert.equal(logout.options.headers.get("X-Jellofin-CSRF"), rotatedCsrfToken, "the rotated session's CSRF token must replace the previous token");
+  assert.match(environment.main.innerHTML, /Unlock Helmsman/u, "signing out after rotation must return to reusable-key login");
 }
 
 const failures = [];
 
 for (const [name, contract] of [
   ["setup gate without browser-vault language", setupGateContract],
-  ["pairing gate heading", pairingGateHeadingContract],
+  ["universal access-key gate", accessKeyGateContract],
+  ["access-key recovery gate", accessKeyRecoveryGateContract],
+  ["first-time access-key reveal", setupClaimAccessKeyContract],
+  ["first access-key creation skips rotation confirmation", firstAccessKeyCreationContract],
+  ["reusable access-key login and redaction", accessKeyLoginContract],
   ["exact and manual network policy modes", networkPolicyInteractionContract],
   ["readable empty-state layout", emptyStateLayoutContract],
   ["prioritized and retry-bounded media artwork", mediaArtworkLoadingContract],
@@ -2780,4 +3145,4 @@ if (failures.length) {
   throw new Error(`Runtime v5 smoke test failed:\n${failures.map((failure) => `  - ${failure}`).join("\n")}`);
 }
 
-console.log("Runtime v5 smoke test passed: setup, network modes, service authentication, Infrastructure and Proxmox workflows, authenticated Overview, routes, stable polling, browser-session revocation, CSRF, same-origin credentials, and escaping.");
+console.log("Runtime v5 smoke test passed: setup, universal access-key login and rotation, key redaction, network modes, service authentication, Infrastructure and Proxmox workflows, authenticated Overview, routes, stable polling, browser-session revocation, CSRF, same-origin credentials, and escaping.");

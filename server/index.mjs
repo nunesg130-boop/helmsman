@@ -193,7 +193,7 @@ async function resetAccess() {
     let recoveredSessionState = false;
     try {
       await sessions.initialize();
-      await sessions.revokeAll();
+      await sessions.clearAccess();
     } catch {
       await lock.assertHeld();
       await quarantineFiles(dataDir, [{
@@ -214,6 +214,29 @@ async function resetAccess() {
     await lock.release();
   }
   process.stdout.write("Helmsman access was reset. Saved services and encrypted credentials were preserved. Start the broker to receive a new setup token.\n");
+}
+
+async function rotateAccessKeyCommand() {
+  if (process.argv.length !== 4 || process.argv[3] !== "--confirm") {
+    throw new Error("Access-key rotation refused. Stop the broker, then run: node server/index.mjs rotate-access-key --confirm");
+  }
+  const dataDir = process.env.HELMSMAN_DATA_DIR || process.env.JELLOFIN_COMMAND_DATA_DIR || "/data";
+  const lock = await acquireDataDirLock(dataDir);
+  let accessKey;
+  try {
+    const store = new StateStore(dataDir, { guard: () => lock.assertHeld() });
+    await store.initialize();
+    if (!store.snapshot().claimed) {
+      throw new Error("Access-key rotation requires a claimed Helmsman instance. Complete first-time setup instead.");
+    }
+    const sessions = new SessionAuthStore(dataDir, { guard: () => lock.assertHeld() });
+    await sessions.initialize();
+    accessKey = await sessions.rotateAccessKey();
+  } finally {
+    await lock.release();
+  }
+  process.stdout.write(`Helmsman access key: ${accessKey}\n`);
+  process.stdout.write("All existing browser sessions were revoked. Saved services, network policy, and encrypted credentials were preserved.\n");
 }
 
 async function resetCredentials() {
@@ -255,8 +278,9 @@ try {
   if (command === "serve") await serve();
   else if (command === "healthcheck") await healthcheck();
   else if (command === "reset-access") await resetAccess();
+  else if (command === "rotate-access-key") await rotateAccessKeyCommand();
   else if (command === "reset-credentials") await resetCredentials();
-  else throw new Error("Usage: node server/index.mjs <serve|healthcheck|reset-access --confirm|reset-credentials --confirm>");
+  else throw new Error("Usage: node server/index.mjs <serve|healthcheck|reset-access --confirm|rotate-access-key --confirm|reset-credentials --confirm>");
 } catch (error) {
   process.stderr.write(`Helmsman broker error: ${error?.message || "startup failed"}\n`);
   process.exitCode = 1;

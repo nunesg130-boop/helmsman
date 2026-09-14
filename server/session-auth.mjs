@@ -3,9 +3,11 @@ import { chmod, mkdir, open, rename, stat, unlink } from "node:fs/promises";
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import path from "node:path";
 
-const SESSION_STATE_VERSION = 1;
+const SESSION_STATE_VERSION = 2;
+const LEGACY_SESSION_STATE_VERSION = 1;
 const SESSION_TOKEN_BYTES = 32;
-const DEFAULT_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
+const ACCESS_KEY_BYTES = 32;
+const DEFAULT_TTL_MS = 365 * 24 * 60 * 60 * 1_000;
 const DEFAULT_MAX_SESSIONS = 64;
 const MAX_SESSION_STATE_BYTES = 256 * 1_024;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
@@ -41,6 +43,15 @@ function tokenHash(token) {
 
 function validToken(token) {
   return typeof token === "string" && TOKEN_PATTERN.test(token);
+}
+
+function accessKeyMatches(storedHash, presentedKey) {
+  if (typeof storedHash !== "string" || !TOKEN_HASH_PATTERN.test(storedHash) || !validToken(presentedKey)) {
+    return false;
+  }
+  const expected = Buffer.from(storedHash, "hex");
+  const presented = Buffer.from(tokenHash(presentedKey), "hex");
+  return expected.length === presented.length && timingSafeEqual(expected, presented);
 }
 
 function safeEqualText(left, right) {
@@ -291,12 +302,19 @@ function requireCsrf(request, record, headerName) {
 }
 
 function initialSessionState() {
-  return { version: SESSION_STATE_VERSION, revision: 0, sessions: {} };
+  return { version: SESSION_STATE_VERSION, revision: 0, accessKeyHash: null, sessions: {} };
+}
+
+function hasExactKeys(value, expected) {
+  const keys = Object.keys(value).sort();
+  const allowed = [...expected].sort();
+  return keys.length === allowed.length && keys.every((key, index) => key === allowed[index]);
 }
 
 function validStoredRecord(id, record) {
   if (!UUID_PATTERN.test(id)
     || !isPlainObject(record)
+    || !hasExactKeys(record, ["id", "name", "origin", "host", "tokenHash", "createdAt", "expiresAt"])
     || record.id !== id
     || typeof record.name !== "string"
     || !record.name
@@ -318,9 +336,8 @@ function validStoredRecord(id, record) {
   }
 }
 
-function validateSessionState(value, maximumSessions) {
+function validateSessionRecords(value, maximumSessions) {
   if (!isPlainObject(value)
-    || value.version !== SESSION_STATE_VERSION
     || !Number.isSafeInteger(value.revision)
     || value.revision < 0
     || !isPlainObject(value.sessions)) {
@@ -330,7 +347,35 @@ function validateSessionState(value, maximumSessions) {
   if (entries.length > maximumSessions || entries.some(([id, record]) => !validStoredRecord(id, record))) {
     throw new Error("Malformed browser session state.");
   }
+}
+
+function validateSessionState(value, maximumSessions) {
+  if (!isPlainObject(value)
+    || value.version !== SESSION_STATE_VERSION
+    || !hasExactKeys(value, ["version", "revision", "accessKeyHash", "sessions"])
+    || (value.accessKeyHash !== null
+      && (typeof value.accessKeyHash !== "string" || !TOKEN_HASH_PATTERN.test(value.accessKeyHash)))) {
+    throw new Error("Unsupported or malformed session state.");
+  }
+  validateSessionRecords(value, maximumSessions);
   return value;
+}
+
+function migrateSessionState(value, maximumSessions) {
+  if (!isPlainObject(value) || value.version !== LEGACY_SESSION_STATE_VERSION) {
+    return { state: validateSessionState(value, maximumSessions), changed: false };
+  }
+  if (!hasExactKeys(value, ["version", "revision", "sessions"])) {
+    throw new Error("Unsupported or malformed session state.");
+  }
+  validateSessionRecords(value, maximumSessions);
+  const migrated = {
+    version: SESSION_STATE_VERSION,
+    revision: value.revision,
+    accessKeyHash: null,
+    sessions: value.sessions
+  };
+  return { state: validateSessionState(migrated, maximumSessions), changed: true };
 }
 
 async function secureReadJson(filePath) {
@@ -426,7 +471,9 @@ export class SessionAuthStore {
     try {
       const metadata = await stat(this.filePath);
       if (!metadata.isFile()) throw new Error("Session state path is not a regular file.");
-      this.#state = validateSessionState(await secureReadJson(this.filePath), this.#maxSessions);
+      const loaded = migrateSessionState(await secureReadJson(this.filePath), this.#maxSessions);
+      this.#state = loaded.state;
+      if (loaded.changed) await atomicWriteJson(this.dataDir, this.filePath, this.#state);
       await chmod(this.filePath, 0o600);
     } catch (error) {
       if (error?.code !== "ENOENT") throw error;
@@ -468,7 +515,11 @@ export class SessionAuthStore {
       .map(publicSession);
   }
 
-  async issue(options) {
+  accessKeyConfigured() {
+    return this.#snapshot().accessKeyHash !== null;
+  }
+
+  #prepareIssue(options) {
     if (!isPlainObject(options)) throw new Error("Session issue options are required.");
     const name = safeSessionName(options.name);
     const origin = canonicalOrigin(options.origin);
@@ -482,10 +533,9 @@ export class SessionAuthStore {
     const currentTime = nowMilliseconds(this.#now);
     const expiresAt = currentTime + this.#ttlMs;
     if (!Number.isSafeInteger(expiresAt)) throw new Error("The session expiration is invalid.");
-    const id = randomUUID();
     const token = randomBytes(SESSION_TOKEN_BYTES).toString("base64url");
     const record = {
-      id,
+      id: randomUUID(),
       name,
       origin,
       host,
@@ -493,25 +543,103 @@ export class SessionAuthStore {
       createdAt: isoTime(currentTime),
       expiresAt: isoTime(expiresAt)
     };
-    await this.#mutate((next) => {
-      for (const [sessionId, session] of Object.entries(next.sessions)) {
-        if (Date.parse(session.expiresAt) <= currentTime) delete next.sessions[sessionId];
-      }
-      if (Object.keys(next.sessions).length >= this.#maxSessions) {
-        fail(409, "SESSION_LIMIT_REACHED", "Revoke an existing browser session before adding another one.");
-      }
-      next.sessions[id] = record;
-    });
+    return { currentTime, record, token };
+  }
+
+  #insertPreparedSession(next, prepared) {
+    for (const [sessionId, session] of Object.entries(next.sessions)) {
+      if (Date.parse(session.expiresAt) <= prepared.currentTime) delete next.sessions[sessionId];
+    }
+    if (Object.keys(next.sessions).length >= this.#maxSessions) {
+      fail(409, "SESSION_LIMIT_REACHED", "Revoke an existing browser session before adding another one.");
+    }
+    next.sessions[prepared.record.id] = prepared.record;
+  }
+
+  #issuedResult(prepared) {
     return {
-      session: publicSession(record),
-      csrfToken: csrfForRecord(record),
-      cookie: sessionCookie(token, {
+      session: publicSession(prepared.record),
+      csrfToken: csrfForRecord(prepared.record),
+      cookie: sessionCookie(prepared.token, {
         cookieName: this.#cookieName,
-        origin,
-        expiresAt: record.expiresAt,
-        now: currentTime
+        origin: prepared.record.origin,
+        expiresAt: prepared.record.expiresAt,
+        now: prepared.currentTime
       })
     };
+  }
+
+  async issue(options) {
+    const prepared = this.#prepareIssue(options);
+    await this.#mutate((next) => {
+      this.#insertPreparedSession(next, prepared);
+    });
+    return this.#issuedResult(prepared);
+  }
+
+  async claimAccess(options) {
+    const prepared = this.#prepareIssue(options);
+    const accessKey = randomBytes(ACCESS_KEY_BYTES).toString("base64url");
+    await this.#mutate((next) => {
+      if (next.accessKeyHash !== null) {
+        fail(409, "ACCESS_KEY_ALREADY_CONFIGURED", "The reusable access key is already configured.");
+      }
+      next.accessKeyHash = tokenHash(accessKey);
+      next.sessions = {};
+      this.#insertPreparedSession(next, prepared);
+    });
+    return { ...this.#issuedResult(prepared), accessKey };
+  }
+
+  async login(options) {
+    if (!isPlainObject(options)) throw new Error("Access login options are required.");
+    const prepared = this.#prepareIssue(options);
+    await this.#mutate((next) => {
+      if (next.accessKeyHash === null) {
+        fail(409, "ACCESS_KEY_NOT_CONFIGURED", "A reusable access key has not been configured.");
+      }
+      if (!accessKeyMatches(next.accessKeyHash, options.accessKey)) {
+        fail(401, "ACCESS_KEY_INVALID", "The Helmsman access key is invalid.");
+      }
+      this.#insertPreparedSession(next, prepared);
+    });
+    return this.#issuedResult(prepared);
+  }
+
+  async rotateAccessKeyAndIssue(options) {
+    const prepared = this.#prepareIssue(options);
+    const currentSessionId = options.currentSessionId;
+    if (typeof currentSessionId !== "string" || !UUID_PATTERN.test(currentSessionId)) {
+      fail(401, "SESSION_INVALID", "The browser session is invalid or revoked.");
+    }
+    const accessKey = randomBytes(ACCESS_KEY_BYTES).toString("base64url");
+    await this.#mutate((next) => {
+      if (!next.sessions[currentSessionId]) {
+        fail(401, "SESSION_INVALID", "The browser session is invalid or revoked.");
+      }
+      next.accessKeyHash = tokenHash(accessKey);
+      next.sessions = {};
+      this.#insertPreparedSession(next, prepared);
+    });
+    return { ...this.#issuedResult(prepared), accessKey };
+  }
+
+  async rotateAccessKey() {
+    const accessKey = randomBytes(ACCESS_KEY_BYTES).toString("base64url");
+    await this.#mutate((next) => {
+      next.accessKeyHash = tokenHash(accessKey);
+      next.sessions = {};
+    });
+    return accessKey;
+  }
+
+  async clearAccess() {
+    return this.#mutate((next) => {
+      const count = Object.keys(next.sessions).length;
+      next.accessKeyHash = null;
+      next.sessions = {};
+      return count;
+    });
   }
 
   async authenticateToken(token) {

@@ -1,4 +1,4 @@
-# Helmsman v0.10.0-beta.8
+# Helmsman v0.10.0-beta.9
 
 Helmsman is a self-hosted operations center for a homelab's media services and infrastructure. It runs as one portable Linux container on Docker Desktop, Linux, macOS, compatible NAS platforms, AMD64, and ARM64.
 
@@ -37,12 +37,12 @@ Version 0.10 adds read-only Portainer monitoring under Infrastructure and refres
 - the supplied Helmsman helmet is the sidebar, mobile, browser, and installable-app identity, and the interface uses its charcoal, slate, and muted sea-green palette in a hard-framed retro-web control-room treatment;
 - credentials are encrypted in the container and are write-only through the interface;
 - private-network access defaults to exact per-connection host approvals, with manual CIDR ranges available as an advanced boundary;
-- browsers use revocable HttpOnly sessions, with no vault or vault passphrase;
+- one reusable 256-bit access key signs any browser into a revocable, one-year, origin-bound HttpOnly session, with no vault or vault passphrase;
 - Caddy, Authentik, and any other compatible HTTPS/MFA edge remain optional and do not replace credentials for the upstream systems.
 
 ## Deploy the published container
 
-Helmsman is distributed as a Linux AMD64/ARM64 image in GitHub Container Registry. A `v0.10.0-beta.8` Git tag runs the contracts and architecture smoke tests, publishes the version, beta, and full-commit image tags, and creates a GitHub Release containing ready-to-use `compose.yaml`, `container.env.example`, and `SHA256SUMS` assets. The release deployment files replace the source tree's `ghcr.io/OWNER/REPOSITORY:0.10.0-beta.8` placeholder with the real lowercase image path pinned to the exact multi-architecture manifest digest (`@sha256:...`).
+Helmsman is distributed as a Linux AMD64/ARM64 image in GitHub Container Registry. A `v0.10.0-beta.9` Git tag runs the contracts and architecture smoke tests, publishes the version, beta, and full-commit image tags, and creates a GitHub Release containing ready-to-use `compose.yaml`, `container.env.example`, and `SHA256SUMS` assets. The release deployment files replace the source tree's `ghcr.io/OWNER/REPOSITORY:0.10.0-beta.9` placeholder with the real lowercase image path pinned to the exact multi-architecture manifest digest (`@sha256:...`).
 
 Download those three files from the GitHub Release into one directory, verify the two deployment files against `SHA256SUMS`, open a terminal there, and make sure Docker Desktop or Docker Engine is running. No source checkout, Dockerfile, Node.js installation, or server-side image build is required. Private repositories can download the assets with `gh release download`; public repositories can also use a browser or `curl`.
 
@@ -78,7 +78,7 @@ unset GHCR_TOKEN
 
 Do not store the token in `.env`, Compose YAML, the repository, or shell history. Publishing the GHCR package publicly removes this login requirement; changing package visibility does not change the digest-pinned release files. Repository and package visibility are separate settings, and changing a GHCR package to public cannot be undone.
 
-Open `http://127.0.0.1:4180`. Paste the newest one-time setup token from the container log and name the browser. The default **Exact service addresses** network mode needs no CIDR list: when you register a private media service, Proxmox endpoint, or Portainer server, Helmsman stores only its currently resolved safe private addresses as `/32` or `/128` approvals for that connection. Manual private CIDRs remain available as an advanced, intentionally broader registration boundary. Service and endpoint URLs and credentials are entered in the interface, not `.env`.
+Open `http://127.0.0.1:4180`. Paste the newest one-time setup token from the container log, name the browser, and complete the claim. The claim response displays the generated reusable 256-bit Helmsman access key once; copy it to a password manager before leaving the screen. Any browser can subsequently enter that same key to receive its own one-year HttpOnly session for the exact application origin. The access key is never accepted from `.env` or a URL, stored in browser storage, or written to application logs. The default **Exact service addresses** network mode needs no CIDR list: when you register a private media service, Proxmox endpoint, or Portainer server, Helmsman stores only its currently resolved safe private addresses as `/32` or `/128` approvals for that connection. Manual private CIDRs remain available as an advanced, intentionally broader registration boundary. Service and endpoint URLs and credentials are entered in the interface, not `.env`.
 
 If Docker reports that `dockerDesktopLinuxEngine` or its named pipe cannot be found, start Docker Desktop, wait until it says the engine is running, select Linux containers, and run the commands again.
 
@@ -90,9 +90,9 @@ There is no vendor cloud, hosted account, telemetry, analytics, advertising, tra
 
 | Location | Stored data |
 |---|---|
-| Browser | A revocable HttpOnly session cookie and non-secret presentation state |
+| Browser | A revocable, one-year, origin-bound HttpOnly session cookie and non-secret presentation state; never the reusable access key |
 | `/data/state.json` | Instance, network policy, media connections, Proxmox environments and endpoints, Portainer service records, discovered identities, exact URLs, and per-connection private-host approvals |
-| `/data/sessions.json` | Browser-session hashes; never bearer tokens |
+| `/data/sessions.json` | The access-key SHA-256 verifier and browser-session hashes; never the plaintext access key or bearer tokens |
 | `/data/credentials.json` | AES-256-GCM ciphertext and authenticated metadata |
 | `/data/credentials.key` | Auto-generated local encryption key, unless the environment-sourced Docker secret is enabled |
 | In-memory operations snapshot | Bounded normalized media records, current activity, states, safe codes, latency, counters, incidents, and recent transitions; never raw responses |
@@ -183,7 +183,11 @@ For Portainer, generate an access token for a dedicated user whose visible envir
 
 ## Browser access and recovery
 
-The first claim creates one browser session. From Settings, an authorized browser can create a ten-minute, single-use invite for another browser. Sessions are bound to the exact scheme, host, and port and can be revoked.
+The first claim creates a reusable 256-bit Helmsman access key and one browser session. The key is shown once in the claim response; save it in a password manager. On another computer or browser, open the same Helmsman address, enter that universal key on the unlock screen, and give the browser a recognizable name. A changed client or public IP does not require a new key.
+
+Each successful unlock creates a one-year HttpOnly session that is bound to the exact scheme, host, and port. The plaintext access key is submitted only in the unlock request: it is never placed in `.env`, a URL, browser storage, or application logs. Helmsman persists only its SHA-256 verifier and revocable session hashes in `/data/sessions.json`.
+
+Settings can create the first access key for an upgraded installation or rotate an existing one. The new value is displayed once. Rotation revokes every prior browser session while preserving the instance configuration and encrypted upstream credentials; the browser performing the rotation receives a replacement one-year session, and other browsers unlock again with the new key.
 
 Recovery must use the same Compose file stack that owns the running installation. If an optional override was used to deploy, add it to **every** `stop`, `run`, `up`, and `logs` command below:
 
@@ -196,16 +200,17 @@ Recovery must use the same Compose file stack that owns the running installation
 
 For either hardened row, export the same `HELMSMAN_MASTER_KEY` before running any command and unset it afterward. Substituting a different key cannot recover the stored credentials.
 
-There is no vault password to forget. If all browser sessions are lost, reset only access from the Docker host:
+If the access key is lost, or no browser remains signed in to create one after upgrading, rotate only the Helmsman access key from the Docker host:
 
 ```sh
 docker compose stop helmsman
-docker compose run --rm --no-deps helmsman reset-access --confirm
+docker compose run --rm --no-deps helmsman rotate-access-key --confirm
 docker compose up -d
-docker compose logs helmsman
 ```
 
-The reset revokes browser sessions but preserves service URLs, the network policy, and encrypted credentials. The next start prints a new one-time setup token. If `sessions.json` is malformed, this same command moves it to a timestamped `sessions.json.corrupt-*` quarantine file and creates clean session state; it does not discard service configuration or credentials.
+The CLI explicitly prints the new access key once to its own standard output. Copy it immediately; the key is not repeated in subsequent application logs. Rotation revokes all browser sessions but preserves service URLs, the instance and network policy, registered targets, and encrypted credentials. The main service must stay stopped while the one-off container writes the shared `/data` volume.
+
+When upgrading from v0.10.0-beta.8, existing browser sessions migrate and remain valid, but no reusable access key exists yet. Use a currently signed-in browser to create one under Settings. If every beta.8 session is already unavailable, use the CLI rotation sequence above; it creates the key without resetting the rest of the installation.
 
 If the credential encryption key is lost or the configured key no longer matches, the ciphertext cannot be recovered. Stop the service and reset only the credential store, using the same command prefix selected above:
 
@@ -276,6 +281,8 @@ Protect and back up that external key file separately. Export the exact same key
 
 Edge authentication protects browser access only. It does not authenticate Helmsman to Jellyfin, Seerr, Proxmox, Portainer, or another monitored system, so each upstream system still requires its own supported credential.
 
+The reusable Helmsman access key does not change a Cloudflare Tunnel, Caddy, or Authentik deployment. Those layers continue to admit and proxy the browser first; the browser then uses its Helmsman session cookie, or the universal key when it needs to unlock Helmsman. Upstream monitoring continues directly from the container to the saved service URLs.
+
 For external use, publish the container only on an address reachable by the edge, proxy every path unchanged, and firewall port 4180 so clients cannot bypass the HTTPS/Authentik route. Example Caddy configurations are in `deploy/`.
 
 ## Upgrade an existing Helmsman beta
@@ -297,6 +304,8 @@ The production Compose file fixes the project name as `helmsman`, so fresh deplo
 To roll back application code, restore the previous digest-pinned `HELMSMAN_IMAGE` reference and repeat `docker compose pull` and `docker compose up -d`. Do not roll an already migrated `/data` volume back into an older image unless that release explicitly documents schema compatibility; restore the matching pre-update volume backup instead.
 
 v0.10 advances the state schema to 4 by adding an empty, bounded Infrastructure-services collection. Existing media connections, destination-bound encrypted credentials, browser sessions, network approvals, and Proxmox environments/endpoints remain in place; nothing is converted into or automatically combined with a Portainer connection. The unified media catalog, artwork cache, and Portainer inventory are rebuilt in memory from current read-only service responses and do not require a data migration. Installations coming directly from an older schema still use the existing in-place migrations, including the rule that separate Proxmox targets are never merged automatically. Back up the volume before upgrading, and do not attempt to run an older image against state after it has been migrated.
+
+For v0.10.0-beta.8 specifically, existing browser sessions migrate and remain valid, but the upgraded instance initially has no reusable access key. Use a current session to create the key under Settings and save the one-time display. If no prior session remains usable, run the `rotate-access-key --confirm` CLI sequence under **Browser access and recovery**; it preserves configuration and encrypted credentials.
 
 ## Upgrade from Jellofin Command v0.4 or v0.5
 
@@ -330,7 +339,7 @@ docker compose -f compose.yaml -f deploy/compose.upgrade-v0.5.yaml -f deploy/com
 unset HELMSMAN_MASTER_KEY
 ```
 
-The server also accepts legacy `JELLOFIN_COMMAND_*` runtime variables for this transition release, but new deployments should use `HELMSMAN_*`. Do not change or regenerate an external master key during the rename. If you also change the browser-facing hostname, existing sessions will not follow because they are intentionally bound to the exact scheme, host, and port; use the access-reset sequence after confirming the old volume is mounted.
+The server also accepts legacy `JELLOFIN_COMMAND_*` runtime variables for this transition release, but new deployments should use `HELMSMAN_*`. Do not change or regenerate an external master key during the rename. If you also change the browser-facing hostname, existing sessions will not follow because they are intentionally bound to the exact scheme, host, and port; create or rotate the reusable access key after confirming the old volume is mounted, then unlock the new origin with that key.
 
 Upgrading directly from v0.4 preserves registered service URLs. Its credentials were browser-only, so they must be entered once into the server-side encrypted store. Keep the old archive/browser profile until every connection has been verified.
 
