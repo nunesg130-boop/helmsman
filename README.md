@@ -1,13 +1,14 @@
-# Helmsman v0.10.0-beta.10
+# Helmsman v0.10.0-beta.11
 
 Helmsman is a self-hosted operations center for a homelab's media services and infrastructure. It runs as one portable Linux container on Docker Desktop, Linux, macOS, compatible NAS platforms, AMD64, and ARM64.
 
 Version 0.10 adds read-only Portainer monitoring under Infrastructure and refreshes the authenticated application as an original retro-web operations console while preserving the v0.9 media workflow and cluster-aware Proxmox model:
 
 - Media and Infrastructure are separate workspaces inside the same authenticated application, and only the selected workspace's navigation is shown;
-- the desktop sidebar collapses to an icon rail, remembers that preference, and keeps its navigation scrollable at high browser zoom while the brand and Settings remain reachable;
-- service-specific Infrastructure navigation appears only after its Proxmox or Portainer connection exists, while Overview retains the entry points needed to add those connections;
+- the desktop sidebar collapses to an icon rail, remembers that preference, keeps its navigation scrollable at high browser zoom, and places its 44 px collapse control on the content-side edge below the shared header rule;
+- Infrastructure **Overview** contains only already-configured Proxmox and Portainer connections plus their current read-only signals, while the always-available categorized **Connectors** view owns supported-provider discovery, setup, and editing;
 - the Media workspace has dedicated **Home**, **Discover**, **Library**, **Requests**, **Activity**, **Calendar**, **Health**, and **Connections** views;
+- Media **Connections** groups every supported integration by purpose: media server, requests, media management, indexers, download clients, and subtitles;
 - Jellyfin, Seerr, Radarr, Sonarr, qBittorrent, and Bazarr records are correlated by TMDb, TVDb, IMDb, download, and service identifiers rather than title matching;
 - Home combines current Jellyfin playback, continue-watching items, pending requests, active downloads, blocked imports, upcoming releases, recently added titles, missing media, and subtitle backlog; episode resumes use their series poster rather than an episode frame, and short poster rails retain the same bounded card size as full rails;
 - Activity combines qBittorrent transfer progress, speed, and ETA with Sonarr/Radarr queue and import state, including the current bounded service-reported error when one is available;
@@ -44,7 +45,7 @@ Version 0.10 adds read-only Portainer monitoring under Infrastructure and refres
 
 ## Deploy the published container
 
-Helmsman is distributed as a Linux AMD64/ARM64 image in GitHub Container Registry. A `v0.10.0-beta.10` Git tag runs the contracts and architecture smoke tests, publishes the version, beta, and full-commit image tags, and creates a GitHub Release containing ready-to-use `compose.yaml`, `container.env.example`, and `SHA256SUMS` assets. The release deployment files replace the source tree's `ghcr.io/OWNER/REPOSITORY:0.10.0-beta.10` placeholder with the real lowercase image path pinned to the exact multi-architecture manifest digest (`@sha256:...`).
+Helmsman is distributed as a Linux AMD64/ARM64 image in GitHub Container Registry. A `v0.10.0-beta.11` Git tag runs the contracts and architecture smoke tests, publishes the version, beta, and full-commit image tags, and creates a GitHub Release containing ready-to-use `compose.yaml`, `container.env.example`, and `SHA256SUMS` assets. The release deployment files replace the source tree's `ghcr.io/OWNER/REPOSITORY:0.10.0-beta.11` placeholder with the real lowercase image path pinned to the exact multi-architecture manifest digest (`@sha256:...`).
 
 Download those three files from the GitHub Release into one directory, verify the two deployment files against `SHA256SUMS`, open a terminal there, and make sure Docker Desktop or Docker Engine is running. No source checkout, Dockerfile, Node.js installation, or server-side image build is required. Private repositories can download the assets with `gh release download`; public repositories can also use a browser or `curl`.
 
@@ -216,9 +217,9 @@ Each media record uses provider and service identifiers to join evidence from mu
 
 Artwork descriptors never reach the browser. The browser receives an opaque same-origin `/api/v2/media/artwork/<key>` URL, and the authenticated broker tries only fixed service-owned artwork routes in this order: Jellyfin, Radarr/Sonarr, then Seerr. Grid requests use a revisioned 342 px Jellyfin or Seerr thumbnail and try fixed 250 px, 500 px, then original Radarr/Sonarr covers. When Sonarr exposes only TVDB remote artwork, Helmsman uses the series' validated TMDb identifier for a typed Seerr metadata lookup and then requests only Seerr's fixed TMDb image-proxy route; it never follows the remote artwork URL. Duplicate misses are coalesced, and a bounded scheduler permits at most three upstream artwork fetches at once with 64 pending requests. Successful images are cached in memory for up to 24 hours. General failures are cached for 15 minutes, versioned Arr cover misses for 30 seconds, and unrevisioned Arr misses are not negative-cached, allowing newly generated covers to appear promptly without continuous retry. The cache is limited to 512 entries, 64 MiB total, and 4 MiB per accepted image, and accepts only bounded raster image types. Browser responses use an ETag, a one-day private cache lifetime, and one-week stale revalidation/error windows; media artwork is never written to the data volume.
 
-Infrastructure navigation contains **Overview**, **Proxmox**, **Workloads**, **Portainer**, and **Incidents**. Proxmox and Workloads appear only after a Proxmox environment is configured, while Portainer appears only after a Portainer connection is configured; Overview always keeps the connection entry points available. Helmsman supports up to 25 Proxmox environments and 25 total endpoints, with no more than four endpoints in one environment. An environment is either a standalone server or one multi-node cluster. The combined Proxmox view presents environments, nodes, and a dedicated storage section with current sanitized status and capacity information.
+Infrastructure navigation contains **Overview**, **Connectors**, **Proxmox**, **Workloads**, **Portainer**, and **Incidents**. Overview shows only connections that are already configured and their current read-only status; the always-available categorized Connectors view lists every supported provider and owns setup and connection editing. Proxmox and Workloads appear only after a Proxmox environment is configured, while Portainer appears only after a Portainer connection is configured. Helmsman supports up to 25 Proxmox environments and 25 total endpoints, with no more than four endpoints in one environment. An environment is either a standalone server or one multi-node cluster. The combined Proxmox view presents environments, nodes, and a dedicated storage section with current sanitized status and capacity information.
 
-To add Proxmox, open **Infrastructure**, choose **Connect and discover**, and enter:
+To add Proxmox, open **Infrastructure → Connectors**, select **Proxmox VE**, and enter:
 
 - a display name;
 - the full HTTPS URL reachable from inside the container, normally `https://host-or-ip:8006`;
@@ -236,7 +237,7 @@ Each monitoring cycle tests endpoint availability, selects one healthy matching 
 
 ### Portainer under Infrastructure
 
-Portainer is a separate Infrastructure service, not a Media connection. Open **Infrastructure → Portainer** to register up to eight independent Portainer servers. For each server, enter:
+Portainer is a separate Infrastructure service, not a Media connection. Open **Infrastructure → Connectors**, select **Portainer**, and register up to eight independent servers. After the first connection is saved, the dedicated Portainer inventory view becomes available in the sidebar. For each server, enter:
 
 - a display name;
 - its full HTTPS base URL, normally `https://host-or-ip:9443`;

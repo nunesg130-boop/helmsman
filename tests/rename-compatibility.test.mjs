@@ -108,7 +108,7 @@ test("Helmsman boots the frozen v0.5 state, session, and credential formats", as
 
   const status = await statusRequest(port, cookie);
   assert.equal(status.status, 200);
-  assert.equal(status.body.version, "0.10.0-beta.10");
+  assert.equal(status.body.version, "0.10.0-beta.11");
   assert.equal(status.body.authenticated, true);
   assert.equal(status.body.accessKeyConfigured, false);
   assert.equal(status.body.session.name, "Existing v0.5 browser");

@@ -572,14 +572,19 @@ const boundedSnapshotOnlyTarget = normalizeInfrastructureSnapshot({
 });
 assert.equal(boundedSnapshotOnlyTarget.targets[0].displayName.length, 80, "unmatched snapshot metadata must pass through the same text bounds as configured targets");
 
-const renderedInfrastructure = renderInfrastructureOverview(proxmoxSnapshot, proxmoxConfiguration);
+const renderedInfrastructure = renderInfrastructureOverview(proxmoxSnapshot, proxmoxConfiguration, { configuredOnly: true });
 assert.match(renderedInfrastructure, /Infrastructure assessment/u);
 assert.match(renderedInfrastructure, /Lab Cluster/u);
 assert.match(renderedInfrastructure, /2 \/ 3/u);
 assert.match(renderedInfrastructure, /64\.2%/u);
 assert.match(renderedInfrastructure, /50%/u);
 assert.match(renderedInfrastructure, /1 unavailable storage entry/u);
-assert.match(renderedInfrastructure, /data-action="open-infrastructure-target"/u);
+assert.match(renderedInfrastructure, /data-action="open-infrastructure-environment-detail"/u);
+assert.doesNotMatch(renderedInfrastructure, /data-action="open-infrastructure-target"|Connect and discover|Connect Portainer/u, "Infrastructure Overview must not expose connector setup actions");
+const emptyInfrastructureOverview = renderInfrastructureOverview({ infrastructure: { targets: [] } }, [], { configuredOnly: true });
+assert.match(emptyInfrastructureOverview, /No infrastructure connections yet/u);
+assert.match(emptyInfrastructureOverview, /href="#\/connectors">Open Connectors/u);
+assert.doesNotMatch(emptyInfrastructureOverview, /Connect and discover|Connect Portainer|Infrastructure signals/u, "an empty Overview must remain provider-neutral");
 
 const disabledInfrastructure = normalizeInfrastructureSnapshot({
   infrastructure: { state: "stale", targets: [] }
@@ -648,5 +653,55 @@ assert.match(incidentNextStep(normalizedPortainerIncident.incidents[0]), /Portai
 const renderedPortainerMedia = renderOperationsOverview(portainerSnapshot);
 assert.doesNotMatch(renderedPortainerMedia, /Container Control|reverse-proxy|CONTAINERS_UNHEALTHY/u, "the Media overview must never absorb Portainer infrastructure incidents");
 assert.doesNotMatch(renderedPortainerMedia, /<img src=x onerror="portainer-report-xss">/u);
+const portainerOverview = renderInfrastructureOverview(portainerSnapshot, [], {
+  configuredOnly: true,
+  overallState: "degraded",
+  lastCheckedAt: "2026-09-13T13:00:00.000Z",
+  portainerServices: [{
+    id: portainerServiceId,
+    displayName: 'Container Control <img src=x onerror="portainer-overview-xss">',
+    url: "https://portainer.example.internal:9443",
+    state: "degraded",
+    connectionState: "connected",
+    version: "2.45.0",
+    credentialConfigured: true,
+    metrics: {
+      environmentTotal: 2,
+      environmentOnline: 2,
+      containerTotal: 17,
+      containerRunning: 16,
+      stackTotal: 4
+    },
+    accessToken: "must-not-render"
+  }]
+});
+assert.match(portainerOverview, /Portainer servers/u);
+assert.match(portainerOverview, /data-action="open-portainer-overview" data-portainer-overview-id=/u, "a Portainer Overview row must open its own filtered inventory");
+assert.match(portainerOverview, /Container Control &lt;img src=x onerror=&quot;portainer-overview-xss&quot;&gt;/u);
+assert.match(portainerOverview, /16\/17 containers running/u);
+assert.doesNotMatch(portainerOverview, /Proxmox environments|Infrastructure signals|Connect Portainer|Connect and discover|must-not-render|<img src=x/u, "a Portainer-only Overview must show only configured, escaped current state");
+const mixedInfrastructureOverview = renderInfrastructureOverview({
+  ...proxmoxSnapshot,
+  infrastructure: {
+    ...proxmoxSnapshot.infrastructure,
+    overall: {
+      state: "healthy",
+      headline: "Proxmox-specific healthy headline",
+      summary: "Proxmox-specific healthy summary"
+    }
+  }
+}, proxmoxConfiguration, {
+  configuredOnly: true,
+  overallState: "down",
+  portainerServices: [{
+    id: portainerServiceId,
+    displayName: "Unavailable Portainer",
+    state: "down",
+    connectionState: "down",
+    credentialConfigured: true
+  }]
+});
+assert.match(mixedInfrastructureOverview, /An infrastructure connection is unavailable/u, "mixed providers must use copy for their combined health state");
+assert.doesNotMatch(mixedInfrastructureOverview, /Proxmox-specific healthy/u, "healthy Proxmox copy must not contradict a failed Portainer connection");
 
-console.log("Operations view contract passed: media and infrastructure health, incidents, reports, actions, and escaping.");
+console.log("Operations view contract passed: media and configured-only infrastructure health, incidents, reports, actions, and escaping.");

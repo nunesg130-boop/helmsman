@@ -1,6 +1,7 @@
 import {
   escapeOperationsHtml as escapeHtml,
   incidentNextStep,
+  infrastructureSnapshotForTargets,
   normalizeInfrastructureSnapshot,
   normalizeOperationsReports,
   normalizeOperationsSnapshot,
@@ -56,16 +57,25 @@ function setMarkup(element, markup) {
 }
 
 const SERVICE_ORDER = ["jellyfin", "seerr", "radarr", "sonarr", "prowlarr", "qbittorrent", "bazarr"];
+const MEDIA_CONNECTION_CATEGORIES = Object.freeze([
+  Object.freeze({ id: "media-server", kicker: "Playback", title: "Media server", description: "Library discovery, playback state, and recently added media.", services: Object.freeze(["jellyfin"]) }),
+  Object.freeze({ id: "requests", kicker: "Discovery", title: "Requests", description: "Audience discovery and request workflow visibility.", services: Object.freeze(["seerr"]) }),
+  Object.freeze({ id: "media-management", kicker: "Automation", title: "Media management", description: "Movie and series monitoring, queues, imports, and health.", services: Object.freeze(["radarr", "sonarr"]) }),
+  Object.freeze({ id: "indexers", kicker: "Search", title: "Indexers", description: "Indexer availability and blocked-source visibility.", services: Object.freeze(["prowlarr"]) }),
+  Object.freeze({ id: "download-clients", kicker: "Acquisition", title: "Download clients", description: "Transfer state and active download workload.", services: Object.freeze(["qbittorrent"]) }),
+  Object.freeze({ id: "subtitles", kicker: "Accessibility", title: "Subtitles", description: "Subtitle health and wanted-item backlog.", services: Object.freeze(["bazarr"]) })
+]);
 const SHARED_ROUTES = new Set(["logs", "settings"]);
 const MEDIA_ROUTES = new Set(["home", "discover", "library", "requests", "activity", "calendar", "health", "connections", ...SHARED_ROUTES]);
-const INFRASTRUCTURE_ROUTES = new Set(["overview", "proxmox", "workloads", "portainer", "incidents", ...SHARED_ROUTES]);
+const INFRASTRUCTURE_ROUTES = new Set(["overview", "connectors", "proxmox", "workloads", "portainer", "incidents", ...SHARED_ROUTES]);
 const ROUTES = new Set([...MEDIA_ROUTES, ...INFRASTRUCTURE_ROUTES, "pipeline", "services", "environments", "nodes"]);
 const MEDIA_ROUTE_ALIASES = Object.freeze({ overview: "home", pipeline: "health", incidents: "health", services: "connections" });
 const INFRASTRUCTURE_ROUTE_ALIASES = Object.freeze({
   environments: "proxmox",
   nodes: "proxmox",
   pipeline: "overview",
-  services: "proxmox"
+  services: "connectors",
+  connections: "connectors"
 });
 const SESSION_ID_PATTERN = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u;
 const INFRASTRUCTURE_ID_PATTERN = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u;
@@ -177,6 +187,7 @@ const ROUTE_TITLES = Object.freeze({
   health: "Health",
   connections: "Connections",
   overview: "Overview",
+  connectors: "Connectors",
   incidents: "Incidents",
   pipeline: "Pipeline",
   services: "Services",
@@ -279,44 +290,83 @@ function operationalFingerprint(snapshot) {
     ))
   } : {};
   const infrastructure = state.workspace === "infrastructure"
-    && ["overview", "proxmox", "workloads", "portainer"].includes(route)
+    && ["overview", "connectors", "proxmox", "workloads", "portainer"].includes(route)
     ? normalizeInfrastructureSnapshot(snapshot, state.infrastructure.targets)
     : null;
-  const infrastructureStructure = infrastructure ? {
-    generatedAt: Boolean(infrastructure.generatedAt),
-    overall: infrastructure.overall,
-    targets: infrastructure.targets.map((target) => ({
-      id: target.id,
-      type: target.type,
-      displayName: target.displayName,
-      url: target.url,
-      state: target.state,
-      message: target.message,
-      enabled: target.enabled,
-      monitoringEnabled: target.monitoringEnabled,
-      tlsMode: target.tlsMode,
-      credentialConfigured: target.credentialConfigured,
-      environmentKind: target.environmentKind,
-      environmentName: target.environmentName,
-      clusterName: target.clusterName,
-      quorate: target.quorate,
-      selectedEndpointId: target.selectedEndpointId,
-      endpoints: target.endpoints,
-      nodes: target.nodes,
-      workloads: target.workloads,
-      storage: target.storage,
-      activity: target.activity,
-      capabilities: target.capabilities.map((check) => ({
-        id: check.id,
-        name: check.name,
-        state: check.state,
-        code: check.code,
-        status: check.status
-      }))
-    }))
-  } : null;
-  const portainerStructure = state.workspace === "infrastructure" && route === "portainer"
-    ? portainerServicesForUi().map((service) => ({
+  const configuredInfrastructureIds = new Set(state.infrastructure.targets.map(({ id }) => id));
+  const infrastructureTargets = infrastructure
+    ? infrastructure.targets.filter(({ id }) => !["overview", "connectors"].includes(route) || configuredInfrastructureIds.has(id))
+    : [];
+  const infrastructureStructure = infrastructure
+    ? route === "connectors"
+      ? { targets: infrastructureTargets.map((target) => ({
+          id: target.id,
+          displayName: target.displayName,
+          url: target.url,
+          state: target.state,
+          connectionState: target.connectionState,
+          enabled: target.enabled,
+          monitoringEnabled: target.monitoringEnabled,
+          credentialConfigured: target.credentialConfigured,
+          environmentKind: target.environmentKind,
+          environmentName: target.environmentName,
+          clusterName: target.clusterName
+        })) }
+      : {
+        generatedAt: Boolean(infrastructure.generatedAt),
+        overall: infrastructure.overall,
+        targets: infrastructureTargets.map((target) => ({
+          id: target.id,
+          type: target.type,
+          displayName: target.displayName,
+          url: target.url,
+          state: target.state,
+          connectionState: target.connectionState,
+          message: target.message,
+          enabled: target.enabled,
+          monitoringEnabled: target.monitoringEnabled,
+          tlsMode: target.tlsMode,
+          credentialConfigured: target.credentialConfigured,
+          environmentKind: target.environmentKind,
+          environmentName: target.environmentName,
+          clusterName: target.clusterName,
+          quorate: target.quorate,
+          selectedEndpointId: target.selectedEndpointId,
+          endpoints: target.endpoints,
+          nodes: target.nodes,
+          workloads: target.workloads,
+          storage: target.storage,
+          activity: target.activity,
+          capabilities: target.capabilities.map((check) => ({
+            id: check.id,
+            name: check.name,
+            state: check.state,
+            code: check.code,
+            status: check.status
+          }))
+        }))
+      }
+    : null;
+  const includePortainerStructure = state.workspace === "infrastructure"
+    && ["overview", "connectors", "portainer"].includes(route);
+  const configuredPortainerIds = new Set(normalizedPortainerConfigurations().map(({ id }) => id));
+  const fingerprintPortainers = includePortainerStructure
+    ? portainerServicesForSnapshot(snapshot)
+      .filter(({ id }) => route === "portainer" || configuredPortainerIds.has(id))
+    : [];
+  const portainerStructure = includePortainerStructure
+    ? fingerprintPortainers.map((service) => route === "connectors" ? {
+        id: service.id,
+        displayName: service.displayName,
+        url: service.url,
+        enabled: service.enabled,
+        monitoringEnabled: service.monitoringEnabled,
+        credentialConfigured: service.credentialConfigured,
+        state: service.state,
+        connectionState: service.connectionState,
+        typeName: service.typeName,
+        role: service.role
+      } : {
         id: service.id,
         displayName: service.displayName,
         url: service.url,
@@ -336,7 +386,7 @@ function operationalFingerprint(snapshot) {
           reports: check.reports
         })),
         inventory: service.inventory
-      }))
+      })
     : null;
   const logs = route === "logs"
     ? safeLogEntriesForSnapshot(snapshot).map((entry) => ({
@@ -1714,28 +1764,65 @@ function reportFingerprint(reports) {
   return JSON.stringify(reports.map(({ severity, source, message }) => [severity, source, message]));
 }
 
+function renderConnectionCategory({ id, index, kicker, title, description, summary, action = "", content }) {
+  const headingId = `${id}-connection-category-title`;
+  return `<section class="glass-panel connection-category" data-connection-category="${escapeHtml(id)}" aria-labelledby="${escapeHtml(headingId)}">
+    <header class="connection-category__header">
+      <span class="connection-category__index" aria-hidden="true">${String(index + 1).padStart(2, "0")}</span>
+      <div class="connection-category__copy"><span class="section-kicker">${escapeHtml(kicker)}</span><h3 id="${escapeHtml(headingId)}">${escapeHtml(title)}</h3><p>${escapeHtml(description)}</p></div>
+      <div class="connection-category__actions"><span class="connection-category__summary">${escapeHtml(summary)}</span>${action}</div>
+    </header>
+    <div class="connection-category__body">${content}</div>
+  </section>`;
+}
+
+function renderMediaConnectionCard(service) {
+  const health = healthForService(service.id);
+  const healthState = service.monitoringEnabled === false
+    ? "disabled"
+    : health ? savedMonitorTone(health) : service.configured ? "stale" : "disabled";
+  const healthLabel = service.monitoringEnabled === false
+    ? "Disabled"
+    : health ? savedMonitorLabel(health) : service.configured ? "Waiting for data" : "Set up";
+  return `<button class="service-card-v5" type="button" data-action="open-service" data-service-id="${escapeHtml(service.id)}">
+    <span class="service-card-v5__letter service-card-v5__brand">${serviceIconMarkup(service.id, service.name.slice(0, 1))}</span>
+    <span class="service-card-v5__copy"><strong>${escapeHtml(service.name)}</strong><small>${escapeHtml(service.role)}</small><code>${escapeHtml(service.configured ? service.url : "Not configured")}</code></span>
+    <span class="service-card-v5__status"><i class="health-dot is-${statusClass(healthState)}"></i><b>${escapeHtml(healthLabel)}</b><small>${service.credentialConfigured ? "Credential saved" : "No credential"}</small></span>
+    ${icon("chevron")}
+  </button>`;
+}
+
 function renderServicesPage() {
   const services = [...(state.config?.services || [])]
     .filter((service) => !/^(?:proxmox|portainer)(?:-|$)/u.test(String(service?.id || "").toLowerCase()))
     .sort((a, b) => SERVICE_ORDER.indexOf(a.id) - SERVICE_ORDER.indexOf(b.id));
+  const knownServiceIds = new Set(MEDIA_CONNECTION_CATEGORIES.flatMap(({ services: serviceIds }) => serviceIds));
+  const categories = MEDIA_CONNECTION_CATEGORIES.map((category) => ({
+    ...category,
+    items: category.services.flatMap((serviceId) => services.filter((service) => service.id === serviceId))
+  })).filter(({ items }) => items.length);
+  const otherServices = services.filter((service) => !knownServiceIds.has(service.id));
+  if (otherServices.length) {
+    categories.push({
+      id: "other-services",
+      kicker: "Additional integrations",
+      title: "Other services",
+      description: "Additional service definitions supported by this Helmsman build.",
+      items: otherServices
+    });
+  }
   return `
-    <section class="detail-page">
-      <header class="detail-hero"><div><span class="section-kicker">Media integrations</span><h2>Connections</h2><p>Configure service endpoints and protected credentials. Media browsing remains read-only, and saved secrets are never returned to this browser.</p></div></header>
-      <div class="service-grid-v5">${services.map((service) => {
-        const health = healthForService(service.id);
-        const healthState = service.monitoringEnabled === false
-          ? "disabled"
-          : health ? savedMonitorTone(health) : service.configured ? "stale" : "disabled";
-        const healthLabel = service.monitoringEnabled === false
-          ? "Disabled"
-          : health ? savedMonitorLabel(health) : service.configured ? "Waiting for data" : "Set up";
-        return `<button class="service-card-v5" type="button" data-action="open-service" data-service-id="${escapeHtml(service.id)}">
-          <span class="service-card-v5__letter service-card-v5__brand">${serviceIconMarkup(service.id, service.name.slice(0, 1))}</span>
-          <span class="service-card-v5__copy"><strong>${escapeHtml(service.name)}</strong><small>${escapeHtml(service.role)}</small><code>${escapeHtml(service.configured ? service.url : "Not configured")}</code></span>
-          <span class="service-card-v5__status"><i class="health-dot is-${statusClass(healthState)}"></i><b>${escapeHtml(healthLabel)}</b><small>${service.credentialConfigured ? "Credential saved" : "No credential"}</small></span>
-          ${icon("chevron")}
-        </button>`;
-      }).join("")}</div>
+    <section class="detail-page connections-page media-connections-page">
+      <header class="detail-hero"><div><span class="section-kicker">Media integrations</span><h2>Connections</h2><p>Browse integrations by role, then configure service endpoints and protected credentials. Media access remains read-only, and saved secrets are never returned to this browser.</p></div></header>
+      <div class="connection-category-list">${categories.map((category, index) => renderConnectionCategory({
+        id: category.id,
+        index,
+        kicker: category.kicker,
+        title: category.title,
+        description: category.description,
+        summary: `${category.items.filter(({ configured }) => configured).length} / ${category.items.length} configured`,
+        content: `<div class="service-grid-v5">${category.items.map(renderMediaConnectionCard).join("")}</div>`
+      })).join("")}</div>
     </section>`;
 }
 
@@ -2085,10 +2172,10 @@ function normalizePortainerService(raw, configured = null) {
   };
 }
 
-function portainerServicesForUi() {
+function portainerServicesForSnapshot(value) {
   const configured = normalizedPortainerConfigurations();
-  const rawServices = Array.isArray(state.snapshot?.infrastructure?.services)
-    ? state.snapshot.infrastructure.services.slice(0, 8)
+  const rawServices = Array.isArray(value?.infrastructure?.services)
+    ? value.infrastructure.services.slice(0, 8)
     : [];
   const healthById = new Map(rawServices.flatMap((entry) => {
     const id = String(entry?.id || "").toLowerCase();
@@ -2105,12 +2192,129 @@ function portainerServicesForUi() {
   return output.sort((left, right) => left.displayName.localeCompare(right.displayName) || left.id.localeCompare(right.id));
 }
 
+function portainerServicesForUi() {
+  return portainerServicesForSnapshot(state.snapshot);
+}
+
 function portainerServiceById(serviceId) {
   return normalizedPortainerConfigurations().find(({ id }) => id === serviceId) || null;
 }
 
 function portainerHealthById(serviceId) {
   return portainerServicesForUi().find(({ id }) => id === serviceId) || null;
+}
+
+function configuredInfrastructureTargetsForUi() {
+  const configuredIds = new Set(state.infrastructure.targets.map(({ id }) => id));
+  return infrastructureHealth().targets.filter(({ id }) => configuredIds.has(id));
+}
+
+function configuredInfrastructureSnapshotForUi() {
+  const snapshot = infrastructureHealth();
+  const configuredIds = new Set(state.infrastructure.targets.map(({ id }) => id));
+  return infrastructureSnapshotForTargets(
+    snapshot,
+    snapshot.targets.filter(({ id }) => configuredIds.has(id))
+  );
+}
+
+function configuredPortainerServicesForUi() {
+  const configuredIds = new Set(normalizedPortainerConfigurations().map(({ id }) => id));
+  return portainerServicesForUi().filter(({ id }) => configuredIds.has(id));
+}
+
+function proxmoxConnectorLabel(target) {
+  if (!target.enabled || !target.monitoringEnabled) return "Disabled";
+  if (target.connectionState === "connected") return `Connected · ${statusLabel(target.state)}`;
+  if (target.connectionState === "auth_required") return "Authentication required";
+  if (target.connectionState === "down") return "Connection unavailable";
+  return target.credentialConfigured ? "Waiting for verification" : "API token required";
+}
+
+function renderProxmoxConnectorCard(target) {
+  const environment = target.environmentKind === "cluster"
+    ? target.clusterName || target.environmentName || "Cluster discovery pending"
+    : target.environmentName || "Standalone discovery pending";
+  return `<button class="service-card-v5 infrastructure-card" type="button" data-action="open-infrastructure-target" data-infrastructure-target-id="${escapeHtml(target.id)}" data-connector-provider="proxmox">
+    <span class="service-card-v5__letter service-card-v5__brand">${serviceIconMarkup("proxmox", "P")}</span>
+    <span class="service-card-v5__copy"><strong>${escapeHtml(target.displayName)}</strong><small>Proxmox VE · ${escapeHtml(target.environmentKind === "cluster" ? "Cluster" : target.environmentKind === "standalone" ? "Standalone server" : "Discovery pending")}</small><code>${escapeHtml(target.url || environment)}</code></span>
+    <span class="service-card-v5__status"><i class="health-dot is-${statusClass(target.state)}"></i><b>${escapeHtml(proxmoxConnectorLabel(target))}</b><small>${target.credentialConfigured ? "API token protected" : "No API token"}</small></span>
+    ${icon("chevron")}
+  </button>`;
+}
+
+function renderPortainerConnectorCard(service) {
+  return `<button class="service-card-v5 infrastructure-card" type="button" data-action="open-portainer-service" data-portainer-service-id="${escapeHtml(service.id)}" data-connector-provider="portainer">
+    <span class="service-card-v5__letter service-card-v5__brand">${serviceIconMarkup("portainer", "P")}</span>
+    <span class="service-card-v5__copy"><strong>${escapeHtml(service.displayName)}</strong><small>${escapeHtml(service.typeName)} · ${escapeHtml(service.role)}</small><code>${escapeHtml(service.url || "Connection address unavailable")}</code></span>
+    <span class="service-card-v5__status"><i class="health-dot is-${statusClass(service.state)}"></i><b>${escapeHtml(portainerConnectionLabel(service))}</b><small>${service.credentialConfigured ? "Access token protected" : "No access token"}</small></span>
+    ${icon("chevron")}
+  </button>`;
+}
+
+function renderAvailableInfrastructureConnector({ provider, name, role, detail, action, actionLabel }) {
+  return `<button class="service-card-v5 infrastructure-card connector-card--available" type="button" data-action="${escapeHtml(action)}" data-connector-provider="${escapeHtml(provider)}">
+    <span class="service-card-v5__letter service-card-v5__brand">${serviceIconMarkup(provider, name.slice(0, 1))}</span>
+    <span class="service-card-v5__copy"><strong>${escapeHtml(name)}</strong><small>${escapeHtml(role)}</small><code>${escapeHtml(detail)}</code></span>
+    <span class="service-card-v5__status"><i class="health-dot is-disabled"></i><b>Available</b><small>${escapeHtml(actionLabel)}</small></span>
+    ${icon("chevron")}
+  </button>`;
+}
+
+function renderInfrastructureConnectorsPage() {
+  const proxmoxTargets = configuredInfrastructureTargetsForUi();
+  const portainerServices = configuredPortainerServicesForUi();
+  const configuredCount = proxmoxTargets.length + portainerServices.length;
+  const proxmoxAction = proxmoxTargets.length
+    ? `<button class="button button--compact" type="button" data-action="open-infrastructure-target">${icon("plus")} Add environment</button>`
+    : "";
+  const portainerAction = portainerServices.length
+    ? `<button class="button button--compact" type="button" data-action="open-portainer-service">${icon("plus")} Add server</button>`
+    : "";
+  const proxmoxContent = proxmoxTargets.length
+    ? proxmoxTargets.map(renderProxmoxConnectorCard).join("")
+    : renderAvailableInfrastructureConnector({
+        provider: "proxmox",
+        name: "Proxmox VE",
+        role: "Virtualization and cluster inventory",
+        detail: "No environments configured",
+        action: "open-infrastructure-target",
+        actionLabel: "Connect with a read-only API token"
+      });
+  const portainerContent = portainerServices.length
+    ? portainerServices.map(renderPortainerConnectorCard).join("")
+    : renderAvailableInfrastructureConnector({
+        provider: "portainer",
+        name: "Portainer",
+        role: "Container platform inventory",
+        detail: "No servers configured",
+        action: "open-portainer-service",
+        actionLabel: "Connect with a scoped access token"
+      });
+  const categories = [
+    {
+      id: "virtualization",
+      kicker: "Virtualization",
+      title: "Proxmox VE",
+      description: "Discover standalone servers or clusters, then inventory nodes, guests, storage, tasks, and backups.",
+      summary: `${proxmoxTargets.length} configured`,
+      action: proxmoxAction,
+      content: `<div class="service-grid-v5 infrastructure-target-grid">${proxmoxContent}</div>`
+    },
+    {
+      id: "container-management",
+      kicker: "Container management",
+      title: "Portainer",
+      description: "Inventory permitted environments, containers, and stacks without exposing management controls.",
+      summary: `${portainerServices.length} configured`,
+      action: portainerAction,
+      content: `<div class="service-grid-v5 infrastructure-target-grid">${portainerContent}</div>`
+    }
+  ];
+  return `<section class="detail-page connections-page infrastructure-connections-page" id="infrastructure-connectors">
+    <header class="detail-hero"><div><span class="section-kicker">Infrastructure catalog</span><h2>Connectors</h2><p>See every infrastructure integration this Helmsman build supports. Configured connections show their current state; available connectors open a guarded, read-only setup flow.</p></div><span class="connector-total"><strong>${configuredCount}</strong><small>configured connection${configuredCount === 1 ? "" : "s"}</small></span></header>
+    <div class="connection-category-list">${categories.map((category, index) => renderConnectionCategory({ ...category, index })).join("")}</div>
+  </section>`;
 }
 
 function normalizedSessionList(payload) {
@@ -2639,9 +2843,17 @@ function renderAuthenticatedRoute() {
     if (state.route === "logs") return renderLogsPage();
     return renderSettingsPage();
   }
-  if (state.route === "overview") return renderInfrastructureOverview(snapshotForUi(), state.infrastructure.targets, {
-    portainerConfigured: normalizedPortainerConfigurations().length > 0
-  });
+  if (state.route === "overview") {
+    const infrastructure = configuredInfrastructureSnapshotForUi();
+    const portainers = configuredPortainerServicesForUi();
+    return renderInfrastructureOverview(snapshotForUi(), state.infrastructure.targets, {
+      configuredOnly: true,
+      portainerServices: portainers,
+      overallState: combinedInfrastructureState(infrastructure, portainers),
+      lastCheckedAt: latestInfrastructureCheck(infrastructure.targets, portainers)
+    });
+  }
+  if (state.route === "connectors") return renderInfrastructureConnectorsPage();
   if (state.route === "incidents") return renderIncidentsPage();
   if (state.route === "proxmox") return renderProxmoxPage();
   if (state.route === "workloads") return renderInfrastructureWorkloadsPage();
@@ -2733,17 +2945,17 @@ function combinedInfrastructureState(infrastructure, portainers) {
   ))[0] || "disabled";
 }
 
-function latestInfrastructureCheck(infrastructure, portainers) {
+function latestInfrastructureCheck(targets, portainers) {
   return [
-    infrastructure.generatedAt,
+    ...targets.map(({ lastCheckedAt }) => lastCheckedAt),
     ...portainers.map(({ checkedAt }) => checkedAt)
   ].filter(Boolean).sort((left, right) => Date.parse(right) - Date.parse(left))[0] || null;
 }
 
 function updateChrome() {
   const normalized = normalizeOperationsSnapshot(snapshotForUi(), state.infrastructure.targets);
-  const infrastructure = normalizeInfrastructureSnapshot(snapshotForUi(), state.infrastructure.targets);
-  const portainers = portainerServicesForUi();
+  const infrastructure = configuredInfrastructureSnapshotForUi();
+  const portainers = configuredPortainerServicesForUi();
   const infrastructureWorkspace = state.workspace === "infrastructure";
   const navigationAvailability = {
     proxmox: state.infrastructure.targets.length > 0,
@@ -2784,7 +2996,7 @@ function updateChrome() {
   modeBadge.dataset.state = statusClass(overall);
   monitorSummary.setAttribute("href", infrastructureWorkspace ? "#/incidents" : "#/health");
   monitorSummary.setAttribute("aria-label", infrastructureWorkspace ? "Open infrastructure incidents" : "Open media health");
-  const time = infrastructureWorkspace ? latestInfrastructureCheck(infrastructure, portainers) : state.snapshot?.generatedAt;
+  const time = infrastructureWorkspace ? latestInfrastructureCheck(infrastructure.targets, portainers) : state.snapshot?.generatedAt;
   const summaryText = state.refreshing
     ? infrastructureWorkspace ? "Checking infrastructure…" : "Checking services…"
     : `Last ${infrastructureWorkspace ? "infrastructure" : "container"} check ${formatTime(time, "pending")}`;
@@ -3063,13 +3275,17 @@ function updateInfrastructureModalVolatile(snapshot) {
 }
 
 function updateInfrastructureVolatile() {
-  const snapshot = infrastructureHealth();
+  const snapshot = configuredInfrastructureSnapshotForUi();
   if (state.workspace === "infrastructure" && state.route === "overview") {
+    const configuredTargets = configuredInfrastructureTargetsForUi();
+    const portainers = configuredPortainerServicesForUi();
+    const affectedConnections = [...configuredTargets, ...portainers]
+      .filter(({ state: connectionState }) => !["healthy", "disabled"].includes(statusClass(connectionState))).length;
     const nodes = snapshot.metrics.nodesOnline === null
       ? "Waiting"
       : `${snapshot.metrics.nodesOnline}${snapshot.metrics.nodeTotal === null ? "" : ` / ${snapshot.metrics.nodeTotal}`}`;
-    setInfrastructureMetric("targets", String(snapshot.overall.environmentCount));
-    setInfrastructureMetric("guests-running", snapshot.metrics.guestsRunning === null ? "Waiting" : snapshot.metrics.guestsRunning.toLocaleString());
+    setInfrastructureMetric("connections", String(configuredTargets.length + portainers.length));
+    setInfrastructureMetric("attention", String(affectedConnections));
     setInfrastructureMetric("guests-running-signal", snapshot.metrics.guestsRunning === null ? "Waiting" : snapshot.metrics.guestsRunning.toLocaleString());
     setInfrastructureMetric("nodes", nodes);
     setInfrastructureMetric("node-cpu", snapshot.metrics.nodeCpuPercent === null ? "Waiting" : `${snapshot.metrics.nodeCpuPercent.toLocaleString()}%`);
@@ -3092,7 +3308,7 @@ function updateInfrastructureVolatile() {
       ? "No successful-backup age reported"
       : `Last success ${formatMetricDuration(snapshot.metrics.lastBackupSuccessAgeSeconds)} ago`);
     const checked = main.querySelector("[data-infrastructure-checked] time");
-    updateTimeElement(checked, snapshot.generatedAt, "Waiting for data", formatAssessmentTime);
+    updateTimeElement(checked, latestInfrastructureCheck(snapshot.targets, portainers), "Waiting for data", formatAssessmentTime);
     for (const element of main.querySelectorAll("[data-infrastructure-target-id]")) {
       const target = snapshot.targets.find((entry) => entry.id === element.dataset.infrastructureTargetId);
       const facts = element.querySelector("[data-infrastructure-target-facts]");
@@ -4709,6 +4925,19 @@ document.addEventListener("click", async (event) => {
   if (action === "open-infrastructure-node") openInfrastructureNode(target.dataset.infrastructureNodeId);
   if (action === "open-infrastructure-workload") openInfrastructureWorkload(target.dataset.infrastructureWorkloadId);
   if (action === "open-portainer-service") openPortainerService(target.dataset.portainerServiceId || "");
+  if (action === "open-portainer-overview") {
+    const serviceId = String(target.dataset.portainerOverviewId || "").toLowerCase();
+    if (normalizedPortainerConfigurations().some(({ id }) => id === serviceId)) {
+      event.preventDefault();
+      state.infrastructure.portainerFilters = {
+        server: serviceId,
+        environment: "all",
+        state: "all",
+        search: ""
+      };
+      location.hash = "#/portainer";
+    }
+  }
   if (action === "open-infrastructure-endpoint" || action === "add-infrastructure-endpoint") {
     openInfrastructureEndpoint(target.dataset.infrastructureTargetId, target.dataset.infrastructureEndpointId || "");
   }

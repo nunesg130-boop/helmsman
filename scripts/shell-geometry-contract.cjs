@@ -129,9 +129,11 @@ function near(actual, expected, message, tolerance = 1) {
         const blockSelectors = [".cinema-hero", ".media-home-search", ".media-home-metrics", ".media-section", ".focus-layout"];
         const blocks = blockSelectors.flatMap((selector) => [...home.querySelectorAll(`:scope > ${selector}`)].map((element) => {
           const value = element.getBoundingClientRect();
-          return { selector, left: value.left, right: value.right };
+          return { selector, left: value.left, right: value.right, top: value.top, bottom: value.bottom };
         }));
         const rail = document.querySelector(".poster-rail");
+        const sidebarToggle = document.querySelector(".sidebar-toggle");
+        const toggleRect = sidebarToggle.getBoundingClientRect();
         const posterWidths = [...rail.querySelectorAll(".poster-card")]
           .map((card) => card.getBoundingClientRect().width);
         return {
@@ -140,6 +142,7 @@ function near(actual, expected, message, tolerance = 1) {
           sidebar: rect(".sidebar"),
           brand: rect(".brand"),
           topbar: rect(".topbar"),
+          toggle: { ...rect(".sidebar-toggle"), hit: document.elementFromPoint(toggleRect.left + toggleRect.width / 2, toggleRect.top + toggleRect.height / 2)?.closest(".sidebar-toggle") === sidebarToggle },
           main: rect(".main-content"),
           home: rect(".media-home-page"),
           paddingLeft: parseFloat(homeStyle.paddingLeft),
@@ -162,6 +165,17 @@ function near(actual, expected, message, tolerance = 1) {
       assert.ok(geometry.topbar.left >= geometry.main.left, `${viewport.width}px topbar must stay inside the main grid column`);
       assert.ok(geometry.topbar.right <= geometry.viewport + 1, `${viewport.width}px topbar must stay inside the viewport`);
       assert.ok(geometry.brand.left >= geometry.sidebar.left && geometry.brand.right <= geometry.sidebar.right, `${viewport.width}px brand must stay inside the sidebar`);
+      near(geometry.toggle.left, geometry.sidebar.right, `${viewport.width}px sidebar toggle edge placement`, 3);
+      near(geometry.toggle.top, geometry.topbar.bottom + 16, `${viewport.width}px sidebar toggle vertical placement`, 2);
+      near(geometry.toggle.width, 44, `${viewport.width}px sidebar toggle width`);
+      near(geometry.toggle.height, 44, `${viewport.width}px sidebar toggle height`);
+      assert.equal(geometry.toggle.hit, true, `${viewport.width}px sidebar toggle must remain clickable outside the sidebar`);
+      assert.ok(
+        geometry.toggle.right <= geometry.blocks[0].left
+          || geometry.toggle.bottom <= geometry.blocks[0].top
+          || geometry.toggle.top >= geometry.blocks[0].bottom,
+        `${viewport.width}px sidebar toggle must not overlap the first content panel`
+      );
       assert.ok(geometry.home.left >= geometry.main.left - 1, `${viewport.width}px Home starts outside main`);
       assert.ok(geometry.home.right <= geometry.main.right + 1, `${viewport.width}px Home ends outside main`);
 
@@ -197,8 +211,10 @@ function near(actual, expected, message, tolerance = 1) {
       const collapsed = await page.evaluate(() => {
         const rect = (selector) => {
           const value = document.querySelector(selector).getBoundingClientRect();
-          return { left: value.left, right: value.right, width: value.width };
+          return { left: value.left, right: value.right, top: value.top, bottom: value.bottom, width: value.width, height: value.height };
         };
+        const sidebarToggle = document.querySelector(".sidebar-toggle");
+        const toggleRect = sidebarToggle.getBoundingClientRect();
         return {
           viewport: document.documentElement.clientWidth,
           documentWidth: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth),
@@ -206,6 +222,9 @@ function near(actual, expected, message, tolerance = 1) {
           brand: rect(".brand"),
           topbar: rect(".topbar"),
           main: rect(".main-content"),
+          home: rect(".media-home-page"),
+          firstBlock: rect(".cinema-hero"),
+          toggle: { ...rect(".sidebar-toggle"), hit: document.elementFromPoint(toggleRect.left + toggleRect.width / 2, toggleRect.top + toggleRect.height / 2)?.closest(".sidebar-toggle") === sidebarToggle },
           navigationLabelDisplay: getComputedStyle(document.querySelector(".nav-item > span")).display,
           workspaceLabelDisplay: getComputedStyle(document.querySelector(".world-option__label")).display
         };
@@ -217,6 +236,17 @@ function near(actual, expected, message, tolerance = 1) {
       near(collapsed.sidebar.right + collapsed.sidebar.left, collapsed.main.left, `${viewport.width}px collapsed sidebar/main gutter`);
       assert.ok(collapsed.topbar.left >= collapsed.main.left, `${viewport.width}px collapsed topbar must stay inside the main grid column`);
       assert.ok(collapsed.brand.width <= collapsed.sidebar.width, `${viewport.width}px collapsed brand must stay inside the sidebar`);
+      near(collapsed.toggle.left, collapsed.sidebar.right, `${viewport.width}px collapsed sidebar toggle edge placement`, 3);
+      near(collapsed.toggle.top, collapsed.topbar.bottom + 16, `${viewport.width}px collapsed sidebar toggle vertical placement`, 2);
+      near(collapsed.toggle.width, 44, `${viewport.width}px collapsed sidebar toggle width`);
+      near(collapsed.toggle.height, 44, `${viewport.width}px collapsed sidebar toggle height`);
+      assert.equal(collapsed.toggle.hit, true, `${viewport.width}px collapsed sidebar toggle must remain clickable`);
+      assert.ok(
+        collapsed.toggle.right <= collapsed.firstBlock.left
+          || collapsed.toggle.bottom <= collapsed.firstBlock.top
+          || collapsed.toggle.top >= collapsed.firstBlock.bottom,
+        `${viewport.width}px collapsed sidebar toggle must not overlap the first content panel`
+      );
       assert.equal(collapsed.navigationLabelDisplay, "none", `${viewport.width}px collapsed navigation labels must be hidden`);
       assert.equal(collapsed.workspaceLabelDisplay, "none", `${viewport.width}px collapsed workspace labels must be hidden`);
       await page.close();
@@ -304,6 +334,9 @@ function near(actual, expected, message, tolerance = 1) {
             return { left: value.left, right: value.right, top: value.top, bottom: value.bottom, width: value.width };
           };
           const row = document.querySelector(".request-row");
+          const sidebar = document.querySelector(".sidebar");
+          const sidebarToggle = document.querySelector(".sidebar-toggle");
+          const toggleRect = sidebarToggle.getBoundingClientRect();
           return {
             viewport: document.documentElement.clientWidth,
             documentWidth: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth),
@@ -312,6 +345,8 @@ function near(actual, expected, message, tolerance = 1) {
             title: rect(".request-title"),
             journey: rect(".request-journey"),
             actions: rect(".request-actions"),
+            sidebar: rect(".sidebar"),
+            toggle: { ...rect(".sidebar-toggle"), hit: document.elementFromPoint(toggleRect.left + toggleRect.width / 2, toggleRect.top + toggleRect.height / 2)?.closest(".sidebar-toggle") === sidebarToggle },
             gridTrackCount: getComputedStyle(row).gridTemplateColumns.trim().split(/\s+/u).length,
             ownerDisplay: getComputedStyle(document.querySelector(".request-owner")).display
           };
@@ -319,6 +354,14 @@ function near(actual, expected, message, tolerance = 1) {
         const state = collapsed ? "collapsed" : "expanded";
 
         assert.ok(geometry.documentWidth <= geometry.viewport + 1, `${viewport.width}px ${state} compact request shell must not overflow horizontally`);
+        near(geometry.toggle.left, geometry.sidebar.right, `${viewport.width}px ${state} compact sidebar toggle edge`, 3);
+        assert.equal(geometry.toggle.hit, true, `${viewport.width}px ${state} compact sidebar toggle must be clickable`);
+        assert.ok(
+          geometry.toggle.right <= geometry.list.left
+            || geometry.toggle.bottom <= geometry.list.top
+            || geometry.toggle.top >= geometry.list.bottom,
+          `${viewport.width}px ${state} compact sidebar toggle must not overlap the first content panel`
+        );
         if (viewport.width <= 1440) {
           assert.equal(geometry.gridTrackCount, 2, `${viewport.width}px ${state} request row must use two grid columns`);
           assert.equal(geometry.ownerDisplay, "none", `${viewport.width}px ${state} compact request owner must be hidden`);
@@ -362,7 +405,7 @@ function near(actual, expected, message, tolerance = 1) {
         return {
           viewport: document.documentElement.clientWidth,
           documentWidth: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth),
-          sidebar: { top: sidebarRect.top, bottom: sidebarRect.bottom },
+          sidebar: { top: sidebarRect.top, right: sidebarRect.right, bottom: sidebarRect.bottom },
           scrollRegion: {
             top: scrollRect.top,
             bottom: scrollRect.bottom,
@@ -407,6 +450,7 @@ function near(actual, expected, message, tolerance = 1) {
           && sidebarOverflow.toggle.bottom <= sidebarOverflow.sidebar.bottom,
         `${viewport.width}x${viewport.height} sidebar toggle must remain reachable`
       );
+      near(sidebarOverflow.toggle.left, sidebarOverflow.sidebar.right, `${viewport.width}x${viewport.height} sidebar toggle edge placement`, 3);
       await page.close();
     }
     console.log("Shell geometry contract passed for fixed poster rails, compact requests and downloads, collapsed navigation, and short-height sidebar scrolling.");

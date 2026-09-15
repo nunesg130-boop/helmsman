@@ -169,6 +169,7 @@ time,
   --sidebar-gutter: 18px;
   inset: 0 auto 0 0;
   width: var(--sidebar-width);
+  overflow: visible;
   padding: 0 var(--sidebar-gutter) 18px;
   border: 0;
   border-right: 3px double var(--retro-rule);
@@ -210,10 +211,15 @@ time,
 }
 
 .app-shell.is-sidebar-collapsed .sidebar-toggle {
-  top: calc(var(--topbar-height) - 17px);
+  top: calc(var(--topbar-height) + 16px);
 }
 
 .sidebar-toggle {
+  top: calc(var(--topbar-height) + 16px);
+  right: auto;
+  left: 100%;
+  width: 44px;
+  height: 44px;
   border-color: var(--retro-rule);
   border-radius: 0;
   background: var(--retro-ink);
@@ -450,7 +456,8 @@ kbd {
   .portainer-table,
   .portainer-environment-card,
   .portainer-stack-card,
-  .portainer-connection-card
+  .portainer-connection-card,
+  .connection-category
 ) {
   border: 1px solid var(--retro-frame);
   border-radius: 2px;
@@ -477,6 +484,10 @@ kbd {
   backdrop-filter: none;
 }
 
+.service-card-v5.connector-card--available {
+  border-style: dashed;
+}
+
 .operations-overall::before,
 .operations-overall::after,
 .operations-panel::before,
@@ -485,6 +496,27 @@ kbd {
 .setup-v5__header::before,
 .infrastructure-signals__grid > div::after {
   display: none;
+}
+
+.connection-category > .connection-category__header {
+  border-bottom: 3px double var(--retro-rule);
+  background: var(--retro-screen);
+}
+
+.connection-category > .connection-category__header::before {
+  display: none;
+  content: none;
+}
+
+.connection-category__index,
+.connector-total {
+  border-color: var(--retro-rule);
+  background: var(--retro-ink);
+  box-shadow: 2px 2px 0 rgba(0, 0, 0, 0.42);
+}
+
+.connection-category__body {
+  background: rgba(6, 15, 17, 0.35);
 }
 
 .page-intro,

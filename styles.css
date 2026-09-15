@@ -717,6 +717,7 @@ kbd {
   max-width: 1660px;
   margin: 0 auto;
   padding: 22px clamp(24px, 3vw, 54px) 70px;
+  padding-left: clamp(52px, 3vw, 54px);
 }
 
 .main-content.is-route-entry > .page {

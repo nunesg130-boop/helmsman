@@ -648,6 +648,7 @@ button.operations-service:hover { background: rgba(255, 255, 255, 0.055); }
   color: var(--text, #f3f7f6);
   cursor: pointer;
   font: inherit;
+  text-decoration: none;
   text-align: left;
   transition: background-color 140ms ease;
 }

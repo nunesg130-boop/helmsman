@@ -153,7 +153,7 @@ function installFakeBrowser(fetchHandler, suffix) {
   });
   const mediaOnly = ["home", "discover", "library", "requests", "activity", "calendar", "health", "connections"]
     .flatMap((route) => routeElements(route, { workspace: "media" }));
-  const infrastructureGlobalNav = ["overview", "incidents"]
+  const infrastructureGlobalNav = ["overview", "connectors", "incidents"]
     .flatMap((route) => routeElements(route, { workspace: "infrastructure" }));
   const proxmoxNav = ["proxmox", "workloads"]
     .flatMap((route) => routeElements(route, { workspace: "infrastructure", service: "proxmox" }));
@@ -816,7 +816,7 @@ async function emptyStateLayoutContract() {
   for (const route of ["home", "discover", "library", "requests", "activity", "calendar", "health", "connections"]) {
     assert.equal((documentMarkup.match(new RegExp(`class="[^"]*workspace-media-only[^"]*"[^>]+data-route="${route}"`, "gu")) || []).length, 2, `${route} must appear only in the desktop and mobile Media navigation`);
   }
-  for (const route of ["overview", "proxmox", "workloads", "portainer", "incidents"]) {
+  for (const route of ["overview", "connectors", "proxmox", "workloads", "portainer", "incidents"]) {
     assert.equal((documentMarkup.match(new RegExp(`class="[^"]*workspace-infrastructure-only[^"]*"[^>]+data-route="${route}"`, "gu")) || []).length, 2, `${route} must appear only in the desktop and mobile Infrastructure navigation`);
   }
   for (const retiredRoute of ["environments", "nodes"]) {
@@ -825,6 +825,8 @@ async function emptyStateLayoutContract() {
   assert.equal((documentMarkup.match(/data-route="proxmox"[^>]+data-service-nav="proxmox"/gu) || []).length, 2, "Proxmox navigation must be gated in both desktop and mobile shells");
   assert.equal((documentMarkup.match(/data-route="workloads"[^>]+data-service-nav="proxmox"/gu) || []).length, 2, "Workloads navigation must follow the Proxmox connection gate");
   assert.equal((documentMarkup.match(/data-route="portainer"[^>]+data-service-nav="portainer"/gu) || []).length, 2, "Portainer navigation must use its own connection gate");
+  assert.equal((documentMarkup.match(/data-route="connectors"/gu) || []).length, 2, "Connectors must remain available in both Infrastructure navigation surfaces");
+  assert.doesNotMatch(documentMarkup, /data-route="connectors"[^>]+data-service-nav=/u, "Connectors must not require an existing provider connection");
   assert.match(application, /const INFRASTRUCTURE_ROUTE_ALIASES\s*=\s*Object\.freeze\(\{[\s\S]*?environments:\s*"proxmox"[\s\S]*?nodes:\s*"proxmox"/u, "legacy Infrastructure URLs must canonicalize to the merged Proxmox route");
   for (const [code, copy] of [
     ["FORBIDDEN", "Authenticated user lacks permission for this capability or environment"],
@@ -1924,6 +1926,71 @@ async function serviceDialogInteractionContract() {
   assert.doesNotMatch(`${environment.main.innerHTML}${modal.innerHTML}`, /name="credential"|type="password"/u);
 }
 
+async function mediaConnectionCategoriesContract() {
+  const definitions = [
+    ["jellyfin", "Jellyfin", "Library and playback"],
+    ["seerr", "Seerr", "Discovery and requests"],
+    ["radarr", "Radarr", "Movie management"],
+    ["sonarr", "Sonarr", "Series management"],
+    ["prowlarr", "Prowlarr", "Indexer management"],
+    ["qbittorrent", "qBittorrent", "Download client"],
+    ["bazarr", "Bazarr", "Subtitle management"]
+  ];
+  const config = {
+    policy: { allowedCidrs: [], allowPublicHttps: false },
+    services: definitions.map(([id, name, role], index) => ({
+      id,
+      name,
+      role,
+      url: index === 0 ? "http://jellyfin.internal:8096" : "",
+      configured: index === 0,
+      credentialConfigured: index === 0,
+      monitoringEnabled: true
+    }))
+  };
+  const snapshot = {
+    version: 1,
+    generatedAt: "2026-09-15T12:00:00.000Z",
+    overall: { state: "healthy", serviceCount: 1, affectedServiceCount: 0, openIncidentCount: 0 },
+    services: [{ id: "jellyfin", label: "Jellyfin", state: "healthy", connectionState: "connected", checks: [] }],
+    pipeline: { state: "healthy", stages: [] },
+    incidents: { open: [], recent: [] },
+    workload: {},
+    events: []
+  };
+  const environment = installFakeBrowser(({ path }) => {
+    if (path === "/api/v2/status") return jsonResponse({ setupRequired: false, authenticated: true, csrfToken: "media-categories-csrf", session: { name: "Media Categories" } });
+    if (path === "/api/v2/config") return jsonResponse(clone(config));
+    if (path === "/api/v2/operations/snapshot") return jsonResponse(clone(snapshot));
+    if (path === "/api/v2/sessions") return jsonResponse({ currentSessionId: "", sessions: [] });
+    if (path === "/api/v2/infrastructure/environments") return jsonResponse({ environments: [] });
+    return jsonResponse({ code: "NOT_FOUND", message: "Unexpected test route." }, 404);
+  }, "media-connection-categories");
+  environment.location.hash = "#/connections";
+  await importShell(environment);
+  await waitFor(() => environment.main.innerHTML.includes("media-connections-page"), "categorized Media Connections");
+  const markup = environment.main.innerHTML;
+  const expectedCategories = [
+    ["media-server", ["jellyfin"]],
+    ["requests", ["seerr"]],
+    ["media-management", ["radarr", "sonarr"]],
+    ["indexers", ["prowlarr"]],
+    ["download-clients", ["qbittorrent"]],
+    ["subtitles", ["bazarr"]]
+  ];
+  let previousCategory = -1;
+  for (const [category, serviceIds] of expectedCategories) {
+    const categoryIndex = markup.indexOf(`data-connection-category="${category}"`);
+    assert.ok(categoryIndex > previousCategory, `${category} must appear once in deterministic category order`);
+    previousCategory = categoryIndex;
+    for (const serviceId of serviceIds) {
+      assert.equal((markup.match(new RegExp(`data-service-id="${serviceId}"`, "gu")) || []).length, 1, `${serviceId} must appear in exactly one category`);
+    }
+  }
+  assert.match(markup, /Jellyfin[\s\S]*Connected[\s\S]*Credential saved/u);
+  assert.match(markup, /qBittorrent[\s\S]*Set up[\s\S]*No credential/u);
+}
+
 async function infrastructureWorkspaceContract() {
   const csrfToken = "infrastructure-csrf-token";
   const targetId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -1944,7 +2011,15 @@ async function infrastructureWorkspaceContract() {
     infrastructure: {
       generatedAt: "2026-09-13T01:00:00.000Z",
       overall: { state: "disabled", headline: "No targets", summary: "Add Proxmox to begin." },
-      targets: []
+      targets: [{
+        id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+        type: "proxmox",
+        displayName: "Removed Proxmox",
+        state: "down",
+        connectionState: "down",
+        checkedAt: "2026-09-13T01:00:00.000Z",
+        metrics: { nodesOnline: 99, guestsRunning: 99 }
+      }]
     }
   };
   const healthyTest = {
@@ -2115,11 +2190,19 @@ async function infrastructureWorkspaceContract() {
   assert.equal(environment.elements.get("#monitor-summary").attributes.get("href"), "#/incidents", "Infrastructure monitor summary must link to Incidents");
   assert.equal(environment.elements.get("#monitor-summary").attributes.get("aria-label"), "Open infrastructure incidents");
   assert.ok(environment.requestLog.some(({ path }) => path === "/api/v2/infrastructure/environments"), "workspace switch must load environment metadata");
+  assert.match(environment.main.innerHTML, /No infrastructure connections yet/u, "Overview must describe only currently configured infrastructure");
+  assert.doesNotMatch(environment.main.innerHTML, /Connect and discover|Connect Portainer|data-action="open-infrastructure-target"|data-action="open-portainer-service"/u, "Overview must not act as the connector catalog");
+  assert.equal(environment.elements.get("#mode-badge").textContent, "Disabled", "an unmatched removed target must not affect current Infrastructure health");
+  assert.match(environment.elements.get("#monitor-summary").innerHTML, /pending/u, "an empty current Overview must not borrow the global monitor timestamp");
+  snapshot.infrastructure.targets = [];
 
   environment.location.hash = "#/services";
   await environment.dispatchWindow("hashchange", { type: "hashchange" });
-  assert.match(environment.main.innerHTML, /id="infrastructure-proxmox"/u, "the legacy Services route must render the merged Proxmox page");
-  assert.match(environment.main.innerHTML, /Connect your first Proxmox environment/u);
+  assert.match(environment.main.innerHTML, /id="infrastructure-connectors"/u, "the legacy Services route must render the Infrastructure connector catalog");
+  assert.match(environment.main.innerHTML, /data-connection-category="virtualization"[\s\S]*Proxmox VE/u);
+  assert.match(environment.main.innerHTML, /data-connection-category="container-management"[\s\S]*Portainer/u);
+  assert.match(environment.main.innerHTML, /data-action="open-infrastructure-target"/u);
+  assert.match(environment.main.innerHTML, /data-action="open-portainer-service"/u);
   environment.location.hash = "#/environments";
   await environment.dispatchWindow("hashchange", { type: "hashchange" });
   assert.match(environment.main.innerHTML, /id="infrastructure-proxmox"/u, "the legacy Environments route must render the merged Proxmox page");
@@ -2342,6 +2425,32 @@ async function infrastructureWorkspaceContract() {
   assert.equal(createRefreshCall.options.method, "POST");
   assert.equal(createRefreshCall.options.headers.get("X-Jellofin-CSRF"), csrfToken);
   assert.deepEqual(JSON.parse(createRefreshCall.options.body), {});
+
+  environment.location.hash = "#/overview";
+  await environment.dispatchWindow("hashchange", { type: "hashchange" });
+  assert.match(environment.main.innerHTML, /id="infrastructure-overview"/u);
+  assert.match(environment.main.innerHTML, /Main Proxmox/u, "Overview must include the configured Proxmox environment");
+  assert.doesNotMatch(environment.main.innerHTML, /Connect and discover|Connect Portainer|Portainer servers/u, "Overview must omit unconfigured providers and every setup CTA");
+  environment.location.hash = "#/connectors";
+  await environment.dispatchWindow("hashchange", { type: "hashchange" });
+  assert.equal(environment.elements.get("#page-title").textContent, "Connectors");
+  assert.match(environment.main.innerHTML, /id="infrastructure-connectors"/u);
+  assert.match(environment.main.innerHTML, /Main Proxmox/u, "Connectors must include current connections");
+  assert.match(environment.main.innerHTML, /data-connector-provider="portainer"[\s\S]*Available/u, "Connectors must retain supported but unconfigured providers");
+  assert.match(environment.main.innerHTML, /Add environment/u, "a configured provider must still allow another connection");
+  const connectorWritesBeforeConnectionChange = environment.main.markupWrites;
+  snapshot.infrastructure.targets[0].connectionState = "auth_required";
+  const snapshotsBeforeConnectionChange = environment.requestLog.filter(({ path }) => path === "/api/v2/operations/snapshot").length;
+  await environment.intervalCallbacks.at(-1)();
+  await waitFor(
+    () => environment.requestLog.filter(({ path }) => path === "/api/v2/operations/snapshot").length === snapshotsBeforeConnectionChange + 1,
+    "Proxmox connector connection-state refresh"
+  );
+  assert.ok(environment.main.markupWrites > connectorWritesBeforeConnectionChange, "a Proxmox connection-state change must repaint Connectors");
+  assert.match(environment.main.innerHTML, /Authentication required/u);
+  snapshot.infrastructure.targets[0].connectionState = "connected";
+  environment.location.hash = "#/proxmox";
+  await environment.dispatchWindow("hashchange", { type: "hashchange" });
 
   const snapshotsBeforeHydration = environment.requestLog.filter(({ path }) => path === "/api/v2/operations/snapshot").length;
   await environment.intervalCallbacks.at(-1)();
@@ -2742,6 +2851,61 @@ async function portainerInfrastructureContract() {
   assert.match(markup, /reverse-proxy &lt;script&gt;portainer-container-xss&lt;\/script&gt;/u);
   assert.doesNotMatch(markup, /<script>portainer-container-xss<\/script>|<img src=x onerror="portainer-environment-xss">/u);
   assert.doesNotMatch(`${markup}${environment.elements.get("#modal-layer").innerHTML}`, new RegExp(hiddenToken, "u"));
+
+  environment.location.hash = "#/overview";
+  await environment.dispatchWindow("hashchange", { type: "hashchange" });
+  assert.match(environment.main.innerHTML, /id="infrastructure-overview"/u);
+  assert.match(environment.main.innerHTML, /Portainer servers[\s\S]*Container Control/u, "Overview must show a configured Portainer server");
+  assert.doesNotMatch(environment.main.innerHTML, /Proxmox environments|Infrastructure signals|Connect and discover|Connect Portainer/u, "Portainer-only Overview must omit unconfigured Proxmox and setup prompts");
+  assert.doesNotMatch(environment.main.innerHTML, new RegExp(hiddenToken, "u"));
+  const overviewWritesBeforeStateChange = environment.main.markupWrites;
+  const snapshotsBeforeOverviewStateChange = environment.requestLog.filter(({ path }) => path === "/api/v2/operations/snapshot").length;
+  snapshot.infrastructure.services[0].state = "healthy";
+  await environment.intervalCallbacks.at(-1)();
+  await waitFor(
+    () => environment.requestLog.filter(({ path }) => path === "/api/v2/operations/snapshot").length === snapshotsBeforeOverviewStateChange + 1,
+    "Portainer Overview state refresh"
+  );
+  assert.ok(environment.main.markupWrites > overviewWritesBeforeStateChange, "Portainer state changes must repaint the combined Infrastructure Overview");
+  assert.match(environment.main.innerHTML, /Healthy read-only connection/u);
+  const overviewPortainerLink = new FakeElement({ id: "overview-portainer" });
+  overviewPortainerLink.dataset.action = "open-portainer-overview";
+  overviewPortainerLink.dataset.portainerOverviewId = serviceId;
+  overviewPortainerLink.closest = (selector) => selector === "[data-action]" ? overviewPortainerLink : null;
+  let portainerNavigationPrevented = false;
+  await environment.dispatchDocument("click", {
+    target: overviewPortainerLink,
+    preventDefault() { portainerNavigationPrevented = true; }
+  });
+  assert.equal(portainerNavigationPrevented, true, "the filtered Portainer navigation must handle its own anchor transition");
+  assert.equal(environment.location.hash, "#/portainer");
+  await environment.dispatchWindow("hashchange", { type: "hashchange" });
+  assert.match(environment.main.innerHTML, new RegExp(`<option value="${serviceId}" selected`, "u"), "a clicked Portainer Overview row must select that server's inventory");
+  snapshot.infrastructure.services[0].state = "degraded";
+  environment.location.hash = "#/connectors";
+  await environment.dispatchWindow("hashchange", { type: "hashchange" });
+  assert.match(environment.main.innerHTML, /data-connector-provider="proxmox"[\s\S]*Available/u, "Connectors must expose the available Proxmox provider");
+  assert.match(environment.main.innerHTML, /Container Control/u, "Connectors must include the current Portainer connection");
+  assert.match(environment.main.innerHTML, /Add server/u);
+  assert.doesNotMatch(environment.main.innerHTML, new RegExp(hiddenToken, "u"));
+  const snapshotsBeforeConnectorStateSync = environment.requestLog.filter(({ path }) => path === "/api/v2/operations/snapshot").length;
+  await environment.intervalCallbacks.at(-1)();
+  await waitFor(
+    () => environment.requestLog.filter(({ path }) => path === "/api/v2/operations/snapshot").length === snapshotsBeforeConnectorStateSync + 1,
+    "Portainer connector state sync"
+  );
+  assert.match(environment.main.innerHTML, /Connected · Degraded/u);
+  const connectorWritesBeforeInventoryOnlyPoll = environment.main.markupWrites;
+  snapshot.infrastructure.services[0].inventory.containers[0].status = "Up 3 hours";
+  const snapshotsBeforeInventoryOnlyPoll = environment.requestLog.filter(({ path }) => path === "/api/v2/operations/snapshot").length;
+  await environment.intervalCallbacks.at(-1)();
+  await waitFor(
+    () => environment.requestLog.filter(({ path }) => path === "/api/v2/operations/snapshot").length === snapshotsBeforeInventoryOnlyPoll + 1,
+    "Portainer inventory-only connector poll"
+  );
+  assert.equal(environment.main.markupWrites, connectorWritesBeforeInventoryOnlyPoll, "inventory-only polling must not replace the Connectors DOM");
+  environment.location.hash = "#/portainer";
+  await environment.dispatchWindow("hashchange", { type: "hashchange" });
 
   const editConnection = new FakeElement({ id: "edit-portainer" });
   editConnection.dataset.action = "open-portainer-service";
@@ -3236,6 +3400,7 @@ for (const [name, contract] of [
   ["prioritized and retry-bounded media artwork", mediaArtworkLoadingContract],
   ["truthful media request and calendar semantics", mediaSemanticsContract],
   ["stable service dialog interactions", serviceDialogInteractionContract],
+  ["categorized Media connections", mediaConnectionCategoriesContract],
   ["Infrastructure workspace and Proxmox dialog", infrastructureWorkspaceContract],
   ["Infrastructure-only Portainer inventory", portainerInfrastructureContract],
   ["authenticated operations runtime", authenticatedRuntimeContract]
@@ -3253,4 +3418,4 @@ if (failures.length) {
   throw new Error(`Runtime v5 smoke test failed:\n${failures.map((failure) => `  - ${failure}`).join("\n")}`);
 }
 
-console.log("Runtime v5 smoke test passed: setup, universal access-key login and rotation, key redaction, network modes, service authentication, Infrastructure and Proxmox workflows, authenticated Overview, routes, stable polling, browser-session revocation, CSRF, same-origin credentials, and escaping.");
+console.log("Runtime v5 smoke test passed: setup, universal access-key login and rotation, key redaction, network modes, categorized Media connections, configured-only Infrastructure Overview, connector catalog, Proxmox and Portainer workflows, stable polling, browser-session revocation, CSRF, same-origin credentials, and escaping.");

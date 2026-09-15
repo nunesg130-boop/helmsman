@@ -30,7 +30,7 @@ import {
 } from "./network.mjs";
 import { generateSecretToken, hashToken, StateStore, tokenMatches } from "./state.mjs";
 
-const DEFAULT_VERSION = "0.10.0-beta.10";
+const DEFAULT_VERSION = "0.10.0-beta.11";
 const requestedVersion = String(process.env.HELMSMAN_VERSION || DEFAULT_VERSION);
 const VERSION = /^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/u.test(requestedVersion)
   ? requestedVersion

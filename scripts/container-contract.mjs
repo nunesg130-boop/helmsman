@@ -125,7 +125,7 @@ if (existsSync(join(root, "Dockerfile"))) {
   );
 
   record(
-    /^ARG HELMSMAN_VERSION=0\.10\.0-beta\.10$/mu.test(dockerfile)
+    /^ARG HELMSMAN_VERSION=0\.10\.0-beta\.11$/mu.test(dockerfile)
       && /^ARG HELMSMAN_REVISION=unknown$/mu.test(dockerfile)
       && /org\.opencontainers\.image\.title="Helmsman"/u.test(dockerfile)
       && !/org\.opencontainers\.image\.title="Jellofin Command"/u.test(dockerfile),
@@ -188,7 +188,7 @@ if (existsSync(join(root, "Dockerfile"))) {
 if (existsSync(join(root, "server/broker.mjs"))) {
   const broker = read("server/broker.mjs");
   record(
-    /const DEFAULT_VERSION = "0\.10\.0-beta\.10"/u.test(broker)
+    /const DEFAULT_VERSION = "0\.10\.0-beta\.11"/u.test(broker)
       && /process\.env\.HELMSMAN_VERSION/u.test(broker)
       && /\^\[0-9A-Za-z\]\[0-9A-Za-z\.\+-\]\{0,63\}\$/u.test(broker),
     "runtime version follows the validated immutable v0.10 image metadata"
@@ -264,7 +264,7 @@ if (existsSync(join(root, "compose.yaml"))) {
   record(
     /^name:\s*helmsman\s*$/mu.test(compose)
       && /^services:\s*\n\s{2}helmsman:\s*$/mu.test(compose)
-      && compose.includes('${HELMSMAN_IMAGE:-ghcr.io/OWNER/REPOSITORY:0.10.0-beta.10}')
+      && compose.includes('${HELMSMAN_IMAGE:-ghcr.io/OWNER/REPOSITORY:0.10.0-beta.11}')
       && !/^\s{4}build:/mu.test(compose),
     "production Compose has a stable project name and pulls the versioned GHCR image without a local build"
   );
@@ -323,9 +323,9 @@ if (existsSync(join(root, "compose.dev.yaml"))) {
       && /^\s{4}build:\s*$/mu.test(developmentCompose)
       && /^\s{6}context:\s*[.]\s*$/mu.test(developmentCompose)
       && /^\s{6}dockerfile:\s*Dockerfile\s*$/mu.test(developmentCompose)
-      && /HELMSMAN_VERSION:\s*["']0\.10\.0-beta\.10["']/u.test(developmentCompose)
+      && /HELMSMAN_VERSION:\s*["']0\.10\.0-beta\.11["']/u.test(developmentCompose)
       && /HELMSMAN_REVISION:\s*["']local["']/u.test(developmentCompose)
-      && /image:\s*["']helmsman:0\.10\.0-beta\.10["']/u.test(developmentCompose),
+      && /image:\s*["']helmsman:0\.10\.0-beta\.11["']/u.test(developmentCompose),
     "developer Compose override keeps source builds separate from the production pull contract"
   );
 }
@@ -453,7 +453,7 @@ if (existsSync(join(root, "container.env.example"))) {
   const allowed = new Set(["HELMSMAN_IMAGE", "HELMSMAN_BIND_IP", "HELMSMAN_PORT"]);
   const unexpected = keys.filter((key) => !allowed.has(key));
   record(
-    assignments.includes("HELMSMAN_IMAGE=ghcr.io/OWNER/REPOSITORY:0.10.0-beta.10")
+    assignments.includes("HELMSMAN_IMAGE=ghcr.io/OWNER/REPOSITORY:0.10.0-beta.11")
       && assignments.includes("HELMSMAN_BIND_IP=127.0.0.1")
       && assignments.includes("HELMSMAN_PORT=4180")
       && !assignments.some((line) => line.startsWith("HELMSMAN_DATA_VOLUME="))
@@ -673,7 +673,7 @@ if (existsSync(join(root, "index.html"))) {
   record(
     ["home", "discover", "library", "requests", "activity", "calendar", "health", "connections"]
       .every((route) => workspaceRouteCount("media", route) === 2)
-      && ["overview", "proxmox", "workloads", "portainer", "incidents"]
+      && ["overview", "connectors", "proxmox", "workloads", "portainer", "incidents"]
         .every((route) => workspaceRouteCount("infrastructure", route) === 2)
       && ["environments", "nodes"].every((route) => !new RegExp(`data-route="${route}"`, "u").test(shell))
       && serviceRouteCount("proxmox", "proxmox") === 2
@@ -738,7 +738,7 @@ if (existsSync(join(root, "package.json"))) {
     const packageJson = JSON.parse(read("package.json"));
     record(
       packageJson.name === "helmsman"
-        && packageJson.version === "0.10.0-beta.10"
+        && packageJson.version === "0.10.0-beta.11"
         && packageJson.scripts?.serve === "node server/index.mjs serve"
         && packageJson.scripts?.["check:broker"] === "node --test tests/control-plane.test.mjs"
         && /tests\/secrets[.]test[.]mjs/u.test(packageJson.scripts?.["check:security"] || "")
@@ -1009,8 +1009,8 @@ if (existsSync(join(root, "deploy/DOCKER.md"))) {
       && /does not specifically require Caddy/iu.test(guide)
       && /## Optional Caddy and Authentik/iu.test(guide)
       && /Authentik is optional/iu.test(guide)
-      && /Select the Media workspace/iu.test(guide)
-      && /Select Infrastructure/iu.test(guide)
+      && /Select Media \*\*Connections\*\*/iu.test(guide)
+      && /Select Infrastructure \*\*Connectors\*\*/iu.test(guide)
       && /Do not add media, Proxmox, or Portainer URLs, API keys, passwords, token IDs, token secrets, access tokens, Helmsman access keys, cookies, setup tokens, or Authentik secrets to `[.]env`/iu.test(guide),
     "deployment guide keeps media and infrastructure setup in the UI and makes Caddy and Authentik optional"
   );

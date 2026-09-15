@@ -1362,26 +1362,29 @@ export function renderOperationsOverview(value = {}, configuredInfrastructureTar
     </div>`;
 }
 
-function infrastructureOverallCopy(snapshot) {
-  if (!snapshot.targets.length) {
+function infrastructureOverallCopy(snapshot, connectionCount, state, hasPortainer) {
+  if (!connectionCount) {
     return {
-      headline: "Connect your first Proxmox environment",
-      summary: "Start with one explicitly trusted endpoint. Helmsman will discover whether it represents a standalone server or a cluster."
+      headline: "No infrastructure connections yet",
+      summary: "Configured virtualization and container-platform connections will appear here with their current read-only health."
     };
   }
   const defaults = {
-    healthy: ["Infrastructure is operating normally", "Every monitored Proxmox environment is responding through at least one trusted API endpoint."],
-    limited: ["Infrastructure visibility is limited", "An API endpoint or non-critical signal needs attention while cluster inventory remains available."],
-    degraded: ["Part of your infrastructure needs attention", "At least one Proxmox environment or core capability is not operating normally."],
-    down: ["A Proxmox environment is unavailable", "Helmsman cannot collect inventory through any trusted endpoint for at least one environment."],
-    "authentication-required": ["Proxmox credentials need attention", "Every usable endpoint for at least one environment rejected its configured API token."],
-    stale: ["Waiting for infrastructure health", "Configured environments will appear here after the next monitoring cycle."],
-    checking: ["Checking Proxmox", "Helmsman is collecting a fresh read-only infrastructure snapshot."],
-    disabled: ["Infrastructure monitoring is paused", "Enable monitoring on a Proxmox environment to collect health signals."]
-  }[snapshot.overall.state] || ["Infrastructure state is unknown", "Helmsman has not received a trustworthy Proxmox snapshot yet."];
+    healthy: ["Infrastructure is operating normally", "Every monitored connection is responding to its read-only health checks."],
+    limited: ["Infrastructure visibility is limited", "A non-critical signal needs attention while the connected inventory remains available."],
+    degraded: ["Part of your infrastructure needs attention", "At least one connected environment or core capability is not operating normally."],
+    down: ["An infrastructure connection is unavailable", "Helmsman cannot collect inventory from at least one configured connection."],
+    "authentication-required": ["Infrastructure credentials need attention", "At least one configured connection rejected its protected credential."],
+    stale: ["Waiting for infrastructure health", "Configured connections will report here after the next monitoring cycle."],
+    checking: ["Checking infrastructure", "Helmsman is collecting a fresh read-only infrastructure snapshot."],
+    disabled: ["Infrastructure monitoring is paused", "Enable monitoring on a configured connection to collect health signals."]
+  }[state] || ["Infrastructure state is unknown", "Helmsman has not received a trustworthy infrastructure snapshot yet."];
+  const useProxmoxCopy = snapshot.targets.length > 0
+    && !hasPortainer
+    && state === snapshot.overall.state;
   return {
-    headline: snapshot.overall.headline || defaults[0],
-    summary: snapshot.overall.summary || defaults[1]
+    headline: useProxmoxCopy && snapshot.overall.headline ? snapshot.overall.headline : defaults[0],
+    summary: useProxmoxCopy && snapshot.overall.summary ? snapshot.overall.summary : defaults[1]
   };
 }
 
@@ -1458,13 +1461,130 @@ function renderInfrastructureTarget(target) {
   </button></li>`;
 }
 
+function normalizeInfrastructureOverviewPortainer(value, index) {
+  const source = record(value) || {};
+  const metrics = record(own(source, "metrics")) || {};
+  const enabled = own(source, "enabled") !== false;
+  const monitoringEnabled = own(source, "monitoringEnabled") !== false;
+  return {
+    id: safeIdentifier(own(source, "id"), `portainer-${index + 1}`),
+    displayName: boundedText(own(source, "displayName") ?? own(source, "name"), `Portainer ${index + 1}`, 80),
+    url: boundedText(own(source, "url"), "", 500),
+    enabled,
+    monitoringEnabled,
+    state: !enabled || !monitoringEnabled ? "disabled" : normalizeHealthState(own(source, "state")),
+    connectionState: normalizeConnectionState(own(source, "connectionState")),
+    version: boundedText(own(source, "version"), "", 80).replace(/^v/iu, ""),
+    credentialConfigured: own(source, "credentialConfigured") === true,
+    metrics: {
+      environmentTotal: optionalInteger([own(metrics, "environmentTotal")], 100_000) ?? 0,
+      environmentOnline: optionalInteger([own(metrics, "environmentOnline")], 100_000) ?? 0,
+      containerTotal: optionalInteger([own(metrics, "containerTotal")], 1_000_000) ?? 0,
+      containerRunning: optionalInteger([own(metrics, "containerRunning")], 1_000_000) ?? 0,
+      stackTotal: optionalInteger([own(metrics, "stackTotal")], 100_000) ?? 0
+    }
+  };
+}
+
+function infrastructurePortainerSummary(service) {
+  if (!service.enabled || !service.monitoringEnabled) return "Continuous monitoring is disabled";
+  if (service.connectionState === "connected") return `${healthMeta(service.state).label} read-only connection`;
+  if (service.connectionState === "auth_required") return "Protected access token needs attention";
+  if (service.connectionState === "down") return "Portainer is currently unavailable";
+  return service.credentialConfigured ? "Waiting for connection verification" : "Protected access token is not configured";
+}
+
+function renderInfrastructurePortainer(service) {
+  const meta = healthMeta(service.state);
+  const facts = [
+    `${service.metrics.environmentOnline}/${service.metrics.environmentTotal} environments online`,
+    `${service.metrics.containerRunning}/${service.metrics.containerTotal} containers running`,
+    `${service.metrics.stackTotal} visible stack${service.metrics.stackTotal === 1 ? "" : "s"}`
+  ];
+  if (service.version) facts.push(`Portainer ${service.version}`);
+  return `<li><a class="infrastructure-target" href="#/portainer" data-action="open-portainer-overview" data-portainer-overview-id="${escapeOperationsHtml(service.id)}" aria-label="Open ${escapeOperationsHtml(service.displayName)} container inventory">
+    <span class="infrastructure-target__mark">${serviceIconMarkup("portainer", "P")}</span>
+    <span class="infrastructure-target__copy">
+      <span class="operations-kicker">Container platform</span>
+      <strong>${escapeOperationsHtml(service.displayName)}</strong>
+      <small>${escapeOperationsHtml(infrastructurePortainerSummary(service))}</small>
+      <code>${escapeOperationsHtml(service.url || "Connection address unavailable")}</code>
+      <em>${escapeOperationsHtml(facts.join(" · "))}</em>
+    </span>
+    <span class="infrastructure-target__state is-${service.state}"><i class="is-${meta.tone}"></i>${escapeOperationsHtml(meta.label)}</span>
+    ${svgIcon("chevron")}
+  </a></li>`;
+}
+
+export function infrastructureSnapshotForTargets(snapshot, targets) {
+  const backupFailures = sumInfrastructureMetric(targets, "backupFailures");
+  const staleBackups = sumInfrastructureMetric(targets, "staleBackups");
+  const storageUsedBytes = sumInfrastructureMetric(targets, "storageUsedBytes");
+  const storageTotalBytes = sumInfrastructureMetric(targets, "storageTotalBytes");
+  return {
+    ...snapshot,
+    overall: {
+      ...snapshot.overall,
+      environmentCount: targets.length,
+      targetCount: targets.length,
+      affectedTargetCount: targets.filter((target) => !["healthy", "disabled"].includes(target.state)).length
+    },
+    environments: targets,
+    targets,
+    nodes: targets.flatMap((target) => target.nodes),
+    workloads: targets.flatMap((target) => target.workloads),
+    storage: targets.flatMap((target) => target.storage),
+    activity: targets.flatMap((target) => target.activity)
+      .sort((left, right) => String(right.endedAt || "").localeCompare(String(left.endedAt || "")))
+      .slice(0, 100),
+    metrics: {
+      nodesOnline: sumInfrastructureMetric(targets, "nodesOnline"),
+      nodesOffline: sumInfrastructureMetric(targets, "nodesOffline"),
+      nodeTotal: sumInfrastructureMetric(targets, "nodeTotal"),
+      nodeCpuPercent: averageInfrastructurePercent(targets, "nodeCpuPercent", "nodeTotal"),
+      nodeMemoryUsedBytes: sumInfrastructureMetric(targets, "nodeMemoryUsedBytes"),
+      nodeMemoryTotalBytes: sumInfrastructureMetric(targets, "nodeMemoryTotalBytes"),
+      nodeDiskUsedBytes: sumInfrastructureMetric(targets, "nodeDiskUsedBytes"),
+      nodeDiskTotalBytes: sumInfrastructureMetric(targets, "nodeDiskTotalBytes"),
+      guestTotal: sumInfrastructureMetric(targets, "guestTotal"),
+      guestsRunning: sumInfrastructureMetric(targets, "guestsRunning"),
+      guestsStopped: sumInfrastructureMetric(targets, "guestsStopped"),
+      virtualMachineTotal: sumInfrastructureMetric(targets, "virtualMachineTotal"),
+      containerTotal: sumInfrastructureMetric(targets, "containerTotal"),
+      storagePercent: storageUsedBytes !== null && storageTotalBytes
+        ? Math.round(Math.min(100, (storageUsedBytes / storageTotalBytes) * 100) * 10) / 10
+        : averageInfrastructurePercent(targets, "storagePercent"),
+      storageWarnings: sumInfrastructureMetric(targets, "storageWarnings"),
+      storageUsedBytes,
+      storageTotalBytes,
+      failedTasks: sumInfrastructureMetric(targets, "failedTasks"),
+      lastBackupSuccessAgeSeconds: maxInfrastructureMetric(targets, "lastBackupSuccessAgeSeconds"),
+      lastBackupFailureAgeSeconds: maxInfrastructureMetric(targets, "lastBackupFailureAgeSeconds"),
+      backupIssues: backupFailures === null && staleBackups === null
+        ? null
+        : (backupFailures || 0) + (staleBackups || 0)
+    }
+  };
+}
+
 /** Renders the Infrastructure workspace without exposing credential material. */
 export function renderInfrastructureOverview(value = {}, configuredTargets = [], options = {}) {
-  const snapshot = normalizeInfrastructureSnapshot(value, configuredTargets);
-  const portainerConfigured = options?.portainerConfigured === true;
-  const state = snapshot.overall.state;
+  let snapshot = normalizeInfrastructureSnapshot(value, configuredTargets);
+  if (options?.configuredOnly === true) {
+    const configuredIds = new Set(array(configuredTargets, 64).map(normalizeInfrastructureConfiguration).map(({ id }) => id));
+    snapshot = infrastructureSnapshotForTargets(snapshot, snapshot.targets.filter(({ id }) => configuredIds.has(id)));
+  }
+  const portainerServices = array(options?.portainerServices, 8).map(normalizeInfrastructureOverviewPortainer);
+  const connectionCount = snapshot.targets.length + portainerServices.length;
+  const state = options?.overallState
+    ? normalizeHealthState(options.overallState, snapshot.overall.state)
+    : snapshot.overall.state;
   const meta = healthMeta(state);
-  const copy = infrastructureOverallCopy(snapshot);
+  const copy = infrastructureOverallCopy(snapshot, connectionCount, state, portainerServices.length > 0);
+  const affectedConnections = [
+    ...snapshot.targets.map((target) => target.state),
+    ...portainerServices.map((service) => service.state)
+  ].filter((connectionState) => !["healthy", "disabled"].includes(connectionState)).length;
   const nodes = snapshot.metrics.nodesOnline === null
     ? "Waiting"
     : `${snapshot.metrics.nodesOnline}${snapshot.metrics.nodeTotal === null ? "" : ` / ${snapshot.metrics.nodeTotal}`}`;
@@ -1488,31 +1608,30 @@ export function renderInfrastructureOverview(value = {}, configuredTargets = [],
         <div class="operations-overall__status"><span class="operations-overall__icon is-${meta.tone}">${svgIcon("server")}</span><div><span class="operations-kicker">Infrastructure assessment</span><span class="operations-overall__label" data-infrastructure-overall-label>${escapeOperationsHtml(meta.label)}</span></div></div>
         <div class="operations-overall__copy"><h2 id="infrastructure-overall-title">${escapeOperationsHtml(copy.headline)}</h2><p>${escapeOperationsHtml(copy.summary)}</p></div>
         <dl class="operations-overall__facts">
-          <div><dt>Environments</dt><dd data-infrastructure-metric="targets">${snapshot.overall.environmentCount}</dd></div>
-          <div><dt>Guests running</dt><dd data-infrastructure-metric="guests-running">${infrastructureMetric(snapshot.metrics.guestsRunning)}</dd></div>
-          <div><dt>Last assessment</dt><dd><span data-infrastructure-checked>${timestampMarkup(snapshot.generatedAt, "Waiting for data")}</span></dd></div>
+          <div><dt>Connections</dt><dd data-infrastructure-metric="connections">${connectionCount}</dd></div>
+          <div><dt>Needs attention</dt><dd data-infrastructure-metric="attention">${affectedConnections}</dd></div>
+          <div><dt>Last assessment</dt><dd><span data-infrastructure-checked>${timestampMarkup(options?.lastCheckedAt || snapshot.generatedAt, "Waiting for data")}</span></dd></div>
         </dl>
         <button class="operations-refresh" type="button" data-action="refresh-live">${svgIcon("refresh")}<span>Refresh now</span></button>
       </section>
 
-      <section class="operations-panel infrastructure-targets" aria-labelledby="infrastructure-targets-title">
+      ${snapshot.targets.length ? `<section class="operations-panel infrastructure-targets" aria-labelledby="infrastructure-targets-title">
         <header class="operations-section-heading">
           <div><span class="operations-kicker">Virtualization topology</span><h2 id="infrastructure-targets-title">Proxmox environments</h2><p>Each standalone server or cluster has independent nodes, workloads, and explicitly trusted API endpoints.</p></div>
-          <button class="button button--primary" type="button" data-action="open-infrastructure-target">${svgIcon("plus")} Connect and discover</button>
         </header>
-        ${snapshot.targets.length
-          ? `<ul class="infrastructure-targets__list">${snapshot.targets.map(renderInfrastructureTarget).join("")}</ul>`
-          : `<div class="operations-empty infrastructure-empty"><span>${svgIcon("server")}</span><strong>No Proxmox environments connected</strong><p>Connect one endpoint with a read-only API token. Helmsman verifies its certificate and discovers the environment before confirmation.</p><button class="button" type="button" data-action="open-infrastructure-target">Connect and discover</button></div>`}
-      </section>
+        <ul class="infrastructure-targets__list">${snapshot.targets.map(renderInfrastructureTarget).join("")}</ul>
+      </section>` : ""}
 
-      ${portainerConfigured ? "" : `<section class="operations-panel infrastructure-connect-prompt" aria-labelledby="portainer-connect-title">
+      ${portainerServices.length ? `<section class="operations-panel infrastructure-targets infrastructure-portainer-connections" aria-labelledby="portainer-connections-title">
         <header class="operations-section-heading">
-          <div><span class="operations-kicker">Container inventory</span><h2 id="portainer-connect-title">Connect Portainer</h2><p>Add a read-only Portainer connection to show environments, containers, and stacks in Infrastructure.</p></div>
-          <button class="button button--primary" type="button" data-action="open-portainer-service">${svgIcon("plus")} Connect Portainer</button>
+          <div><span class="operations-kicker">Container inventory</span><h2 id="portainer-connections-title">Portainer servers</h2><p>Configured servers expose only the environments, containers, and stacks permitted by their protected access token.</p></div>
         </header>
-      </section>`}
+        <ul class="infrastructure-targets__list">${portainerServices.map(renderInfrastructurePortainer).join("")}</ul>
+      </section>` : ""}
 
-      <section class="operations-panel infrastructure-signals" aria-labelledby="infrastructure-signals-title">
+      ${connectionCount ? "" : `<section class="operations-panel infrastructure-connections-empty" aria-labelledby="infrastructure-connections-empty-title"><div class="operations-empty"><span>${svgIcon("server")}</span><strong id="infrastructure-connections-empty-title">No infrastructure connections yet</strong><p>Connections you configure appear here with their current read-only status and inventory.</p><a class="button" href="#/connectors">Open Connectors</a></div></section>`}
+
+      ${snapshot.targets.length ? `<section class="operations-panel infrastructure-signals" aria-labelledby="infrastructure-signals-title">
         <header class="operations-section-heading"><div><span class="operations-kicker">Read-only telemetry</span><h2 id="infrastructure-signals-title">Infrastructure signals</h2><p>Current node, guest, storage, task, and backup evidence from Proxmox.</p></div></header>
         <dl class="infrastructure-signals__grid">
           <div class="is-neutral"><dt>Nodes online</dt><dd data-infrastructure-metric="nodes">${escapeOperationsHtml(nodes)}</dd><small>Across discovered environments</small></div>
@@ -1523,6 +1642,6 @@ export function renderInfrastructureOverview(value = {}, configuredTargets = [],
           <div class="${snapshot.metrics.failedTasks ? "is-danger" : "is-neutral"}"><dt>Failed tasks</dt><dd data-infrastructure-metric="failed-tasks">${infrastructureMetric(snapshot.metrics.failedTasks)}</dd><small>Current bounded window</small></div>
           <div class="${snapshot.metrics.backupIssues ? "is-warning" : "is-neutral"}"><dt>Backup issues</dt><dd data-infrastructure-metric="backup-issues">${infrastructureMetric(snapshot.metrics.backupIssues)}</dd><small data-infrastructure-detail="backups">${escapeOperationsHtml(backupDetail)}</small></div>
         </dl>
-      </section>
+      </section>` : ""}
     </div>`;
 }
