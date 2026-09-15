@@ -40,26 +40,57 @@ record(
 
 record(
   /^  publisher-syntax:\s*$/mu.test(workflow)
-    && /name: Windows PowerShell 5[.]1 publisher syntax/u.test(workflow)
+    && /name: Windows PowerShell 5[.]1 publisher contracts/u.test(workflow)
     && /runs-on: windows-latest/u.test(workflow)
-    && /- name: Parse the guarded release publisher\s*\n\s*shell: powershell\s*\n\s*run: \|/u.test(workflow)
-    && /Resolve-Path [.]\/scripts\/Publish-HelmsmanRelease[.]ps1/u.test(workflow)
+    && /- name: Parse the portable and guarded publishers\s*\n\s*shell: powershell\s*\n\s*run: \|/u.test(workflow)
+    && /[.]\/Publish-Helmsman[.]ps1/u.test(workflow)
+    && /[.]\/scripts\/Publish-HelmsmanRelease[.]ps1/u.test(workflow)
     && /System[.]Management[.]Automation[.]Language[.]Parser\]::ParseFile\(/u.test(workflow)
     && /\[ref\]\$tokens/u.test(workflow)
     && /\[ref\]\$parseErrors/u.test(workflow)
     && /\$parseErrors[.]Count -ne 0/u.test(workflow)
+    && /Publish-Helmsman[.]ps1 -SelfTest/u.test(workflow)
+    && /Publish-HelmsmanRelease[.]ps1 -SourcePath [.] -RepositoryPath [.] -SelfTest/u.test(workflow)
     && /exit 1/u.test(workflow),
-  "GitHub CI parses the complete publisher with PowerShell before any image can be released"
+  "GitHub CI parses both publishers and runs both offline Windows PowerShell self-tests before any image can be released"
 );
 
 record(
   /\[Parameter\(Mandatory = \$true\)\]\s*\n\s*\[ValidateNotNullOrEmpty\(\)\]\s*\n\s*\[string\]\$SourcePath/iu.test(source)
     && /\$Repository = 'nunesg130-boop\/helmsman'/u.test(source)
+    && /\$GitHubLogin = 'nunesg130-boop'/u.test(source)
+    && /\$MinimumGitHubCliVersion = \[version\]'2[.]57[.]0'/u.test(source)
     && /\$Workflow = 'container[.]yml'/u.test(source)
+    && /\[string\]\$RepositoryPath/u.test(source)
     && /\[switch\]\$SkipLocalTests/u.test(source)
-    && !/\[string\]\$RepositoryPath/u.test(source)
+    && /\[switch\]\$SelfTest/u.test(source)
     && !/\?\?|ForEach-Object\s+-Parallel|\[IO[.]Path\]::GetRelativePath|^\s*[^#\r\n]+\s(?:&&|\|\|)\s/imu.test(sourceWithoutStringLiterals),
-  "publisher accepts one source tree and remains compatible with Windows PowerShell 5.1"
+  "publisher accepts one source tree plus an explicit clone target and remains compatible with Windows PowerShell 5.1"
+);
+
+const enterHooksIsolation = functionBlock("Enter-GitHooksIsolation");
+const exitHooksIsolation = functionBlock("Exit-GitHooksIsolation");
+record(
+  /'GIT_CONFIG_COUNT'/u.test(enterHooksIsolation)
+    && /'GIT_CONFIG_KEY_0'/u.test(enterHooksIsolation)
+    && /'GIT_CONFIG_VALUE_0'/u.test(enterHooksIsolation)
+    && /'GIT_CONFIG_PARAMETERS'/u.test(enterHooksIsolation)
+    && /'GIT_TERMINAL_PROMPT'/u.test(enterHooksIsolation)
+    && /'GCM_INTERACTIVE'/u.test(enterHooksIsolation)
+    && /helmsman-empty-hooks-/u.test(enterHooksIsolation)
+    && /FileAttributes\]::ReparsePoint/u.test(enterHooksIsolation)
+    && /GetFileSystemEntries\(\$hooksFull\)[.]Count -ne 0/u.test(enterHooksIsolation)
+    && /SetEnvironmentVariable\('GIT_CONFIG_COUNT', '1', 'Process'\)/u.test(enterHooksIsolation)
+    && /SetEnvironmentVariable\('GIT_CONFIG_KEY_0', 'core[.]hooksPath', 'Process'\)/u.test(enterHooksIsolation)
+    && /SetEnvironmentVariable\('GIT_TERMINAL_PROMPT', '0', 'Process'\)/u.test(enterHooksIsolation)
+    && /SetEnvironmentVariable\('GCM_INTERACTIVE', 'Never', 'Process'\)/u.test(enterHooksIsolation)
+    && /PreviousValues = \$previousValues/u.test(enterHooksIsolation)
+    && /\$Scope[.]PreviousValues\[\$name\]/u.test(exitHooksIsolation)
+    && /Refusing to remove a Git-hooks directory outside/u.test(exitHooksIsolation)
+    && /Directory\]::Delete\(\$hooksFull, \$false\)/u.test(exitHooksIsolation)
+    && /\$gitHooksIsolation = Enter-GitHooksIsolation/u.test(source)
+    && /Exit-GitHooksIsolation -Scope \$gitHooksIsolation/u.test(source),
+  "publisher disables Git hooks and interactive credential fallback for direct and nested execution, then restores the environment"
 );
 
 const probe = functionBlock("Invoke-NativeProbe");
@@ -95,7 +126,11 @@ record(
 );
 
 const canonicalRepository = functionBlock("Get-CanonicalRepository");
+const expectedHttpsRepositoryUrl = functionBlock("Assert-ExpectedHttpsRepositoryUrl");
+const credentialOverrides = functionBlock("Assert-NoGitHubCredentialOverrides");
+const authenticationScope = functionBlock("Test-GitHubAuthenticationScope");
 const githubAuthentication = functionBlock("Assert-GitHubAuthentication");
+const requiredTools = functionBlock("Assert-RequiredTool");
 const cleanMain = functionBlock("Assert-CleanMainAtOrigin");
 record(
   /PathType Container/u.test(canonicalRepository)
@@ -106,13 +141,44 @@ record(
     && /\$pushOrigins[.]Count -ne 1/u.test(canonicalRepository)
     && /remote[.]origin[.]mirror/u.test(canonicalRepository)
     && /ConvertTo-GitHubSlug/u.test(canonicalRepository)
+    && /Assert-ExpectedHttpsRepositoryUrl/u.test(canonicalRepository)
+    && /https:\/\/github[.]com\//u.test(expectedHttpsRepositoryUrl)
+    && /StringComparison\]::Ordinal\)/u.test(expectedHttpsRepositoryUrl)
+    && /Git URL rewrites are not allowed/u.test(expectedHttpsRepositoryUrl)
+    && /Assert-NoGitHubCredentialOverrides/u.test(canonicalRepository)
+    && /--get-urlmatch', 'http[.]extraHeader'/u.test(credentialOverrides)
+    && /its value was not displayed/iu.test(credentialOverrides)
+    && /--local', '--name-only', '--get-regexp'/u.test(credentialOverrides)
+    && /repository-local credential helper override/u.test(credentialOverrides)
+    && /--worktree', '--name-only', '--get-regexp'/u.test(credentialOverrides)
+    && /worktree-specific credential helper override/u.test(credentialOverrides)
     && /\$slug -cne \$ExpectedRepository[.]ToLowerInvariant\(\)/u.test(canonicalRepository)
     && /\$pushSlug -cne \$ExpectedRepository[.]ToLowerInvariant\(\)/u.test(canonicalRepository)
     && /-cne 'main'/u.test(canonicalRepository)
     && /ExpectedRepository[.]ToLowerInvariant/u.test(canonicalRepository)
-    && /auth', 'status', '--hostname', 'github[.]com'/u.test(githubAuthentication)
+    && /--version/u.test(requiredTools)
+    && /MinimumGitHubCliVersion/u.test(requiredTools)
+    && /'GH_TOKEN', 'GITHUB_TOKEN', 'GH_HOST', 'GH_CONFIG_DIR'/u.test(githubAuthentication)
+    && /Its value was not displayed/u.test(githubAuthentication)
+    && /auth', 'status', '--active', '--hostname', 'github[.]com'/u.test(githubAuthentication)
+    && /'api', 'user', '--jq', '[.]login'/u.test(githubAuthentication)
+    && /\$login -cne \$ExpectedLogin/u.test(githubAuthentication)
+    && /repo.*workflow permissions/u.test(githubAuthentication)
+    && /Test-GitHubAuthenticationScope -StatusText \$statusText -RequiredScope 'repo'/u.test(githubAuthentication)
+    && /Test-GitHubAuthenticationScope -StatusText \$statusText -RequiredScope 'workflow'/u.test(githubAuthentication)
+    && /Token scopes:/u.test(authenticationScope)
+    && /[.]Value[.]Split\(','\)/u.test(authenticationScope)
+    && /\$scope -ceq \$RequiredScope/u.test(authenticationScope)
     && /\$repositorySelector = 'github[.]com\/' \+ \$ExpectedRepository/u.test(githubAuthentication)
     && /repo', 'view', \$repositorySelector/u.test(githubAuthentication)
+    && /nameWithOwner,viewerPermission,defaultBranchRef,isArchived/u.test(githubAuthentication)
+    && /viewerPermission -cnotin @\('WRITE', 'MAINTAIN', 'ADMIN'\)/u.test(githubAuthentication)
+    && /defaultBranchRef[.]name -cne 'main'/u.test(githubAuthentication)
+    && /Properties\['isArchived'\][.]Value -isnot \[bool\]/u.test(githubAuthentication)
+    && /'auth', 'setup-git', '--hostname', 'github[.]com'/u.test(githubAuthentication)
+    && /Assert-NoGitHubCredentialOverrides/u.test(githubAuthentication)
+    && /'ls-remote', '--get-url', \$expectedUrl/u.test(githubAuthentication)
+    && /'ls-remote', '--exit-code', \$expectedUrl, 'refs\/heads\/main'/u.test(githubAuthentication)
     && /status', '--porcelain=v1', '--untracked-files=all'/u.test(cleanMain)
     && /fetch', '--no-tags', '--no-prune', '--recurse-submodules=no', 'origin'/u.test(cleanMain)
     && /refs\/heads\/main:refs\/remotes\/origin\/main/u.test(cleanMain)
@@ -120,7 +186,7 @@ record(
     && /rev-parse', 'HEAD'/u.test(cleanMain)
     && /rev-parse', 'refs\/remotes\/origin\/main'/u.test(cleanMain)
     && /\$localHead -cne \$remoteHead/u.test(cleanMain),
-  "publisher proves the canonical repository, authenticated GitHub account, clean main branch, and exact fast-forward synchronization"
+  "publisher binds HTTPS Git to the exact active writable GitHub account, rejects credential overrides, and fast-forwards clean main only"
 );
 
 const prohibitedPaths = functionBlock("Test-ProhibitedReleasePath");
@@ -178,7 +244,15 @@ record(
   "embedded-secret scanner patterns compile, catch high-confidence credentials, avoid synthetic URL fixtures, and never echo a match"
 );
 record(
-  /'package[.]json', 'compose[.]yaml', 'container[.]env[.]example', '[.]gitattributes', '[.]github\/workflows\/container[.]yml'/u.test(sourceValidation)
+  [
+    "package.json",
+    "compose.yaml",
+    "container.env.example",
+    ".gitattributes",
+    ".github/workflows/container.yml",
+    "Publish-Helmsman.ps1",
+    "Publish-Helmsman.cmd"
+  ].every((name) => sourceValidation.includes(`'${name}'`))
     && /FileAttributes\]::ReparsePoint/u.test(sourceValidation)
     && /Get-RegularTreeEntries/u.test(sourceValidation)
     && /sourcePathKeys[.]ContainsKey/u.test(sourceValidation)
@@ -283,12 +357,30 @@ record(
 
 const workflowWaiter = functionBlock("Wait-WorkflowForCommit");
 const workflowRunIds = functionBlock("Get-WorkflowRunIds");
+const workflowRunListParser = functionBlock("ConvertFrom-GitHubRunListJson");
+const workflowRunViewParser = functionBlock("ConvertFrom-GitHubRunViewJson");
+const requiredJsonProperties = functionBlock("Assert-RequiredJsonProperties");
+const publisherSelfTest = functionBlock("Invoke-PublisherSelfTest");
 record(
-  /\$repositorySelector = 'github[.]com\/' \+ \$ExpectedRepository/u.test(workflowRunIds)
+  /Assert-ExpectedHttpsRepositoryUrl/u.test(publisherSelfTest)
+    && /git@github[.]com:nunesg130-boop\/helmsman[.]git/u.test(publisherSelfTest)
+    && /accepted an SSH origin URL/u.test(publisherSelfTest)
+    && /caseChangedUrlRejected/u.test(publisherSelfTest)
+    && /accepted a case-changed origin URL/u.test(publisherSelfTest)
+    && /repo:status/u.test(publisherSelfTest)
+    && /did not require exact GitHub scope names/u.test(publisherSelfTest)
+    && /\$parsedRuns = \$trimmed \| ConvertFrom-Json/u.test(workflowRunListParser)
+    && /\$rawRuns = @\(\$parsedRuns \| Write-Output\)/u.test(workflowRunListParser)
+    && /'databaseId', 'headBranch', 'headSha'/u.test(workflowRunListParser)
+    && /PSObject[.]Properties\[\$name\]/u.test(requiredJsonProperties)
+    && /missing the required '\$name' property/u.test(requiredJsonProperties)
+    && /returned null for the required '\$name' property/u.test(requiredJsonProperties)
+    && /ConvertFrom-GitHubRunListJson/u.test(workflowRunIds)
+    && /\$repositorySelector = 'github[.]com\/' \+ \$ExpectedRepository/u.test(workflowRunIds)
     && /'run', 'list', '--repo', \$repositorySelector, '--workflow', \$WorkflowName/u.test(workflowRunIds)
     && /'--event', 'push', '--commit', \$CommitSha, '--limit', '100'/u.test(workflowRunIds)
-    && /headSha -ceq \$CommitSha -and \$_[.]headBranch -ceq \$RefName/u.test(workflowRunIds)
-    && /databaseId/u.test(workflowRunIds)
+    && /HeadSha -ceq \$CommitSha -and \$_[.]HeadBranch -ceq \$RefName/u.test(workflowRunIds)
+    && /DatabaseId/u.test(workflowRunIds)
     && /\[string\]\$CommitSha/u.test(workflowWaiter)
     && /\[string\]\$RefName/u.test(workflowWaiter)
     && /\[string\[\]\]\$ExcludedRunIds/u.test(workflowWaiter)
@@ -298,19 +390,35 @@ record(
     && /\$excluded\[\[string\]\$runId\] = \$true/u.test(workflowWaiter)
     && /'run', 'list'/u.test(workflowWaiter)
     && /'--event', 'push', '--commit', \$CommitSha/u.test(workflowWaiter)
-    && /headSha -ceq \$CommitSha -and \$_[.]headBranch -ceq \$RefName/u.test(workflowWaiter)
-    && /!\$excluded[.]ContainsKey\(\[string\]\$_[.]databaseId\)/u.test(workflowWaiter)
+    && /ConvertFrom-GitHubRunListJson/u.test(workflowWaiter)
+    && /HeadSha -ceq \$CommitSha -and \$_[.]HeadBranch -ceq \$RefName/u.test(workflowWaiter)
+    && /!\$excluded[.]ContainsKey\(\$_[.]DatabaseId\)/u.test(workflowWaiter)
     && /Start-Sleep -Seconds 5/u.test(workflowWaiter)
     && /'run', 'view'/u.test(workflowWaiter)
     && /\$matchingRuns[.]Count -gt 1/u.test(workflowWaiter)
     && /Refusing to guess/u.test(workflowWaiter)
-    && /\$view[.]headSha -cne \$CommitSha/u.test(workflowWaiter)
-    && /\$view[.]headBranch -cne \$RefName/u.test(workflowWaiter)
-    && /\$view[.]event -cne 'push'/u.test(workflowWaiter)
-    && /\$view[.]status -ceq 'completed'/u.test(workflowWaiter)
-    && /\$view[.]conclusion -cne 'success'/u.test(workflowWaiter)
+    && /ConvertFrom-GitHubRunViewJson/u.test(workflowWaiter)
+    && /\$view[.]HeadSha -cne \$CommitSha/u.test(workflowWaiter)
+    && /\$view[.]HeadBranch -cne \$RefName/u.test(workflowWaiter)
+    && /\$view[.]Event -cne 'push'/u.test(workflowWaiter)
+    && /\$view[.]Status -ceq 'completed'/u.test(workflowWaiter)
+    && /\$view[.]Conclusion -cne 'success'/u.test(workflowWaiter)
+    && /'conclusion', 'headBranch', 'headSha', 'event', 'status'/u.test(workflowRunViewParser)
     && /Start-Sleep -Seconds 10/u.test(workflowWaiter),
   "workflow gates snapshot prior IDs, discover one new exact commit/ref run, and poll it within bounded deadlines"
+);
+
+record(
+  /ConvertFrom-GitHubRunListJson -Json '\[\]'/u.test(publisherSelfTest)
+    && /singleRuns[.]Count -ne 1/u.test(publisherSelfTest)
+    && /twoRuns[.]Count -ne 2/u.test(publisherSelfTest)
+    && /missingPropertyRejected/u.test(publisherSelfTest)
+    && /nullPropertyRejected/u.test(publisherSelfTest)
+    && /wrongShapeRejected/u.test(publisherSelfTest)
+    && /malformedViewRejected/u.test(publisherSelfTest)
+    && /if \(\$SelfTest\)\s*\{\s*Invoke-PublisherSelfTest\s*return\s*\}/su.test(source)
+    && !source.includes("$runs = @($json | ConvertFrom-Json)"),
+  "Windows PowerShell self-test covers empty, singleton, multiple, null, missing, and wrong-shaped GitHub workflow JSON"
 );
 
 const mainPush = functionBlock("Push-Main");
@@ -319,10 +427,25 @@ const publishedRelease = functionBlock("Assert-PublishedRelease");
 const releaseCommit = functionBlock("New-ReleaseCommit");
 const remotePushes = source.match(/'push', '--no-follow-tags', '--recurse-submodules=no', 'origin'/gu) || [];
 record(
-  /'push', '--no-follow-tags', '--recurse-submodules=no', 'origin', "\$\{CommitSha\}:refs\/heads\/main"/u.test(mainPush)
+  /Get-CanonicalRepository/u.test(mainPush)
+    && mainPush.indexOf("Get-CanonicalRepository") < mainPush.indexOf("'push'")
+    && /Assert-GitHubAuthentication/u.test(mainPush)
+    && mainPush.indexOf("Assert-GitHubAuthentication") < mainPush.indexOf("'push'")
+    && /ExpectedRepository/u.test(mainPush)
+    && /ExpectedLogin/u.test(mainPush)
+    && /'push', '--no-follow-tags', '--recurse-submodules=no', 'origin', "\$\{CommitSha\}:refs\/heads\/main"/u.test(mainPush)
     && /refs\/heads\/main/u.test(mainPush)
     && /'tag', '-a', \$Release[.]Tag/u.test(tagPush)
     && /\$tagObject = Invoke-NativeText[^\n]*'rev-parse', "refs\/tags\/\$\(\$Release[.]Tag\)"/u.test(tagPush)
+    && /Get-CanonicalRepository/u.test(tagPush)
+    && tagPush.indexOf("Get-CanonicalRepository") < tagPush.indexOf("'tag'")
+    && tagPush.indexOf("Get-CanonicalRepository") < tagPush.indexOf("'push'")
+    && /Assert-GitHubAuthentication/u.test(tagPush)
+    && tagPush.indexOf("Assert-GitHubAuthentication") < tagPush.indexOf("'tag'")
+    && /Assert-ReleaseIsNew/u.test(tagPush)
+    && tagPush.indexOf("Assert-ReleaseIsNew") < tagPush.indexOf("'tag'")
+    && /ExpectedRepository/u.test(tagPush)
+    && /ExpectedLogin/u.test(tagPush)
     && /'push', '--no-follow-tags', '--recurse-submodules=no', 'origin', "\$\{tagObject\}:refs\/tags\/\$\(\$Release[.]Tag\)"/u.test(tagPush)
     && /refs\/tags\/\$\(\$Release[.]Tag\)\^\{\}/u.test(tagPush)
     && /\$repositorySelector = 'github[.]com\/' \+ \$ExpectedRepository/u.test(publishedRelease)
@@ -398,9 +521,12 @@ for (const [name, expected] of expectedCallCounts) {
 record(
   orchestrationValid
     && /Resolve-Path -LiteralPath \$SourcePath/u.test(orchestration)
-    && /Resolve-Path -LiteralPath \(Split-Path -Parent \$PSScriptRoot\)/u.test(orchestration)
+    && /\$repositoryCandidate = if \(\[string\]::IsNullOrWhiteSpace\(\$RepositoryPath\)\)/u.test(orchestration)
+    && /Resolve-Path -LiteralPath \$repositoryCandidate/u.test(orchestration)
     && /FileAttributes\]::ReparsePoint/u.test(orchestration)
     && /source release and publisher repository must be separate, non-nested directories/u.test(orchestration)
+    && /\$publisherPath = 'scripts\/Publish-HelmsmanRelease[.]ps1'/u.test(orchestration)
+    && /Sync-SourceTree[^\n]*-PublisherPath \$publisherPath/u.test(orchestration)
     && /Stage-AndValidateRelease[^\n]*-Release \$release -PublisherPath \$publisherPath/u.test(orchestration)
     && /\$existingMainRuns = @\(Get-WorkflowRunIds/u.test(orchestration)
     && /-RefName 'main' -ExcludedRunIds \$existingMainRuns/u.test(orchestration)

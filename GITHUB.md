@@ -14,98 +14,117 @@ Start with a private repository and private container package until a source
 license is chosen and redistribution rights for every bundled third-party mark
 have been confirmed.
 
-## One-time repository setup
+## Recommended workflow: one launcher on any computer
 
-The publisher requires Windows PowerShell 5.1 or later, Git, GitHub CLI, and an
-authenticated GitHub account. Local tests additionally require Node.js
-24.19.x.
+The release launcher is version-independent. Every full Helmsman source
+archive carries these two files at its root:
 
-From the extracted `helmsman` directory:
+- `Publish-Helmsman.cmd` — the double-click entry point; and
+- `Publish-Helmsman.ps1` — the Windows PowerShell 5.1-compatible launcher.
 
-```powershell
-git init
-git branch -M main
-git add .
-git commit -m "Release Helmsman v0.10.0-beta.9"
-gh auth login
-gh repo create OWNER/REPOSITORY --private --source . --remote origin --push
-```
+Extract any future Helmsman source archive and double-click
+`Publish-Helmsman.cmd`. There is no release number or source path to edit. The
+launcher reads the authoritative SemVer version from that source's
+`package.json`, and the same launcher flow works for prereleases, stable
+versions, and a different Windows computer.
 
-Replace `OWNER/REPOSITORY` with the GitHub account or organization and the new
-repository name. If an empty repository was created on the GitHub website,
-use:
+Do not manually copy release files into the persistent Git clone. The launcher
+performs the validated synchronization before the guarded publisher shows the
+staged review.
 
-```powershell
-git remote add origin https://github.com/OWNER/REPOSITORY.git
-git push -u origin main
-```
-
-Configure a Git author once if this computer does not already have one:
+To start the same flow from PowerShell:
 
 ```powershell
-$GitHubLogin = (gh api user --jq ".login").Trim()
-$GitHubId = (gh api user --jq ".id").Trim()
-git config user.name "YOUR NAME"
-git config user.email "$GitHubId+$GitHubLogin@users.noreply.github.com"
+Set-Location "C:\path\to\the\extracted\helmsman"
+.\Publish-Helmsman.ps1
 ```
 
-Do not add `.env`, state files, credential stores, master keys, logs, volume
-backups, or a previously built archive. The publisher checks the source and
-staged repository for their normal names and common embedded-secret patterns,
+When a standalone launcher copy outside both the source and publishing clone is
+started, select the manually extracted release folder when prompted. The
+folder picker accepts either the outer version folder that contains
+`helmsman` or the inner `helmsman` source folder itself. An extracted source
+folder can also be supplied explicitly without embedding a version in the
+command:
+
+Extract into a normal local folder such as `C:\Helmsman-Releases`. If OneDrive
+marks the extracted tree as a cloud placeholder or reparse point, move or
+re-extract it there before publishing.
+
+```powershell
+.\Publish-Helmsman.ps1 -SourcePath "C:\path\to\the\extracted\release"
+```
+
+Do not run the root launcher from
+`%USERPROFILE%\Downloads\helmsman-github`. It intentionally refuses to use the
+persistent publishing clone as its release source, preventing self-overwrite.
+The advanced direct publisher command later in this guide is the only command
+that is run from that clone.
+
+The launcher performs the per-computer preparation that previously required a
+checklist. It:
+
+1. checks Windows PowerShell, checks or installs Git, and requires GitHub CLI
+   2.57.0 or newer;
+2. starts browser-based GitHub authentication when needed and verifies the
+   exact active `nunesg130-boop` account, the `repo` and `workflow`
+   permissions, write access to the private repository, and noninteractive
+   HTTPS Git access without SSH or URL rewriting;
+3. creates or validates the persistent
+   `%USERPROFILE%\Downloads\helmsman-github` clone of
+   `nunesg130-boop/helmsman`; if that managed clone is incomplete, dirty, on a
+   different branch, has a noncanonical effective fetch or push URL, or
+   contains a clean local commit that cannot fast-forward to `origin/main`, it
+   is preserved and the launcher creates or reuses
+   `%USERPROFILE%\Downloads\helmsman-github-recovery` as the persistent
+   publishing clone; incompatible occupied recovery paths are preserved and
+   skipped with bounded `-2`, `-3`, and later suffixes;
+4. configures the repository-local author and GitHub noreply address;
+5. resolves the selected outer release folder or inner `helmsman` folder and
+   validates the extracted source; and
+6. verifies the extracted release's guarded publisher against the SHA-256
+   identity bound into its launcher, then calls it with both the validated
+   source and the independently verified publishing clone.
+
+The source and persistent clone remain separate and non-nested. The launcher
+preserves dirty, redirected, or unexpected managed-clone states rather than
+discarding work, then advances to a separate recovery path. A clean ahead or
+divergent clone keeps its local files and commit; only its remote-tracking
+reference may be refreshed during comparison. The launcher reuses only a
+verified clean HTTPS recovery clone on future runs and never deletes an
+incompatible recovery path. An explicitly supplied `-RepositoryPath` remains
+fail-closed instead of silently changing destinations. It does not
+accept a different GitHub account,
+repository, or workflow from the command line, and it never reads a token from
+the source package.
+
+Only these user approvals remain:
+
+- Windows installation or UAC approval if Git or GitHub CLI is absent;
+- browser GitHub authentication once per computer, or after authorization
+  expires; and
+- the exact `PUBLISH <detected-version>` confirmation before any commit, tag,
+  or push.
+
+The root launchers ship in the full source archive and tagged source tree. The
+tracked copy in the persistent clone ensures future source archives retain the
+launcher, but it is not run there. The launchers are not additional GitHub
+Release deployment assets; a release still contains exactly `compose.yaml`,
+`container.env.example`, and `SHA256SUMS`.
+
+Do not put `.env`, state files, credential stores, master keys, logs, volume
+backups, or a previously built archive inside a source directory. The launcher
+and publisher check normal sensitive names and common embedded-secret patterns,
 but those checks are not a substitute for reviewing the staged summary.
 
-### Install the publisher into an existing beta.9 clone
+## What the guarded publisher does
 
-Adding the publisher, its contract test, and its documentation is a
-**tooling-only update** to `main`. It does not change the beta.9 application
-image. Review the script before allowing Windows to execute the downloaded
-copy, then remove its downloaded-file block:
-
-```powershell
-Set-Location "C:\Users\admin\Downloads\helmsman-github"
-Get-Content .\scripts\Publish-HelmsmanRelease.ps1
-Unblock-File -LiteralPath .\scripts\Publish-HelmsmanRelease.ps1
-```
-
-Review `git status` and the staged diff, commit the supplied tooling changes,
-and push only `main`. Do **not** create or push another
-`v0.10.0-beta.9` tag—the existing release is immutable. The first application
-tag created with this helper should be the next new version from a separately
-extracted source package. GitHub executes a tag's own workflow snapshot, so the
-new immutability checks begin with that next tag and do not retrofit beta.9.
-
-## Normal future release workflow
-
-Keep two separate, non-nested directories:
-
-- the persistent Git clone, such as
-  `C:\Users\admin\Downloads\helmsman-github`;
-- the newly extracted and tested source release, such as
-  `C:\Users\admin\Downloads\helmsman-v0.10.0-beta.10\helmsman`.
-
-Keep the publisher at the tracked path
-`scripts\Publish-HelmsmanRelease.ps1` inside that clone. It derives the exact
-clone root from its own location and is intentionally bound to
-`nunesg130-boop/helmsman` and `.github/workflows/container.yml` (shown as
-**Container** in GitHub). It does not accept a different repository or workflow
-from the command line.
-
-The version in the source directory's `package.json` is authoritative. It must
-be a new SemVer version whose local tag, remote tag, and GitHub Release do not
-already exist.
-
-From the existing clone, run:
-
-```powershell
-Set-Location "C:\Users\admin\Downloads\helmsman-github"
-
-.\scripts\Publish-HelmsmanRelease.ps1 `
-  -SourcePath "C:\Users\admin\Downloads\helmsman-v0.10.0-beta.10\helmsman"
-```
-
-The publisher stops unless the clone is the exact repository root, is on a
-clean `main`, can fast-forward to `origin/main`, and the GitHub CLI can access
-the expected repository. It then:
+The version in the selected source's `package.json` must be a new SemVer
+version whose local tag, remote tag, and GitHub Release do not already exist.
+After the launcher finishes its computer and source checks, the guarded
+publisher stops unless the clone is the exact repository root, is on a clean
+`main`, can fast-forward to `origin/main`, uses the exact effective HTTPS fetch
+and push URLs without credential overrides, and the expected active GitHub CLI
+account has write access plus `repo` and `workflow` permissions. It then:
 
 1. validates the extracted source and release version;
 2. synchronizes it into the clone and stages the exact result;
@@ -123,20 +142,44 @@ the expected repository. It then:
 11. prints the exact transfer and deployment commands without running them.
 
 Nothing is committed or pushed before the typed confirmation. The tag is not
-created if the `main` workflow fails.
+created if the `main` workflow fails. Local tests use Node.js 24.19.0 or newer
+within Node 24 (`>=24.19.0 <25`). When Node is missing or incompatible, the
+launcher automatically skips only the local test pass. Both GitHub workflow
+gates remain mandatory, so a failure that local tests could have caught is then
+reported after the release commit reaches `main`.
 
-If Node.js 24.19.x is unavailable on the publishing computer, the local test
-step can be skipped explicitly:
+## Advanced: call the guarded publisher directly
+
+The root launcher is the normal interface. For troubleshooting or an already
+prepared publishing computer, the underlying publisher remains available from
+the persistent clone. Supply a separate, non-nested extracted source folder:
 
 ```powershell
-.\scripts\Publish-HelmsmanRelease.ps1 `
-  -SourcePath "C:\Users\admin\Downloads\helmsman-v0.10.0-beta.10\helmsman" `
-  -SkipLocalTests
+$SourcePath = "C:\path\to\the\extracted\helmsman"
+Set-Location "$env:USERPROFILE\Downloads\helmsman-github"
+.\scripts\Publish-HelmsmanRelease.ps1 -SourcePath $SourcePath
 ```
 
-`-SkipLocalTests` trades quicker setup for later feedback: both GitHub workflow
-gates still run, but a problem that local tests would have caught is discovered
-only after the release commit has been pushed to `main`.
+The repaired publisher can also run from the extracted release while targeting
+an explicit clean clone:
+
+```powershell
+$SourcePath = "C:\path\to\the\extracted\helmsman"
+$RepositoryPath = "$env:USERPROFILE\Downloads\helmsman-github-recovery"
+& "$SourcePath\scripts\Publish-HelmsmanRelease.ps1" -SourcePath $SourcePath -RepositoryPath $RepositoryPath
+```
+
+Both forms independently verify the exact clone root, active GitHub identity,
+repository permission, canonical effective HTTPS fetch and push URLs, and Git
+credential configuration. They reject ambient `GH_TOKEN`, `GITHUB_TOKEN`,
+`GH_HOST`, and `GH_CONFIG_DIR` overrides without displaying their values. Use
+the root launcher when browser authentication or authorization refresh is
+needed. The effective destination and credential overrides are checked again
+immediately before both the `main` and tag pushes.
+Append `-SkipLocalTests` to skip local tests explicitly; the launcher also
+selects that behavior automatically when Node.js `>=24.19.0 <25` is
+unavailable. The `main` and tag workflows still gate publication, but local
+failures will be reported later.
 
 ## Cancellation and recovery
 
@@ -152,9 +195,13 @@ git diff --cached --check
 
 The publisher requires a clean clone at the beginning, so do not immediately
 rerun it against that staged state. Either finish the reviewed release with the
-manual fallback below, or return the dedicated release clone to a clean state
-after preserving anything you want to keep. Re-cloning the repository is the
-safest reset when the clone contains no independent work.
+manual fallback below or choose a separate clean clone. The normal launcher
+automatically preserves a clean non-fast-forward default clone and switches to
+the first verified or unused recovery path, beginning with
+`helmsman-github-recovery`; it never resets, amends, deletes, or force-pushes
+the interrupted commit. Incomplete recovery directories are also preserved and
+skipped. Once a clean canonical recovery clone exists, it is reused by future
+normal launcher runs.
 
 If the push to `main` succeeds but its workflow fails, no release tag has been
 created. Fix the problem in a new commit, wait for that exact `main` workflow to
@@ -174,9 +221,12 @@ recovering after a successful `main` push. Confirm the version first, review
 the staged diff, and never reuse an existing tag:
 
 ```powershell
+$Version = ((Get-Content -LiteralPath .\package.json -Raw | ConvertFrom-Json).version).Trim()
+$Tag = "v$Version"
+
 git diff --cached --check
 git diff --cached --name-status
-git commit -m "Release Helmsman v0.10.0-beta.10"
+git commit -m "Release Helmsman $Tag"
 git push origin main
 
 $CommitSha = (git rev-parse HEAD).Trim()
@@ -187,13 +237,13 @@ gh run list --repo nunesg130-boop/helmsman --workflow container.yml `
 Wait for the matching `main` run to succeed before publishing the tag:
 
 ```powershell
-git tag -a v0.10.0-beta.10 -m "Helmsman v0.10.0-beta.10"
-git push origin v0.10.0-beta.10
+git tag -a $Tag -m "Helmsman $Tag"
+git push origin $Tag
 
 gh run list --repo nunesg130-boop/helmsman --workflow container.yml `
-  --event push --commit $CommitSha --branch v0.10.0-beta.10
+  --event push --commit $CommitSha --branch $Tag
 
-gh release view v0.10.0-beta.10 `
+gh release view $Tag `
   --repo nunesg130-boop/helmsman `
   --json tagName,isDraft,isPrerelease,url,assets
 ```

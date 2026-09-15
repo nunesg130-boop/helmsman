@@ -5,18 +5,22 @@
 }
 
 .monitor-summary {
-  cursor: default;
+  cursor: pointer;
 }
 
 .monitor-summary:hover {
-  border-color: var(--line);
-  background: rgba(255, 255, 255, 0.055);
-  color: var(--muted);
+  border-color: var(--accent-border);
+  background: var(--glass-hover);
+  color: var(--text-soft);
 }
 
-.monitor-summary .health-dot {
+.monitor-summary :is(.health-dot, .pulse-dot) {
+  display: inline-block;
   width: 8px;
   height: 8px;
+  min-width: 8px;
+  flex: 0 0 8px;
+  margin-left: 0;
 }
 
 .preview-badge[data-state="healthy"] {
@@ -473,6 +477,27 @@ label > small {
   align-items: start;
 }
 
+.incident-grid {
+  align-items: stretch;
+}
+
+.incident-grid > .glass-panel {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.incident-grid .glass-panel > header {
+  justify-content: flex-start;
+}
+
+.incident-grid .glass-panel > header > div {
+  flex: 1 1 auto;
+}
+
+.incident-grid .count-pill {
+  margin-left: auto;
+}
+
 .glass-panel {
   overflow: hidden;
   border-radius: var(--radius-lg);
@@ -719,6 +744,85 @@ label > small {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
+}
+
+.infrastructure-proxmox-page .detail-hero .button-row {
+  flex: 0 0 auto;
+  justify-content: flex-end;
+}
+
+.proxmox-section {
+  display: grid;
+  min-width: 0;
+  gap: 14px;
+}
+
+.proxmox-section__heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 8px 4px 2px;
+}
+
+.proxmox-section__heading > div {
+  min-width: 0;
+}
+
+.proxmox-section__heading h3,
+.proxmox-storage-panel > header h3 {
+  margin: 4px 0 0;
+  font-size: 20px;
+}
+
+.proxmox-section__heading p,
+.proxmox-storage-panel > header p {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.proxmox-filterbar {
+  position: sticky;
+  z-index: 4;
+  top: calc(var(--topbar-height) + 16px);
+}
+
+.proxmox-storage-panel {
+  min-width: 0;
+}
+
+.proxmox-storage-list article {
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding-block: 16px;
+}
+
+.proxmox-storage-list .storage-usage {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.proxmox-storage-list progress {
+  grid-column: 1 / -1;
+  margin-top: 8px;
+}
+
+.proxmox-storage-list article.is-limited progress::-webkit-progress-value {
+  background: var(--warning);
+}
+
+.proxmox-storage-list article.is-limited progress::-moz-progress-bar {
+  background: var(--warning);
+}
+
+.proxmox-storage-list article.is-down progress::-webkit-progress-value {
+  background: var(--danger);
+}
+
+.proxmox-storage-list article.is-down progress::-moz-progress-bar {
+  background: var(--danger);
 }
 
 .environment-card {
@@ -1204,12 +1308,21 @@ label > small {
   .inventory-detail-columns { grid-template-columns: 1fr; }
 }
 
+@media (max-width: 940px) {
+  .infrastructure-environment-grid,
+  .infrastructure-node-grid { grid-template-columns: 1fr; }
+  .infrastructure-proxmox-page .detail-hero { align-items: flex-start; flex-direction: column; }
+  .infrastructure-proxmox-page .detail-hero .button-row { width: 100%; justify-content: flex-start; }
+}
+
 @media (max-width: 760px) {
   .main-content > :where(.operations-page, .detail-page, .setup-v5, .state-page) { padding: 18px 16px calc(96px + env(safe-area-inset-bottom)); }
   .monitor-summary { width: 42px; }
   .monitor-summary span:last-child { display: none; }
   .detail-hero,
   .setup-v5__header { min-height: 130px; align-items: flex-start; padding: 24px; }
+  .proxmox-section__heading { align-items: flex-start; }
+  .proxmox-filterbar { position: static; }
   .setup-v5__mark { display: none; }
   .setup-v5__steps { grid-template-columns: 1fr; }
   .form-grid--two,

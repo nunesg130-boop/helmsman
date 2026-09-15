@@ -1,6 +1,6 @@
 {
   "name": "helmsman",
-  "version": "0.10.0-beta.9",
+  "version": "0.10.0-beta.10",
   "private": true,
   "description": "Private, operations-first media and infrastructure monitor with a self-hosted control plane.",
   "type": "module",
@@ -14,7 +14,7 @@
     "check:broker": "node --test tests/control-plane.test.mjs",
     "check:security": "node --test tests/secrets.test.mjs tests/session-auth.test.mjs tests/control-plane.test.mjs tests/recovery.test.mjs tests/rename-compatibility.test.mjs tests/health-engine.test.mjs tests/service-probes.test.mjs tests/seerr-request-metadata.test.mjs tests/monitor.test.mjs tests/network-transport-security.test.mjs tests/state-approved-hosts.test.mjs tests/state-infrastructure-targets.test.mjs tests/infrastructure-control-plane.test.mjs tests/infrastructure-service-control-plane.test.mjs tests/proxmox-environment-failover.test.mjs tests/proxmox-probes.test.mjs tests/proxmox-monitor.test.mjs tests/proxmox-transport.test.mjs tests/portainer-backend.test.mjs tests/portainer-monitor.test.mjs tests/portainer-transport.test.mjs tests/media-model.test.mjs tests/media-artwork.test.mjs tests/media-artwork-control-plane.test.mjs",
     "check:operations": "node scripts/operations-view-contract.mjs && node scripts/runtime-v5-smoke.mjs",
-    "check:container": "node scripts/container-contract.mjs && node scripts/publisher-contract.mjs",
+    "check:container": "node scripts/container-contract.mjs && node scripts/publisher-contract.mjs && node scripts/bootstrap-contract.mjs",
     "check:visual": "node scripts/operations-visual-contract.cjs && node scripts/shell-geometry-contract.cjs"
   }
 }

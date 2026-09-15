@@ -110,28 +110,55 @@ jobs:
         run: npm test
 
   publisher-syntax:
-    name: Windows PowerShell 5.1 publisher syntax
+    name: Windows PowerShell 5.1 publisher contracts
     runs-on: windows-latest
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Parse the guarded release publisher
+      - name: Parse the portable and guarded publishers
         shell: powershell
         run: |
-          $tokens = $null
-          $parseErrors = $null
-          $scriptPath = Resolve-Path ./scripts/Publish-HelmsmanRelease.ps1
-          [System.Management.Automation.Language.Parser]::ParseFile(
-            $scriptPath,
-            [ref]$tokens,
-            [ref]$parseErrors
-          ) | Out-Null
-          if ($parseErrors.Count -ne 0) {
-            foreach ($parseError in $parseErrors) {
-              Write-Host ("Line {0}: {1}" -f $parseError.Extent.StartLineNumber, $parseError.Message)
+          if ($PSVersionTable.PSEdition -cne 'Desktop' -or
+              $PSVersionTable.PSVersion.Major -ne 5 -or
+              $PSVersionTable.PSVersion.Minor -lt 1) {
+            throw "This contract requires Windows PowerShell 5.1 Desktop edition."
+          }
+
+          foreach ($relativePath in @(
+              './Publish-Helmsman.ps1',
+              './scripts/Publish-HelmsmanRelease.ps1'
+          )) {
+            $tokens = $null
+            $parseErrors = $null
+            $scriptPath = Resolve-Path -LiteralPath $relativePath
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              $scriptPath,
+              [ref]$tokens,
+              [ref]$parseErrors
+            ) | Out-Null
+            if ($parseErrors.Count -ne 0) {
+              foreach ($parseError in $parseErrors) {
+                Write-Host ("{0}, line {1}: {2}" -f $relativePath, $parseError.Extent.StartLineNumber, $parseError.Message)
+              }
+              exit 1
             }
-            exit 1
+          }
+
+      - name: Exercise the offline publisher launcher self-test
+        shell: powershell
+        run: |
+          & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ./Publish-Helmsman.ps1 -SelfTest
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+      - name: Exercise guarded publisher JSON normalization
+        shell: powershell
+        run: |
+          & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ./scripts/Publish-HelmsmanRelease.ps1 -SourcePath . -RepositoryPath . -SelfTest
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
           }
 
   smoke:

@@ -1,16 +1,16 @@
-# Helmsman Docker deployment — v0.10.0-beta.9
+# Helmsman Docker deployment — v0.10.0-beta.10
 
 The supported image contains one non-root Node.js process. It serves the Media and Infrastructure workspaces, owns the encrypted credential store and browser sessions, and runs safe background health checks. It does not contain Caddy, Authentik, a database, or a Docker socket, and it has no infrastructure control actions.
 
 ## 1. Prepare
 
-The GitHub Release for `v0.10.0-beta.9` publishes three deployment assets:
+The GitHub Release for `v0.10.0-beta.10` publishes three deployment assets:
 
 - `compose.yaml` — the pull-only production service definition pinned to the released multi-architecture image digest;
 - `container.env.example` — the same digest-pinned image reference plus non-secret bind-address and port settings;
 - `SHA256SUMS` — SHA-256 checksums for both deployment files.
 
-The release workflow replaces `ghcr.io/OWNER/REPOSITORY:0.10.0-beta.9` in the tagged source files with the repository's actual lowercase GHCR path and exact multi-architecture manifest digest (`ghcr.io/owner/repository@sha256:...`) before publishing them. Do not deploy the placeholder-bearing files directly from a source checkout unless you first set `HELMSMAN_IMAGE` to a published image reference.
+The release workflow replaces `ghcr.io/OWNER/REPOSITORY:0.10.0-beta.10` in the tagged source files with the repository's actual lowercase GHCR path and exact multi-architecture manifest digest (`ghcr.io/owner/repository@sha256:...`) before publishing them. Do not deploy the placeholder-bearing files directly from a source checkout unless you first set `HELMSMAN_IMAGE` to a published image reference.
 
 The three release assets are the complete base deployment. Optional Caddy examples, migration overrides, the external-key override, and `compose.dev.yaml` remain available from the repository at the matching Git tag and should be downloaded only when that deployment mode is needed.
 
@@ -19,9 +19,9 @@ For a public GitHub repository, download and verify the assets on Linux:
 ```sh
 sudo install -d -o "$(id -u)" -g "$(id -g)" -m 0755 /opt/helmsman
 cd /opt/helmsman
-curl -fLO https://github.com/OWNER/REPOSITORY/releases/download/v0.10.0-beta.9/compose.yaml
-curl -fLO https://github.com/OWNER/REPOSITORY/releases/download/v0.10.0-beta.9/container.env.example
-curl -fLO https://github.com/OWNER/REPOSITORY/releases/download/v0.10.0-beta.9/SHA256SUMS
+curl -fLO https://github.com/OWNER/REPOSITORY/releases/download/v0.10.0-beta.10/compose.yaml
+curl -fLO https://github.com/OWNER/REPOSITORY/releases/download/v0.10.0-beta.10/container.env.example
+curl -fLO https://github.com/OWNER/REPOSITORY/releases/download/v0.10.0-beta.10/SHA256SUMS
 sha256sum -c SHA256SUMS
 ```
 
@@ -31,7 +31,7 @@ For a private repository, authenticate GitHub CLI and download the same release 
 sudo install -d -o "$(id -u)" -g "$(id -g)" -m 0755 /opt/helmsman
 cd /opt/helmsman
 gh auth login
-gh release download v0.10.0-beta.9 --repo OWNER/REPOSITORY \
+gh release download v0.10.0-beta.10 --repo OWNER/REPOSITORY \
   --pattern compose.yaml \
   --pattern container.env.example \
   --pattern SHA256SUMS
@@ -147,7 +147,7 @@ After the environment is saved, its detail view can register additional endpoint
 
 The Proxmox connector permits only its fixed read-only API routes. It does not expose a generic Proxmox proxy and cannot start, stop, reset, migrate, back up, restore, reconfigure, or open a console for any node, VM, LXC, or storage resource. Helmsman also has no SSH credential and no Docker socket.
 
-The v0.10.0-beta.9 snapshot exposes a bounded read-only inventory to the authenticated UI: each node, VM, LXC, storage entry, and recent activity/backup result is normalized and sanitized. Cluster-wide inventory is collected only once per environment and monitoring cycle through one healthy, identity-matched endpoint, which prevents duplicate workloads and incidents. Recent tasks and backup tasks are queried through each visible node's fixed read-only route and merged with their node identity retained; raw UPIDs and command-bearing task status text are discarded. Endpoint health is reported separately from actual node health; losing a primary endpoint can leave the environment Limited and inventory available through an approved alternate.
+The v0.10.0-beta.10 snapshot exposes a bounded read-only inventory to the authenticated UI: each node, VM, LXC, storage entry, and recent activity/backup result is normalized and sanitized. Cluster-wide inventory is collected only once per environment and monitoring cycle through one healthy, identity-matched endpoint, which prevents duplicate workloads and incidents. Recent tasks and backup tasks are queried through each visible node's fixed read-only route and merged with their node identity retained; raw UPIDs and command-bearing task status text are discarded. Endpoint health is reported separately from actual node health; losing a primary endpoint can leave the environment Limited and inventory available through an approved alternate.
 
 ### Proxmox token preparation
 
@@ -464,25 +464,53 @@ that will actually run on the Jellyfin server. That keeps every deployed image
 identifiable and gives it a fixed rollback tag without turning every experiment
 into a public release.
 
-Adding this publisher to an existing beta.9 clone is a tooling-only update to
-`main`, not a new application release. Review
-`scripts\Publish-HelmsmanRelease.ps1`, run
-`Unblock-File -LiteralPath .\scripts\Publish-HelmsmanRelease.ps1`, and commit
-the supplied tooling changes without creating or reusing the immutable
-`v0.10.0-beta.9` tag.
+The normal publishing interface is version-independent. Extract any full
+Helmsman source archive on a Windows computer and double-click the root
+`Publish-Helmsman.cmd`; the adjacent `Publish-Helmsman.ps1` reads the version
+from `package.json`, so no release-specific path or command needs editing. It
+checks or installs Git, requires GitHub CLI 2.57.0 or newer, and authenticates
+the expected active GitHub user,
+verifies `repo` and `workflow` permissions plus write access to the private
+repository, proves noninteractive HTTPS Git access without SSH or URL rewriting,
+and creates or validates the persistent
+`%USERPROFILE%\Downloads\helmsman-github` clone, configures its local author,
+and validates the extracted source folder before handing both that source and
+the verified clone to the SHA-256-bound guarded publisher. If a managed clone
+is incomplete, dirty, on another branch, has a noncanonical effective remote,
+or contains a clean unpublished commit that cannot fast-forward, it is
+preserved and `%USERPROFILE%\Downloads\helmsman-github-recovery` becomes the
+persistent publishing clone. An incompatible recovery directory is left intact
+and the launcher advances to a bounded `-2`, `-3`, or later suffix; only a
+verified clean HTTPS recovery clone is reused. If the standalone launcher is used, its folder picker accepts
+either the outer version folder that contains `helmsman` or the inner
+`helmsman` source folder itself. Extract the full release ZIP with Windows
+before starting either launcher. Prefer a normal local folder such as
+`C:\Helmsman-Releases`; if OneDrive marks the extracted tree as a cloud
+placeholder or reparse point, move or re-extract it there.
 
-The guarded Windows PowerShell 5.1 publisher expects the persistent Git clone
-and new source release to be separate, non-nested directories. For the normal
-layout, keep it at the tracked `scripts\Publish-HelmsmanRelease.ps1` path. It
-derives the clone root from that location and is intentionally bound to the
-`nunesg130-boop/helmsman` repository and `.github/workflows/container.yml`
-(shown as **Container** in GitHub):
+To start the launcher from PowerShell instead:
 
 ```powershell
-Set-Location "C:\Users\admin\Downloads\helmsman-github"
-.\scripts\Publish-HelmsmanRelease.ps1 `
-  -SourcePath "C:\Users\admin\Downloads\helmsman-v0.10.0-beta.10\helmsman"
+Set-Location "C:\path\to\the\extracted\helmsman"
+.\Publish-Helmsman.ps1
 ```
+
+The same launcher works on another computer and for every future prerelease or
+stable version. Missing prerequisites may require Windows installation or UAC
+approval, GitHub authentication opens in a browser once per computer, and the
+operator must still type the exact `PUBLISH <detected-version>` confirmation.
+The launchers ship in the source archive, not as extra GitHub Release assets.
+Do not run the root launcher from the persistent `helmsman-github` clone; it
+intentionally refuses that location to prevent self-overwrite.
+
+For troubleshooting, the guarded Windows PowerShell 5.1 publisher remains at
+`scripts\Publish-HelmsmanRelease.ps1` in both the extracted source and the
+persistent clone. It expects the clone and extracted source release to be
+separate, non-nested directories, independently validates the selected clone,
+the exact active GitHub identity and HTTPS credential path, and is intentionally
+bound to the `nunesg130-boop/helmsman` repository and
+`.github/workflows/container.yml` (shown as **Container** in GitHub). See
+[GITHUB.md](../GITHUB.md) for its advanced direct command and recovery flow.
 
 The script requires a clean `main` synchronized with the exact expected
 `origin`, validates the source and new SemVer version, scans prohibited paths
@@ -502,10 +530,12 @@ the two configuration files to contain the same expected digest-pinned image.
 The workflow publishes Linux AMD64 and ARM64 images under version, beta, and
 full-commit tags.
 
-Local tests require Node.js 24.19.x. `-SkipLocalTests` explicitly relies on the
-two GitHub Actions gates instead; that is useful on a machine without the
-matching Node.js runtime, but validation failures are discovered only after the
-release commit reaches `main`.
+Local tests require Node.js 24.19.0 or newer within Node 24
+(`>=24.19.0 <25`). The launcher automatically skips only the local pass when
+Node is missing or incompatible, and `-SkipLocalTests` can select that behavior
+explicitly when the underlying publisher is called directly. Both GitHub
+Actions gates remain mandatory; without local tests, validation failures are
+discovered only after the release commit reaches `main`.
 
 If the process stops before confirmation, nothing was committed, tagged, or
 pushed, but the synchronized changes remain staged for review. Inspect them

@@ -1459,8 +1459,9 @@ function renderInfrastructureTarget(target) {
 }
 
 /** Renders the Infrastructure workspace without exposing credential material. */
-export function renderInfrastructureOverview(value = {}, configuredTargets = []) {
+export function renderInfrastructureOverview(value = {}, configuredTargets = [], options = {}) {
   const snapshot = normalizeInfrastructureSnapshot(value, configuredTargets);
+  const portainerConfigured = options?.portainerConfigured === true;
   const state = snapshot.overall.state;
   const meta = healthMeta(state);
   const copy = infrastructureOverallCopy(snapshot);
@@ -1503,6 +1504,13 @@ export function renderInfrastructureOverview(value = {}, configuredTargets = [])
           ? `<ul class="infrastructure-targets__list">${snapshot.targets.map(renderInfrastructureTarget).join("")}</ul>`
           : `<div class="operations-empty infrastructure-empty"><span>${svgIcon("server")}</span><strong>No Proxmox environments connected</strong><p>Connect one endpoint with a read-only API token. Helmsman verifies its certificate and discovers the environment before confirmation.</p><button class="button" type="button" data-action="open-infrastructure-target">Connect and discover</button></div>`}
       </section>
+
+      ${portainerConfigured ? "" : `<section class="operations-panel infrastructure-connect-prompt" aria-labelledby="portainer-connect-title">
+        <header class="operations-section-heading">
+          <div><span class="operations-kicker">Container inventory</span><h2 id="portainer-connect-title">Connect Portainer</h2><p>Add a read-only Portainer connection to show environments, containers, and stacks in Infrastructure.</p></div>
+          <button class="button button--primary" type="button" data-action="open-portainer-service">${svgIcon("plus")} Connect Portainer</button>
+        </header>
+      </section>`}
 
       <section class="operations-panel infrastructure-signals" aria-labelledby="infrastructure-signals-title">
         <header class="operations-section-heading"><div><span class="operations-kicker">Read-only telemetry</span><h2 id="infrastructure-signals-title">Infrastructure signals</h2><p>Current node, guest, storage, task, and backup evidence from Proxmox.</p></div></header>

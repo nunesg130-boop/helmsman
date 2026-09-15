@@ -45,7 +45,38 @@ function homeFixture() {
   </div>`;
 }
 
-function instrumentedShell(root) {
+function requestFixture() {
+  const steps = ["Requested", "Monitored", "Downloading", "Imported", "Available"]
+    .map((label, index) => `<span class="journey-step${index < 2 ? " is-done" : index === 2 ? " is-current" : ""}"><i>${index + 1}</i><small>${label}</small></span>`)
+    .join("");
+  return `<div class="page media-desktop-page">
+    <section class="request-list">
+      <article class="request-row">
+        <button class="request-title" type="button"><span class="request-art"></span><span><strong>Compact request fixture</strong><small>Season 1 · 4K</small></span></button>
+        <span class="request-owner"><span>Request state</span><strong>Approved</strong><small>Fixture owner</small></span>
+        <span class="request-journey">${steps}</span>
+        <span class="request-actions"><span class="status-pill status-partial"><i></i>Awaiting approval</span><button class="icon-button" type="button" aria-label="Open fixture details"><svg></svg></button></span>
+      </article>
+    </section>
+  </div>`;
+}
+
+function downloadFixture() {
+  return `<div class="page media-desktop-page">
+    <section class="download-list">
+      <article class="download-row media-filter-item">
+        <button class="download-identity" type="button"><span class="download-art"></span><span><strong>Activity download fixture with a deliberately long media title</strong><small>Episode 08 · qBittorrent activity</small></span></button>
+        <span class="download-stage"><span class="status-pill status-active"><i></i>Downloading</span><small>qBittorrent</small></span>
+        <span class="download-progress"><span><strong>64%</strong><span>Progress</span></span><progress value="64" max="100">64%</progress></span>
+        <span class="download-stat"><span>Speed</span><strong>42.3 MB/s</strong></span>
+        <span class="download-stat"><span>ETA</span><strong>12 minutes</strong></span>
+        <span class="download-actions"><button class="icon-button" type="button" aria-label="Open fixture details"><svg></svg></button></span>
+      </article>
+    </section>
+  </div>`;
+}
+
+function instrumentedShell(root, fixture = homeFixture()) {
   const cssFiles = ["styles.css", "src/ui/operations.css", "src/ui/control.css", "src/ui/retro.css"];
   const css = cssFiles.map((file) => readFileSync(path.join(root, file), "utf8")).join("\n");
   let html = readFileSync(path.join(root, "index.html"), "utf8");
@@ -54,7 +85,7 @@ function instrumentedShell(root) {
     .replace(/<link\s+rel="stylesheet"[^>]*>/gu, "")
     .replace(/<script\s+type="module"[^>]*><\/script>/gu, "")
     .replace("</head>", `<style>${css}\nhtml, body { overflow-x: visible !important; }</style></head>`)
-    .replace('<main class="main-content" id="main-content" tabindex="-1"></main>', `<main class="main-content" id="main-content" tabindex="-1">${homeFixture()}</main>`);
+    .replace('<main class="main-content" id="main-content" tabindex="-1"></main>', `<main class="main-content" id="main-content" tabindex="-1">${fixture}</main>`);
   return html;
 }
 
@@ -69,6 +100,8 @@ function near(actual, expected, message, tolerance = 1) {
   assert.ok(executablePath, "A preinstalled Chrome, Edge, or Chromium executable is required; this contract never downloads a browser.");
   const browser = await chromium.launch({ headless: true, executablePath });
   const html = instrumentedShell(root);
+  const requestHtml = instrumentedShell(root, requestFixture());
+  const downloadHtml = instrumentedShell(root, downloadFixture());
 
   try {
     for (const viewport of [
@@ -82,7 +115,14 @@ function near(actual, expected, message, tolerance = 1) {
       const geometry = await page.evaluate(() => {
         const rect = (selector) => {
           const value = document.querySelector(selector).getBoundingClientRect();
-          return { left: value.left, right: value.right, top: value.top, bottom: value.bottom, width: value.width };
+          return {
+            left: value.left,
+            right: value.right,
+            top: value.top,
+            bottom: value.bottom,
+            width: value.width,
+            height: value.height
+          };
         };
         const home = document.querySelector(".media-home-page");
         const homeStyle = getComputedStyle(home);
@@ -92,6 +132,8 @@ function near(actual, expected, message, tolerance = 1) {
           return { selector, left: value.left, right: value.right };
         }));
         const rail = document.querySelector(".poster-rail");
+        const posterWidths = [...rail.querySelectorAll(".poster-card")]
+          .map((card) => card.getBoundingClientRect().width);
         return {
           viewport: document.documentElement.clientWidth,
           documentWidth: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth),
@@ -109,16 +151,17 @@ function near(actual, expected, message, tolerance = 1) {
             ...rect(".poster-rail"),
             clientWidth: rail.clientWidth,
             scrollWidth: rail.scrollWidth,
-            overflowX: getComputedStyle(rail).overflowX
+            overflowX: getComputedStyle(rail).overflowX,
+            posterWidths
           }
         };
       });
 
       assert.ok(geometry.documentWidth <= geometry.viewport + 1, `${viewport.width}px shell overflows horizontally by ${geometry.documentWidth - geometry.viewport}px`);
-      near(geometry.sidebar.right, geometry.main.left, `${viewport.width}px sidebar/main seam`);
-      near(geometry.sidebar.right, geometry.topbar.left, `${viewport.width}px sidebar/topbar seam`);
-      near(geometry.brand.bottom, geometry.topbar.bottom, `${viewport.width}px logo divider/header rule baseline`);
-      near(geometry.brandBorderBottom, geometry.topbarBorderBottom, `${viewport.width}px logo/header rule thickness`, 0.1);
+      near(geometry.sidebar.right + geometry.sidebar.left, geometry.main.left, `${viewport.width}px sidebar/main gutter`);
+      assert.ok(geometry.topbar.left >= geometry.main.left, `${viewport.width}px topbar must stay inside the main grid column`);
+      assert.ok(geometry.topbar.right <= geometry.viewport + 1, `${viewport.width}px topbar must stay inside the viewport`);
+      assert.ok(geometry.brand.left >= geometry.sidebar.left && geometry.brand.right <= geometry.sidebar.right, `${viewport.width}px brand must stay inside the sidebar`);
       assert.ok(geometry.home.left >= geometry.main.left - 1, `${viewport.width}px Home starts outside main`);
       assert.ok(geometry.home.right <= geometry.main.right + 1, `${viewport.width}px Home ends outside main`);
 
@@ -132,9 +175,241 @@ function near(actual, expected, message, tolerance = 1) {
       near(geometry.rail.right, expectedRight, `${viewport.width}px poster rail right containment`);
       assert.equal(geometry.rail.overflowX, "auto");
       assert.ok(geometry.rail.scrollWidth > geometry.rail.clientWidth, `${viewport.width}px fixture must exercise internal poster scrolling`);
+
+      const expectedPosterWidth = viewport.width >= 1500
+        ? 176
+        : Math.min(176, Math.max(140, viewport.width * 0.11));
+      assert.ok(geometry.rail.posterWidths.length > 1, `${viewport.width}px fixture must render multiple poster cards`);
+      near(geometry.rail.posterWidths[0], expectedPosterWidth, `${viewport.width}px standardized poster width`);
+      assert.ok(
+        geometry.rail.posterWidths.every((width) => Math.abs(width - geometry.rail.posterWidths[0]) <= 0.5),
+        `${viewport.width}px poster cards must use one consistent rail width`
+      );
+      assert.ok(
+        geometry.rail.posterWidths.every((width) => width <= 176.5),
+        `${viewport.width}px poster cards must not grow into oversized fluid columns`
+      );
+
+      await page.evaluate(() => {
+        document.querySelector("#app").classList.add("is-sidebar-collapsed");
+      });
+      await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      const collapsed = await page.evaluate(() => {
+        const rect = (selector) => {
+          const value = document.querySelector(selector).getBoundingClientRect();
+          return { left: value.left, right: value.right, width: value.width };
+        };
+        return {
+          viewport: document.documentElement.clientWidth,
+          documentWidth: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth),
+          sidebar: rect(".sidebar"),
+          brand: rect(".brand"),
+          topbar: rect(".topbar"),
+          main: rect(".main-content"),
+          navigationLabelDisplay: getComputedStyle(document.querySelector(".nav-item > span")).display,
+          workspaceLabelDisplay: getComputedStyle(document.querySelector(".world-option__label")).display
+        };
+      });
+
+      assert.ok(collapsed.documentWidth <= collapsed.viewport + 1, `${viewport.width}px collapsed shell must not overflow horizontally`);
+      near(collapsed.main.left, 102, `${viewport.width}px collapsed main-column offset`);
+      near(collapsed.sidebar.width, 102, `${viewport.width}px collapsed sidebar width`);
+      near(collapsed.sidebar.right + collapsed.sidebar.left, collapsed.main.left, `${viewport.width}px collapsed sidebar/main gutter`);
+      assert.ok(collapsed.topbar.left >= collapsed.main.left, `${viewport.width}px collapsed topbar must stay inside the main grid column`);
+      assert.ok(collapsed.brand.width <= collapsed.sidebar.width, `${viewport.width}px collapsed brand must stay inside the sidebar`);
+      assert.equal(collapsed.navigationLabelDisplay, "none", `${viewport.width}px collapsed navigation labels must be hidden`);
+      assert.equal(collapsed.workspaceLabelDisplay, "none", `${viewport.width}px collapsed workspace labels must be hidden`);
       await page.close();
     }
-    console.log("Shell geometry contract passed at compact and wide desktop widths.");
+
+    for (const viewport of [
+      { width: 861, height: 800 },
+      { width: 1240, height: 800 },
+      { width: 1241, height: 800 },
+      { width: 1320, height: 800 },
+      { width: 1321, height: 800 }
+    ]) {
+      const page = await browser.newPage({ viewport, colorScheme: "dark", reducedMotion: "reduce" });
+      await page.setContent(downloadHtml, { waitUntil: "load" });
+
+      for (const collapsed of [false, true]) {
+        await page.evaluate((value) => {
+          document.querySelector("#app").classList.toggle("is-sidebar-collapsed", value);
+        }, collapsed);
+        await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        const geometry = await page.evaluate(() => {
+          const rect = (selector) => {
+            const value = document.querySelector(selector).getBoundingClientRect();
+            return { left: value.left, right: value.right, top: value.top, bottom: value.bottom, width: value.width };
+          };
+          const list = document.querySelector(".download-list");
+          const row = document.querySelector(".download-row");
+          return {
+            viewport: document.documentElement.clientWidth,
+            documentWidth: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth),
+            list: { ...rect(".download-list"), clientWidth: list.clientWidth, scrollWidth: list.scrollWidth },
+            row: { ...rect(".download-row"), clientWidth: row.clientWidth, scrollWidth: row.scrollWidth },
+            identity: rect(".download-identity"),
+            progress: rect(".download-progress"),
+            actions: rect(".download-actions"),
+            gridTrackCount: getComputedStyle(row).gridTemplateColumns.trim().split(/\s+/u).length,
+            stageDisplay: getComputedStyle(document.querySelector(".download-stage")).display,
+            statDisplays: [...document.querySelectorAll(".download-stat")].map((stat) => getComputedStyle(stat).display)
+          };
+        });
+        const state = collapsed ? "collapsed" : "expanded";
+
+        assert.ok(geometry.documentWidth <= geometry.viewport + 1, `${viewport.width}px ${state} download shell must not overflow horizontally`);
+        assert.ok(geometry.list.scrollWidth <= geometry.list.clientWidth + 1, `${viewport.width}px ${state} download list contents must not be clipped`);
+        assert.ok(geometry.row.left >= geometry.list.left - 1 && geometry.row.right <= geometry.list.right + 1, `${viewport.width}px ${state} download row must stay inside its list`);
+        assert.ok(geometry.row.scrollWidth <= geometry.row.clientWidth + 1, `${viewport.width}px ${state} download row contents must not be clipped`);
+        assert.ok(geometry.identity.left >= geometry.row.left - 1 && geometry.identity.right <= geometry.row.right + 1, `${viewport.width}px ${state} download identity must stay inside its row`);
+        assert.ok(geometry.progress.left >= geometry.row.left - 1 && geometry.progress.right <= geometry.row.right + 1, `${viewport.width}px ${state} download progress must stay inside its row`);
+        assert.ok(geometry.actions.left >= geometry.row.left - 1 && geometry.actions.right <= geometry.row.right + 1, `${viewport.width}px ${state} download actions must stay inside their row`);
+
+        if (viewport.width <= 1320) {
+          assert.equal(geometry.gridTrackCount, 2, `${viewport.width}px ${state} download row must use two grid columns`);
+          assert.equal(geometry.stageDisplay, "none", `${viewport.width}px ${state} compact download stage must be hidden`);
+          assert.ok(geometry.statDisplays.every((display) => display === "none"), `${viewport.width}px ${state} compact download stats must be hidden`);
+          assert.ok(geometry.progress.top >= Math.max(geometry.identity.bottom, geometry.actions.bottom) - 1, `${viewport.width}px ${state} download progress must occupy the second row`);
+        } else {
+          assert.equal(geometry.gridTrackCount, 6, `${viewport.width}px ${state} download row must return to six columns`);
+          assert.notEqual(geometry.stageDisplay, "none", `${viewport.width}px ${state} download stage must return in the wide layout`);
+          assert.ok(geometry.statDisplays.every((display) => display !== "none"), `${viewport.width}px ${state} download stats must return in the wide layout`);
+        }
+      }
+      await page.close();
+    }
+
+    for (const viewport of [
+      { width: 761, height: 800 },
+      { width: 940, height: 800 },
+      { width: 941, height: 800 },
+      { width: 1240, height: 800 },
+      { width: 1241, height: 800 },
+      { width: 1440, height: 900 },
+      { width: 1441, height: 900 }
+    ]) {
+      const page = await browser.newPage({ viewport, colorScheme: "dark", reducedMotion: "reduce" });
+      await page.setContent(requestHtml, { waitUntil: "load" });
+
+      for (const collapsed of [false, true]) {
+        await page.evaluate((value) => {
+          document.querySelector("#app").classList.toggle("is-sidebar-collapsed", value);
+        }, collapsed);
+        await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        const geometry = await page.evaluate(() => {
+          const rect = (selector) => {
+            const value = document.querySelector(selector).getBoundingClientRect();
+            return { left: value.left, right: value.right, top: value.top, bottom: value.bottom, width: value.width };
+          };
+          const row = document.querySelector(".request-row");
+          return {
+            viewport: document.documentElement.clientWidth,
+            documentWidth: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth),
+            list: rect(".request-list"),
+            row: { ...rect(".request-row"), clientWidth: row.clientWidth, scrollWidth: row.scrollWidth },
+            title: rect(".request-title"),
+            journey: rect(".request-journey"),
+            actions: rect(".request-actions"),
+            gridTrackCount: getComputedStyle(row).gridTemplateColumns.trim().split(/\s+/u).length,
+            ownerDisplay: getComputedStyle(document.querySelector(".request-owner")).display
+          };
+        });
+        const state = collapsed ? "collapsed" : "expanded";
+
+        assert.ok(geometry.documentWidth <= geometry.viewport + 1, `${viewport.width}px ${state} compact request shell must not overflow horizontally`);
+        if (viewport.width <= 1440) {
+          assert.equal(geometry.gridTrackCount, 2, `${viewport.width}px ${state} request row must use two grid columns`);
+          assert.equal(geometry.ownerDisplay, "none", `${viewport.width}px ${state} compact request owner must be hidden`);
+        } else {
+          assert.equal(geometry.gridTrackCount, 4, `${viewport.width}px ${state} request row must return to four columns`);
+          assert.notEqual(geometry.ownerDisplay, "none", `${viewport.width}px ${state} request owner must return in the wide layout`);
+        }
+        assert.ok(geometry.row.left >= geometry.list.left - 1 && geometry.row.right <= geometry.list.right + 1, `${viewport.width}px ${state} request row must stay inside its list`);
+        assert.ok(geometry.row.scrollWidth <= geometry.row.clientWidth + 1, `${viewport.width}px ${state} request row contents must not be clipped`);
+        assert.ok(geometry.title.left >= geometry.row.left - 1, `${viewport.width}px ${state} request title must stay inside its row`);
+        assert.ok(geometry.actions.right <= geometry.row.right + 1, `${viewport.width}px ${state} request actions must stay inside their row`);
+        assert.ok(geometry.journey.left >= geometry.row.left - 1 && geometry.journey.right <= geometry.row.right + 1, `${viewport.width}px ${state} request journey must stay inside its row`);
+        if (viewport.width <= 1440) {
+          assert.ok(geometry.journey.top >= Math.max(geometry.title.bottom, geometry.actions.bottom) - 1, `${viewport.width}px ${state} request journey must occupy the second row`);
+        }
+      }
+      await page.close();
+    }
+
+    for (const viewport of [
+      { width: 800, height: 420 },
+      { width: 1024, height: 480 },
+      { width: 1440, height: 540 }
+    ]) {
+      const page = await browser.newPage({ viewport, colorScheme: "dark", reducedMotion: "reduce" });
+      await page.setContent(html, { waitUntil: "load" });
+      const sidebarOverflow = await page.evaluate(() => {
+        const sidebar = document.querySelector(".sidebar");
+        const scrollRegion = document.querySelector(".sidebar-scroll-region");
+        const footer = document.querySelector(".sidebar-footer");
+        const privacyCard = document.querySelector(".privacy-card");
+        const sidebarToggle = document.querySelector(".sidebar-toggle");
+
+        scrollRegion.scrollTop = scrollRegion.scrollHeight;
+
+        const sidebarRect = sidebar.getBoundingClientRect();
+        const scrollRect = scrollRegion.getBoundingClientRect();
+        const footerRect = footer.getBoundingClientRect();
+        const privacyRect = privacyCard.getBoundingClientRect();
+        const toggleRect = sidebarToggle.getBoundingClientRect();
+        return {
+          viewport: document.documentElement.clientWidth,
+          documentWidth: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth),
+          sidebar: { top: sidebarRect.top, bottom: sidebarRect.bottom },
+          scrollRegion: {
+            top: scrollRect.top,
+            bottom: scrollRect.bottom,
+            clientHeight: scrollRegion.clientHeight,
+            scrollHeight: scrollRegion.scrollHeight,
+            scrollTop: scrollRegion.scrollTop,
+            overflowY: getComputedStyle(scrollRegion).overflowY
+          },
+          footer: { top: footerRect.top, bottom: footerRect.bottom, height: footerRect.height },
+          privacyCard: { top: privacyRect.top, bottom: privacyRect.bottom },
+          toggle: { top: toggleRect.top, right: toggleRect.right, bottom: toggleRect.bottom, left: toggleRect.left }
+        };
+      });
+
+      assert.ok(sidebarOverflow.documentWidth <= sidebarOverflow.viewport + 1, `${viewport.width}x${viewport.height} short shell must not overflow horizontally`);
+      near(sidebarOverflow.sidebar.top, 0, `${viewport.width}x${viewport.height} sidebar top`);
+      near(sidebarOverflow.sidebar.bottom, viewport.height, `${viewport.width}x${viewport.height} sidebar bottom`);
+      assert.equal(sidebarOverflow.scrollRegion.overflowY, "auto", `${viewport.width}x${viewport.height} sidebar content must scroll vertically`);
+      assert.ok(
+        sidebarOverflow.scrollRegion.scrollHeight > sidebarOverflow.scrollRegion.clientHeight,
+        `${viewport.width}x${viewport.height} fixture must exercise sidebar overflow`
+      );
+      near(
+        sidebarOverflow.scrollRegion.scrollTop,
+        sidebarOverflow.scrollRegion.scrollHeight - sidebarOverflow.scrollRegion.clientHeight,
+        `${viewport.width}x${viewport.height} sidebar must reach its final content`,
+        1.5
+      );
+      assert.ok(
+        sidebarOverflow.privacyCard.top >= sidebarOverflow.scrollRegion.top - 1
+          && sidebarOverflow.privacyCard.bottom <= sidebarOverflow.scrollRegion.bottom + 1,
+        `${viewport.width}x${viewport.height} final scrollable sidebar card must be reachable`
+      );
+      assert.ok(sidebarOverflow.footer.height > 0, `${viewport.width}x${viewport.height} fixed sidebar footer must remain rendered`);
+      assert.ok(
+        sidebarOverflow.footer.top >= sidebarOverflow.scrollRegion.bottom - 1
+          && sidebarOverflow.footer.bottom <= sidebarOverflow.sidebar.bottom + 1,
+        `${viewport.width}x${viewport.height} settings footer must remain inside the sidebar below the scroll region`
+      );
+      assert.ok(
+        sidebarOverflow.toggle.top >= sidebarOverflow.sidebar.top
+          && sidebarOverflow.toggle.bottom <= sidebarOverflow.sidebar.bottom,
+        `${viewport.width}x${viewport.height} sidebar toggle must remain reachable`
+      );
+      await page.close();
+    }
+    console.log("Shell geometry contract passed for fixed poster rails, compact requests and downloads, collapsed navigation, and short-height sidebar scrolling.");
   } finally {
     await browser.close();
   }

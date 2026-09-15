@@ -36,7 +36,10 @@ const requiredFiles = [
   "container.env.example",
   "GITHUB.md",
   "package.json",
+  "Publish-Helmsman.ps1",
+  "Publish-Helmsman.cmd",
   "scripts/Publish-HelmsmanRelease.ps1",
+  "scripts/bootstrap-contract.mjs",
   "scripts/publisher-contract.mjs",
   "server/index.mjs",
   "server/broker.mjs",
@@ -122,7 +125,7 @@ if (existsSync(join(root, "Dockerfile"))) {
   );
 
   record(
-    /^ARG HELMSMAN_VERSION=0\.10\.0-beta\.9$/mu.test(dockerfile)
+    /^ARG HELMSMAN_VERSION=0\.10\.0-beta\.10$/mu.test(dockerfile)
       && /^ARG HELMSMAN_REVISION=unknown$/mu.test(dockerfile)
       && /org\.opencontainers\.image\.title="Helmsman"/u.test(dockerfile)
       && !/org\.opencontainers\.image\.title="Jellofin Command"/u.test(dockerfile),
@@ -185,7 +188,7 @@ if (existsSync(join(root, "Dockerfile"))) {
 if (existsSync(join(root, "server/broker.mjs"))) {
   const broker = read("server/broker.mjs");
   record(
-    /const DEFAULT_VERSION = "0\.10\.0-beta\.9"/u.test(broker)
+    /const DEFAULT_VERSION = "0\.10\.0-beta\.10"/u.test(broker)
       && /process\.env\.HELMSMAN_VERSION/u.test(broker)
       && /\^\[0-9A-Za-z\]\[0-9A-Za-z\.\+-\]\{0,63\}\$/u.test(broker),
     "runtime version follows the validated immutable v0.10 image metadata"
@@ -261,7 +264,7 @@ if (existsSync(join(root, "compose.yaml"))) {
   record(
     /^name:\s*helmsman\s*$/mu.test(compose)
       && /^services:\s*\n\s{2}helmsman:\s*$/mu.test(compose)
-      && compose.includes('${HELMSMAN_IMAGE:-ghcr.io/OWNER/REPOSITORY:0.10.0-beta.9}')
+      && compose.includes('${HELMSMAN_IMAGE:-ghcr.io/OWNER/REPOSITORY:0.10.0-beta.10}')
       && !/^\s{4}build:/mu.test(compose),
     "production Compose has a stable project name and pulls the versioned GHCR image without a local build"
   );
@@ -320,9 +323,9 @@ if (existsSync(join(root, "compose.dev.yaml"))) {
       && /^\s{4}build:\s*$/mu.test(developmentCompose)
       && /^\s{6}context:\s*[.]\s*$/mu.test(developmentCompose)
       && /^\s{6}dockerfile:\s*Dockerfile\s*$/mu.test(developmentCompose)
-      && /HELMSMAN_VERSION:\s*["']0\.10\.0-beta\.9["']/u.test(developmentCompose)
+      && /HELMSMAN_VERSION:\s*["']0\.10\.0-beta\.10["']/u.test(developmentCompose)
       && /HELMSMAN_REVISION:\s*["']local["']/u.test(developmentCompose)
-      && /image:\s*["']helmsman:0\.10\.0-beta\.9["']/u.test(developmentCompose),
+      && /image:\s*["']helmsman:0\.10\.0-beta\.10["']/u.test(developmentCompose),
     "developer Compose override keeps source builds separate from the production pull contract"
   );
 }
@@ -450,7 +453,7 @@ if (existsSync(join(root, "container.env.example"))) {
   const allowed = new Set(["HELMSMAN_IMAGE", "HELMSMAN_BIND_IP", "HELMSMAN_PORT"]);
   const unexpected = keys.filter((key) => !allowed.has(key));
   record(
-    assignments.includes("HELMSMAN_IMAGE=ghcr.io/OWNER/REPOSITORY:0.10.0-beta.9")
+    assignments.includes("HELMSMAN_IMAGE=ghcr.io/OWNER/REPOSITORY:0.10.0-beta.10")
       && assignments.includes("HELMSMAN_BIND_IP=127.0.0.1")
       && assignments.includes("HELMSMAN_PORT=4180")
       && !assignments.some((line) => line.startsWith("HELMSMAN_DATA_VOLUME="))
@@ -664,14 +667,31 @@ if (existsSync(join(root, "index.html"))) {
   const sharedRouteCount = (route) => (
     shell.match(new RegExp(`<a(?=[^>]*data-route="${route}")(?![^>]*workspace-(?:media|infrastructure)-only)[^>]*>`, "gu")) || []
   ).length;
+  const serviceRouteCount = (route, service) => (
+    shell.match(new RegExp(`<a(?=[^>]*data-route="${route}")(?=[^>]*data-service-nav="${service}")[^>]*>`, "gu")) || []
+  ).length;
   record(
     ["home", "discover", "library", "requests", "activity", "calendar", "health", "connections"]
       .every((route) => workspaceRouteCount("media", route) === 2)
-      && ["overview", "environments", "nodes", "workloads", "portainer", "incidents"]
+      && ["overview", "proxmox", "workloads", "portainer", "incidents"]
         .every((route) => workspaceRouteCount("infrastructure", route) === 2)
+      && ["environments", "nodes"].every((route) => !new RegExp(`data-route="${route}"`, "u").test(shell))
+      && serviceRouteCount("proxmox", "proxmox") === 2
+      && serviceRouteCount("workloads", "proxmox") === 2
+      && serviceRouteCount("portainer", "portainer") === 2
       && ["logs", "settings"].every((route) => sharedRouteCount(route) === 2)
       && /\[hidden\]\s*\{\s*display:\s*none\s*!important;\s*\}/u.test(shellStyles),
-    "desktop and mobile navigation isolate workspace routes while retaining shared Logs and Settings"
+    "desktop and mobile navigation expose one gated Proxmox route while retaining legacy-free service navigation and shared routes"
+  );
+  record(
+    /data-action="toggle-sidebar"[^>]+aria-controls="sidebar-navigation"[^>]+aria-expanded="true"/u.test(shell)
+      && /class="sidebar-scroll-region"/u.test(shell)
+      && /class="sidebar-footer"/u.test(shell)
+      && /<a[^>]+id="monitor-summary"[^>]+href="#\/health"[^>]+aria-label="Open media health"/u.test(shell)
+      && /\.sidebar-scroll-region\s*\{[\s\S]*?min-height:\s*0;[\s\S]*?overflow-y:\s*auto;/u.test(shellStyles)
+      && /\.app-shell\.is-sidebar-collapsed\s*\{\s*--sidebar-width:\s*102px;/u.test(shellStyles)
+      && /\.poster-rail\s*\{[\s\S]*?grid-auto-columns:\s*clamp\(140px,\s*11vw,\s*176px\)/u.test(shellStyles),
+    "the shell provides a persistent-ready collapsible sidebar, zoom-safe navigation scrolling, dynamic monitor link, and bounded poster rail"
   );
 }
 
@@ -679,15 +699,28 @@ if (existsSync(join(root, "src/app-v5.js")) && existsSync(join(root, "src/ui/ope
   const application = read("src/app-v5.js");
   const operationsViews = read("src/ui/operations-views.js");
   record(
-    /id="infrastructure-environments"/u.test(application)
+    /id="infrastructure-proxmox"/u.test(application)
+      && /id="proxmox-environments-title"/u.test(application)
+      && /id="proxmox-nodes-title"/u.test(application)
+      && /id="proxmox-storage-title"/u.test(application)
       && /data-action="open-infrastructure-target"/u.test(application)
       && /data-action="open-infrastructure-environment-detail"/u.test(application)
       && /data-action="open-infrastructure-node"/u.test(application)
       && /data-action="open-infrastructure-workload"/u.test(application)
+      && /function renderProxmoxPage/u.test(application)
       && /renderInfrastructureOverview/u.test(application)
       && /export function normalizeInfrastructureSnapshot/u.test(operationsViews)
       && /export function renderInfrastructureOverview/u.test(operationsViews),
-    "the authenticated client renders separate Proxmox configuration and infrastructure health views"
+    "the authenticated client combines Proxmox environments, nodes, and storage without losing its read-only detail actions"
+  );
+  record(
+    /const INFRASTRUCTURE_ROUTE_ALIASES\s*=\s*Object[.]freeze\(\{[\s\S]*?environments:\s*"proxmox"[\s\S]*?nodes:\s*"proxmox"/u.test(application)
+      && /getItem\("helmsman[.]sidebarCollapsed"\)/u.test(application)
+      && /setItem\("helmsman[.]sidebarCollapsed",\s*String\(state[.]sidebarCollapsed\)\)/u.test(application)
+      && /proxmox:\s*state[.]infrastructure[.]targets[.]length\s*>\s*0/u.test(application)
+      && /portainer:\s*normalizedPortainerConfigurations\(\)[.]length\s*>\s*0/u.test(application)
+      && /setAttribute\("href",\s*infrastructureWorkspace\s*\?\s*"#\/incidents"\s*:\s*"#\/health"\)/u.test(application),
+    "legacy Infrastructure URLs, saved sidebar preference, connection-gated navigation, and workspace-specific monitor targets remain wired"
   );
   record(
     /function renderPortainerPage/u.test(application)
@@ -705,7 +738,7 @@ if (existsSync(join(root, "package.json"))) {
     const packageJson = JSON.parse(read("package.json"));
     record(
       packageJson.name === "helmsman"
-        && packageJson.version === "0.10.0-beta.9"
+        && packageJson.version === "0.10.0-beta.10"
         && packageJson.scripts?.serve === "node server/index.mjs serve"
         && packageJson.scripts?.["check:broker"] === "node --test tests/control-plane.test.mjs"
         && /tests\/secrets[.]test[.]mjs/u.test(packageJson.scripts?.["check:security"] || "")
@@ -853,16 +886,21 @@ if (existsSync(join(root, ".github/workflows/container.yml"))) {
   );
   record(
     /^\s*runs-on: windows-latest\s*$/mu.test(publisherSyntaxJob)
-      && /name: Windows PowerShell 5[.]1 publisher syntax/u.test(publisherSyntaxJob)
+      && /name: Windows PowerShell 5[.]1 publisher contracts/u.test(publisherSyntaxJob)
       && /shell: powershell/u.test(publisherSyntaxJob)
-      && /Resolve-Path [.]\/scripts\/Publish-HelmsmanRelease[.]ps1/u.test(publisherSyntaxJob)
+      && /\$PSVersionTable[.]PSEdition -cne 'Desktop'/u.test(publisherSyntaxJob)
+      && /\$PSVersionTable[.]PSVersion[.]Major -ne 5/u.test(publisherSyntaxJob)
+      && /[.]\/Publish-Helmsman[.]ps1/u.test(publisherSyntaxJob)
+      && /[.]\/scripts\/Publish-HelmsmanRelease[.]ps1/u.test(publisherSyntaxJob)
       && /System[.]Management[.]Automation[.]Language[.]Parser\]::ParseFile\(/u.test(publisherSyntaxJob)
       && /\[ref\]\$tokens/u.test(publisherSyntaxJob)
       && /\[ref\]\$parseErrors/u.test(publisherSyntaxJob)
       && /\$parseErrors[.]Count -ne 0/u.test(publisherSyntaxJob)
+      && /powershell[.]exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass/u.test(publisherSyntaxJob)
+      && /Publish-Helmsman[.]ps1[^\n]*-SelfTest/u.test(publisherSyntaxJob)
       && /^\s{6}- publisher-syntax\s*$/mu.test(imageJob)
       && /^\s{6}- publisher-syntax\s*$/mu.test(existingReleaseJob),
-    "Windows PowerShell parses the guarded publisher before either tagged release path can pass"
+    "Windows PowerShell 5.1 parses both publishers and exercises the offline bootstrap before either tagged release path can pass"
   );
   record(
     /release_exists:\s*\$\{\{ steps[.]release_state[.]outputs[.]exists \}\}/u.test(testJob)

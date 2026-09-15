@@ -1,14 +1,15 @@
-# Helmsman v0.10.0-beta.9
+# Helmsman v0.10.0-beta.10
 
 Helmsman is a self-hosted operations center for a homelab's media services and infrastructure. It runs as one portable Linux container on Docker Desktop, Linux, macOS, compatible NAS platforms, AMD64, and ARM64.
 
 Version 0.10 adds read-only Portainer monitoring under Infrastructure and refreshes the authenticated application as an original retro-web operations console while preserving the v0.9 media workflow and cluster-aware Proxmox model:
 
 - Media and Infrastructure are separate workspaces inside the same authenticated application, and only the selected workspace's navigation is shown;
-- the desktop shell uses one full-bleed divider across the sidebar brand and topbar, and Media Home is bounded to the post-sidebar viewport so its hero, metrics, and horizontal poster rails cannot widen the page or run beneath the viewport edge;
+- the desktop sidebar collapses to an icon rail, remembers that preference, and keeps its navigation scrollable at high browser zoom while the brand and Settings remain reachable;
+- service-specific Infrastructure navigation appears only after its Proxmox or Portainer connection exists, while Overview retains the entry points needed to add those connections;
 - the Media workspace has dedicated **Home**, **Discover**, **Library**, **Requests**, **Activity**, **Calendar**, **Health**, and **Connections** views;
 - Jellyfin, Seerr, Radarr, Sonarr, qBittorrent, and Bazarr records are correlated by TMDb, TVDb, IMDb, download, and service identifiers rather than title matching;
-- Home combines current Jellyfin playback, continue-watching items, pending requests, active downloads, blocked imports, upcoming releases, recently added titles, missing media, and subtitle backlog; episode resumes use their series poster rather than an episode frame;
+- Home combines current Jellyfin playback, continue-watching items, pending requests, active downloads, blocked imports, upcoming releases, recently added titles, missing media, and subtitle backlog; episode resumes use their series poster rather than an episode frame, and short poster rails retain the same bounded card size as full rails;
 - Activity combines qBittorrent transfer progress, speed, and ETA with Sonarr/Radarr queue and import state, including the current bounded service-reported error when one is available;
 - Requests keep Seerr approval separate from acquisition state, use exact **Awaiting approval**, **In progress**, **Available**, **Needs attention**, and **Closed** buckets, preserve the exact season/4K scope, and never treat older episodes from the same series as proof that a new request is available;
 - request rows missing presentation metadata are enriched through Seerr's fixed movie/TV detail routes with revision-scoped caching and a fair three-worker background queue; the short dashboard wait no longer cancels slow TV lookups, and visible unresolved rows can resolve their cover through the same typed route on demand;
@@ -23,14 +24,15 @@ Version 0.10 adds read-only Portainer monitoring under Infrastructure and refres
 - an environment can have up to four explicitly approved API endpoints, each with its own URL, TLS trust, encrypted API token, and availability state;
 - cluster-wide inventory is collected once per monitoring cycle through one healthy endpoint, so nodes, workloads, storage, tasks, backups, and incidents are not duplicated;
 - endpoint reachability and actual Proxmox node health remain separate—loss of one endpoint can make an environment Limited while another endpoint keeps its inventory available;
-- dedicated **Proxmox Environments**, **Nodes**, and **Workloads** views provide read-only topology, capacity, uptime, backup, warning, and current-state detail;
+- one dedicated **Proxmox** view combines environments, physical nodes, and node-scoped storage capacity; **Workloads** remains a focused VM/LXC inventory view;
 - stopped guests remain informational and do not make an environment unhealthy;
 - Portainer servers are configured and monitored only in Infrastructure, independently from media connections and Proxmox environments;
 - each Portainer connection verifies its API version and authenticated user, then reads bounded environment, stack, and Docker/Podman container inventories through fixed routes;
 - stopped Portainer containers remain informational, while unreachable environments and genuinely unhealthy, dead, or restarting containers report their specific failure;
 - infrastructure remains read-only—there are no VM, LXC, node, storage, backup, migration, console, power, container, stack, or environment control actions;
 - container-side checks continue when every browser is closed;
-- repeated failures become deduplicated incidents after two matching results;
+- repeated failures become deduplicated incidents after two matching results, with aligned open and recovered panels;
+- the top assessment summary opens Media Health or Infrastructure Incidents for the active workspace;
 - service, capability, and end-to-end pipeline health are shown separately;
 - queue, request, download, import, schedule, missing-media, and subtitle-backlog views are derived without writing a media catalog or artwork cache to disk;
 - current structured health reports from supported service APIs can be shown only to authenticated browsers after bounding, redaction, and escaping;
@@ -42,7 +44,7 @@ Version 0.10 adds read-only Portainer monitoring under Infrastructure and refres
 
 ## Deploy the published container
 
-Helmsman is distributed as a Linux AMD64/ARM64 image in GitHub Container Registry. A `v0.10.0-beta.9` Git tag runs the contracts and architecture smoke tests, publishes the version, beta, and full-commit image tags, and creates a GitHub Release containing ready-to-use `compose.yaml`, `container.env.example`, and `SHA256SUMS` assets. The release deployment files replace the source tree's `ghcr.io/OWNER/REPOSITORY:0.10.0-beta.9` placeholder with the real lowercase image path pinned to the exact multi-architecture manifest digest (`@sha256:...`).
+Helmsman is distributed as a Linux AMD64/ARM64 image in GitHub Container Registry. A `v0.10.0-beta.10` Git tag runs the contracts and architecture smoke tests, publishes the version, beta, and full-commit image tags, and creates a GitHub Release containing ready-to-use `compose.yaml`, `container.env.example`, and `SHA256SUMS` assets. The release deployment files replace the source tree's `ghcr.io/OWNER/REPOSITORY:0.10.0-beta.10` placeholder with the real lowercase image path pinned to the exact multi-architecture manifest digest (`@sha256:...`).
 
 Download those three files from the GitHub Release into one directory, verify the two deployment files against `SHA256SUMS`, open a terminal there, and make sure Docker Desktop or Docker Engine is running. No source checkout, Dockerfile, Node.js installation, or server-side image build is required. Private repositories can download the assets with `gh release download`; public repositories can also use a browser or `curl`.
 
@@ -86,34 +88,76 @@ The guarded future-release workflow is in [GITHUB.md](GITHUB.md). Detailed insta
 
 ## Publish future versions
 
-Installing the guarded publisher in an existing beta.9 repository is a
-tooling-only `main` update. Review it, run
-`Unblock-File .\scripts\Publish-HelmsmanRelease.ps1`, and commit the supplied
-tooling changes without creating or reusing the `v0.10.0-beta.9` tag.
-Those workflow protections begin with the next new application tag; beta.9's
-already-published tag is not moved or rewritten.
-
 Use local source builds while a version is still experimental, then publish
-each version that is intended for the Jellyfin server. From the persistent Git
-clone, point the Windows PowerShell 5.1-compatible publisher at a separate,
-newly extracted source directory. The publisher must remain at the tracked
-`scripts\Publish-HelmsmanRelease.ps1` path because it derives and verifies the
-exact `nunesg130-boop/helmsman` clone from its own location:
+each version that is intended for the Jellyfin server. The same launcher works
+for every future prerelease or stable version and on any Windows computer; it
+does not contain a release-number-specific path or command.
+
+Every full source archive includes `Publish-Helmsman.cmd` and
+`Publish-Helmsman.ps1` at its root. Extract the archive, then double-click
+`Publish-Helmsman.cmd`. The launcher detects the release version from that
+source's `package.json` and uses it for the entire publication. To start it
+from PowerShell instead:
 
 ```powershell
-Set-Location "C:\Users\admin\Downloads\helmsman-github"
-.\scripts\Publish-HelmsmanRelease.ps1 `
-  -SourcePath "C:\Users\admin\Downloads\helmsman-v0.10.0-beta.10\helmsman"
+Set-Location "C:\path\to\the\extracted\helmsman"
+.\Publish-Helmsman.ps1
 ```
 
-The publisher validates and stages the source, runs local tests, shows the
-review summary, and asks once for `PUBLISH <version>`. After confirmation it
-pushes `main`, requires the workflow for that exact commit to pass, publishes
-the version tag, requires the tag workflow to pass, and verifies the GitHub
-Release assets. It downloads the verified digest-pinned `compose.yaml`,
+Do not manually copy release files into `helmsman-github`; the launcher safely
+prepares and synchronizes the selected source for you.
+
+On a new computer the launcher checks or installs Git, requires GitHub CLI
+2.57.0 or newer, opens the GitHub sign-in when necessary, verifies the exact active account, confirms write
+access to the private `nunesg130-boop/helmsman` repository, and requires both
+the `repo` and `workflow` permissions. It then verifies noninteractive HTTPS
+Git access and rejects SSH or Git URL rewrites before creating or validating
+the persistent `%USERPROFILE%\Downloads\helmsman-github` clone and configuring
+the repository-local Git author. If that managed clone is incomplete, dirty, on a
+different branch, uses a noncanonical remote, or contains the clean unpublished
+commit from an interrupted release, the launcher preserves it and uses
+`%USERPROFILE%\Downloads\helmsman-github-recovery` as the persistent clone.
+An incompatible occupied recovery path is also preserved; the launcher safely
+advances to `helmsman-github-recovery-2`, then a bounded numeric suffix when
+necessary. A verified clean HTTPS recovery clone is reused on later
+runs. Extract the complete release with Windows before
+starting the publisher. Prefer a normal local folder such as
+`C:\Helmsman-Releases`; if OneDrive marks the extracted tree as a cloud
+placeholder or reparse point, move or re-extract it there. A standalone
+launcher copy kept outside both the source and persistent clone prompts for
+that extracted release folder. You may
+select either the outer version folder that contains `helmsman` or the inner
+`helmsman` source folder itself. From PowerShell, `-SourcePath` accepts either
+folder form as well. Do not run the root launcher from `helmsman-github`: it
+intentionally refuses the publishing clone so it cannot overwrite itself. It
+safely prepares the source before publishing and never copies credentials,
+`.env`, or runtime state into the repository.
+
+The launcher verifies the extracted release's guarded publisher against its
+bound SHA-256 identity, then gives it the validated source and independently
+verified clean clone. That publisher stages the source, runs the applicable
+local tests, shows the review summary, and asks once for the exact
+`PUBLISH <detected-version>` confirmation. After confirmation it pushes
+`main`, requires the workflow for that exact commit to pass, publishes the
+version tag, requires the tag workflow to pass, and verifies the GitHub Release
+assets. It downloads the verified digest-pinned `compose.yaml`,
 `container.env.example`, and `SHA256SUMS` into a new local deployment-assets
-directory beside the source folder. `-SkipLocalTests` is available when Node.js
-24.19.x is not installed, but then errors are found later by GitHub Actions.
+directory beside the source folder.
+
+Local tests run with Node.js 24.19.0 or newer within Node 24. If that compatible
+runtime is missing, the launcher automatically skips only the local test pass;
+the `main` and version-tag GitHub workflow gates remain mandatory.
+
+Three prompts remain intentionally human-controlled:
+
+- Windows installation or UAC approval if Git or GitHub CLI is missing;
+- browser-based GitHub authentication once on each computer, and again if the
+  saved authorization expires; and
+- the exact `PUBLISH <detected-version>` release confirmation.
+
+The launcher is part of the full source tree and source archive. It is not an
+additional GitHub Release deployment asset; releases continue to publish the
+same three digest-verified deployment files.
 
 It never logs into or changes the Jellyfin server. After publication it only
 prints the PowerShell `scp` commands and manual `/opt/helmsman` update block.
@@ -126,7 +170,7 @@ refuses to deploy unless Compose resolves the exact verified digest. Rollback re
 Compose and `.env`. Cancellation before
 the commit leaves the reviewed changes staged and makes no GitHub change; see
 [GITHUB.md](GITHUB.md) for inspection, recovery, transfer commands, and the
-manual fallback.
+advanced manual publisher fallback.
 
 ## Privacy and storage
 
@@ -172,7 +216,7 @@ Each media record uses provider and service identifiers to join evidence from mu
 
 Artwork descriptors never reach the browser. The browser receives an opaque same-origin `/api/v2/media/artwork/<key>` URL, and the authenticated broker tries only fixed service-owned artwork routes in this order: Jellyfin, Radarr/Sonarr, then Seerr. Grid requests use a revisioned 342 px Jellyfin or Seerr thumbnail and try fixed 250 px, 500 px, then original Radarr/Sonarr covers. When Sonarr exposes only TVDB remote artwork, Helmsman uses the series' validated TMDb identifier for a typed Seerr metadata lookup and then requests only Seerr's fixed TMDb image-proxy route; it never follows the remote artwork URL. Duplicate misses are coalesced, and a bounded scheduler permits at most three upstream artwork fetches at once with 64 pending requests. Successful images are cached in memory for up to 24 hours. General failures are cached for 15 minutes, versioned Arr cover misses for 30 seconds, and unrevisioned Arr misses are not negative-cached, allowing newly generated covers to appear promptly without continuous retry. The cache is limited to 512 entries, 64 MiB total, and 4 MiB per accepted image, and accepts only bounded raster image types. Browser responses use an ETag, a one-day private cache lifetime, and one-week stale revalidation/error windows; media artwork is never written to the data volume.
 
-Infrastructure navigation contains **Overview**, **Proxmox Environments**, **Nodes**, **Workloads**, **Portainer**, and **Incidents**. Helmsman supports up to 25 Proxmox environments and 25 total endpoints, with no more than four endpoints in one environment. An environment is either a standalone server or one multi-node cluster. Its detail view presents Summary, API endpoints, Nodes, Workloads, Storage, Recent Activity, and current sanitized warnings.
+Infrastructure navigation contains **Overview**, **Proxmox**, **Workloads**, **Portainer**, and **Incidents**. Proxmox and Workloads appear only after a Proxmox environment is configured, while Portainer appears only after a Portainer connection is configured; Overview always keeps the connection entry points available. Helmsman supports up to 25 Proxmox environments and 25 total endpoints, with no more than four endpoints in one environment. An environment is either a standalone server or one multi-node cluster. The combined Proxmox view presents environments, nodes, and a dedicated storage section with current sanitized status and capacity information.
 
 To add Proxmox, open **Infrastructure**, choose **Connect and discover**, and enter:
 

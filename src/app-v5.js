@@ -58,9 +58,15 @@ function setMarkup(element, markup) {
 const SERVICE_ORDER = ["jellyfin", "seerr", "radarr", "sonarr", "prowlarr", "qbittorrent", "bazarr"];
 const SHARED_ROUTES = new Set(["logs", "settings"]);
 const MEDIA_ROUTES = new Set(["home", "discover", "library", "requests", "activity", "calendar", "health", "connections", ...SHARED_ROUTES]);
-const INFRASTRUCTURE_ROUTES = new Set(["overview", "environments", "nodes", "workloads", "portainer", "incidents", ...SHARED_ROUTES]);
-const ROUTES = new Set([...MEDIA_ROUTES, ...INFRASTRUCTURE_ROUTES, "pipeline", "services"]);
+const INFRASTRUCTURE_ROUTES = new Set(["overview", "proxmox", "workloads", "portainer", "incidents", ...SHARED_ROUTES]);
+const ROUTES = new Set([...MEDIA_ROUTES, ...INFRASTRUCTURE_ROUTES, "pipeline", "services", "environments", "nodes"]);
 const MEDIA_ROUTE_ALIASES = Object.freeze({ overview: "home", pipeline: "health", incidents: "health", services: "connections" });
+const INFRASTRUCTURE_ROUTE_ALIASES = Object.freeze({
+  environments: "proxmox",
+  nodes: "proxmox",
+  pipeline: "overview",
+  services: "proxmox"
+});
 const SESSION_ID_PATTERN = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u;
 const INFRASTRUCTURE_ID_PATTERN = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u;
 const CONNECTION_CAPABILITY_LABELS = Object.freeze({
@@ -174,8 +180,7 @@ const ROUTE_TITLES = Object.freeze({
   incidents: "Incidents",
   pipeline: "Pipeline",
   services: "Services",
-  environments: "Proxmox Environments",
-  nodes: "Nodes",
+  proxmox: "Proxmox",
   workloads: "Workloads",
   portainer: "Portainer",
   logs: "Logs",
@@ -192,9 +197,18 @@ function savedWorkspace() {
   }
 }
 
+function savedSidebarCollapsed() {
+  try {
+    return globalThis.localStorage?.getItem("helmsman.sidebarCollapsed") === "true";
+  } catch {
+    return false;
+  }
+}
+
 const state = {
   route: "home",
   workspace: savedWorkspace(),
+  sidebarCollapsed: savedSidebarCollapsed(),
   status: null,
   config: null,
   snapshot: null,
@@ -265,7 +279,7 @@ function operationalFingerprint(snapshot) {
     ))
   } : {};
   const infrastructure = state.workspace === "infrastructure"
-    && ["overview", "services", "environments", "nodes", "workloads", "portainer"].includes(route)
+    && ["overview", "proxmox", "workloads", "portainer"].includes(route)
     ? normalizeInfrastructureSnapshot(snapshot, state.infrastructure.targets)
     : null;
   const infrastructureStructure = infrastructure ? {
@@ -356,13 +370,35 @@ function currentRoute() {
     const aliased = MEDIA_ROUTE_ALIASES[candidate] || candidate;
     return MEDIA_ROUTES.has(aliased) ? aliased : "home";
   }
-  if (candidate === "services") return "environments";
-  if (candidate === "pipeline") return "overview";
-  return INFRASTRUCTURE_ROUTES.has(candidate) ? candidate : "overview";
+  const aliased = INFRASTRUCTURE_ROUTE_ALIASES[candidate] || candidate;
+  return INFRASTRUCTURE_ROUTES.has(aliased) ? aliased : "overview";
 }
 
 function workspaceLandingRoute(workspace) {
   return workspace === "infrastructure" ? "overview" : "home";
+}
+
+function applySidebarState({ persist = false } = {}) {
+  appShell?.classList.toggle("is-sidebar-collapsed", state.sidebarCollapsed);
+  const toggle = document.querySelector("[data-action='toggle-sidebar']");
+  if (toggle) {
+    const label = state.sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar";
+    toggle.setAttribute("aria-expanded", state.sidebarCollapsed ? "false" : "true");
+    toggle.setAttribute("aria-label", label);
+    toggle.setAttribute("title", label);
+  }
+  if (persist) {
+    try {
+      globalThis.localStorage?.setItem("helmsman.sidebarCollapsed", String(state.sidebarCollapsed));
+    } catch {
+      // A private browser can deny storage; collapse still works for this page load.
+    }
+  }
+}
+
+function toggleSidebar() {
+  state.sidebarCollapsed = !state.sidebarCollapsed;
+  applySidebarState({ persist: true });
 }
 
 async function switchWorkspace(value) {
@@ -1632,7 +1668,7 @@ function renderIncidentsPage() {
   return `
     <section class="detail-page">
       <header class="detail-hero"><div><span class="section-kicker">Incident center</span><h2>${open.length ? `${open.length} active ${open.length === 1 ? "incident" : "incidents"}` : "No active incidents"}</h2><p>Repeated failures are grouped so one noisy endpoint does not flood the log.</p></div><button class="button" data-action="refresh-live">${icon("refresh")} Check now</button></header>
-      <div class="detail-grid">
+      <div class="detail-grid incident-grid">
         <section class="glass-panel"><header><div><span class="section-kicker">Open</span><h3>Needs attention</h3></div><span class="count-pill">${open.length}</span></header>
           <div class="incident-table">${open.length ? open.map((entry) => `
             <article class="incident-row">
@@ -1641,9 +1677,9 @@ function renderIncidentsPage() {
               <time>${escapeHtml(formatTime(entry.lastSeen))}</time>
             </article>`).join("") : `<div class="empty-state">${icon("check")}<strong>Everything is clear</strong><span>The two-check debounce has not confirmed any active failures.</span></div>`}</div>
         </section>
-        <section class="glass-panel"><header><div><span class="section-kicker">Recovered</span><h3>Recent recoveries</h3></div></header>
+        <section class="glass-panel"><header><div><span class="section-kicker">Recovered</span><h3>Recent recoveries</h3></div><span class="count-pill">${recovered.length}</span></header>
           <div class="incident-table">${recovered.length ? recovered.map((entry) => `
-            <article class="incident-row"><span class="health-dot is-healthy"></span><div><strong>${escapeHtml(entry.serviceName)} · ${escapeHtml(entry.capability)}</strong><p>Recovered from ${escapeHtml(statusLabel(entry.previousState).toLowerCase())}.</p><small>${entry.occurrenceCount} recorded occurrence${entry.occurrenceCount === 1 ? "" : "s"}</small></div><time>${escapeHtml(formatTime(entry.recoveredAt))}</time></article>`).join("") : `<div class="empty-state"><span>No recoveries have been recorded yet.</span></div>`}</div>
+            <article class="incident-row"><span class="health-dot is-healthy"></span><div><strong>${escapeHtml(entry.serviceName)} · ${escapeHtml(entry.capability)}</strong><p>Recovered from ${escapeHtml(statusLabel(entry.previousState).toLowerCase())}.</p><small>${entry.occurrenceCount} recorded occurrence${entry.occurrenceCount === 1 ? "" : "s"}</small></div><time>${escapeHtml(formatTime(entry.recoveredAt))}</time></article>`).join("") : `<div class="empty-state">${icon("check")}<strong>No recent recoveries</strong><span>No recoveries have been recorded yet.</span></div>`}</div>
         </section>
       </div>
     </section>`;
@@ -2318,31 +2354,24 @@ function openInfrastructureWorkload(workloadId) {
   openModal(renderInfrastructureWorkloadDetail(workload), "#workload-detail-title");
 }
 
-function renderInfrastructureEnvironmentsPage() {
-  const snapshot = infrastructureHealth();
-  return `
-    <section class="detail-page infrastructure-connections-page" id="infrastructure-environments">
-      <header class="detail-hero"><div><span class="section-kicker">Virtualization topology</span><h2>Proxmox environments</h2><p>Each standalone server or cluster is one environment. Alternate API endpoints stay separate from the nodes they report.</p></div><button class="button button--primary" type="button" data-action="open-infrastructure-target">${icon("plus")} Connect and discover</button></header>
-      ${state.infrastructure.error ? `<div class="infrastructure-load-error" role="alert"><div><strong>Proxmox environments could not be refreshed</strong><span>${escapeHtml(state.infrastructure.error)}</span></div><button class="button" type="button" data-action="retry-infrastructure-targets">Try again</button></div>` : ""}
-      ${state.infrastructure.loading && !state.infrastructure.loaded
-        ? `<div class="glass-panel infrastructure-loading" role="status"><span class="state-page__spinner">${icon("refresh")}</span><strong>Loading Proxmox environments…</strong></div>`
-        : snapshot.environments.length
-          ? `<div class="infrastructure-environment-grid">${snapshot.environments.map((environment) => {
-            const endpointOnline = environment.endpoints.filter(({ state: endpointState }) => endpointState === "healthy").length;
-            const endpointCount = environment.endpoints.length || state.infrastructure.targets.find(({ id }) => id === environment.id)?.endpoints?.length || 1;
-            return `<article class="glass-panel environment-card is-${statusClass(environment.state)}">
-              <button class="environment-card__main" type="button" data-action="open-infrastructure-environment-detail" data-infrastructure-target-id="${escapeHtml(environment.id)}">
-                <span class="environment-card__icon">${serviceIconMarkup("proxmox", "P")}</span>
-                <span class="environment-card__copy"><span class="section-kicker">${escapeHtml(environmentKindLabel(environment))}</span><strong>${escapeHtml(environment.displayName)}</strong><small>${environment.environmentKind === "cluster" ? escapeHtml(environment.clusterName || environment.environmentName) : escapeHtml(environment.environmentName)}</small></span>
-                <span class="environment-card__state"><i class="health-dot is-${statusClass(environment.state)}"></i>${escapeHtml(statusLabel(environment.state))}</span>
-                ${icon("chevron")}
-              </button>
-              <dl class="environment-card__metrics"><div><dt>Nodes</dt><dd>${environment.nodes.length || environment.metrics.nodeTotal || 0}</dd><small>${environment.metrics.nodesOnline ?? 0} online</small></div><div><dt>Workloads</dt><dd>${environment.workloads.filter(({ template }) => !template).length || environment.metrics.guestTotal || 0}</dd><small>${environment.metrics.guestsRunning ?? 0} running</small></div><div><dt>API endpoints</dt><dd>${endpointCount}</dd><small>${endpointOnline || (environment.connectionState === "connected" ? 1 : 0)} available</small></div></dl>
-              <footer><span>${environment.quorate === false ? "Cluster quorum lost" : environment.version ? `PVE ${escapeHtml(environment.version)}` : "Read-only inventory"}</span><button class="button button--compact" type="button" data-action="open-infrastructure-target" data-infrastructure-target-id="${escapeHtml(environment.id)}">Connection settings</button></footer>
-            </article>`;
-          }).join("")}</div>`
-          : `<section class="glass-panel infrastructure-onboarding"><div class="infrastructure-onboarding__icon">${icon("server")}</div><span class="section-kicker">Start with virtualization</span><h3>Connect your first Proxmox environment</h3><p>Helmsman will discover whether the endpoint belongs to a standalone server or a cluster before it is saved.</p><ol><li><span>1</span>Enter one HTTPS endpoint and audit token.</li><li><span>2</span>Verify certificate trust and discover its nodes.</li><li><span>3</span>Confirm the environment, then optionally add failover endpoints.</li></ol><button class="button button--primary" type="button" data-action="open-infrastructure-target">${icon("plus")} Connect and discover</button></section>`}
-    </section>`;
+function renderInfrastructureEnvironmentGrid(snapshot) {
+  if (!snapshot.environments.length) {
+    return `<section class="glass-panel infrastructure-onboarding"><div class="infrastructure-onboarding__icon">${icon("server")}</div><span class="section-kicker">Start with virtualization</span><h3>Connect your first Proxmox environment</h3><p>Helmsman will discover whether the endpoint belongs to a standalone server or a cluster before it is saved.</p><ol><li><span>1</span>Enter one HTTPS endpoint and audit token.</li><li><span>2</span>Verify certificate trust and discover its nodes.</li><li><span>3</span>Confirm the environment, then optionally add failover endpoints.</li></ol><button class="button button--primary" type="button" data-action="open-infrastructure-target">${icon("plus")} Connect and discover</button></section>`;
+  }
+  return `<div class="infrastructure-environment-grid">${snapshot.environments.map((environment) => {
+    const endpointOnline = environment.endpoints.filter(({ state: endpointState }) => endpointState === "healthy").length;
+    const endpointCount = environment.endpoints.length || state.infrastructure.targets.find(({ id }) => id === environment.id)?.endpoints?.length || 1;
+    return `<article class="glass-panel environment-card is-${statusClass(environment.state)}">
+      <button class="environment-card__main" type="button" data-action="open-infrastructure-environment-detail" data-infrastructure-target-id="${escapeHtml(environment.id)}">
+        <span class="environment-card__icon">${serviceIconMarkup("proxmox", "P")}</span>
+        <span class="environment-card__copy"><span class="section-kicker">${escapeHtml(environmentKindLabel(environment))}</span><strong>${escapeHtml(environment.displayName)}</strong><small>${environment.environmentKind === "cluster" ? escapeHtml(environment.clusterName || environment.environmentName) : escapeHtml(environment.environmentName)}</small></span>
+        <span class="environment-card__state"><i class="health-dot is-${statusClass(environment.state)}"></i>${escapeHtml(statusLabel(environment.state))}</span>
+        ${icon("chevron")}
+      </button>
+      <dl class="environment-card__metrics"><div><dt>Nodes</dt><dd>${environment.nodes.length || environment.metrics.nodeTotal || 0}</dd><small>${environment.metrics.nodesOnline ?? 0} online</small></div><div><dt>Workloads</dt><dd>${environment.workloads.filter(({ template }) => !template).length || environment.metrics.guestTotal || 0}</dd><small>${environment.metrics.guestsRunning ?? 0} running</small></div><div><dt>API endpoints</dt><dd>${endpointCount}</dd><small>${endpointOnline || (environment.connectionState === "connected" ? 1 : 0)} available</small></div></dl>
+      <footer><span>${environment.quorate === false ? "Cluster quorum lost" : environment.version ? `PVE ${escapeHtml(environment.version)}` : "Read-only inventory"}</span><button class="button button--compact" type="button" data-action="open-infrastructure-target" data-infrastructure-target-id="${escapeHtml(environment.id)}">Connection settings</button></footer>
+    </article>`;
+  }).join("")}</div>`;
 }
 
 function infrastructureFilterOptions(items, valueKey, labelKey, selected, allLabel) {
@@ -2352,21 +2381,66 @@ function infrastructureFilterOptions(items, valueKey, labelKey, selected, allLab
   }).join("")}`;
 }
 
-function renderInfrastructureNodesPage() {
-  const snapshot = infrastructureHealth();
-  const selectedEnvironment = state.infrastructure.filters.environment;
-  const nodes = snapshot.nodes.filter((node) => selectedEnvironment === "all" || node.environmentId === selectedEnvironment);
-  return `<section class="detail-page infrastructure-inventory-page" id="infrastructure-nodes">
-    <header class="detail-hero"><div><span class="section-kicker">Physical layer</span><h2>Proxmox nodes</h2><p>Node health is reported independently from the API endpoint Helmsman used to collect it.</p></div><button class="button" type="button" data-action="refresh-live">${icon("refresh")} Check now</button></header>
-    <div class="infrastructure-filterbar"><label><span>Environment</span><select id="infrastructure-node-environment-filter" data-infrastructure-filter="environment">${infrastructureFilterOptions(snapshot.environments, "id", "displayName", selectedEnvironment, "All environments")}</select></label><span class="filter-result-count">${nodes.length} node${nodes.length === 1 ? "" : "s"}</span></div>
-    ${nodes.length ? `<div class="infrastructure-node-grid">${nodes.map((node) => {
-      const api = environmentApiAvailability(snapshot.environments.find(({ id }) => id === node.environmentId));
-      return `<button class="glass-panel infrastructure-node-card is-${statusClass(node.state)}" type="button" data-action="open-infrastructure-node" data-infrastructure-node-id="${escapeHtml(node.id)}">
+function selectedInfrastructureEnvironment(snapshot) {
+  const requested = state.infrastructure.filters.environment;
+  if (requested === "all" || snapshot.environments.some(({ id }) => id === requested)) return requested;
+  state.infrastructure.filters.environment = "all";
+  state.infrastructure.filters.node = "all";
+  return "all";
+}
+
+function renderInfrastructureNodeGrid(snapshot, nodes) {
+  if (!nodes.length) return `<div class="glass-panel empty-state"><span>${icon("server")}</span><strong>No node inventory yet</strong><span>Nodes appear after an enabled environment completes discovery.</span></div>`;
+  return `<div class="infrastructure-node-grid">${nodes.map((node) => {
+    const api = environmentApiAvailability(snapshot.environments.find(({ id }) => id === node.environmentId));
+    return `<button class="glass-panel infrastructure-node-card is-${statusClass(node.state)}" type="button" data-action="open-infrastructure-node" data-infrastructure-node-id="${escapeHtml(node.id)}">
       <header><span class="node-mark">${serviceIconMarkup("proxmox", "P")}</span><span><small>${escapeHtml(node.environmentName)}</small><strong>${escapeHtml(node.name)}</strong></span><i class="health-dot is-${statusClass(node.state)}"></i></header>
       <dl><div><dt>CPU</dt><dd>${node.cpuPercent === null ? "—" : `${node.cpuPercent}%`}</dd><small>${node.cpuCores === null ? "Cores unavailable" : `${node.cpuCores} cores`}</small></div><div><dt>Memory</dt><dd>${escapeHtml(formatMetricRatio(node.memoryUsedBytes, node.memoryTotalBytes))}</dd><small>${node.memoryUsedBytes === null ? "Usage unavailable" : `${formatMetricBytes(node.memoryUsedBytes)} used`}</small></div><div><dt>Root disk</dt><dd>${escapeHtml(formatMetricRatio(node.rootDiskUsedBytes, node.rootDiskTotalBytes))}</dd><small>${node.rootDiskUsedBytes === null ? "Usage unavailable" : `${formatMetricBytes(node.rootDiskUsedBytes)} used`}</small></div><div><dt>Workloads</dt><dd>${node.runningWorkloadCount}/${node.workloadCount}</dd><small>${node.virtualMachineCount} VM · ${node.containerCount} LXC</small></div></dl>
       <footer><span>${node.status === "online" ? "Online" : node.status === "offline" ? "Offline" : "State unknown"}</span><span>${node.uptimeSeconds === null ? "Uptime unavailable" : `Up ${formatMetricDuration(node.uptimeSeconds)}`}${node.version ? ` · ${escapeHtml(node.version)}` : ""} · API ${api.available}/${api.total}</span></footer>
     </button>`;
-    }).join("")}</div>` : `<div class="glass-panel empty-state"><span>${icon("server")}</span><strong>No node inventory yet</strong><span>Nodes appear after an enabled environment completes discovery.</span></div>`}
+  }).join("")}</div>`;
+}
+
+function infrastructureStorageTone(storage) {
+  const status = String(storage.status || "unknown").toLowerCase();
+  if (["unknown", "unavailable", "offline", "inactive", "disabled"].includes(status)) return "down";
+  if (storage.usagePercent !== null && storage.usagePercent >= 90) return "down";
+  if (storage.usagePercent !== null && storage.usagePercent >= 80) return "limited";
+  return status === "available" ? "healthy" : "stale";
+}
+
+function renderInfrastructureStorageList(storage) {
+  if (!storage.length) return `<div class="empty-state"><span>${icon("server")}</span><strong>No storage inventory yet</strong><span>Storage appears after an enabled environment completes its first inventory check.</span></div>`;
+  return `<div class="storage-detail-list proxmox-storage-list">${storage.map((entry) => {
+    const tone = infrastructureStorageTone(entry);
+    const freeBytes = entry.usedBytes !== null && entry.totalBytes !== null
+      ? Math.max(0, entry.totalBytes - entry.usedBytes)
+      : null;
+    const usage = entry.usagePercent === null ? "—" : `${entry.usagePercent}%`;
+    const capacity = entry.usedBytes === null || entry.totalBytes === null
+      ? "Capacity unavailable"
+      : `${formatMetricBytes(entry.usedBytes)} used · ${formatMetricBytes(freeBytes)} free · ${formatMetricBytes(entry.totalBytes)} total`;
+    return `<article class="is-${tone}"><div><strong>${escapeHtml(entry.name)}</strong><small>${escapeHtml(entry.environmentName)} · ${escapeHtml(entry.node)}${entry.type ? ` · ${escapeHtml(entry.type)}` : ""}${entry.shared ? " · Shared" : " · Local"} · Status ${escapeHtml(entry.status)}</small></div><span class="storage-usage"><i class="health-dot is-${tone}" aria-hidden="true"></i>${usage}</span><small>${capacity}</small>${entry.usagePercent === null ? "" : `<progress max="100" value="${entry.usagePercent}" aria-label="${escapeHtml(entry.name)} storage use">${entry.usagePercent}%</progress>`}</article>`;
+  }).join("")}</div>`;
+}
+
+function renderProxmoxPage() {
+  const snapshot = infrastructureHealth();
+  const selectedEnvironment = selectedInfrastructureEnvironment(snapshot);
+  const nodes = snapshot.nodes.filter((node) => selectedEnvironment === "all" || node.environmentId === selectedEnvironment);
+  const storage = snapshot.storage.filter((entry) => selectedEnvironment === "all" || entry.environmentId === selectedEnvironment);
+  const loading = state.infrastructure.loading && !state.infrastructure.loaded;
+  return `<section class="detail-page infrastructure-inventory-page infrastructure-proxmox-page" id="infrastructure-proxmox">
+    <header class="detail-hero"><div><span class="section-kicker">Virtualization topology</span><h2>Proxmox</h2><p>Environments, physical nodes, and node-scoped storage inventory in one read-only view.</p></div><div class="button-row"><button class="button" type="button" data-action="refresh-live">${icon("refresh")} Check now</button><button class="button button--primary" type="button" data-action="open-infrastructure-target">${icon("plus")} Connect and discover</button></div></header>
+    ${state.infrastructure.error ? `<div class="infrastructure-load-error" role="alert"><div><strong>Proxmox inventory could not be refreshed</strong><span>${escapeHtml(state.infrastructure.error)}</span></div><button class="button" type="button" data-action="retry-infrastructure-targets">Try again</button></div>` : ""}
+    ${loading
+      ? `<div class="glass-panel infrastructure-loading" role="status"><span class="state-page__spinner">${icon("refresh")}</span><strong>Loading Proxmox inventory…</strong></div>`
+      : !snapshot.environments.length
+        ? renderInfrastructureEnvironmentGrid(snapshot)
+        : `<section class="proxmox-section" aria-labelledby="proxmox-environments-title"><header class="proxmox-section__heading"><div><span class="section-kicker">Connections</span><h3 id="proxmox-environments-title">Environments</h3><p>Standalone servers and clusters, with their explicitly trusted API endpoints.</p></div><span class="count-pill">${snapshot.environments.length}</span></header>${renderInfrastructureEnvironmentGrid(snapshot)}</section>
+          <div class="infrastructure-filterbar proxmox-filterbar"><label><span>Environment</span><select id="proxmox-environment-filter" data-infrastructure-filter="environment">${infrastructureFilterOptions(snapshot.environments, "id", "displayName", selectedEnvironment, "All environments")}</select></label><span class="filter-result-count">${nodes.length} node${nodes.length === 1 ? "" : "s"} · ${storage.length} storage entr${storage.length === 1 ? "y" : "ies"}</span></div>
+          <section class="proxmox-section" aria-labelledby="proxmox-nodes-title"><header class="proxmox-section__heading"><div><span class="section-kicker">Physical layer</span><h3 id="proxmox-nodes-title">Nodes</h3><p>Node health is independent from the API endpoint used to collect it.</p></div><span class="count-pill">${nodes.length}</span></header>${renderInfrastructureNodeGrid(snapshot, nodes)}</section>
+          <section class="glass-panel proxmox-storage-panel" aria-labelledby="proxmox-storage-title"><header><div><span class="section-kicker">Capacity</span><h3 id="proxmox-storage-title">Storage</h3><p>Entries stay scoped to their reporting node; shared pools may appear on more than one node.</p></div><span class="count-pill">${storage.length}</span></header>${renderInfrastructureStorageList(storage)}</section>`}
   </section>`;
 }
 
@@ -2385,6 +2459,7 @@ function filteredInfrastructureWorkloads(snapshot) {
 function renderInfrastructureWorkloadsPage() {
   const snapshot = infrastructureHealth();
   const filters = state.infrastructure.filters;
+  selectedInfrastructureEnvironment(snapshot);
   const availableNodes = [...new Set(snapshot.workloads
     .filter((workload) => filters.environment === "all" || workload.environmentId === filters.environment)
     .map(({ node }) => node))].sort().map((name) => ({ id: name, name }));
@@ -2564,10 +2639,11 @@ function renderAuthenticatedRoute() {
     if (state.route === "logs") return renderLogsPage();
     return renderSettingsPage();
   }
-  if (state.route === "overview") return renderInfrastructureOverview(snapshotForUi(), state.infrastructure.targets);
+  if (state.route === "overview") return renderInfrastructureOverview(snapshotForUi(), state.infrastructure.targets, {
+    portainerConfigured: normalizedPortainerConfigurations().length > 0
+  });
   if (state.route === "incidents") return renderIncidentsPage();
-  if (state.route === "environments") return renderInfrastructureEnvironmentsPage();
-  if (state.route === "nodes") return renderInfrastructureNodesPage();
+  if (state.route === "proxmox") return renderProxmoxPage();
   if (state.route === "workloads") return renderInfrastructureWorkloadsPage();
   if (state.route === "portainer") return renderPortainerPage();
   if (state.route === "logs") return renderLogsPage();
@@ -2669,6 +2745,10 @@ function updateChrome() {
   const infrastructure = normalizeInfrastructureSnapshot(snapshotForUi(), state.infrastructure.targets);
   const portainers = portainerServicesForUi();
   const infrastructureWorkspace = state.workspace === "infrastructure";
+  const navigationAvailability = {
+    proxmox: state.infrastructure.targets.length > 0,
+    portainer: normalizedPortainerConfigurations().length > 0
+  };
   const count = normalized.incidents.filter(({ scope, service }) => (
     scope !== "infrastructure" && !/^(?:proxmox|portainer)(?:-|$)/u.test(String(service || ""))
   )).length;
@@ -2687,7 +2767,9 @@ function updateChrome() {
     element.hidden = infrastructureWorkspace;
   });
   document.querySelectorAll(".workspace-infrastructure-only").forEach((element) => {
-    element.hidden = !infrastructureWorkspace;
+    const requiredService = element.dataset.serviceNav;
+    element.hidden = !infrastructureWorkspace
+      || (Boolean(requiredService) && navigationAvailability[requiredService] !== true);
   });
   const workspaceHome = `#/${workspaceLandingRoute(state.workspace)}`;
   document.querySelectorAll(".brand, .mobile-brand").forEach((link) => {
@@ -2700,6 +2782,8 @@ function updateChrome() {
   });
   modeBadge.textContent = state.status?.authenticated ? statusLabel(overall) : "Local container";
   modeBadge.dataset.state = statusClass(overall);
+  monitorSummary.setAttribute("href", infrastructureWorkspace ? "#/incidents" : "#/health");
+  monitorSummary.setAttribute("aria-label", infrastructureWorkspace ? "Open infrastructure incidents" : "Open media health");
   const time = infrastructureWorkspace ? latestInfrastructureCheck(infrastructure, portainers) : state.snapshot?.generatedAt;
   const summaryText = state.refreshing
     ? infrastructureWorkspace ? "Checking infrastructure…" : "Checking services…"
@@ -2714,6 +2798,7 @@ function updateChrome() {
   }
   const initials = String(state.status?.session?.name || "HM").split(/\s+/u).map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "HM";
   sessionButton.querySelector("span").textContent = initials;
+  applySidebarState();
 }
 
 function formatAssessmentTime(value, fallback = "Waiting for data") {
@@ -4217,6 +4302,7 @@ async function submitInfrastructureTarget(form) {
     });
     closeModal();
     await loadInfrastructureTargets({ render: false });
+    await refreshOperations();
     state.lastMarkup = "";
     renderPage({ force: true, preserveFocus: true });
     showToast(targetId ? "Proxmox environment updated." : "Proxmox environment connected.", "success");
@@ -4238,6 +4324,7 @@ async function deleteInfrastructureTarget(targetId) {
     await api(`/api/v2/infrastructure/environments/${encodeURIComponent(targetId)}`, { method: "DELETE" });
     closeModal();
     await loadInfrastructureTargets({ render: false });
+    await refreshOperations();
     state.lastMarkup = "";
     renderPage({ force: true });
     showToast("Proxmox environment and its protected endpoint tokens were removed.", "success");
@@ -4320,6 +4407,7 @@ async function submitInfrastructureEndpoint(form) {
     });
     closeModal();
     await loadInfrastructureTargets({ render: false });
+    await refreshOperations();
     state.lastMarkup = "";
     renderPage({ force: true, preserveFocus: true });
     showToast(endpointId ? "Failover endpoint updated." : "Failover endpoint registered.", "success");
@@ -4343,6 +4431,7 @@ async function deleteInfrastructureEndpoint(environmentId, endpointId) {
     await api(`/api/v2/infrastructure/environments/${encodeURIComponent(environmentId)}/endpoints/${encodeURIComponent(endpointId)}`, { method: "DELETE" });
     closeModal();
     await loadInfrastructureTargets({ render: false });
+    await refreshOperations();
     state.lastMarkup = "";
     renderPage({ force: true });
     showToast("Failover endpoint removed.", "success");
@@ -4595,6 +4684,7 @@ document.addEventListener("click", async (event) => {
   const target = event.target.closest("[data-action]");
   if (!target) return;
   const action = target.dataset.action;
+  if (action === "toggle-sidebar") toggleSidebar();
   if (action === "switch-workspace") await switchWorkspace(target.dataset.workspace);
   if (action === "open-service") openService(target.dataset.serviceId);
   if (action === "open-media-detail") openMediaDrawer(target.dataset.mediaId);

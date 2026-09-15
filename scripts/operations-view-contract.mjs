@@ -26,8 +26,59 @@ const serviceIconAssets = Object.freeze({
 });
 
 const retroCss = await readFile(new URL("../src/ui/retro.css", import.meta.url), "utf8");
+const shellCss = await readFile(new URL("../styles.css", import.meta.url), "utf8");
 const shellHtml = await readFile(new URL("../index.html", import.meta.url), "utf8");
 const manifest = JSON.parse(await readFile(new URL("../manifest.webmanifest", import.meta.url), "utf8"));
+
+function flatMediaBody(css, minWidth, maxWidth, label) {
+  const query = new RegExp(
+    `@media\\s*\\(min-width:\\s*${minWidth}px\\)\\s+and\\s+\\(max-width:\\s*${maxWidth}px\\)\\s*\\{((?:[^{}]|\\{[^{}]*\\})*)\\}`,
+    "u"
+  );
+  const match = css.match(query);
+  assert.ok(match, `${label} must define the ${minWidth}-${maxWidth}px media block`);
+  return match[1];
+}
+
+function ruleBody(css, selector, label) {
+  const match = css.match(new RegExp(`${selector}\\s*\\{([^}]*)\\}`, "u"));
+  assert.ok(match, `${label} must define ${selector}`);
+  return match[1];
+}
+
+for (const [name, css] of [["base", shellCss], ["retro", retroCss]]) {
+  assert.match(
+    css,
+    /@media\s*\(min-width:\s*761px\)\s*and\s*\(max-width:\s*1440px\)\s*\{\s*\.request-list\s*\{[^}]*\}\s*\.request-row\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s+auto;/su,
+    `${name} styles must switch request rows to the compact two-column layout from 761px through 1440px`
+  );
+}
+
+for (const [name, css] of [["base", shellCss], ["retro", retroCss]]) {
+  const compactDownloadCss = flatMediaBody(css, 761, 1320, `${name} styles`);
+  const downloadListCss = ruleBody(compactDownloadCss, "\\.download-list", `${name} compact download styles`);
+  const downloadRowCss = ruleBody(compactDownloadCss, "\\.download-row", `${name} compact download styles`);
+  const hiddenMetadataCss = ruleBody(
+    compactDownloadCss,
+    "\\.download-stage\\s*,\\s*\\.download-stat",
+    `${name} compact download styles`
+  );
+  const downloadProgressCss = ruleBody(compactDownloadCss, "\\.download-progress", `${name} compact download styles`);
+  const downloadActionsCss = ruleBody(compactDownloadCss, "\\.download-actions", `${name} compact download styles`);
+
+  assert.match(downloadListCss, /border:\s*0;/u, `${name} compact download list must drop its outer border`);
+  assert.match(downloadListCss, /background:\s*transparent;/u, `${name} compact download list must drop its outer background`);
+  assert.match(
+    downloadRowCss,
+    /grid-template-columns:\s*minmax\(0,\s*1fr\)\s+auto;/u,
+    `${name} download rows must use two columns from 761px through 1320px`
+  );
+  assert.match(hiddenMetadataCss, /display:\s*none;/u, `${name} compact download rows must hide stage and stat metadata`);
+  assert.match(downloadProgressCss, /grid-column:\s*1\s*\/\s*-1;/u, `${name} compact download progress must span both columns`);
+  assert.match(downloadProgressCss, /grid-row:\s*2;/u, `${name} compact download progress must occupy the second row`);
+  assert.match(downloadActionsCss, /grid-column:\s*2;/u, `${name} compact download actions must occupy the second column`);
+  assert.match(downloadActionsCss, /grid-row:\s*1;/u, `${name} compact download actions must stay in the first row`);
+}
 
 assert.match(
   retroCss,

@@ -140,20 +140,33 @@ function installFakeBrowser(fetchHandler, suffix) {
   ];
   const elements = new Map(selectors.map((selector) => [selector, new FakeElement({ id: selector.slice(1) })]));
   elements.set("#session-button", new FakeElement({ id: "session-button", childSpan: true }));
+  const sidebarToggle = new FakeElement({ id: "sidebar-toggle" });
+  sidebarToggle.dataset.action = "toggle-sidebar";
+  elements.set("[data-action='toggle-sidebar']", sidebarToggle);
 
-  const routes = ["overview", "incidents", "pipeline", "services", "environments", "nodes", "workloads", "portainer", "logs", "settings"].map((route) => {
+  const routeElements = (route, { workspace = "", service = "" } = {}) => Array.from({ length: 2 }, () => {
     const element = new FakeElement();
     element.dataset.route = route;
+    if (workspace) element.dataset.workspaceNav = workspace;
+    if (service) element.dataset.serviceNav = service;
     return element;
   });
+  const mediaOnly = ["home", "discover", "library", "requests", "activity", "calendar", "health", "connections"]
+    .flatMap((route) => routeElements(route, { workspace: "media" }));
+  const infrastructureGlobalNav = ["overview", "incidents"]
+    .flatMap((route) => routeElements(route, { workspace: "infrastructure" }));
+  const proxmoxNav = ["proxmox", "workloads"]
+    .flatMap((route) => routeElements(route, { workspace: "infrastructure", service: "proxmox" }));
+  const portainerNav = routeElements("portainer", { workspace: "infrastructure", service: "portainer" });
+  const infrastructureOnly = [...infrastructureGlobalNav, ...proxmoxNav, ...portainerNav];
+  const sharedRoutes = ["logs", "settings"].flatMap((route) => routeElements(route));
+  const routes = [...mediaOnly, ...infrastructureOnly, ...sharedRoutes];
   const workspaceButtons = ["media", "infrastructure"].flatMap((workspace) => Array.from({ length: 2 }, () => {
     const element = new FakeElement();
     element.dataset.action = "switch-workspace";
     element.dataset.workspace = workspace;
     return element;
   }));
-  const mediaOnly = [new FakeElement(), new FakeElement()];
-  const infrastructureOnly = [new FakeElement(), new FakeElement()];
   const infrastructureIncidentCounts = [new FakeElement()];
   const documentListeners = new Map();
   const windowListeners = new Map();
@@ -308,8 +321,12 @@ function installFakeBrowser(fetchHandler, suffix) {
     requestLog,
     scrollCalls,
     workspaceButtons,
+    sidebarToggle,
     mediaOnly,
     infrastructureOnly,
+    infrastructureGlobalNav,
+    proxmoxNav,
+    portainerNav,
     infrastructureIncidentCounts,
     localStorageValues,
     sessionStorageValues,
@@ -784,17 +801,31 @@ async function emptyStateLayoutContract() {
   assert.match(documentMarkup, /<body\s+av-disable="true">/u, "the app shell must opt out of AliasVault's page-wide autofill injection");
   assert.match(documentMarkup, /content="A private, local-first operations center for your media and infrastructure stack\."/u);
   assert.doesNotMatch(documentMarkup, /id="monitor-summary"\s+role="status"/u, "background polling must not repeatedly announce a global status region");
+  assert.match(documentMarkup, /<a[^>]+id="monitor-summary"[^>]+href="#\/health"[^>]+aria-label="Open media health"/u, "the monitor summary must be a direct navigation link");
+  assert.match(documentMarkup, /data-action="toggle-sidebar"[^>]+aria-controls="sidebar-navigation"[^>]+aria-expanded="true"/u, "the desktop sidebar needs an accessible collapse toggle");
+  assert.match(documentMarkup, /<div class="sidebar-scroll-region">[\s\S]*?<nav class="nav-list" id="sidebar-navigation">[\s\S]*?<div class="sidebar-footer">/u, "navigation must scroll independently while Settings remains in the sidebar footer");
   assert.match(shellStyles, /\.world-option\s*\{[\s\S]*?min-height:\s*44px/u, "sidebar workspace controls need a 44px touch target");
   assert.match(shellStyles, /\.topbar-workspace-switch button\s*\{[\s\S]*?min-height:\s*44px/u, "mobile workspace controls need a 44px touch target");
+  assert.match(shellStyles, /\.sidebar-scroll-region\s*\{[\s\S]*?min-height:\s*0;[\s\S]*?overflow-y:\s*auto;/u, "the sidebar navigation region must remain scrollable at browser zoom and short viewport heights");
+  assert.match(shellStyles, /\.app-shell\.is-sidebar-collapsed\s*\{\s*--sidebar-width:\s*102px;/u, "the collapsed sidebar must use the compact shell width");
+  assert.match(shellStyles, /\.poster-rail\s*\{[\s\S]*?grid-auto-columns:\s*clamp\(140px,\s*11vw,\s*176px\)/u, "upcoming poster cards must use a bounded standard width");
+  assert.doesNotMatch(shellStyles, /\.poster-rail\s*\{[^}]*grid-auto-columns:\s*minmax\([^}]*1fr/u, "a poster rail must not stretch cards to fill the viewport");
   assert.match(shellStyles, /\[hidden\]\s*\{\s*display:\s*none\s*!important;\s*\}/u, "semantic hidden state must override flex navigation display rules");
   assert.match(shellStyles, /\.media-art-image:not\(\[hidden\]\)\s*\+\s*\.art-fallback-letter/u, "a hidden retrying artwork image must reveal its text fallback");
   assert.match(shellStyles, /:has\(\.hero-art-image:not\(\[hidden\]\)\)/u, "a hidden retrying hero image must reveal its visual fallback");
   for (const route of ["home", "discover", "library", "requests", "activity", "calendar", "health", "connections"]) {
     assert.equal((documentMarkup.match(new RegExp(`class="[^"]*workspace-media-only[^"]*"[^>]+data-route="${route}"`, "gu")) || []).length, 2, `${route} must appear only in the desktop and mobile Media navigation`);
   }
-  for (const route of ["overview", "environments", "nodes", "workloads", "portainer", "incidents"]) {
+  for (const route of ["overview", "proxmox", "workloads", "portainer", "incidents"]) {
     assert.equal((documentMarkup.match(new RegExp(`class="[^"]*workspace-infrastructure-only[^"]*"[^>]+data-route="${route}"`, "gu")) || []).length, 2, `${route} must appear only in the desktop and mobile Infrastructure navigation`);
   }
+  for (const retiredRoute of ["environments", "nodes"]) {
+    assert.equal((documentMarkup.match(new RegExp(`data-route="${retiredRoute}"`, "gu")) || []).length, 0, `${retiredRoute} must remain a route alias rather than a duplicate navigation entry`);
+  }
+  assert.equal((documentMarkup.match(/data-route="proxmox"[^>]+data-service-nav="proxmox"/gu) || []).length, 2, "Proxmox navigation must be gated in both desktop and mobile shells");
+  assert.equal((documentMarkup.match(/data-route="workloads"[^>]+data-service-nav="proxmox"/gu) || []).length, 2, "Workloads navigation must follow the Proxmox connection gate");
+  assert.equal((documentMarkup.match(/data-route="portainer"[^>]+data-service-nav="portainer"/gu) || []).length, 2, "Portainer navigation must use its own connection gate");
+  assert.match(application, /const INFRASTRUCTURE_ROUTE_ALIASES\s*=\s*Object\.freeze\(\{[\s\S]*?environments:\s*"proxmox"[\s\S]*?nodes:\s*"proxmox"/u, "legacy Infrastructure URLs must canonicalize to the merged Proxmox route");
   for (const [code, copy] of [
     ["FORBIDDEN", "Authenticated user lacks permission for this capability or environment"],
     ["TLS_PIN_MISMATCH", "Certificate fingerprint does not match"],
@@ -816,6 +847,36 @@ async function emptyStateLayoutContract() {
   assert.doesNotMatch(application, /\/api\/v2\/session\/(?:invite|pair)/u, "the retired browser-invite routes must not remain reachable from the runtime");
   assert.doesNotMatch(application, /(?:localStorage|sessionStorage)\?\.setItem\([^\n]*accessKey/iu, "access keys must not be persisted in web storage");
   assert.match(application, /contains\("media-art-image"\)[\s\S]*?contains\("hero-art-image"\)/u, "failed poster and hero artwork must both reveal their CSS fallback");
+}
+
+async function sidebarPersistenceContract() {
+  const snapshot = minimalOperationsSnapshot();
+  const environment = installFakeBrowser(({ path }) => {
+    if (path === "/api/v2/status") return jsonResponse({
+      setupRequired: false,
+      authenticated: true,
+      csrfToken: "sidebar-csrf",
+      session: { name: "Sidebar Browser" }
+    });
+    if (path === "/api/v2/config") return jsonResponse({
+      policy: { allowedCidrs: [], allowPublicHttps: false },
+      services: [],
+      infrastructureEnvironments: [],
+      infrastructureTargets: [],
+      infrastructureServices: []
+    });
+    if (path === "/api/v2/operations/snapshot") return jsonResponse(snapshot);
+    if (path === "/api/v2/sessions") return jsonResponse({ currentSessionId: "", sessions: [] });
+    return jsonResponse({ code: "NOT_FOUND", message: "Unexpected test route." }, 404);
+  }, "sidebar-persistence");
+  environment.localStorageValues.set("helmsman.sidebarCollapsed", "true");
+
+  await importShell(environment);
+  await waitFor(() => environment.main.innerHTML.includes("operations-page"), "persisted collapsed sidebar startup");
+  assert.equal(environment.elements.get("#app").classList.contains("is-sidebar-collapsed"), true, "a saved collapsed preference must survive application startup");
+  assert.equal(environment.sidebarToggle.attributes.get("aria-expanded"), "false");
+  assert.equal(environment.sidebarToggle.attributes.get("aria-label"), "Expand sidebar");
+  assert.equal(environment.sidebarToggle.attributes.get("title"), "Expand sidebar");
 }
 
 async function mediaArtworkLoadingContract() {
@@ -1930,6 +1991,7 @@ async function infrastructureWorkspaceContract() {
       return jsonResponse({ currentSessionId: "", sessions: [] });
     }
     if (path === "/api/v2/operations/snapshot" && method === "GET") return jsonResponse(clone(snapshot));
+    if (path === "/api/v2/operations/refresh" && method === "POST") return jsonResponse(clone(snapshot));
     if (path === "/api/v2/infrastructure/environments" && method === "GET") return jsonResponse({ environments: clone(targets) });
     if (path === "/api/v2/infrastructure/environments/test" && method === "POST") return jsonResponse(clone(healthyTest));
     if (path === `/api/v2/infrastructure/environments/${targetId}/test` && method === "POST") return jsonResponse(clone(healthyTest));
@@ -2022,6 +2084,20 @@ async function infrastructureWorkspaceContract() {
   await importShell(environment);
   await waitFor(() => environment.main.innerHTML.includes("operations-page"), "media workspace startup");
   assert.equal(environment.elements.get("#page-eyebrow").textContent, "Media operations");
+  assert.equal(environment.elements.get("#monitor-summary").attributes.get("href"), "#/health", "Media monitor summary must link to Health");
+  assert.equal(environment.elements.get("#monitor-summary").attributes.get("aria-label"), "Open media health");
+
+  environment.sidebarToggle.closest = (selector) => selector === "[data-action]" ? environment.sidebarToggle : null;
+  assert.equal(environment.elements.get("#app").classList.contains("is-sidebar-collapsed"), false);
+  await environment.dispatchDocument("click", { target: environment.sidebarToggle });
+  assert.equal(environment.elements.get("#app").classList.contains("is-sidebar-collapsed"), true, "the sidebar toggle must apply compact shell geometry");
+  assert.equal(environment.sidebarToggle.attributes.get("aria-expanded"), "false");
+  assert.equal(environment.sidebarToggle.attributes.get("aria-label"), "Expand sidebar");
+  assert.equal(environment.localStorageValues.get("helmsman.sidebarCollapsed"), "true", "the explicit sidebar preference must persist");
+  await environment.dispatchDocument("click", { target: environment.sidebarToggle });
+  assert.equal(environment.elements.get("#app").classList.contains("is-sidebar-collapsed"), false);
+  assert.equal(environment.sidebarToggle.attributes.get("aria-expanded"), "true");
+  assert.equal(environment.localStorageValues.get("helmsman.sidebarCollapsed"), "false");
 
   const infrastructureSwitch = environment.workspaceButtons.find((button) => button.dataset.workspace === "infrastructure");
   infrastructureSwitch.closest = (selector) => selector === "[data-action]" ? infrastructureSwitch : null;
@@ -2033,13 +2109,23 @@ async function infrastructureWorkspaceContract() {
   assert.ok(environment.workspaceButtons.filter((button) => button.dataset.workspace === "media")
     .every((button) => button.attributes.get("aria-pressed") === "false"));
   assert.ok(environment.mediaOnly.every((element) => element.hidden), "media-only navigation must hide in Infrastructure");
-  assert.ok(environment.infrastructureOnly.every((element) => !element.hidden), "infrastructure navigation must become available");
+  assert.ok(environment.infrastructureGlobalNav.every((element) => !element.hidden), "global Infrastructure navigation must remain available without a service connection");
+  assert.ok(environment.proxmoxNav.every((element) => element.hidden), "Proxmox and Workloads navigation must stay hidden until Proxmox is connected");
+  assert.ok(environment.portainerNav.every((element) => element.hidden), "Portainer navigation must stay hidden until Portainer is connected");
+  assert.equal(environment.elements.get("#monitor-summary").attributes.get("href"), "#/incidents", "Infrastructure monitor summary must link to Incidents");
+  assert.equal(environment.elements.get("#monitor-summary").attributes.get("aria-label"), "Open infrastructure incidents");
   assert.ok(environment.requestLog.some(({ path }) => path === "/api/v2/infrastructure/environments"), "workspace switch must load environment metadata");
 
   environment.location.hash = "#/services";
   await environment.dispatchWindow("hashchange", { type: "hashchange" });
-  assert.match(environment.main.innerHTML, /id="infrastructure-environments"/u);
+  assert.match(environment.main.innerHTML, /id="infrastructure-proxmox"/u, "the legacy Services route must render the merged Proxmox page");
   assert.match(environment.main.innerHTML, /Connect your first Proxmox environment/u);
+  environment.location.hash = "#/environments";
+  await environment.dispatchWindow("hashchange", { type: "hashchange" });
+  assert.match(environment.main.innerHTML, /id="infrastructure-proxmox"/u, "the legacy Environments route must render the merged Proxmox page");
+  environment.location.hash = "#/nodes";
+  await environment.dispatchWindow("hashchange", { type: "hashchange" });
+  assert.match(environment.main.innerHTML, /id="infrastructure-proxmox"/u, "the legacy Nodes route must render the merged Proxmox page");
   assert.equal(environment.elements.get("#modal-layer").innerHTML, "", "closed Infrastructure view must not retain a token form");
 
   const modal = environment.elements.get("#modal-layer");
@@ -2242,6 +2328,20 @@ async function infrastructureWorkspaceContract() {
   });
   await waitFor(() => modal.innerHTML === "", "Proxmox modal close after save");
   assert.doesNotMatch(`${environment.main.innerHTML}${modal.innerHTML}`, /name="proxmoxTokenSecret"/u, "closed modal must remove token inputs");
+  assert.ok(environment.proxmoxNav.every((element) => !element.hidden), "saving a Proxmox connection must reveal Proxmox and Workloads navigation");
+  assert.ok(environment.portainerNav.every((element) => element.hidden), "a Proxmox connection must not reveal Portainer navigation");
+  assert.match(environment.main.innerHTML, /id="proxmox-environments-title">Environments/u);
+  assert.match(environment.main.innerHTML, /id="proxmox-nodes-title">Nodes/u);
+  assert.match(environment.main.innerHTML, /id="proxmox-storage-title">Storage/u, "the merged Proxmox page must include storage inventory");
+  assert.match(environment.main.innerHTML, /local-zfs/u, "saving Proxmox must refresh node-scoped storage without waiting for the polling interval");
+  assert.match(environment.main.innerHTML, /local-zfs[\s\S]*?Status available/u, "storage availability must be stated in text rather than communicated by color alone");
+  assert.match(environment.main.innerHTML, /class="storage-usage"><i class="health-dot is-healthy" aria-hidden="true"><\/i>20%/u, "the redundant storage health dot must remain hidden from assistive technology");
+  assert.match(environment.main.innerHTML, /20%/u);
+  const createRefreshCall = environment.requestLog.find(({ path }) => path === "/api/v2/operations/refresh");
+  assert.ok(createRefreshCall, "saving Proxmox must request an immediate operations refresh");
+  assert.equal(createRefreshCall.options.method, "POST");
+  assert.equal(createRefreshCall.options.headers.get("X-Jellofin-CSRF"), csrfToken);
+  assert.deepEqual(JSON.parse(createRefreshCall.options.body), {});
 
   const snapshotsBeforeHydration = environment.requestLog.filter(({ path }) => path === "/api/v2/operations/snapshot").length;
   await environment.intervalCallbacks.at(-1)();
@@ -2322,7 +2422,9 @@ async function infrastructureWorkspaceContract() {
 
   environment.location.hash = "#/nodes";
   await environment.dispatchWindow("hashchange", { type: "hashchange" });
-  assert.match(environment.main.innerHTML, /Proxmox nodes/u);
+  assert.match(environment.main.innerHTML, /id="infrastructure-proxmox"/u);
+  assert.match(environment.main.innerHTML, /id="proxmox-nodes-title">Nodes/u);
+  assert.match(environment.main.innerHTML, /id="proxmox-storage-title">Storage/u, "the legacy Nodes alias must retain the merged storage section");
   assert.match(environment.main.innerHTML, /pve-main/u);
   assert.match(environment.main.innerHTML, /API 1\/1/u, "node cards must keep environment endpoint availability separate from node state");
   assert.match(environment.main.innerHTML, /node-mark"><img class="service-brand-icon service-brand-icon--light-plate" src="\.\/assets\/services\/proxmox\.png"/u, "node cards must use the normalized Proxmox mark on its light plate");
@@ -2620,6 +2722,11 @@ async function portainerInfrastructureContract() {
   await importShell(environment);
   await waitFor(() => environment.main.innerHTML.includes("portainer-infrastructure"), "Portainer infrastructure route");
   const markup = environment.main.innerHTML;
+  assert.ok(environment.infrastructureGlobalNav.every((element) => !element.hidden), "global Infrastructure navigation must remain visible with Portainer configured");
+  assert.ok(environment.proxmoxNav.every((element) => element.hidden), "Portainer alone must not reveal Proxmox-specific navigation");
+  assert.ok(environment.portainerNav.every((element) => !element.hidden), "a saved Portainer connection must reveal Portainer navigation even while its live state is degraded");
+  assert.equal(environment.elements.get("#monitor-summary").attributes.get("href"), "#/incidents");
+  assert.equal(environment.elements.get("#monitor-summary").attributes.get("aria-label"), "Open infrastructure incidents");
   assert.equal(environment.elements.get("#page-title").textContent, "Portainer");
   assert.match(markup, /assets\/services\/portainer\.svg/u);
   assert.match(markup, /Container Control/u);
@@ -3125,6 +3232,7 @@ for (const [name, contract] of [
   ["reusable access-key login and redaction", accessKeyLoginContract],
   ["exact and manual network policy modes", networkPolicyInteractionContract],
   ["readable empty-state layout", emptyStateLayoutContract],
+  ["persistent collapsible sidebar", sidebarPersistenceContract],
   ["prioritized and retry-bounded media artwork", mediaArtworkLoadingContract],
   ["truthful media request and calendar semantics", mediaSemanticsContract],
   ["stable service dialog interactions", serviceDialogInteractionContract],

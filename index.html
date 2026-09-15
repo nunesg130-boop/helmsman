@@ -23,25 +23,30 @@
   </head>
   <body av-disable="true">
     <div id="app" class="app-shell">
-      <aside class="sidebar" aria-label="Primary navigation">
+      <aside class="sidebar" id="primary-sidebar" aria-label="Primary navigation">
         <a class="brand" href="#/home" aria-label="Helmsman home">
           <span class="brand-lockup" aria-hidden="true">
             <img src="./assets/helmsman-logo.png" alt="" width="351" height="231" />
           </span>
         </a>
 
-        <div class="world-switch" role="group" aria-label="Workspace">
-          <button class="world-option is-active" type="button" data-action="switch-workspace" data-workspace="media" aria-pressed="true">
-            <span class="world-dot" aria-hidden="true"></span>
-            <span class="world-option__label">Media</span>
-          </button>
-          <button class="world-option" type="button" data-action="switch-workspace" data-workspace="infrastructure" aria-pressed="false">
-            <span class="world-dot world-dot--infrastructure" aria-hidden="true"></span>
-            <span class="world-option__label">Infrastructure</span>
-          </button>
-        </div>
+        <button class="sidebar-toggle" type="button" data-action="toggle-sidebar" aria-controls="sidebar-navigation" aria-expanded="true" aria-label="Collapse sidebar" title="Collapse sidebar">
+          <svg aria-hidden="true"><use href="#icon-chevron"></use></svg>
+        </button>
 
-        <nav class="nav-list">
+        <div class="sidebar-scroll-region">
+          <div class="world-switch" role="group" aria-label="Workspace">
+            <button class="world-option is-active" type="button" data-action="switch-workspace" data-workspace="media" aria-pressed="true" aria-label="Media workspace">
+              <span class="world-dot" aria-hidden="true"></span>
+              <span class="world-option__label">Media</span>
+            </button>
+            <button class="world-option" type="button" data-action="switch-workspace" data-workspace="infrastructure" aria-pressed="false" aria-label="Infrastructure workspace">
+              <span class="world-dot world-dot--infrastructure" aria-hidden="true"></span>
+              <span class="world-option__label">Infrastructure</span>
+            </button>
+          </div>
+
+          <nav class="nav-list" id="sidebar-navigation">
           <a class="nav-item workspace-media-only" href="#/home" data-route="home" aria-label="Media home">
             <svg aria-hidden="true"><use href="#icon-home"></use></svg><span>Home</span>
           </a>
@@ -70,16 +75,13 @@
           <a class="nav-item workspace-infrastructure-only" hidden href="#/overview" data-route="overview" aria-label="Infrastructure overview">
             <svg aria-hidden="true"><use href="#icon-home"></use></svg><span>Overview</span>
           </a>
-          <a class="nav-item workspace-infrastructure-only" hidden href="#/environments" data-route="environments" aria-label="Proxmox environments">
-            <svg aria-hidden="true"><use href="#icon-server"></use></svg><span>Proxmox Environments</span>
+          <a class="nav-item workspace-infrastructure-only" hidden href="#/proxmox" data-route="proxmox" data-service-nav="proxmox" aria-label="Proxmox">
+            <svg aria-hidden="true"><use href="#icon-server"></use></svg><span>Proxmox</span>
           </a>
-          <a class="nav-item workspace-infrastructure-only" hidden href="#/nodes" data-route="nodes" aria-label="Proxmox nodes">
-            <svg aria-hidden="true"><use href="#icon-server"></use></svg><span>Nodes</span>
-          </a>
-          <a class="nav-item workspace-infrastructure-only" hidden href="#/workloads" data-route="workloads" aria-label="Virtual machines and containers">
+          <a class="nav-item workspace-infrastructure-only" hidden href="#/workloads" data-route="workloads" data-service-nav="proxmox" aria-label="Virtual machines and containers">
             <svg aria-hidden="true"><use href="#icon-library"></use></svg><span>Workloads</span>
           </a>
-          <a class="nav-item workspace-infrastructure-only" hidden href="#/portainer" data-route="portainer" aria-label="Portainer containers">
+          <a class="nav-item workspace-infrastructure-only" hidden href="#/portainer" data-route="portainer" data-service-nav="portainer" aria-label="Portainer containers">
             <svg aria-hidden="true"><use href="#icon-containers"></use></svg><span>Portainer</span>
           </a>
           <a class="nav-item workspace-infrastructure-only" hidden href="#/incidents" data-route="incidents" aria-label="Infrastructure incidents">
@@ -89,23 +91,24 @@
           <a class="nav-item" href="#/logs" data-route="logs" aria-label="Logs">
             <svg aria-hidden="true"><use href="#icon-logs"></use></svg><span>Logs</span>
           </a>
-        </nav>
+          </nav>
 
-        <div class="sidebar-spacer"></div>
-
-        <div class="privacy-card">
-          <div class="privacy-card__icon">
-            <svg aria-hidden="true"><use href="#icon-shield"></use></svg>
-          </div>
-          <div>
-            <strong>Local by design</strong>
-            <span>Encrypted · No telemetry</span>
+          <div class="privacy-card">
+            <div class="privacy-card__icon">
+              <svg aria-hidden="true"><use href="#icon-shield"></use></svg>
+            </div>
+            <div>
+              <strong>Local by design</strong>
+              <span>Encrypted · No telemetry</span>
+            </div>
           </div>
         </div>
 
-        <a class="nav-item settings-link" href="#/settings" data-route="settings" aria-label="Settings">
-          <svg aria-hidden="true"><use href="#icon-settings"></use></svg><span>Settings</span>
-        </a>
+        <div class="sidebar-footer">
+          <a class="nav-item settings-link" href="#/settings" data-route="settings" aria-label="Settings">
+            <svg aria-hidden="true"><use href="#icon-settings"></use></svg><span>Settings</span>
+          </a>
+        </div>
       </aside>
 
       <header class="topbar">
@@ -120,10 +123,10 @@
           <button type="button" class="is-active" data-action="switch-workspace" data-workspace="media" aria-pressed="true">Media</button>
           <button type="button" data-action="switch-workspace" data-workspace="infrastructure" aria-pressed="false">Infrastructure</button>
         </div>
-        <div class="global-search monitor-summary" id="monitor-summary">
+        <a class="global-search monitor-summary" id="monitor-summary" href="#/health" aria-label="Open media health">
           <span class="pulse-dot" aria-hidden="true"></span>
           <span>Container monitor starting…</span>
-        </div>
+        </a>
         <div class="topbar-actions">
           <span class="preview-badge" id="mode-badge">Local container</span>
           <button class="icon-button" type="button" id="privacy-button" aria-label="Privacy status">
@@ -148,10 +151,9 @@
         <a class="workspace-media-only" href="#/health" data-route="health" aria-label="Media health"><svg aria-hidden="true"><use href="#icon-shield"></use></svg><span>Health</span></a>
         <a class="workspace-media-only" href="#/connections" data-route="connections" aria-label="Media connections"><svg aria-hidden="true"><use href="#icon-link"></use></svg><span>Connections</span></a>
         <a class="workspace-infrastructure-only" hidden href="#/overview" data-route="overview" aria-label="Infrastructure overview"><svg aria-hidden="true"><use href="#icon-home"></use></svg><span>Overview</span></a>
-        <a class="workspace-infrastructure-only" hidden href="#/environments" data-route="environments" aria-label="Environments"><svg aria-hidden="true"><use href="#icon-server"></use></svg><span>Environments</span></a>
-        <a class="workspace-infrastructure-only" hidden href="#/nodes" data-route="nodes" aria-label="Nodes"><svg aria-hidden="true"><use href="#icon-server"></use></svg><span>Nodes</span></a>
-        <a class="workspace-infrastructure-only" hidden href="#/workloads" data-route="workloads" aria-label="Workloads"><svg aria-hidden="true"><use href="#icon-library"></use></svg><span>Workloads</span></a>
-        <a class="workspace-infrastructure-only" hidden href="#/portainer" data-route="portainer" aria-label="Portainer containers"><svg aria-hidden="true"><use href="#icon-containers"></use></svg><span>Portainer</span></a>
+        <a class="workspace-infrastructure-only" hidden href="#/proxmox" data-route="proxmox" data-service-nav="proxmox" aria-label="Proxmox"><svg aria-hidden="true"><use href="#icon-server"></use></svg><span>Proxmox</span></a>
+        <a class="workspace-infrastructure-only" hidden href="#/workloads" data-route="workloads" data-service-nav="proxmox" aria-label="Workloads"><svg aria-hidden="true"><use href="#icon-library"></use></svg><span>Workloads</span></a>
+        <a class="workspace-infrastructure-only" hidden href="#/portainer" data-route="portainer" data-service-nav="portainer" aria-label="Portainer containers"><svg aria-hidden="true"><use href="#icon-containers"></use></svg><span>Portainer</span></a>
         <a class="workspace-infrastructure-only" hidden href="#/incidents" data-route="incidents" aria-label="Infrastructure incidents"><svg aria-hidden="true"><use href="#icon-shield"></use></svg><span>Incidents</span></a>
         <a href="#/logs" data-route="logs" aria-label="Logs"><svg aria-hidden="true"><use href="#icon-logs"></use></svg><span>Logs</span></a>
         <a href="#/settings" data-route="settings" aria-label="Settings"><svg aria-hidden="true"><use href="#icon-settings"></use></svg><span>Settings</span></a>

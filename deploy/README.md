@@ -4,7 +4,7 @@ The supported Helmsman v0.10 production deployment uses the GitHub Release `comp
 
 ## Published deployment
 
-Pushing the Git tag `v0.10.0-beta.9` runs the Node contracts and Linux AMD64/ARM64 smoke tests. A successful tagged workflow publishes version, beta, and full-commit tags with provenance and an SBOM, then creates a GitHub Release containing `compose.yaml`, `container.env.example`, and `SHA256SUMS`. The workflow replaces the source tree's tagged placeholder with the actual lowercase GHCR image path and exact manifest digest, then checksums both deployment files before publishing the release and all three assets together.
+Pushing the Git tag `v0.10.0-beta.10` runs the Node contracts and Linux AMD64/ARM64 smoke tests. A successful tagged workflow publishes version, beta, and full-commit tags with provenance and an SBOM, then creates a GitHub Release containing `compose.yaml`, `container.env.example`, and `SHA256SUMS`. The workflow replaces the source tree's tagged placeholder with the actual lowercase GHCR image path and exact manifest digest, then checksums both deployment files before publishing the release and all three assets together.
 
 After downloading those three files into one directory and verifying `sha256sum -c SHA256SUMS`:
 

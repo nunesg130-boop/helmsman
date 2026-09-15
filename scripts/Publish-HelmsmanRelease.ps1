@@ -5,12 +5,16 @@ param(
     [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
     [string]$SourcePath,
-    [switch]$SkipLocalTests
+    [string]$RepositoryPath,
+    [switch]$SkipLocalTests,
+    [switch]$SelfTest
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $Repository = 'nunesg130-boop/helmsman'
+$GitHubLogin = 'nunesg130-boop'
+$MinimumGitHubCliVersion = [version]'2.57.0'
 $Workflow = 'container.yml'
 
 function Write-Step {
@@ -166,9 +170,219 @@ function Invoke-NativeJson {
     }
 }
 
+function Assert-RequiredJsonProperties {
+    param(
+        $InputObject,
+        [Parameter(Mandatory = $true)][string[]]$PropertyNames,
+        [Parameter(Mandatory = $true)][string]$Context,
+        [string[]]$NullablePropertyNames = @()
+    )
+
+    if ($null -eq $InputObject) {
+        throw "$Context returned a null record."
+    }
+    foreach ($name in $PropertyNames) {
+        $property = $InputObject.PSObject.Properties[$name]
+        if ($null -eq $property) {
+            throw "$Context is missing the required '$name' property."
+        }
+        if ($null -eq $property.Value -and $NullablePropertyNames -notcontains $name) {
+            throw "$Context returned null for the required '$name' property."
+        }
+    }
+}
+
+function ConvertFrom-GitHubRunListJson {
+    param(
+        [Parameter(Mandatory = $true)][string]$Json,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    $trimmed = $Json.Trim()
+    if (!$trimmed.StartsWith('[') -or !$trimmed.EndsWith(']')) {
+        throw "$Context did not return a JSON array."
+    }
+    try {
+        $parsedRuns = $trimmed | ConvertFrom-Json
+    }
+    catch {
+        throw "$Context returned invalid JSON."
+    }
+
+    # Windows PowerShell 5.1 emits a top-level JSON array as one pipeline
+    # object. Write-Output deliberately enumerates that object so [] becomes
+    # zero records instead of one empty Object[] record under StrictMode.
+    $rawRuns = @($parsedRuns | Write-Output)
+    $runs = @()
+    foreach ($rawRun in $rawRuns) {
+        Assert-RequiredJsonProperties -InputObject $rawRun -PropertyNames @(
+            'databaseId', 'headBranch', 'headSha'
+        ) -Context $Context
+        $databaseId = [string]$rawRun.databaseId
+        $headBranch = [string]$rawRun.headBranch
+        $headSha = [string]$rawRun.headSha
+        if ($databaseId -notmatch '^[1-9][0-9]*$') {
+            throw "$Context returned an invalid databaseId."
+        }
+        if ([string]::IsNullOrWhiteSpace($headBranch) -or $headBranch -match '[\x00-\x1f\x7f]') {
+            throw "$Context returned an invalid headBranch."
+        }
+        if ($headSha -notmatch '^(?:[0-9a-f]{40}|[0-9a-f]{64})$') {
+            throw "$Context returned an invalid headSha."
+        }
+        $runs += [PSCustomObject]@{
+            DatabaseId = $databaseId
+            HeadBranch = $headBranch
+            HeadSha = $headSha
+        }
+    }
+    return @($runs)
+}
+
+function ConvertFrom-GitHubRunViewJson {
+    param(
+        [Parameter(Mandatory = $true)][string]$Json,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    $trimmed = $Json.Trim()
+    if (!$trimmed.StartsWith('{') -or !$trimmed.EndsWith('}')) {
+        throw "$Context did not return a JSON object."
+    }
+    try {
+        $view = $trimmed | ConvertFrom-Json
+    }
+    catch {
+        throw "$Context returned invalid JSON."
+    }
+    Assert-RequiredJsonProperties -InputObject $view -PropertyNames @(
+        'conclusion', 'headBranch', 'headSha', 'event', 'status'
+    ) -NullablePropertyNames @('conclusion') -Context $Context
+
+    $headBranch = [string]$view.headBranch
+    $headSha = [string]$view.headSha
+    $eventName = [string]$view.event
+    $status = [string]$view.status
+    $conclusion = [string]$view.conclusion
+    if ([string]::IsNullOrWhiteSpace($headBranch) -or $headBranch -match '[\x00-\x1f\x7f]') {
+        throw "$Context returned an invalid headBranch."
+    }
+    if ($headSha -notmatch '^(?:[0-9a-f]{40}|[0-9a-f]{64})$') {
+        throw "$Context returned an invalid headSha."
+    }
+    if ([string]::IsNullOrWhiteSpace($eventName) -or [string]::IsNullOrWhiteSpace($status)) {
+        throw "$Context returned an invalid workflow event or status."
+    }
+    return [PSCustomObject]@{
+        Conclusion = $conclusion
+        HeadBranch = $headBranch
+        HeadSha = $headSha
+        Event = $eventName
+        Status = $status
+    }
+}
+
 function Get-NormalizedPath {
     param([Parameter(Mandatory = $true)][string]$Path)
     return [IO.Path]::GetFullPath($Path).Replace('/', '\').TrimEnd('\').ToLowerInvariant()
+}
+
+function Enter-GitHooksIsolation {
+    $variableNames = @(
+        'GIT_CONFIG_COUNT',
+        'GIT_CONFIG_KEY_0',
+        'GIT_CONFIG_VALUE_0',
+        'GIT_CONFIG_PARAMETERS',
+        'GIT_TERMINAL_PROMPT',
+        'GCM_INTERACTIVE'
+    )
+    $previousValues = @{}
+    foreach ($name in $variableNames) {
+        $previousValues[$name] = [PSCustomObject]@{
+            Exists = Test-Path -LiteralPath ("Env:" + $name)
+            Value = [Environment]::GetEnvironmentVariable($name, 'Process')
+        }
+    }
+
+    $temporaryRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd([char[]]@('\', '/'))
+    $hooksPath = Join-Path $temporaryRoot ('helmsman-empty-hooks-' + [guid]::NewGuid().ToString('N'))
+    if (Test-Path -LiteralPath $hooksPath) {
+        throw 'The unique empty Git-hooks directory unexpectedly already exists.'
+    }
+
+    $created = $false
+    try {
+        $null = New-Item -ItemType Directory -Path $hooksPath -ErrorAction Stop
+        $created = $true
+        $hooksItem = Get-Item -LiteralPath $hooksPath -Force
+        $hooksFull = [IO.Path]::GetFullPath($hooksItem.FullName).TrimEnd([char[]]@('\', '/'))
+        $temporaryPrefix = $temporaryRoot + [IO.Path]::DirectorySeparatorChar
+        if (!$hooksFull.StartsWith($temporaryPrefix, [StringComparison]::OrdinalIgnoreCase) -or
+            ($hooksItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+            [IO.Directory]::GetFileSystemEntries($hooksFull).Count -ne 0) {
+            throw 'The empty Git-hooks directory failed validation.'
+        }
+
+        [Environment]::SetEnvironmentVariable('GIT_CONFIG_PARAMETERS', $null, 'Process')
+        [Environment]::SetEnvironmentVariable('GIT_CONFIG_COUNT', '1', 'Process')
+        [Environment]::SetEnvironmentVariable('GIT_CONFIG_KEY_0', 'core.hooksPath', 'Process')
+        [Environment]::SetEnvironmentVariable('GIT_CONFIG_VALUE_0', $hooksFull, 'Process')
+        [Environment]::SetEnvironmentVariable('GIT_TERMINAL_PROMPT', '0', 'Process')
+        [Environment]::SetEnvironmentVariable('GCM_INTERACTIVE', 'Never', 'Process')
+
+        return [PSCustomObject]@{
+            HooksPath = $hooksFull
+            TemporaryRoot = $temporaryRoot
+            PreviousValues = $previousValues
+        }
+    }
+    catch {
+        foreach ($name in $variableNames) {
+            $saved = $previousValues[$name]
+            $restoreValue = if ($saved.Exists) { $saved.Value } else { $null }
+            [Environment]::SetEnvironmentVariable($name, $restoreValue, 'Process')
+        }
+        if ($created -and (Test-Path -LiteralPath $hooksPath -PathType Container)) {
+            $cleanupItem = Get-Item -LiteralPath $hooksPath -Force
+            if (($cleanupItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0 -and
+                [IO.Directory]::GetFileSystemEntries($cleanupItem.FullName).Count -eq 0) {
+                [IO.Directory]::Delete($cleanupItem.FullName, $false)
+            }
+        }
+        throw
+    }
+}
+
+function Exit-GitHooksIsolation {
+    param([Parameter(Mandatory = $true)]$Scope)
+
+    foreach ($name in @(
+        'GIT_CONFIG_COUNT',
+        'GIT_CONFIG_KEY_0',
+        'GIT_CONFIG_VALUE_0',
+        'GIT_CONFIG_PARAMETERS',
+        'GIT_TERMINAL_PROMPT',
+        'GCM_INTERACTIVE'
+    )) {
+        $saved = $Scope.PreviousValues[$name]
+        $restoreValue = if ($saved.Exists) { $saved.Value } else { $null }
+        [Environment]::SetEnvironmentVariable($name, $restoreValue, 'Process')
+    }
+
+    $hooksFull = [IO.Path]::GetFullPath([string]$Scope.HooksPath).TrimEnd([char[]]@('\', '/'))
+    $temporaryRoot = [IO.Path]::GetFullPath([string]$Scope.TemporaryRoot).TrimEnd([char[]]@('\', '/'))
+    $temporaryPrefix = $temporaryRoot + [IO.Path]::DirectorySeparatorChar
+    if (!$hooksFull.StartsWith($temporaryPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Refusing to remove a Git-hooks directory outside the validated temporary root.'
+    }
+    if (!(Test-Path -LiteralPath $hooksFull)) { return }
+    $hooksItem = Get-Item -LiteralPath $hooksFull -Force
+    if (!$hooksItem.PSIsContainer -or
+        ($hooksItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+        [IO.Directory]::GetFileSystemEntries($hooksFull).Count -ne 0) {
+        throw 'The temporary Git-hooks directory changed unexpectedly and was not removed.'
+    }
+    [IO.Directory]::Delete($hooksFull, $false)
 }
 
 function ConvertTo-PowerShellLiteral {
@@ -331,6 +545,23 @@ function Assert-NoEmbeddedSecrets {
 function Assert-RequiredTool {
     $git = Get-RequiredApplication -Name 'git.exe' -InstallHint 'Install Git for Windows, then reopen PowerShell.'
     $gh = Get-RequiredApplication -Name 'gh.exe' -InstallHint 'Install GitHub CLI, then reopen PowerShell.'
+    $versionOutput = Invoke-NativeText -FilePath $gh -ArgumentList @('--version') -FailureMessage 'GitHub CLI version check'
+    $versionMatch = [regex]::Match(
+        $versionOutput,
+        '(?m)^gh version (?<version>[0-9]+\.[0-9]+\.[0-9]+)(?:\s|$)'
+    )
+    if (!$versionMatch.Success) {
+        throw 'GitHub CLI returned an unrecognized version string.'
+    }
+    try {
+        $githubVersion = [version]$versionMatch.Groups['version'].Value
+    }
+    catch {
+        throw 'GitHub CLI returned an invalid version number.'
+    }
+    if ($githubVersion -lt $MinimumGitHubCliVersion) {
+        throw "GitHub CLI $MinimumGitHubCliVersion or newer is required for unambiguous active-account verification; found $githubVersion. Update GitHub CLI, then retry."
+    }
     return [PSCustomObject]@{ Git = $git; GitHub = $gh }
 }
 
@@ -353,6 +584,89 @@ function ConvertTo-GitHubSlug {
     throw 'The origin remote is not a supported credential-free GitHub URL.'
 }
 
+function Assert-ExpectedHttpsRepositoryUrl {
+    param(
+        [Parameter(Mandatory = $true)][string]$RemoteUrl,
+        [Parameter(Mandatory = $true)][string]$ExpectedRepository,
+        [Parameter(Mandatory = $true)][string]$Description
+    )
+
+    $value = $RemoteUrl.Trim().TrimEnd('/')
+    $expectedUrl = 'https://github.com/' + $ExpectedRepository.ToLowerInvariant() + '.git'
+    if (![string]::Equals($value, $expectedUrl, [StringComparison]::Ordinal)) {
+        throw "$Description must use the credential-free HTTPS URL $expectedUrl. SSH, embedded credentials, alternate hosts, and Git URL rewrites are not allowed."
+    }
+}
+
+function Assert-NoGitHubCredentialOverrides {
+    param(
+        [Parameter(Mandatory = $true)][string]$RepoRoot,
+        [Parameter(Mandatory = $true)]$Tools,
+        [Parameter(Mandatory = $true)][string]$ExpectedRepository
+    )
+
+    $expectedUrl = 'https://github.com/' + $ExpectedRepository.ToLowerInvariant() + '.git'
+    $extraHeaderProbe = Invoke-NativeProbe -FilePath $Tools.Git -ArgumentList @(
+        '-C', $RepoRoot, 'config', '--get-urlmatch', 'http.extraHeader', $expectedUrl
+    )
+    if ($extraHeaderProbe.ExitCode -eq 0) {
+        $extraHeaderProbe = $null
+        throw 'An effective GitHub HTTP extraHeader is configured. Remove the credential-bearing override before publishing; its value was not displayed.'
+    }
+    if ($extraHeaderProbe.ExitCode -ne 1) {
+        throw 'The effective GitHub HTTP extraHeader check failed.'
+    }
+    $extraHeaderProbe = $null
+
+    $localHelperProbe = Invoke-NativeProbe -FilePath $Tools.Git -ArgumentList @(
+        '-C', $RepoRoot, 'config', '--local', '--name-only', '--get-regexp',
+        '^credential(\..*)?\.helper$'
+    )
+    if ($localHelperProbe.ExitCode -eq 0) {
+        throw 'The publishing clone has a repository-local credential helper override. Remove it before publishing; no credential value was displayed.'
+    }
+    if ($localHelperProbe.ExitCode -ne 1) {
+        throw 'The repository-local credential helper check failed.'
+    }
+
+    $worktreeHelperProbe = Invoke-NativeProbe -FilePath $Tools.Git -ArgumentList @(
+        '-C', $RepoRoot, 'config', '--worktree', '--name-only', '--get-regexp',
+        '^credential(\..*)?\.helper$'
+    )
+    if ($worktreeHelperProbe.ExitCode -eq 0) {
+        throw 'The publishing clone has a worktree-specific credential helper override. Remove it before publishing; no credential value was displayed.'
+    }
+    if ($worktreeHelperProbe.ExitCode -ne 1) {
+        throw 'The worktree-specific credential helper check failed.'
+    }
+}
+
+function Test-GitHubAuthenticationScope {
+    param(
+        [Parameter(Mandatory = $true)][string]$StatusText,
+        [Parameter(Mandatory = $true)][string]$RequiredScope
+    )
+
+    $scopeLines = [regex]::Matches(
+        $StatusText,
+        '(?im)^\s*-\s*Token scopes:\s*(?<scopes>[^\r\n]*)\s*$'
+    )
+    if ($scopeLines.Count -ne 1) { return $false }
+    foreach ($entry in $scopeLines[0].Groups['scopes'].Value.Split(',')) {
+        $scope = $entry.Trim()
+        if ($scope.Length -ge 2) {
+            $first = $scope.Substring(0, 1)
+            $last = $scope.Substring($scope.Length - 1, 1)
+            if (($first -ceq "'" -and $last -ceq "'") -or
+                ($first -ceq '"' -and $last -ceq '"')) {
+                $scope = $scope.Substring(1, $scope.Length - 2)
+            }
+        }
+        if ($scope -ceq $RequiredScope) { return $true }
+    }
+    return $false
+}
+
 function Get-CanonicalRepository {
     param(
         [Parameter(Mandatory = $true)][string]$RepoRoot,
@@ -362,7 +676,7 @@ function Get-CanonicalRepository {
 
     $gitMetadataPath = Join-Path $RepoRoot '.git'
     if (!(Test-Path -LiteralPath $gitMetadataPath -PathType Container)) {
-        throw 'The publisher must remain inside the scripts directory of a regular Git clone.'
+        throw 'The publishing repository must be a regular Git clone.'
     }
     $gitMetadata = Get-Item -LiteralPath $gitMetadataPath -Force
     if (($gitMetadata.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
@@ -370,7 +684,7 @@ function Get-CanonicalRepository {
     }
     $gitRoot = Invoke-NativeText -FilePath $Tools.Git -ArgumentList @('-C', $RepoRoot, 'rev-parse', '--show-toplevel') -FailureMessage 'Git repository discovery'
     if ((Get-NormalizedPath $gitRoot) -ne (Get-NormalizedPath $RepoRoot)) {
-        throw 'The publisher must be located directly under the Helmsman clone root.'
+        throw 'The selected publishing repository is not its Git clone root.'
     }
     $branch = Invoke-NativeText -FilePath $Tools.Git -ArgumentList @('-C', $RepoRoot, 'branch', '--show-current') -FailureMessage 'Current branch discovery'
     if ($branch -cne 'main') {
@@ -381,6 +695,10 @@ function Get-CanonicalRepository {
     if ($origins.Count -ne 1) {
         throw 'The origin remote must have exactly one canonical fetch URL.'
     }
+    Assert-ExpectedHttpsRepositoryUrl `
+        -RemoteUrl $origins[0] `
+        -ExpectedRepository $ExpectedRepository `
+        -Description 'The effective origin fetch URL'
     $slug = ConvertTo-GitHubSlug -RemoteUrl $origins[0]
     if ($slug -cne $ExpectedRepository.ToLowerInvariant()) {
         throw 'The origin remote does not point to the expected Helmsman repository.'
@@ -390,10 +708,18 @@ function Get-CanonicalRepository {
     if ($pushOrigins.Count -ne 1) {
         throw 'The origin remote must have exactly one canonical push URL.'
     }
+    Assert-ExpectedHttpsRepositoryUrl `
+        -RemoteUrl $pushOrigins[0] `
+        -ExpectedRepository $ExpectedRepository `
+        -Description 'The effective origin push URL'
     $pushSlug = ConvertTo-GitHubSlug -RemoteUrl $pushOrigins[0]
     if ($pushSlug -cne $ExpectedRepository.ToLowerInvariant()) {
         throw 'The origin push URL does not point to the expected Helmsman repository.'
     }
+    Assert-NoGitHubCredentialOverrides `
+        -RepoRoot $RepoRoot `
+        -Tools $Tools `
+        -ExpectedRepository $ExpectedRepository
     $mirror = Invoke-NativeProbe -FilePath $Tools.Git -ArgumentList @('-C', $RepoRoot, 'config', '--bool', '--get', 'remote.origin.mirror')
     if ($mirror.ExitCode -eq 0 -and $mirror.Text -ceq 'true') {
         throw 'remote.origin.mirror must not be enabled for guarded releases.'
@@ -407,14 +733,89 @@ function Get-CanonicalRepository {
 function Assert-GitHubAuthentication {
     param(
         [Parameter(Mandatory = $true)]$Tools,
-        [Parameter(Mandatory = $true)][string]$ExpectedRepository
+        [Parameter(Mandatory = $true)][string]$RepoRoot,
+        [Parameter(Mandatory = $true)][string]$ExpectedRepository,
+        [Parameter(Mandatory = $true)][string]$ExpectedLogin
     )
 
+    foreach ($environmentOverride in @('GH_TOKEN', 'GITHUB_TOKEN', 'GH_HOST', 'GH_CONFIG_DIR')) {
+        $ambientValue = [Environment]::GetEnvironmentVariable($environmentOverride, 'Process')
+        if (![string]::IsNullOrWhiteSpace($ambientValue)) {
+            throw "The $environmentOverride environment variable is set. Clear it so GitHub CLI and Git use the verified github.com keyring account. Its value was not displayed."
+        }
+    }
+
+    $status = Invoke-NativeProbe -FilePath $Tools.GitHub -ArgumentList @(
+        'auth', 'status', '--active', '--hostname', 'github.com'
+    )
+    if ($status.ExitCode -ne 0) {
+        throw 'GitHub CLI does not have a valid active github.com account. Run the root Publish-Helmsman launcher to authenticate, then retry.'
+    }
+    $statusText = (@($status.StdOut, $status.StdErr) |
+        Where-Object { ![string]::IsNullOrWhiteSpace($_) }) -join "`n"
+    if (!(Test-GitHubAuthenticationScope -StatusText $statusText -RequiredScope 'repo') -or
+        !(Test-GitHubAuthenticationScope -StatusText $statusText -RequiredScope 'workflow')) {
+        throw 'The active GitHub CLI account does not report the repo and workflow permissions. Run the root Publish-Helmsman launcher to refresh authorization.'
+    }
+
+    $login = (Invoke-NativeText -FilePath $Tools.GitHub -ArgumentList @(
+        'api', 'user', '--jq', '.login'
+    ) -FailureMessage 'GitHub account lookup').Trim()
+    if ($login -cne $ExpectedLogin) {
+        throw "GitHub CLI is authenticated as '$login', not '$ExpectedLogin'. Switch the active github.com account, then retry."
+    }
+
     $repositorySelector = 'github.com/' + $ExpectedRepository
-    Invoke-NativeLive -FilePath $Tools.GitHub -ArgumentList @('auth', 'status', '--hostname', 'github.com') -FailureMessage 'GitHub authentication check'
-    $nameWithOwner = Invoke-NativeText -FilePath $Tools.GitHub -ArgumentList @('repo', 'view', $repositorySelector, '--json', 'nameWithOwner', '--jq', '.nameWithOwner') -FailureMessage 'GitHub repository access check'
-    if ($nameWithOwner.ToLowerInvariant() -cne $ExpectedRepository.ToLowerInvariant()) {
+    $repositoryJson = Invoke-NativeJson -FilePath $Tools.GitHub -ArgumentList @(
+        'repo', 'view', $repositorySelector,
+        '--json', 'nameWithOwner,viewerPermission,defaultBranchRef,isArchived'
+    ) -FailureMessage 'GitHub repository access check'
+    $repository = $repositoryJson | ConvertFrom-Json
+    Assert-RequiredJsonProperties `
+        -InputObject $repository `
+        -PropertyNames @('nameWithOwner', 'viewerPermission', 'defaultBranchRef', 'isArchived') `
+        -Context 'GitHub repository access check'
+    if (([string]$repository.nameWithOwner).ToLowerInvariant() -cne
+        $ExpectedRepository.ToLowerInvariant()) {
         throw 'GitHub CLI resolved a different repository than expected.'
+    }
+    if ([string]$repository.viewerPermission -cnotin @('WRITE', 'MAINTAIN', 'ADMIN')) {
+        throw 'The active GitHub CLI account does not have permission to publish to the Helmsman repository.'
+    }
+    if ($null -eq $repository.defaultBranchRef.PSObject.Properties['name'] -or
+        [string]$repository.defaultBranchRef.name -cne 'main') {
+        throw 'The Helmsman repository default branch is not main.'
+    }
+    if ($repository.PSObject.Properties['isArchived'].Value -isnot [bool]) {
+        throw 'GitHub repository metadata contains an invalid archive state.'
+    }
+    if ([bool]$repository.isArchived) {
+        throw 'The Helmsman repository is archived and cannot accept a release.'
+    }
+
+    Invoke-NativeLive -FilePath $Tools.GitHub -ArgumentList @(
+        'auth', 'setup-git', '--hostname', 'github.com'
+    ) -FailureMessage 'GitHub Git credential setup'
+
+    Assert-NoGitHubCredentialOverrides `
+        -RepoRoot $RepoRoot `
+        -Tools $Tools `
+        -ExpectedRepository $ExpectedRepository
+    $expectedUrl = 'https://github.com/' + $ExpectedRepository.ToLowerInvariant() + '.git'
+    $effectiveUrl = Invoke-NativeText -FilePath $Tools.Git -ArgumentList @(
+        '-C', $RepoRoot, 'ls-remote', '--get-url', $expectedUrl
+    ) -FailureMessage 'Effective authenticated HTTPS URL check'
+    Assert-ExpectedHttpsRepositoryUrl `
+        -RemoteUrl $effectiveUrl `
+        -ExpectedRepository $ExpectedRepository `
+        -Description 'The effective authenticated repository URL'
+    $remoteMain = Invoke-NativeText -FilePath $Tools.Git -ArgumentList @(
+        '-C', $RepoRoot, 'ls-remote', '--exit-code', $expectedUrl, 'refs/heads/main'
+    ) -FailureMessage 'Authenticated HTTPS access to the Helmsman repository'
+    $remoteMainLines = @($remoteMain -split "`r?`n" | Where-Object { $_ -ne '' })
+    if ($remoteMainLines.Count -ne 1 -or
+        $remoteMainLines[0] -notmatch '^(?:[0-9a-f]{40}|[0-9a-f]{64})\s+refs/heads/main$') {
+        throw 'The authenticated Helmsman repository did not return one valid main branch reference.'
     }
 }
 
@@ -461,7 +862,16 @@ function Assert-GitAuthor {
 function Get-ValidatedSourceRelease {
     param([Parameter(Mandatory = $true)][string]$SourceRoot)
 
-    foreach ($required in @('package.json', 'compose.yaml', 'container.env.example', '.gitattributes', '.github/workflows/container.yml')) {
+    foreach ($required in @(
+        'package.json',
+        'compose.yaml',
+        'container.env.example',
+        '.gitattributes',
+        '.github/workflows/container.yml',
+        'Publish-Helmsman.ps1',
+        'Publish-Helmsman.cmd',
+        'scripts/Publish-HelmsmanRelease.ps1'
+    )) {
         if (!(Test-Path -LiteralPath (Join-SafePath -Root $SourceRoot -RelativePath $required) -PathType Leaf)) {
             throw "The source release is missing $required. Select the extracted inner helmsman folder."
         }
@@ -492,6 +902,7 @@ function Get-ValidatedSourceRelease {
     catch {
         throw 'The source package.json is not valid JSON.'
     }
+    Assert-RequiredJsonProperties -InputObject $package -PropertyNames @('name', 'version') -Context 'The source package.json'
     if ([string]$package.name -cne 'helmsman') {
         throw 'The source package name is not helmsman.'
     }
@@ -575,14 +986,14 @@ function Sync-SourceTree {
     param(
         [Parameter(Mandatory = $true)]$Release,
         [Parameter(Mandatory = $true)][string]$RepoRoot,
-        [Parameter(Mandatory = $true)]$Tools
+        [Parameter(Mandatory = $true)]$Tools,
+        [Parameter(Mandatory = $true)][string]$PublisherPath
     )
 
     $trackedText = Invoke-NativeText -FilePath $Tools.Git -ArgumentList @('-C', $RepoRoot, 'ls-files') -FailureMessage 'Tracked-file inventory'
     $tracked = @($trackedText -split "`r?`n" | Where-Object { $_ -ne '' })
     Assert-NoProhibitedPaths -RelativePaths $tracked -Context 'The tracked repository'
 
-    $publisherPath = Get-SafeRelativePath -Root $RepoRoot -FullName $PSCommandPath
     $existingModes = Invoke-NativeText -FilePath $Tools.Git -ArgumentList @('-C', $RepoRoot, 'ls-files', '--stage') -FailureMessage 'Existing index-mode inspection'
     if ($existingModes -match '(?m)^(120000|160000) ') {
         throw 'The repository contains a tracked symlink or nested Git repository.'
@@ -716,6 +1127,7 @@ function Stage-AndValidateRelease {
         catch {
             throw 'The staged package.json is not valid JSON.'
         }
+        Assert-RequiredJsonProperties -InputObject $destinationPackage -PropertyNames @('version') -Context 'The staged package.json'
         if ([string]$destinationPackage.version -cne $Release.Version) {
             throw 'The staged package version does not match the validated source version.'
         }
@@ -846,9 +1258,20 @@ function Push-Main {
     param(
         [Parameter(Mandatory = $true)][string]$RepoRoot,
         [Parameter(Mandatory = $true)]$Tools,
-        [Parameter(Mandatory = $true)][string]$CommitSha
+        [Parameter(Mandatory = $true)][string]$CommitSha,
+        [Parameter(Mandatory = $true)][string]$ExpectedRepository,
+        [Parameter(Mandatory = $true)][string]$ExpectedLogin
     )
 
+    $null = Get-CanonicalRepository `
+        -RepoRoot $RepoRoot `
+        -Tools $Tools `
+        -ExpectedRepository $ExpectedRepository
+    Assert-GitHubAuthentication `
+        -Tools $Tools `
+        -RepoRoot $RepoRoot `
+        -ExpectedRepository $ExpectedRepository `
+        -ExpectedLogin $ExpectedLogin
     Invoke-NativeLive -FilePath $Tools.Git -ArgumentList @('-C', $RepoRoot, 'push', '--no-follow-tags', '--recurse-submodules=no', 'origin', "${CommitSha}:refs/heads/main") -FailureMessage 'Push of main'
     $remote = Invoke-NativeText -FilePath $Tools.Git -ArgumentList @('-C', $RepoRoot, 'ls-remote', 'origin', 'refs/heads/main') -FailureMessage 'Remote main verification'
     $remoteSha = @($remote -split '\s+')[0]
@@ -872,10 +1295,10 @@ function Get-WorkflowRunIds {
         '--event', 'push', '--commit', $CommitSha, '--limit', '100',
         '--json', 'databaseId,headBranch,headSha'
     ) -FailureMessage 'Existing GitHub workflow-run inventory'
-    $runs = @($json | ConvertFrom-Json)
+    $runs = @(ConvertFrom-GitHubRunListJson -Json $json -Context 'Existing GitHub workflow-run inventory')
     return @($runs | Where-Object {
-        $_.headSha -ceq $CommitSha -and $_.headBranch -ceq $RefName
-    } | ForEach-Object { [string]$_.databaseId })
+        $_.HeadSha -ceq $CommitSha -and $_.HeadBranch -ceq $RefName
+    } | ForEach-Object { $_.DatabaseId })
 }
 
 function Wait-WorkflowForCommit {
@@ -901,14 +1324,14 @@ function Wait-WorkflowForCommit {
         $json = Invoke-NativeJson -FilePath $Tools.GitHub -ArgumentList @(
             'run', 'list', '--repo', $repositorySelector, '--workflow', $WorkflowName,
             '--event', 'push', '--commit', $CommitSha, '--limit', '20',
-            '--json', 'databaseId,headBranch,headSha,createdAt,status,conclusion'
+            '--json', 'databaseId,headBranch,headSha'
         ) -FailureMessage 'GitHub workflow discovery'
-        if (![string]::IsNullOrWhiteSpace($json)) {
-            $runs = @($json | ConvertFrom-Json)
+        $runs = @(ConvertFrom-GitHubRunListJson -Json $json -Context 'GitHub workflow discovery')
+        if ($runs.Count -gt 0) {
             $matchingRuns = @($runs | Where-Object {
-                $_.headSha -ceq $CommitSha -and $_.headBranch -ceq $RefName
+                $_.HeadSha -ceq $CommitSha -and $_.HeadBranch -ceq $RefName
             } | Where-Object {
-                !$excluded.ContainsKey([string]$_.databaseId)
+                !$excluded.ContainsKey($_.DatabaseId)
             })
             if ($matchingRuns.Count -gt 1) {
                 throw "More than one push workflow matched $RefName at $CommitSha. Refusing to guess."
@@ -924,22 +1347,22 @@ function Wait-WorkflowForCommit {
         throw "The $RefName workflow did not appear within $DiscoveryTimeoutSeconds seconds."
     }
 
-    Write-Host "Waiting for $RefName workflow run $($run.databaseId)..."
+    Write-Host "Waiting for $RefName workflow run $($run.DatabaseId)..."
     $completionDeadline = [DateTime]::UtcNow.AddSeconds($CompletionTimeoutSeconds)
     while ([DateTime]::UtcNow -lt $completionDeadline) {
         $viewJson = Invoke-NativeJson -FilePath $Tools.GitHub -ArgumentList @(
-            'run', 'view', [string]$run.databaseId, '--repo', $repositorySelector,
+            'run', 'view', $run.DatabaseId, '--repo', $repositorySelector,
             '--json', 'conclusion,headBranch,headSha,event,status'
         ) -FailureMessage 'GitHub workflow result verification'
-        $view = $viewJson | ConvertFrom-Json
-        if ($view.headSha -cne $CommitSha -or $view.headBranch -cne $RefName -or $view.event -cne 'push') {
+        $view = ConvertFrom-GitHubRunViewJson -Json $viewJson -Context 'GitHub workflow result verification'
+        if ($view.HeadSha -cne $CommitSha -or $view.HeadBranch -cne $RefName -or $view.Event -cne 'push') {
             throw "The $RefName workflow identity changed while it was being monitored."
         }
-        if ($view.status -ceq 'completed') {
-            if ($view.conclusion -cne 'success') {
-                throw "The $RefName workflow completed with conclusion '$($view.conclusion)'."
+        if ($view.Status -ceq 'completed') {
+            if ($view.Conclusion -cne 'success') {
+                throw "The $RefName workflow completed with conclusion '$($view.Conclusion)'."
             }
-            return [string]$run.databaseId
+            return $run.DatabaseId
         }
         Start-Sleep -Seconds 10
     }
@@ -951,9 +1374,25 @@ function New-AndPushReleaseTag {
         [Parameter(Mandatory = $true)][string]$RepoRoot,
         [Parameter(Mandatory = $true)]$Tools,
         [Parameter(Mandatory = $true)]$Release,
-        [Parameter(Mandatory = $true)][string]$CommitSha
+        [Parameter(Mandatory = $true)][string]$CommitSha,
+        [Parameter(Mandatory = $true)][string]$ExpectedRepository,
+        [Parameter(Mandatory = $true)][string]$ExpectedLogin
     )
 
+    $null = Get-CanonicalRepository `
+        -RepoRoot $RepoRoot `
+        -Tools $Tools `
+        -ExpectedRepository $ExpectedRepository
+    Assert-GitHubAuthentication `
+        -Tools $Tools `
+        -RepoRoot $RepoRoot `
+        -ExpectedRepository $ExpectedRepository `
+        -ExpectedLogin $ExpectedLogin
+    Assert-ReleaseIsNew `
+        -RepoRoot $RepoRoot `
+        -Tools $Tools `
+        -ExpectedRepository $ExpectedRepository `
+        -Tag $Release.Tag
     Invoke-NativeLive -FilePath $Tools.Git -ArgumentList @('-C', $RepoRoot, 'tag', '-a', $Release.Tag, '-m', "Helmsman $($Release.Tag)", $CommitSha) -FailureMessage 'Annotated release-tag creation'
     $tagObject = Invoke-NativeText -FilePath $Tools.Git -ArgumentList @('-C', $RepoRoot, 'rev-parse', "refs/tags/$($Release.Tag)") -FailureMessage 'Annotated release-tag identity'
     Invoke-NativeLive -FilePath $Tools.Git -ArgumentList @('-C', $RepoRoot, 'push', '--no-follow-tags', '--recurse-submodules=no', 'origin', "${tagObject}:refs/tags/$($Release.Tag)") -FailureMessage 'Release-tag push'
@@ -978,6 +1417,12 @@ function Assert-PublishedRelease {
         '--json', 'tagName,isDraft,isPrerelease,url,assets'
     ) -FailureMessage 'Published GitHub release verification'
     $published = $json | ConvertFrom-Json
+    Assert-RequiredJsonProperties -InputObject $published -PropertyNames @(
+        'tagName', 'isDraft', 'isPrerelease', 'url', 'assets'
+    ) -Context 'Published GitHub release verification'
+    foreach ($asset in @($published.assets | Write-Output)) {
+        Assert-RequiredJsonProperties -InputObject $asset -PropertyNames @('name') -Context 'Published GitHub release asset'
+    }
     $assetNames = @($published.assets | ForEach-Object { [string]$_.name })
     if ($assetNames.Count -ne 3) {
         throw 'The GitHub release must contain exactly the three deployment assets.'
@@ -1135,14 +1580,153 @@ function Show-ServerUpdateCommands {
     Write-Host 'docker compose --file compose.yaml --env-file .env logs --tail=100 helmsman'
 }
 
+function Invoke-PublisherSelfTest {
+    $sha = '0123456789abcdef0123456789abcdef01234567'
+    Assert-ExpectedHttpsRepositoryUrl `
+        -RemoteUrl 'https://github.com/nunesg130-boop/helmsman.git/' `
+        -ExpectedRepository 'nunesg130-boop/helmsman' `
+        -Description 'The self-test origin URL'
+    $sshUrlRejected = $false
+    try {
+        Assert-ExpectedHttpsRepositoryUrl `
+            -RemoteUrl 'git@github.com:nunesg130-boop/helmsman.git' `
+            -ExpectedRepository 'nunesg130-boop/helmsman' `
+            -Description 'The self-test origin URL'
+    }
+    catch {
+        if ($_.Exception.Message -notmatch 'HTTPS URL') { throw }
+        $sshUrlRejected = $true
+    }
+    if (!$sshUrlRejected) {
+        throw 'Publisher self-test accepted an SSH origin URL.'
+    }
+    $caseChangedUrlRejected = $false
+    try {
+        Assert-ExpectedHttpsRepositoryUrl `
+            -RemoteUrl 'https://github.com/NUNESG130-BOOP/HELMSMAN.git' `
+            -ExpectedRepository 'nunesg130-boop/helmsman' `
+            -Description 'The self-test origin URL'
+    }
+    catch {
+        if ($_.Exception.Message -notmatch 'HTTPS URL') { throw }
+        $caseChangedUrlRejected = $true
+    }
+    if (!$caseChangedUrlRejected) {
+        throw 'Publisher self-test accepted a case-changed origin URL.'
+    }
+    $scopeFixture = "  - Token scopes: 'repo', 'workflow'"
+    if (!(Test-GitHubAuthenticationScope -StatusText $scopeFixture -RequiredScope 'repo') -or
+        !(Test-GitHubAuthenticationScope -StatusText $scopeFixture -RequiredScope 'workflow') -or
+        (Test-GitHubAuthenticationScope `
+            -StatusText "  - Token scopes: 'repo:status', 'workflow'" `
+            -RequiredScope 'repo')) {
+        throw 'Publisher self-test did not require exact GitHub scope names.'
+    }
+
+    $emptyRuns = @(ConvertFrom-GitHubRunListJson -Json '[]' -Context 'Self-test empty run list')
+    if ($emptyRuns.Count -ne 0) {
+        throw 'Publisher self-test did not normalize an empty run list to zero records.'
+    }
+
+    $singleJson = '[{"databaseId":101,"headBranch":"main","headSha":"' + $sha + '"}]'
+    $singleRuns = @(ConvertFrom-GitHubRunListJson -Json $singleJson -Context 'Self-test single run list')
+    if ($singleRuns.Count -ne 1 -or
+        $singleRuns[0].DatabaseId -cne '101' -or
+        $singleRuns[0].HeadBranch -cne 'main' -or
+        $singleRuns[0].HeadSha -cne $sha) {
+        throw 'Publisher self-test did not normalize a single workflow run.'
+    }
+
+    $twoJson = '[{"databaseId":101,"headBranch":"main","headSha":"' + $sha + '"},{"databaseId":202,"headBranch":"v0.0.0-test.1","headSha":"' + $sha + '"}]'
+    $twoRuns = @(ConvertFrom-GitHubRunListJson -Json $twoJson -Context 'Self-test two-run list')
+    if ($twoRuns.Count -ne 2 -or $twoRuns[1].DatabaseId -cne '202') {
+        throw 'Publisher self-test did not enumerate a multi-record workflow run list.'
+    }
+
+    $missingPropertyRejected = $false
+    try {
+        $null = @(ConvertFrom-GitHubRunListJson -Json '[{"databaseId":303,"headBranch":"main"}]' -Context 'Self-test malformed run list')
+    }
+    catch {
+        if ($_.Exception.Message -notmatch 'headSha') { throw }
+        $missingPropertyRejected = $true
+    }
+    if (!$missingPropertyRejected) {
+        throw 'Publisher self-test accepted a workflow run without headSha.'
+    }
+
+    $nullPropertyRejected = $false
+    try {
+        $null = @(ConvertFrom-GitHubRunListJson -Json '[{"databaseId":404,"headBranch":"main","headSha":null}]' -Context 'Self-test null run list')
+    }
+    catch {
+        if ($_.Exception.Message -notmatch 'headSha') { throw }
+        $nullPropertyRejected = $true
+    }
+    if (!$nullPropertyRejected) {
+        throw 'Publisher self-test accepted a workflow run with null headSha.'
+    }
+
+    $wrongShapeRejected = $false
+    try {
+        $null = @(ConvertFrom-GitHubRunListJson -Json '{}' -Context 'Self-test wrong-shaped run list')
+    }
+    catch {
+        if ($_.Exception.Message -notmatch 'JSON array') { throw }
+        $wrongShapeRejected = $true
+    }
+    if (!$wrongShapeRejected) {
+        throw 'Publisher self-test accepted a non-array workflow run list.'
+    }
+
+    $viewJson = '{"conclusion":null,"headBranch":"main","headSha":"' + $sha + '","event":"push","status":"in_progress"}'
+    $view = ConvertFrom-GitHubRunViewJson -Json $viewJson -Context 'Self-test workflow view'
+    if ($view.HeadSha -cne $sha -or $view.HeadBranch -cne 'main' -or
+        $view.Event -cne 'push' -or $view.Status -cne 'in_progress' -or
+        $view.Conclusion -cne '') {
+        throw 'Publisher self-test did not validate a workflow view with a pending conclusion.'
+    }
+
+    $malformedViewRejected = $false
+    try {
+        $null = ConvertFrom-GitHubRunViewJson -Json '{"conclusion":null,"headBranch":"main","event":"push","status":"queued"}' -Context 'Self-test malformed workflow view'
+    }
+    catch {
+        if ($_.Exception.Message -notmatch 'headSha') { throw }
+        $malformedViewRejected = $true
+    }
+    if (!$malformedViewRejected) {
+        throw 'Publisher self-test accepted a workflow view without headSha.'
+    }
+
+    Write-Host 'Guarded publisher HTTPS and JSON self-test: PASS' -ForegroundColor Green
+}
+
+if ($SelfTest) {
+    Invoke-PublisherSelfTest
+    return
+}
+
 # ORCHESTRATION
 $startingLocation = Get-Location
+$gitHooksIsolation = $null
 try {
+    # Process-level Git configuration outranks repository and user config, so no
+    # source-controlled or preconfigured hook can run during validation, tests,
+    # commits, tags, or pushes. Child npm processes inherit the same protection.
+    $gitHooksIsolation = Enter-GitHooksIsolation
+
     Write-Step 'Validating release tools and paths'
     $tools = Assert-RequiredTool
 
     $sourceRoot = (Resolve-Path -LiteralPath $SourcePath -ErrorAction Stop).ProviderPath
-    $repoRoot = (Resolve-Path -LiteralPath (Split-Path -Parent $PSScriptRoot) -ErrorAction Stop).ProviderPath
+    $repositoryCandidate = if ([string]::IsNullOrWhiteSpace($RepositoryPath)) {
+        Split-Path -Parent $PSScriptRoot
+    }
+    else {
+        $RepositoryPath
+    }
+    $repoRoot = (Resolve-Path -LiteralPath $repositoryCandidate -ErrorAction Stop).ProviderPath
     foreach ($validatedRoot in @($sourceRoot, $repoRoot)) {
         if ($validatedRoot -match '[\x00-\x1f\x7f]') {
             throw 'The source and repository root paths cannot contain control characters.'
@@ -1161,7 +1745,11 @@ try {
     }
 
     $canonical = Get-CanonicalRepository -RepoRoot $repoRoot -Tools $tools -ExpectedRepository $Repository
-    Assert-GitHubAuthentication -Tools $tools -ExpectedRepository $Repository
+    Assert-GitHubAuthentication `
+        -Tools $tools `
+        -RepoRoot $canonical.Root `
+        -ExpectedRepository $Repository `
+        -ExpectedLogin $GitHubLogin
     Assert-CleanMainAtOrigin -RepoRoot $canonical.Root -Tools $tools
     Assert-GitAuthor -RepoRoot $canonical.Root -Tools $tools
 
@@ -1174,8 +1762,8 @@ try {
     }
 
     Write-Step 'Synchronizing and staging the release'
-    Sync-SourceTree -Release $release -RepoRoot $canonical.Root -Tools $tools
-    $publisherPath = Get-SafeRelativePath -Root $canonical.Root -FullName $PSCommandPath
+    $publisherPath = 'scripts/Publish-HelmsmanRelease.ps1'
+    Sync-SourceTree -Release $release -RepoRoot $canonical.Root -Tools $tools -PublisherPath $publisherPath
     $reviewedTree = Stage-AndValidateRelease -RepoRoot $canonical.Root -Tools $tools -Release $release -PublisherPath $publisherPath
 
     Write-Step 'Running local release tests'
@@ -1191,17 +1779,35 @@ try {
     Write-Step 'Committing and validating main'
     $commitSha = New-ReleaseCommit -RepoRoot $canonical.Root -Tools $tools -Release $release -ExpectedTree $reviewedTree
     $existingMainRuns = @(Get-WorkflowRunIds -Tools $tools -ExpectedRepository $Repository -WorkflowName $Workflow -CommitSha $commitSha -RefName 'main')
-    Push-Main -RepoRoot $canonical.Root -Tools $tools -CommitSha $commitSha
+    Push-Main `
+        -RepoRoot $canonical.Root `
+        -Tools $tools `
+        -CommitSha $commitSha `
+        -ExpectedRepository $Repository `
+        -ExpectedLogin $GitHubLogin
     $mainRun = Wait-WorkflowForCommit -Tools $tools -ExpectedRepository $Repository -WorkflowName $Workflow -CommitSha $commitSha -RefName 'main' -ExcludedRunIds $existingMainRuns
 
     Write-Step 'Publishing the version tag'
     $existingTagRuns = @(Get-WorkflowRunIds -Tools $tools -ExpectedRepository $Repository -WorkflowName $Workflow -CommitSha $commitSha -RefName $release.Tag)
-    New-AndPushReleaseTag -RepoRoot $canonical.Root -Tools $tools -Release $release -CommitSha $commitSha
+    New-AndPushReleaseTag `
+        -RepoRoot $canonical.Root `
+        -Tools $tools `
+        -Release $release `
+        -CommitSha $commitSha `
+        -ExpectedRepository $Repository `
+        -ExpectedLogin $GitHubLogin
     $tagRun = Wait-WorkflowForCommit -Tools $tools -ExpectedRepository $Repository -WorkflowName $Workflow -CommitSha $commitSha -RefName $release.Tag -ExcludedRunIds $existingTagRuns
     $publication = Assert-PublishedRelease -Tools $tools -ExpectedRepository $Repository -Release $release -DeploymentDirectory $deploymentDirectory
 
     Show-ServerUpdateCommands -Release $release -Publication $publication
 }
 finally {
-    Set-Location -LiteralPath $startingLocation.Path
+    try {
+        Set-Location -LiteralPath $startingLocation.Path
+    }
+    finally {
+        if ($null -ne $gitHooksIsolation) {
+            Exit-GitHooksIsolation -Scope $gitHooksIsolation
+        }
+    }
 }
