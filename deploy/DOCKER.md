@@ -333,7 +333,30 @@ The Authentik example removes `JFC_SESSION` and known legacy upstream session co
 
 ## Update an existing Helmsman beta
 
-Keep the existing project directory, `.env`, and Compose file stack so the installation continues to use the same `helmsman-data` volume. Back up the volume, download and verify the new GitHub Release deployment files, replace the tracked deployment files without replacing `.env`, and copy the new digest-pinned `HELMSMAN_IMAGE` value from `container.env.example` into the existing `.env`. Do not replace `.env` with the example if it contains a custom binding or upgrade-volume setting.
+Keep the existing `/opt/helmsman` directory and Compose file stack so the
+installation continues to use the same `helmsman-data` volume. The guarded
+publisher downloads the release assets on the Windows publishing computer,
+checks their SHA-256 values and common image digest, and prints the exact `scp`
+commands needed to transfer all three into
+`/opt/helmsman/releases/<version-tag>`.
+
+Run the printed server block rather than editing the image tag by hand. Before
+installation it rechecks `SHA256SUMS` with `--strict`, backs up both
+`compose.yaml` and the existing `.env`, and unsets a shell-level
+`HELMSMAN_IMAGE` that could take precedence over the file. It builds a new
+`.env` in the same directory, preserving all existing settings except removing
+every old `HELMSMAN_IMAGE` assignment and appending one canonical
+digest-pinned value. The temporary file is atomically renamed into place and
+retains the previous `.env` owner and mode. If `.env` did not exist, the
+verified `container.env.example` supplies the safe defaults and the new file
+receives mode `0600`.
+
+The verified release `compose.yaml` is then installed. Before any pull or
+recreation, `docker compose config --images` must equal the exact verified
+`ghcr.io/nunesg130-boop/helmsman@sha256:...` reference. This prevents an old
+`.env` line or exported shell variable from silently selecting another image.
+When a newly created `.env` needs a non-loopback bind for the HTTPS edge,
+review `HELMSMAN_BIND_IP` before starting the service.
 
 The following commands work unchanged in Windows PowerShell, Command Prompt, and Unix shells:
 
@@ -349,7 +372,35 @@ These commands recreate the application container and preserve `/data`. Do not u
 
 The production Compose file fixes the project name as `helmsman`, so fresh deployments consistently use the Docker volume `helmsman_helmsman-data` regardless of directory name. Before upgrading an earlier beta deployed under a different Compose project name, run `docker volume ls`. Set `COMPOSE_PROJECT_NAME` in `.env` to the old volume's project prefix before the first new `docker compose up`, or migrate that volume deliberately. Stop if Helmsman unexpectedly appears unclaimed or empty; do not configure a second instance over the wrong volume.
 
-Record the previous digest-pinned image reference and take a volume backup before updating. To roll back application code, restore the previous `HELMSMAN_IMAGE` digest and repeat `docker compose pull` and `docker compose up -d`. Do not run an older image against state already migrated by a newer release unless that release explicitly documents backward schema compatibility; restore the matching pre-update volume backup instead.
+Take a volume backup before updating. The printed deployment block records the
+previous files as `compose.yaml.before-<version>` and
+`.env.before-<version>` when `.env` existed. Rollback must restore both inputs,
+not only the image line:
+
+```sh
+set -euo pipefail
+cd /opt/helmsman
+cp -- compose.yaml.before-0.10.0-beta.10 compose.yaml
+if [ -f .env.before-0.10.0-beta.10 ]; then
+  cp -- .env.before-0.10.0-beta.10 .env
+  helmsman_env_file=.env
+else
+  rm -f -- .env
+  helmsman_env_file=/dev/null
+fi
+unset HELMSMAN_IMAGE COMPOSE_FILE COMPOSE_ENV_FILES COMPOSE_PROJECT_NAME COMPOSE_PROFILES
+docker compose --file compose.yaml --env-file "$helmsman_env_file" config
+docker compose --file compose.yaml --env-file "$helmsman_env_file" config --images
+docker compose --file compose.yaml --env-file "$helmsman_env_file" pull helmsman
+docker compose --file compose.yaml --env-file "$helmsman_env_file" up -d --force-recreate helmsman
+docker compose --file compose.yaml --env-file "$helmsman_env_file" ps
+```
+
+The missing `.env` backup means that no `.env` existed before that update, so
+removing the newly created file restores the previous configuration shape. Do
+not run an older image against state already migrated by a newer release unless
+that release explicitly documents backward schema compatibility; restore the
+matching pre-update volume backup instead.
 
 v0.10 advances the state schema to 4 by adding an empty bounded Infrastructure-services collection. Existing media connections, destination-bound encrypted credentials, browser sessions, network approvals, and Proxmox environments/endpoints are retained; nothing is automatically converted into or combined with a Portainer connection. The unified media model, artwork cache, and Portainer inventory are rebuilt in memory and require no catalog migration. Installations coming directly from an older schema still run the existing migrations, including keeping every prior Proxmox target separate rather than merging matching clusters automatically. Back up the volume before upgrading, and do not roll migrated state back into an older image.
 
@@ -408,22 +459,93 @@ docker compose down
 
 ## Publish through GitHub
 
-The repository workflow is the supported release path. Pull requests and pushes to `main` run the contracts and Linux AMD64/ARM64 runtime smoke tests without publishing a release image. Pushing the exact version tag publishes the multi-architecture image under version, beta, and full-commit tags, then atomically creates the matching GitHub prerelease with deployment files pinned to that manifest's immutable digest:
+Use local source builds for intermediate development, but publish each version
+that will actually run on the Jellyfin server. That keeps every deployed image
+identifiable and gives it a fixed rollback tag without turning every experiment
+into a public release.
 
-```sh
-git tag -a v0.10.0-beta.9 -m "Helmsman v0.10.0-beta.9"
-git push origin v0.10.0-beta.9
+Adding this publisher to an existing beta.9 clone is a tooling-only update to
+`main`, not a new application release. Review
+`scripts\Publish-HelmsmanRelease.ps1`, run
+`Unblock-File -LiteralPath .\scripts\Publish-HelmsmanRelease.ps1`, and commit
+the supplied tooling changes without creating or reusing the immutable
+`v0.10.0-beta.9` tag.
+
+The guarded Windows PowerShell 5.1 publisher expects the persistent Git clone
+and new source release to be separate, non-nested directories. For the normal
+layout, keep it at the tracked `scripts\Publish-HelmsmanRelease.ps1` path. It
+derives the clone root from that location and is intentionally bound to the
+`nunesg130-boop/helmsman` repository and `.github/workflows/container.yml`
+(shown as **Container** in GitHub):
+
+```powershell
+Set-Location "C:\Users\admin\Downloads\helmsman-github"
+.\scripts\Publish-HelmsmanRelease.ps1 `
+  -SourcePath "C:\Users\admin\Downloads\helmsman-v0.10.0-beta.10\helmsman"
 ```
 
-After the **Container** workflow succeeds, verify that:
+The script requires a clean `main` synchronized with the exact expected
+`origin`, validates the source and new SemVer version, scans prohibited paths
+and common embedded-secret forms, stages the synchronized release, runs the
+local suite, and shows the staged file list and statistics. It makes no commit
+or GitHub change until the operator types the single exact confirmation
+`PUBLISH <version>`.
 
-- `ghcr.io/OWNER/REPOSITORY:0.10.0-beta.9` contains Linux AMD64 and ARM64 manifests;
-- the GitHub Release is marked as a prerelease;
+After confirmation, the script commits and pushes `main`. It finds and watches
+the **Container** run for that exact commit and `main` ref; only a successful
+gate allows it to create the annotated version tag. It then watches the run for
+that exact commit and tag, and requires the resulting GitHub Release to have
+exactly `compose.yaml`, `container.env.example`, and `SHA256SUMS`. It downloads
+those assets into a new `helmsman-<version>-deployment-assets` directory beside
+the source folder, verifies both checksums, rejects placeholders, and requires
+the two configuration files to contain the same expected digest-pinned image.
+The workflow publishes Linux AMD64 and ARM64 images under version, beta, and
+full-commit tags.
+
+Local tests require Node.js 24.19.x. `-SkipLocalTests` explicitly relies on the
+two GitHub Actions gates instead; that is useful on a machine without the
+matching Node.js runtime, but validation failures are discovered only after the
+release commit reaches `main`.
+
+If the process stops before confirmation, nothing was committed, tagged, or
+pushed, but the synchronized changes remain staged for review. Inspect them
+with `git status --short`, `git diff --cached --name-status`, and
+`git diff --cached --check`. Do not rerun the publisher until the clone is
+clean. If the `main` workflow fails after the push, the script does not create
+the tag; correct the problem and publish the tag manually only after the exact
+replacement commit passes. Never move or force-push a published version tag.
+The complete recovery and manual command sequence is in [GITHUB.md](../GITHUB.md).
+
+After a successful release, verify that:
+
+- `ghcr.io/OWNER/REPOSITORY:<version>` contains Linux AMD64 and ARM64 manifests;
+- the GitHub Release has the expected prerelease state;
 - `compose.yaml`, `container.env.example`, and `SHA256SUMS` are attached;
-- both downloaded deployment files contain the same lowercase `ghcr.io/owner/repository@sha256:...` manifest reference and no `OWNER/REPOSITORY` placeholder; and
+- both downloaded deployment files contain the same lowercase
+  `ghcr.io/owner/repository@sha256:...` manifest reference and no
+  `OWNER/REPOSITORY` placeholder; and
 - `sha256sum -c SHA256SUMS` succeeds beside the two downloaded deployment files.
 
-New GHCR packages are private unless their visibility is changed. Keep the package private for authenticated pulls, or change the package—not merely the repository—to public to permit the anonymous `docker compose pull` experience. GitHub treats that public visibility change as irreversible, so it must be a deliberate publication decision.
+Publishing and deployment deliberately remain separate. The publisher never
+connects to `192.168.0.7`, changes `/opt/helmsman`, or restarts the service. It
+prints Windows `ssh`/`scp` transfer commands and the Jellyfin-host command block
+only after the assets are downloaded and verified. The operator runs them
+manually during the chosen deployment window. If a backup for that version
+already exists, the block stops before mutation so it cannot erase the original
+rollback point; inspect or resume that attempt manually. The server block rechecks the
+transferred checksum file, backs up Compose and `.env`, atomically preserves the
+existing environment while canonicalizing only `HELMSMAN_IMAGE`, installs the
+verified Compose file, unsets shell image and Compose-selector overrides, fixes
+the Compose file/env inputs, and refuses to deploy
+unless the resolved image exactly matches the verified release digest. This
+boundary keeps a successful GitHub release from automatically replacing a
+healthy server container. See [GITHUB.md](../GITHUB.md) for the transfer shape,
+server sequence, and two-file rollback.
+
+New GHCR packages are private unless their visibility is changed. Keep the
+package private for authenticated pulls, or change the package—not merely the
+repository—to public to permit anonymous `docker compose pull`. Treat the
+public visibility change as a deliberate publication decision.
 
 ## Build from source
 

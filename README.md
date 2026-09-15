@@ -82,7 +82,51 @@ Open `http://127.0.0.1:4180`. Paste the newest one-time setup token from the con
 
 If Docker reports that `dockerDesktopLinuxEngine` or its named pipe cannot be found, start Docker Desktop, wait until it says the engine is running, select Linux containers, and run the commands again.
 
-The concise first-publish checklist is in [GITHUB.md](GITHUB.md). Detailed installation, update, rollback, source-build, and release instructions are in [deploy/DOCKER.md](deploy/DOCKER.md).
+The guarded future-release workflow is in [GITHUB.md](GITHUB.md). Detailed installation, update, rollback, source-build, and release instructions are in [deploy/DOCKER.md](deploy/DOCKER.md).
+
+## Publish future versions
+
+Installing the guarded publisher in an existing beta.9 repository is a
+tooling-only `main` update. Review it, run
+`Unblock-File .\scripts\Publish-HelmsmanRelease.ps1`, and commit the supplied
+tooling changes without creating or reusing the `v0.10.0-beta.9` tag.
+Those workflow protections begin with the next new application tag; beta.9's
+already-published tag is not moved or rewritten.
+
+Use local source builds while a version is still experimental, then publish
+each version that is intended for the Jellyfin server. From the persistent Git
+clone, point the Windows PowerShell 5.1-compatible publisher at a separate,
+newly extracted source directory. The publisher must remain at the tracked
+`scripts\Publish-HelmsmanRelease.ps1` path because it derives and verifies the
+exact `nunesg130-boop/helmsman` clone from its own location:
+
+```powershell
+Set-Location "C:\Users\admin\Downloads\helmsman-github"
+.\scripts\Publish-HelmsmanRelease.ps1 `
+  -SourcePath "C:\Users\admin\Downloads\helmsman-v0.10.0-beta.10\helmsman"
+```
+
+The publisher validates and stages the source, runs local tests, shows the
+review summary, and asks once for `PUBLISH <version>`. After confirmation it
+pushes `main`, requires the workflow for that exact commit to pass, publishes
+the version tag, requires the tag workflow to pass, and verifies the GitHub
+Release assets. It downloads the verified digest-pinned `compose.yaml`,
+`container.env.example`, and `SHA256SUMS` into a new local deployment-assets
+directory beside the source folder. `-SkipLocalTests` is available when Node.js
+24.19.x is not installed, but then errors are found later by GitHub Actions.
+
+It never logs into or changes the Jellyfin server. After publication it only
+prints the PowerShell `scp` commands and manual `/opt/helmsman` update block.
+That block verifies the transferred checksums, backs up both Compose and the
+existing `.env`, installs the verified digest-pinned Compose file, preserves
+all existing `.env` settings except canonicalizing `HELMSMAN_IMAGE`, creates a
+mode-`0600` `.env` from the verified example when none exists, unsets shell
+image and Compose-selector overrides, fixes the Compose file/env inputs, and
+refuses to deploy unless Compose resolves the exact verified digest. Rollback restores both
+Compose and `.env`. Cancellation before
+the commit leaves the reviewed changes staged and makes no GitHub change; see
+[GITHUB.md](GITHUB.md) for inspection, recovery, transfer commands, and the
+manual fallback.
 
 ## Privacy and storage
 
@@ -287,7 +331,15 @@ For external use, publish the container only on an address reachable by the edge
 
 ## Upgrade an existing Helmsman beta
 
-Keep the existing Helmsman project directory, `.env`, and the same Compose file stack so Compose reuses the current `helmsman-data` volume. Back up that volume, download the new GitHub Release deployment assets, replace the tracked deployment files without replacing your `.env`, and copy the new digest-pinned `HELMSMAN_IMAGE` value from `container.env.example` into the existing `.env`. Then run these commands from that same directory in PowerShell, Command Prompt, or a Unix shell:
+Keep the existing Helmsman project directory and Compose file stack so Compose
+reuses the current `helmsman-data` volume. Back up that volume, then use the
+publisher's printed transfer and server blocks. They reverify the release
+assets, back up both `compose.yaml` and the existing `.env`, preserve all
+server-specific environment settings while replacing old `HELMSMAN_IMAGE`
+assignments with one verified digest, and create `.env` from the verified
+example if it was absent. They also unset a shell-level image override and
+require Compose to resolve the exact release digest before these lifecycle
+commands run:
 
 ```sh
 docker compose config
@@ -301,7 +353,13 @@ If the installation uses an override, include it in every command. These command
 
 The production Compose file fixes the project name as `helmsman`, so fresh deployments consistently use the Docker volume `helmsman_helmsman-data` regardless of directory name. Before upgrading an older beta that was launched under a different Compose project name, run `docker volume ls`; set `COMPOSE_PROJECT_NAME` in `.env` to that previous project prefix before the first new `docker compose up`, or migrate the old volume deliberately. Do not continue with an unexpectedly empty instance.
 
-To roll back application code, restore the previous digest-pinned `HELMSMAN_IMAGE` reference and repeat `docker compose pull` and `docker compose up -d`. Do not roll an already migrated `/data` volume back into an older image unless that release explicitly documents schema compatibility; restore the matching pre-update volume backup instead.
+To roll back application code, restore both
+`compose.yaml.before-<version>` and `.env.before-<version>`, or remove the new
+`.env` when none existed before the update. Unset `HELMSMAN_IMAGE`, inspect
+`docker compose config --images`, and then repeat `docker compose pull` and
+`docker compose up -d`. Do not roll an already migrated `/data` volume back
+into an older image unless that release explicitly documents schema
+compatibility; restore the matching pre-update volume backup instead.
 
 v0.10 advances the state schema to 4 by adding an empty, bounded Infrastructure-services collection. Existing media connections, destination-bound encrypted credentials, browser sessions, network approvals, and Proxmox environments/endpoints remain in place; nothing is converted into or automatically combined with a Portainer connection. The unified media catalog, artwork cache, and Portainer inventory are rebuilt in memory from current read-only service responses and do not require a data migration. Installations coming directly from an older schema still use the existing in-place migrations, including the rule that separate Proxmox targets are never merged automatically. Back up the volume before upgrading, and do not attempt to run an older image against state after it has been migrated.
 

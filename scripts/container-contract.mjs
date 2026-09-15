@@ -16,6 +16,15 @@ function read(relativePath) {
   return readFileSync(join(root, relativePath), "utf8");
 }
 
+function yamlJobBlock(contents, name) {
+  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const start = contents.search(new RegExp(`^  ${escapedName}:\\s*$`, "mu"));
+  if (start < 0) return "";
+  const remainder = contents.slice(start + 1);
+  const next = remainder.search(/^  [a-z][a-z0-9-]*:\s*$/mu);
+  return next < 0 ? contents.slice(start) : contents.slice(start, start + 1 + next);
+}
+
 const requiredFiles = [
   "Dockerfile",
   "compose.yaml",
@@ -27,6 +36,8 @@ const requiredFiles = [
   "container.env.example",
   "GITHUB.md",
   "package.json",
+  "scripts/Publish-HelmsmanRelease.ps1",
+  "scripts/publisher-contract.mjs",
   "server/index.mjs",
   "server/broker.mjs",
   "server/control-plane.mjs",
@@ -715,7 +726,9 @@ if (existsSync(join(root, "package.json"))) {
         && /tests\/media-artwork[.]test[.]mjs/u.test(packageJson.scripts?.["check:security"] || "")
         && /tests\/media-artwork-control-plane[.]test[.]mjs/u.test(packageJson.scripts?.["check:security"] || "")
         && /operations-view-contract[.]mjs/u.test(packageJson.scripts?.["check:operations"] || "")
-        && /runtime-v5-smoke[.]mjs/u.test(packageJson.scripts?.["check:operations"] || ""),
+        && /runtime-v5-smoke[.]mjs/u.test(packageJson.scripts?.["check:operations"] || "")
+        && /container-contract[.]mjs/u.test(packageJson.scripts?.["check:container"] || "")
+        && /publisher-contract[.]mjs/u.test(packageJson.scripts?.["check:container"] || ""),
       "package identity and checks cover the Helmsman media/infrastructure control plane, sessions, monitor, probes, and operations UI"
     );
   } catch (error) {
@@ -807,9 +820,14 @@ if (existsSync(join(root, "README.md")) && existsSync(join(root, "deploy/DOCKER.
 
 if (existsSync(join(root, ".github/workflows/container.yml"))) {
   const workflow = read(".github/workflows/container.yml");
+  const testJob = yamlJobBlock(workflow, "test");
+  const publisherSyntaxJob = yamlJobBlock(workflow, "publisher-syntax");
+  const imageJob = yamlJobBlock(workflow, "image");
+  const releaseJob = yamlJobBlock(workflow, "release");
+  const existingReleaseJob = yamlJobBlock(workflow, "verify-existing-release");
   const usesLines = workflow.match(/^\s*uses:\s+[^\s#]+(?:\s+#.*)?$/gmu) || [];
   record(
-    usesLines.length === 11
+    usesLines.length === 14
       && usesLines.every((line) => /@[0-9a-f]{40}\s+#\s+v\d+\.\d+\.\d+\s*$/u.test(line)),
     "container workflow pins every external action to a full commit with a release comment",
     usesLines.join("; ")
@@ -834,18 +852,110 @@ if (existsSync(join(root, ".github/workflows/container.yml"))) {
     "container workflow publishes version, beta, stable-latest, and full-SHA channels and exposes the multi-architecture digest"
   );
   record(
-    /repository="\$\{GITHUB_REPOSITORY,,\}"/u.test(workflow)
-      && /RELEASE_DIGEST:\s*\$\{\{ needs\.image\.outputs\.digest \}\}/u.test(workflow)
-      && /image_ref="ghcr\.io\/\$\{repository\}@\$\{RELEASE_DIGEST\}"/u.test(workflow)
-      && /sed -i "s#\$\{tagged_ref\}#\$\{image_ref\}#g"/u.test(workflow)
-      && /sha256sum compose\.yaml container\.env\.example > SHA256SUMS/u.test(workflow)
-      && /gh release download/u.test(workflow)
-      && /cmp --silent/u.test(workflow)
-      && /gh release create/u.test(workflow)
-      && !/gh release upload/u.test(workflow)
-      && !/--clobber/u.test(workflow)
-      && /group:\s*container-\$\{\{ github\.workflow \}\}-\$\{\{ github\.ref \}\}/u.test(workflow),
-    "tagged workflow atomically publishes digest-pinned lowercase release assets and verifies existing assets without replacement"
+    /^\s*runs-on: windows-latest\s*$/mu.test(publisherSyntaxJob)
+      && /name: Windows PowerShell 5[.]1 publisher syntax/u.test(publisherSyntaxJob)
+      && /shell: powershell/u.test(publisherSyntaxJob)
+      && /Resolve-Path [.]\/scripts\/Publish-HelmsmanRelease[.]ps1/u.test(publisherSyntaxJob)
+      && /System[.]Management[.]Automation[.]Language[.]Parser\]::ParseFile\(/u.test(publisherSyntaxJob)
+      && /\[ref\]\$tokens/u.test(publisherSyntaxJob)
+      && /\[ref\]\$parseErrors/u.test(publisherSyntaxJob)
+      && /\$parseErrors[.]Count -ne 0/u.test(publisherSyntaxJob)
+      && /^\s{6}- publisher-syntax\s*$/mu.test(imageJob)
+      && /^\s{6}- publisher-syntax\s*$/mu.test(existingReleaseJob),
+    "Windows PowerShell parses the guarded publisher before either tagged release path can pass"
+  );
+  record(
+    /release_exists:\s*\$\{\{ steps[.]release_state[.]outputs[.]exists \}\}/u.test(testJob)
+      && /name: Detect an existing immutable release/u.test(testJob)
+      && /GH_HOST: github[.]com/u.test(testJob)
+      && /gh release view "\$\{RELEASE_TAG\}" --repo "\$\{GITHUB_REPOSITORY\}"/u.test(testJob)
+      && /release not found\|HTTP 404/u.test(testJob)
+      && /startsWith\(github[.]ref, 'refs\/tags\/v'\) && needs[.]test[.]outputs[.]release_exists == 'false'/u.test(imageJob)
+      && /startsWith\(github[.]ref, 'refs\/tags\/v'\) && needs[.]test[.]outputs[.]release_exists == 'false'/u.test(releaseJob)
+      && /startsWith\(github[.]ref, 'refs\/tags\/v'\) && needs[.]test[.]outputs[.]release_exists == 'true'/u.test(existingReleaseJob),
+    "tagged runs select exactly one immutable new-release or existing-release verification branch"
+  );
+  record(
+    /name: Refuse to replace an existing version image/u.test(imageJob)
+      && /repository="\$\{GITHUB_REPOSITORY,,\}"/u.test(imageJob)
+      && /version_ref="ghcr[.]io\/\$\{repository\}:\$\{RELEASE_VERSION\}"/u.test(imageJob)
+      && /commit_ref="ghcr[.]io\/\$\{repository\}:sha-\$\{GITHUB_SHA\}"/u.test(imageJob)
+      && /trap 'rm -f "\$\{output_file\}" "\$\{error_file\}"' EXIT/u.test(imageJob)
+      && /assert_image_ref_absent\(\)/u.test(imageJob)
+      && /local image_ref="\$1"/u.test(imageJob)
+      && /local image_tag="\$2"/u.test(imageJob)
+      && /registry_manifest_path="\/v2\/\$\{repository\}\/manifests\/\$\{image_tag\}"/u.test(imageJob)
+      && /docker buildx imagetools inspect/u.test(imageJob)
+      && /--format '\{\{json [.]Manifest\}\}'/u.test(imageJob)
+      && /already exists without a matching immutable GitHub Release/u.test(imageJob)
+      && /grep -Fqi "\$\{image_ref\}: not found"/u.test(imageJob)
+      && /manifest unknown\|no such manifest/u.test(imageJob)
+      && imageJob.includes("404([[:space:]]+Not[[:space:]]+Found)?")
+      && /registry lookup failed ambiguously; refusing to publish/u.test(imageJob)
+      && /assert_image_ref_absent "\$\{version_ref\}" "\$\{RELEASE_VERSION\}"/u.test(imageJob)
+      && /assert_image_ref_absent "\$\{commit_ref\}" "sha-\$\{GITHUB_SHA\}"/u.test(imageJob)
+      && imageJob.indexOf("Refuse to replace an existing version image") < imageJob.indexOf("Build and publish the manifest"),
+    "image publication performs fail-closed version and commit-alias registry preflights before any build push"
+  );
+  record(
+    /permissions:\s*\n\s{6}contents: write/u.test(releaseJob)
+      && /needs:\s*\n\s{6}- test\s*\n\s{6}- image/u.test(releaseJob)
+      && /RELEASE_DIGEST:\s*\$\{\{ needs[.]image[.]outputs[.]digest \}\}/u.test(releaseJob)
+      && /\^sha256:\[0-9a-f\]\{64\}\$/u.test(releaseJob)
+      && /repos\/\$\{GITHUB_REPOSITORY\}\/contents\/\$\{source_path\}[?]ref=\$\{GITHUB_SHA\}/u.test(releaseJob)
+      && /tagged_ref="ghcr[.]io\/OWNER\/REPOSITORY:\$\{RELEASE_VERSION\}"/u.test(releaseJob)
+      && /image_ref="ghcr[.]io\/\$\{repository\}@\$\{RELEASE_DIGEST\}"/u.test(releaseJob)
+      && /compose_active_count/u.test(releaseJob)
+      && /environment_active_count/u.test(releaseJob)
+      && releaseJob.includes('tagged_ref_pattern="${tagged_ref//./[.]}"')
+      && releaseJob.includes('sed -i "s#${tagged_ref_pattern}#${image_ref}#g"')
+      && /sha256sum compose[.]yaml container[.]env[.]example > SHA256SUMS/u.test(releaseJob)
+      && /sha256sum --check SHA256SUMS/u.test(releaseJob)
+      && /gh release view "\$\{tag\}" --repo "\$\{GITHUB_REPOSITORY\}"/u.test(releaseJob)
+      && releaseJob.indexOf('gh release view "${tag}"') < releaseJob.indexOf('gh release create "${create_args[@]}"')
+      && /gh release create "\$\{create_args\[@\]\}"/u.test(releaseJob)
+      && /"\$\{release_dir\}\/compose[.]yaml"/u.test(releaseJob)
+      && /"\$\{release_dir\}\/container[.]env[.]example"/u.test(releaseJob)
+      && /"\$\{release_dir\}\/SHA256SUMS"/u.test(releaseJob)
+      && !/gh release (?:upload|delete)/u.test(releaseJob)
+      && !/--clobber/u.test(releaseJob),
+    "new releases render and checksum three digest-pinned assets from the exact tag commit without replacement"
+  );
+  const existingWriteOperations = [
+    /contents: write/u,
+    /packages: write/u,
+    /gh release (?:create|upload|delete|edit)/u,
+    /docker push\b/u,
+    /docker build(?:\s|$)/u,
+    /docker buildx build\b/u,
+    /push:\s*true/u,
+    /docker\/build-push-action@/u
+  ];
+  record(
+    /permissions:\s*\n\s{6}contents: read\s*\n\s{6}packages: read/u.test(existingReleaseJob)
+      && existingWriteOperations.every((pattern) => !pattern.test(existingReleaseJob))
+      && /--json tagName,isDraft,isPrerelease,assets/u.test(existingReleaseJob)
+      && /expected_asset_names="\$\(printf '%s\\n' compose[.]yaml container[.]env[.]example SHA256SUMS/u.test(existingReleaseJob)
+      && /gh release download/u.test(existingReleaseJob)
+      && /sha256sum --strict --check SHA256SUMS/u.test(existingReleaseJob)
+      && /asset_references=/u.test(existingReleaseJob)
+      && /wc -l/u.test(existingReleaseJob)
+      && /expected_prefix="ghcr[.]io\/\$\{repository\}@"/u.test(existingReleaseJob)
+      && /version_manifest="\$\(docker buildx imagetools inspect/u.test(existingReleaseJob)
+      && /"ghcr[.]io\/\$\{repository\}:\$\{RELEASE_VERSION\}"/u.test(existingReleaseJob)
+      && /commit_manifest="\$\(docker buildx imagetools inspect/u.test(existingReleaseJob)
+      && /"ghcr[.]io\/\$\{repository\}:sha-\$\{GITHUB_SHA\}"/u.test(existingReleaseJob)
+      && /\$\{version_digest\}" != "\$\{asset_digest\}/u.test(existingReleaseJob)
+      && /\$\{commit_digest\}" != "\$\{asset_digest\}/u.test(existingReleaseJob)
+      && /[?]ref=\$\{GITHUB_SHA\}/u.test(existingReleaseJob)
+      && /for asset in compose[.]yaml container[.]env[.]example SHA256SUMS/u.test(existingReleaseJob)
+      && /cmp --silent "\$\{expected_dir\}\/\$\{asset\}" "\$\{verify_dir\}\/\$\{asset\}"/u.test(existingReleaseJob),
+    "existing releases are read-only reruns that rederive exact assets and verify version and commit-SHA aliases against one digest"
+  );
+  record(
+    /group:\s*container-\$\{\{ github[.]workflow \}\}-\$\{\{ github[.]ref \}\}/u.test(workflow)
+      && /cancel-in-progress:\s*\$\{\{ !startsWith\(github[.]ref, 'refs\/tags\/'\) \}\}/u.test(workflow),
+    "workflow concurrency never cancels an in-flight immutable tag publication"
   );
 }
 

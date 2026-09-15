@@ -18,6 +18,7 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io
+  GH_HOST: github.com
 
 jobs:
   test:
@@ -28,6 +29,7 @@ jobs:
       is_prerelease: ${{ steps.release.outputs.is_prerelease }}
       is_beta: ${{ steps.release.outputs.is_beta }}
       repository: ${{ steps.release.outputs.repository }}
+      release_exists: ${{ steps.release_state.outputs.exists }}
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -82,8 +84,55 @@ jobs:
             echo "repository=${repository}"
           } >> "${GITHUB_OUTPUT}"
 
+      - name: Detect an existing immutable release
+        id: release_state
+        shell: bash
+        env:
+          GH_HOST: github.com
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_REF: ${{ github.ref }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          exists=false
+          if [[ "${RELEASE_REF}" == refs/tags/* ]]; then
+            error_file="$(mktemp "${RUNNER_TEMP}/helmsman-release-state.XXXXXX")"
+            if gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>"${error_file}"; then
+              exists=true
+            elif ! grep -Eiq '(release not found|HTTP 404)' "${error_file}"; then
+              cat "${error_file}" >&2
+              exit 1
+            fi
+          fi
+          echo "exists=${exists}" >> "${GITHUB_OUTPUT}"
+
       - name: Run contracts
         run: npm test
+
+  publisher-syntax:
+    name: Windows PowerShell 5.1 publisher syntax
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Parse the guarded release publisher
+        shell: powershell
+        run: |
+          $tokens = $null
+          $parseErrors = $null
+          $scriptPath = Resolve-Path ./scripts/Publish-HelmsmanRelease.ps1
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            $scriptPath,
+            [ref]$tokens,
+            [ref]$parseErrors
+          ) | Out-Null
+          if ($parseErrors.Count -ne 0) {
+            foreach ($parseError in $parseErrors) {
+              Write-Host ("Line {0}: {1}" -f $parseError.Extent.StartLineNumber, $parseError.Message)
+            }
+            exit 1
+          }
 
   smoke:
     name: Linux ${{ matrix.arch }} runtime smoke
@@ -155,10 +204,11 @@ jobs:
 
   image:
     name: Publish Linux AMD64 and ARM64 image
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') && needs.test.outputs.release_exists == 'false'
     needs:
       - test
       - smoke
+      - publisher-syntax
     runs-on: ubuntu-latest
     outputs:
       digest: ${{ steps.push.outputs.digest }}
@@ -181,6 +231,52 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Refuse to replace an existing version image
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.test.outputs.version }}
+        run: |
+          set -euo pipefail
+          repository="${GITHUB_REPOSITORY,,}"
+          version_ref="ghcr.io/${repository}:${RELEASE_VERSION}"
+          commit_ref="ghcr.io/${repository}:sha-${GITHUB_SHA}"
+          output_file="$(mktemp "${RUNNER_TEMP}/helmsman-version-manifest.XXXXXX")"
+          error_file="$(mktemp "${RUNNER_TEMP}/helmsman-version-error.XXXXXX")"
+          trap 'rm -f "${output_file}" "${error_file}"' EXIT
+
+          assert_image_ref_absent() {
+            local image_ref="$1"
+            local image_tag="$2"
+            local registry_manifest_path="/v2/${repository}/manifests/${image_tag}"
+            local missing_manifest=false
+
+            if docker buildx imagetools inspect \
+              "${image_ref}" \
+              --format '{{json .Manifest}}' \
+              >"${output_file}" 2>"${error_file}"; then
+              echo "${image_ref} already exists without a matching immutable GitHub Release." >&2
+              echo "Publish a new version or repair the existing release manually; this workflow will not move immutable image tags." >&2
+              exit 1
+            fi
+            if grep -Fqi "${image_ref}: not found" "${error_file}"; then
+              missing_manifest=true
+            elif grep -Fqi "${image_ref}" "${error_file}" \
+              && grep -Eiq '(manifest unknown|no such manifest)' "${error_file}"; then
+              missing_manifest=true
+            elif grep -Fqi "${registry_manifest_path}" "${error_file}" \
+              && grep -Eiq '(^|[^0-9])404([[:space:]]+Not[[:space:]]+Found)?([^0-9]|$)' "${error_file}"; then
+              missing_manifest=true
+            fi
+            if [[ "${missing_manifest}" != true ]]; then
+              cat "${error_file}" >&2
+              echo "The registry lookup failed ambiguously; refusing to publish." >&2
+              exit 1
+            fi
+          }
+
+          assert_image_ref_absent "${version_ref}" "${RELEASE_VERSION}"
+          assert_image_ref_absent "${commit_ref}" "sha-${GITHUB_SHA}"
 
       - name: Generate OCI metadata
         id: meta
@@ -227,7 +323,7 @@ jobs:
 
   release:
     name: Publish GitHub release assets
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') && needs.test.outputs.release_exists == 'false'
     needs:
       - test
       - image
@@ -272,12 +368,39 @@ jobs:
           fetch_tag_file compose.yaml "${release_dir}/compose.yaml"
           fetch_tag_file container.env.example "${release_dir}/container.env.example"
 
+          count_trimmed_line() {
+            local expected="$1"
+            local source_path="$2"
+            awk -v expected="${expected}" '
+              {
+                line = $0
+                sub(/\r$/, "", line)
+                sub(/^[[:space:]]+/, "", line)
+                sub(/[[:space:]]+$/, "", line)
+                if (line == expected) count++
+              }
+              END { print count + 0 }
+            ' "${source_path}"
+          }
+
+          compose_source_line='image: "${HELMSMAN_IMAGE:-'"${tagged_ref}"'}"'
+          environment_source_line="HELMSMAN_IMAGE=${tagged_ref}"
+          compose_active_count="$(awk '/^[[:space:]]*image[[:space:]]*:/ { count++ } END { print count + 0 }' "${release_dir}/compose.yaml")"
+          environment_active_count="$(awk '/^[[:space:]]*(export[[:space:]]+)?HELMSMAN_IMAGE[[:space:]]*=/ { count++ } END { print count + 0 }' "${release_dir}/container.env.example")"
+          if [[ "${compose_active_count}" != "1" ]] \
+            || [[ "$(count_trimmed_line "${compose_source_line}" "${release_dir}/compose.yaml")" != "1" ]]; then
+            echo "The compose.yaml source does not contain exactly one active ${tagged_ref} image field." >&2
+            exit 1
+          fi
+          if [[ "${environment_active_count}" != "1" ]] \
+            || [[ "$(count_trimmed_line "${environment_source_line}" "${release_dir}/container.env.example")" != "1" ]]; then
+            echo "The container.env.example source does not contain exactly one active ${tagged_ref} image field." >&2
+            exit 1
+          fi
+
+          tagged_ref_pattern="${tagged_ref//./[.]}"
           for asset in compose.yaml container.env.example; do
-            if ! grep -Fq "${tagged_ref}" "${release_dir}/${asset}"; then
-              echo "The ${asset} source template does not reference ${tagged_ref}." >&2
-              exit 1
-            fi
-            sed -i "s#${tagged_ref}#${image_ref}#g" "${release_dir}/${asset}"
+            sed -i "s#${tagged_ref_pattern}#${image_ref}#g" "${release_dir}/${asset}"
             if grep -Fq 'OWNER/REPOSITORY' "${release_dir}/${asset}"; then
               echo "The ${asset} release asset still contains the repository placeholder." >&2
               exit 1
@@ -287,6 +410,13 @@ jobs:
               exit 1
             fi
           done
+          compose_rendered_line='image: "${HELMSMAN_IMAGE:-'"${image_ref}"'}"'
+          environment_rendered_line="HELMSMAN_IMAGE=${image_ref}"
+          if [[ "$(count_trimmed_line "${compose_rendered_line}" "${release_dir}/compose.yaml")" != "1" ]] \
+            || [[ "$(count_trimmed_line "${environment_rendered_line}" "${release_dir}/container.env.example")" != "1" ]]; then
+            echo "The rendered deployment assets do not contain the expected active digest-pinned image fields." >&2
+            exit 1
+          fi
 
           (
             cd "${release_dir}"
@@ -295,36 +425,8 @@ jobs:
           )
 
           if gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            existing_dir="$(mktemp -d "${RUNNER_TEMP}/helmsman-existing-release.XXXXXX")"
-            existing_draft="$(gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" --json isDraft --jq '.isDraft')"
-            existing_prerelease="$(gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" --json isPrerelease --jq '.isPrerelease')"
-
-            if [[ "${existing_prerelease}" != "${RELEASE_PRERELEASE}" ]]; then
-              echo "The existing ${tag} release has the wrong prerelease state." >&2
-              exit 1
-            fi
-
-            gh release download \
-              "${tag}" \
-              --repo "${GITHUB_REPOSITORY}" \
-              --dir "${existing_dir}" \
-              --pattern compose.yaml \
-              --pattern container.env.example \
-              --pattern SHA256SUMS
-
-            for asset in compose.yaml container.env.example SHA256SUMS; do
-              if [[ ! -f "${existing_dir}/${asset}" ]] \
-                || ! cmp --silent "${release_dir}/${asset}" "${existing_dir}/${asset}"; then
-                echo "The existing ${tag} ${asset} differs from the tagged image; publish a new version instead of replacing release assets." >&2
-                exit 1
-              fi
-            done
-
-            if [[ "${existing_draft}" == "true" ]]; then
-              gh release edit "${tag}" --repo "${GITHUB_REPOSITORY}" --draft=false
-            fi
-            echo "The existing ${tag} release assets match the published manifest digest."
-            exit 0
+            echo "Release ${tag} appeared after the immutable-release preflight; refusing to replace it." >&2
+            exit 1
           fi
 
           create_args=(
@@ -341,3 +443,173 @@ jobs:
             create_args+=(--prerelease)
           fi
           gh release create "${create_args[@]}"
+
+  verify-existing-release:
+    name: Verify existing immutable release
+    if: startsWith(github.ref, 'refs/tags/v') && needs.test.outputs.release_exists == 'true'
+    needs:
+      - test
+      - publisher-syntax
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    env:
+      GH_HOST: github.com
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify release assets and registry digest
+        shell: bash
+        env:
+          RELEASE_PRERELEASE: ${{ needs.test.outputs.is_prerelease }}
+          RELEASE_VERSION: ${{ needs.test.outputs.version }}
+        run: |
+          set -euo pipefail
+          umask 077
+
+          verify_dir="$(mktemp -d "${RUNNER_TEMP}/helmsman-existing-release.XXXXXX")"
+          expected_dir="$(mktemp -d "${RUNNER_TEMP}/helmsman-expected-release.XXXXXX")"
+          trap 'rm -rf "${verify_dir}" "${expected_dir}"' EXIT
+          repository="${GITHUB_REPOSITORY,,}"
+          tag="${GITHUB_REF_NAME}"
+
+          release_meta="$(gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" --json tagName,isDraft,isPrerelease,assets)"
+          if [[ "$(jq -r '.tagName' <<<"${release_meta}")" != "${tag}" ]] \
+            || [[ "$(jq -r '.isDraft' <<<"${release_meta}")" != "false" ]] \
+            || [[ "$(jq -r '.isPrerelease' <<<"${release_meta}")" != "${RELEASE_PRERELEASE}" ]]; then
+            echo "The existing release identity or state is invalid." >&2
+            exit 1
+          fi
+          actual_asset_names="$(jq -r '.assets[].name' <<<"${release_meta}" | LC_ALL=C sort)"
+          expected_asset_names="$(printf '%s\n' compose.yaml container.env.example SHA256SUMS | LC_ALL=C sort)"
+          if [[ "${actual_asset_names}" != "${expected_asset_names}" ]]; then
+            echo "The existing release does not contain exactly the expected deployment assets." >&2
+            exit 1
+          fi
+
+          gh release download \
+            "${tag}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --dir "${verify_dir}" \
+            --pattern compose.yaml \
+            --pattern container.env.example \
+            --pattern SHA256SUMS
+          checksum_names="$(awk 'NF { print $2 }' "${verify_dir}/SHA256SUMS" | LC_ALL=C sort)"
+          expected_checksum_names="$(printf '%s\n' compose.yaml container.env.example | LC_ALL=C sort)"
+          if [[ "${checksum_names}" != "${expected_checksum_names}" ]] \
+            || grep -Evq '^[0-9a-f]{64}  (compose[.]yaml|container[.]env[.]example)$' "${verify_dir}/SHA256SUMS"; then
+            echo "SHA256SUMS contains an unexpected release asset entry." >&2
+            exit 1
+          fi
+          (
+            cd "${verify_dir}"
+            sha256sum --strict --check SHA256SUMS
+          )
+
+          asset_references="$(
+            grep -Eho "ghcr[.]io/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}" \
+              "${verify_dir}/compose.yaml" "${verify_dir}/container.env.example" \
+              | sort -u
+          )"
+          expected_prefix="ghcr.io/${repository}@"
+          if [[ "$(wc -l <<<"${asset_references}" | tr -d ' ')" != "1" ]] \
+            || [[ "${asset_references}" != "${expected_prefix}"* ]]; then
+            echo "The existing deployment assets do not share one repository digest." >&2
+            exit 1
+          fi
+          for asset in compose.yaml container.env.example; do
+            if grep -Fq 'OWNER/REPOSITORY' "${verify_dir}/${asset}" \
+              || ! grep -Fq "${asset_references}" "${verify_dir}/${asset}"; then
+              echo "The existing ${asset} is not pinned to the shared repository digest." >&2
+              exit 1
+            fi
+          done
+          asset_digest="${asset_references#${expected_prefix}}"
+
+          version_manifest="$(docker buildx imagetools inspect \
+            "ghcr.io/${repository}:${RELEASE_VERSION}" \
+            --format '{{json .Manifest}}')"
+          version_digest="$(jq -r '.digest // empty' <<<"${version_manifest}")"
+          commit_manifest="$(docker buildx imagetools inspect \
+            "ghcr.io/${repository}:sha-${GITHUB_SHA}" \
+            --format '{{json .Manifest}}')"
+          commit_digest="$(jq -r '.digest // empty' <<<"${commit_manifest}")"
+          if [[ "${version_digest}" != "${asset_digest}" ]] \
+            || [[ "${commit_digest}" != "${asset_digest}" ]]; then
+            echo "The version or commit image no longer matches the immutable release assets." >&2
+            exit 1
+          fi
+
+          tagged_ref="ghcr.io/OWNER/REPOSITORY:${RELEASE_VERSION}"
+          image_ref="ghcr.io/${repository}@${asset_digest}"
+          fetch_tag_file() {
+            local source_path="$1"
+            local destination="$2"
+            gh api \
+              --method GET \
+              --header "Accept: application/vnd.github.raw+json" \
+              --header "X-GitHub-Api-Version: 2022-11-28" \
+              "repos/${GITHUB_REPOSITORY}/contents/${source_path}?ref=${GITHUB_SHA}" \
+              > "${destination}"
+          }
+          count_trimmed_line() {
+            local expected="$1"
+            local source_path="$2"
+            awk -v expected="${expected}" '
+              {
+                line = $0
+                sub(/\r$/, "", line)
+                sub(/^[[:space:]]+/, "", line)
+                sub(/[[:space:]]+$/, "", line)
+                if (line == expected) count++
+              }
+              END { print count + 0 }
+            ' "${source_path}"
+          }
+
+          fetch_tag_file compose.yaml "${expected_dir}/compose.yaml"
+          fetch_tag_file container.env.example "${expected_dir}/container.env.example"
+          compose_source_line='image: "${HELMSMAN_IMAGE:-'"${tagged_ref}"'}"'
+          environment_source_line="HELMSMAN_IMAGE=${tagged_ref}"
+          compose_active_count="$(awk '/^[[:space:]]*image[[:space:]]*:/ { count++ } END { print count + 0 }' "${expected_dir}/compose.yaml")"
+          environment_active_count="$(awk '/^[[:space:]]*(export[[:space:]]+)?HELMSMAN_IMAGE[[:space:]]*=/ { count++ } END { print count + 0 }' "${expected_dir}/container.env.example")"
+          if [[ "${compose_active_count}" != "1" ]] \
+            || [[ "$(count_trimmed_line "${compose_source_line}" "${expected_dir}/compose.yaml")" != "1" ]]; then
+            echo "The tagged compose.yaml does not contain exactly one active ${tagged_ref} image field." >&2
+            exit 1
+          fi
+          if [[ "${environment_active_count}" != "1" ]] \
+            || [[ "$(count_trimmed_line "${environment_source_line}" "${expected_dir}/container.env.example")" != "1" ]]; then
+            echo "The tagged container.env.example does not contain exactly one active ${tagged_ref} image field." >&2
+            exit 1
+          fi
+
+          tagged_ref_pattern="${tagged_ref//./[.]}"
+          sed -i "s#${tagged_ref_pattern}#${image_ref}#g" "${expected_dir}/compose.yaml" "${expected_dir}/container.env.example"
+          compose_rendered_line='image: "${HELMSMAN_IMAGE:-'"${image_ref}"'}"'
+          environment_rendered_line="HELMSMAN_IMAGE=${image_ref}"
+          if [[ "$(count_trimmed_line "${compose_rendered_line}" "${expected_dir}/compose.yaml")" != "1" ]] \
+            || [[ "$(count_trimmed_line "${environment_rendered_line}" "${expected_dir}/container.env.example")" != "1" ]]; then
+            echo "The tagged deployment templates did not render the expected active digest-pinned fields." >&2
+            exit 1
+          fi
+          (
+            cd "${expected_dir}"
+            sha256sum compose.yaml container.env.example > SHA256SUMS
+          )
+          for asset in compose.yaml container.env.example SHA256SUMS; do
+            if ! cmp --silent "${expected_dir}/${asset}" "${verify_dir}/${asset}"; then
+              echo "The existing ${asset} differs from the exact asset rendered from ${GITHUB_SHA}." >&2
+              exit 1
+            fi
+          done
