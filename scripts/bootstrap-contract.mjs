@@ -8,6 +8,7 @@ const launcherPath = join(root, "Publish-Helmsman.ps1");
 const commandPath = join(root, "Publish-Helmsman.cmd");
 const publisherPath = join(root, "scripts", "Publish-HelmsmanRelease.ps1");
 const workflowPath = join(root, ".github", "workflows", "container.yml");
+const attributesPath = join(root, ".gitattributes");
 const launcherBuffer = readFileSync(launcherPath);
 const commandBuffer = readFileSync(commandPath);
 const publisherBuffer = readFileSync(publisherPath);
@@ -16,6 +17,7 @@ const command = commandBuffer.toString("utf8").replace(/\r\n?/gu, "\n");
 const publisher = publisherBuffer.toString("utf8").replace(/\r\n?/gu, "\n");
 const publisherSha256 = createHash("sha256").update(publisherBuffer).digest("hex");
 const workflow = readFileSync(workflowPath, "utf8").replace(/\r\n?/gu, "\n");
+const attributes = readFileSync(attributesPath, "utf8").replace(/\r\n?/gu, "\n");
 const failures = [];
 const passes = [];
 
@@ -36,6 +38,12 @@ function functionBlock(contents, name) {
     ? contents.slice(start, start + 1 + Math.min(...boundaries))
     : contents.slice(start);
 }
+
+record(
+  /^[*][.]ps1 text eol=lf$/mu.test(attributes)
+    && /^[*][.]cmd text eol=crlf$/mu.test(attributes),
+  "Git attributes keep hash-bound PowerShell source byte-stable while preserving Windows command-file endings"
+);
 
 const executableLauncher = launcher
   .replace(/'(?:''|[^'])*'/gu, "''")

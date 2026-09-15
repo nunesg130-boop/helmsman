@@ -8,6 +8,8 @@
 *.js text eol=lf
 *.cjs text eol=lf
 *.html text eol=lf
-*.ps1 text eol=crlf
+# The launcher binds the guarded publisher by SHA-256. Keep PowerShell source
+# bytes identical on Windows and Linux checkouts so that integrity check is stable.
+*.ps1 text eol=lf
 *.cmd text eol=crlf
 Dockerfile text eol=lf
