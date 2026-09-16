@@ -1,37 +1,24 @@
-# Local service and workload mark notices
+# Compatibility badges and workload artwork
 
-The SVG and PNG files in `assets/services` and `assets/workloads` are bundled
-local assets. Helmsman uses them only to identify compatible services and to
-distinguish virtual machines from LXC containers. They make no network requests.
+Helmsman names supported services only to identify compatible integrations.
+Jellyfin, Seerr, Radarr, Sonarr, Prowlarr, qBittorrent, Bazarr, Proxmox, and
+Portainer are names or marks of their respective owners. Their mention does not
+imply sponsorship, affiliation, or endorsement.
 
-The Seerr, Radarr, Sonarr, Prowlarr, Proxmox, qBittorrent, Jellyfin, VM, and LXC
-artwork was supplied for this Helmsman build. Raster marks were resized and, where
-needed, had only their surrounding image background removed. Bazarr retains the
-existing compact local representation.
+This public distribution does not bundle those services' logos or other
+third-party service artwork. The interface uses simple project-authored text
+badges such as `JF`, `SE`, `RA`, and `PX`. These badges are part of Helmsman's
+interface and are not intended to reproduce or replace an owner's logo.
 
-`portainer.svg` is an operator-supplied Portainer mark. No license metadata
-accompanied the uploaded asset, so its inclusion here must not be interpreted as
-a license grant. It is bundled only to identify an operator-configured Portainer
-service inside Helmsman.
+The files in `assets/workloads` are original, generic Helmsman drawings:
 
-The service names and marks are trademarks or other protected identifiers of
-their respective owners. Their appearance here does not imply sponsorship,
-affiliation, or endorsement, and this notice does not grant rights to reuse a
-mark outside that identification purpose.
+- `vm.svg` depicts a monitor with code brackets for a virtual machine.
+- `container.svg` depicts a plain isometric box for a software container.
 
-Reference sources:
+They do not reproduce the QEMU, LXC, Docker, Podman, or another container or
+virtualization project's logo. Both drawings are distributed as part of
+Helmsman under `AGPL-3.0-only`.
 
-- Jellyfin: https://jellyfin.org/docs/general/contributing/branding/
-- Seerr: https://seerr.dev/
-- Radarr: https://github.com/Radarr/Radarr
-- Sonarr: https://github.com/Sonarr/Sonarr
-- Prowlarr: https://github.com/Prowlarr/Prowlarr
-- qBittorrent: https://www.qbittorrent.org/
-- Bazarr: https://www.bazarr.media/
-- Proxmox: https://www.proxmox.com/en/about/media-kit
-- Portainer: operator-supplied SVG; product reference at https://www.portainer.io/
-- LXC: https://linuxcontainers.org/
-
-Bundling or adapting an asset does not provide any additional license grant and
-does not override third-party copyright, trademark, brand-guideline, or other
-rights in the represented marks.
+The Helmsman name, helmet logo, application icons, compatibility badges, and
+generic workload drawings identify this project. Helmsman's license does not
+grant rights in third-party product names or trademarks.

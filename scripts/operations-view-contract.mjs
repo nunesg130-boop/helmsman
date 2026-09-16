@@ -13,16 +13,16 @@ import {
   workloadIconMarkup
 } from "../src/ui/operations-views.js";
 
-const serviceIconAssets = Object.freeze({
-  jellyfin: "jellyfin.svg?v=2",
-  seerr: "seerr.png",
-  radarr: "radarr.png",
-  sonarr: "sonarr.png",
-  prowlarr: "prowlarr.png",
-  qbittorrent: "qbittorrent.svg?v=2",
-  bazarr: "bazarr.svg",
-  proxmox: "proxmox.png",
-  portainer: "portainer.svg"
+const serviceBadgeGlyphs = Object.freeze({
+  jellyfin: "JF",
+  seerr: "SE",
+  radarr: "RA",
+  sonarr: "SO",
+  prowlarr: "PR",
+  qbittorrent: "qB",
+  bazarr: "BZ",
+  proxmox: "PX",
+  portainer: "PT"
 });
 
 const retroCss = await readFile(new URL("../src/ui/retro.css", import.meta.url), "utf8");
@@ -116,44 +116,32 @@ assert.match(shellHtml, /<meta name="theme-color" content="#0d1719"\s*\/>/u);
 assert.equal(manifest.background_color, "#081012");
 assert.equal(manifest.theme_color, "#0d1719");
 
-for (const [id, assetPath] of Object.entries(serviceIconAssets)) {
-  const filename = assetPath.split("?", 1)[0];
+for (const [id, glyph] of Object.entries(serviceBadgeGlyphs)) {
   const markup = serviceIconMarkup(id, id.slice(0, 1));
-  assert.match(markup, new RegExp(`src="\\./assets/services/${assetPath.replaceAll(".", "\\.").replaceAll("?", "\\?")}"`, "u"));
-  assert.doesNotMatch(markup, /https?:|data:|blob:/iu, `${id} icon must remain a local asset`);
-  const asset = await readFile(new URL(`../assets/services/${filename}`, import.meta.url));
-  if (filename.endsWith(".svg")) {
-    const svg = asset.toString("utf8");
-    assert.match(svg, /^<svg\b/u, `${id} asset must be an SVG document`);
-    assert.doesNotMatch(
-      svg,
-      /<(?:script|foreignObject)\b|(?:on[a-z]+|href|xlink:href|src|style)\s*=|javascript:|data:|@import/iu,
-      `${id} SVG must not contain active or externally linked content`
-    );
-    assert.doesNotMatch(svg, /url\((?!#)/iu, `${id} SVG paint references must remain document-local`);
-  } else {
-    assert.deepEqual(asset.subarray(0, 8), Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), `${id} asset must be a PNG`);
-    assert.ok(asset.byteLength <= 256 * 1024, `${id} PNG must remain bounded`);
-  }
+  assert.match(markup, new RegExp(`service-brand-icon__fallback--${id}`, "u"));
+  assert.match(markup, new RegExp(`>${glyph}<\\/span>`, "u"));
+  assert.doesNotMatch(markup, /<img|\bsrc=|https?:|data:|blob:/iu, `${id} must use project-owned badge markup`);
 }
 
-assert.match(serviceIconMarkup("proxmox-environment-id", "P"), /assets\/services\/proxmox\.png/u);
-assert.match(serviceIconMarkup("portainer-bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "P"), /assets\/services\/portainer\.svg/u);
-assert.match(serviceIconMarkup("proxmox", "P"), /service-brand-icon--light-plate/u);
-assert.match(serviceIconMarkup("portainer", "P"), /service-brand-icon--light-plate/u);
-assert.match(serviceIconMarkup("radarr", "R"), /service-brand-icon--light-plate/u);
-assert.doesNotMatch(serviceIconMarkup("sonarr", "S"), /service-brand-icon--light-plate/u);
+assert.match(serviceIconMarkup("proxmox-environment-id", "P"), /service-brand-icon__fallback--proxmox/u);
+assert.match(serviceIconMarkup("portainer-bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "P"), /service-brand-icon__fallback--portainer/u);
+assert.match(serviceIconMarkup("portainer", "P"), />PT<\/span>/u);
+assert.doesNotMatch(serviceIconMarkup("portainer", "P"), /<img|assets\/services/u, "Portainer must use the generic project badge instead of bundled third-party artwork");
 const hostileIcon = serviceIconMarkup('unknown"><script>alert(1)</script>', '<img src=x onerror="alert(1)">');
 assert.doesNotMatch(hostileIcon, /<img|<script|onerror=/u, "unknown service ids cannot become image paths or active markup");
 assert.match(hostileIcon, /&lt;/u, "unknown service fallbacks are escaped");
 
-assert.match(workloadIconMarkup("qemu"), /assets\/workloads\/vm\.png/u);
-assert.match(workloadIconMarkup("lxc"), /assets\/workloads\/container\.png/u);
-assert.match(workloadIconMarkup('lxc"><script>'), /assets\/workloads\/vm\.png/u, "untrusted workload types cannot become asset paths");
+for (const [type, filename] of [["qemu", "vm.svg"], ["lxc", "container.svg"]]) {
+  assert.match(workloadIconMarkup(type), new RegExp(`assets/workloads/${filename.replace(".", "\\.")}`, "u"));
+  const svg = await readFile(new URL(`../assets/workloads/${filename}`, import.meta.url), "utf8");
+  assert.match(svg, /^<svg\b/u, `${filename} must be an SVG document`);
+  assert.doesNotMatch(svg, /<(?:script|foreignObject|iframe|object|embed|image)\b|\son[a-z]+\s*=|(?:href|src)\s*=/iu, `${filename} must remain inert`);
+}
+assert.match(workloadIconMarkup('lxc"><script>'), /assets\/workloads\/vm\.svg/u, "untrusted workload types cannot become asset paths");
 assert.match(
   application,
   /portainer-container-mark[^\n]*workloadIconMarkup\("lxc"\)/u,
-  "Portainer container rows must use the operator-supplied local container artwork"
+  "Portainer container rows must use the project-owned local container artwork"
 );
 assert.match(
   retroCss,
@@ -383,9 +371,9 @@ assert.match(hostile, /href="#\/pipeline"/u, "untrusted workload routes fall bac
 assert.equal(escapeOperationsHtml("<>&\"'"), "&lt;&gt;&amp;&quot;&#039;");
 
 const explicitFailure = normalizeOperationsSnapshot({
-  services: [{ id: "main", state: "degraded" }],
+  services: [{ id: "example", state: "degraded" }],
   incidents: [{
-    service: "main",
+    service: "example",
     capability: "task-history",
     state: "degraded",
     code: "HTTP_ERROR",
@@ -394,13 +382,13 @@ const explicitFailure = normalizeOperationsSnapshot({
 });
 assert.equal(
   explicitFailure.incidents[0].summary,
-  "Main task history returned HTTP 400.",
+  "Example task history returned HTTP 400.",
   "specific HTTP evidence must take precedence over a generic degraded summary"
 );
 const explicitCodeFailure = normalizeOperationsSnapshot({
-  services: [{ id: "main", state: "limited" }],
+  services: [{ id: "example", state: "limited" }],
   incidents: [{
-    service: "main",
+    service: "example",
     capability: "backup-history",
     state: "limited",
     code: "TASK_QUERY_REJECTED"
@@ -408,7 +396,7 @@ const explicitCodeFailure = normalizeOperationsSnapshot({
 });
 assert.equal(
   explicitCodeFailure.incidents[0].summary,
-  "Main backup history reported task query rejected.",
+  "Example backup history reported task query rejected.",
   "specific failure codes must take precedence over a generic limited summary"
 );
 
@@ -459,13 +447,13 @@ const proxmoxDiagnosticSecret = "pve-root@pam!helmsman=credential-secret";
 const proxmoxUpstreamBody = "upstream response body must remain server-side";
 const renderedProxmoxDiagnostic = renderOperationsReports([{
   severity: "warning",
-  source: "Recent failed tasks · Node pve-main",
-  message: "GET /api2/json/nodes/pve-main/tasks?source=archive&limit=100 failed. Proxmox rejected the node-scoped task request with HTTP 400. Verify Proxmox API compatibility and the configured base URL, then retry.",
+  source: "Recent failed tasks · Node pve-a",
+  message: "GET /api2/json/nodes/pve-a/tasks?source=archive&limit=100 failed. Proxmox rejected the node-scoped task request with HTTP 400. Verify Proxmox API compatibility and the configured base URL, then retry.",
   tokenSecret: proxmoxDiagnosticSecret,
   upstreamBody: proxmoxUpstreamBody
 }], "Lab Cluster");
-assert.match(renderedProxmoxDiagnostic, /Recent failed tasks · Node pve-main/u, "the affected node must remain visible");
-assert.match(renderedProxmoxDiagnostic, /GET \/api2\/json\/nodes\/pve-main\/tasks\?source=archive&amp;limit=100 failed\./u, "the safe operation and endpoint scope must remain visible");
+assert.match(renderedProxmoxDiagnostic, /Recent failed tasks · Node pve-a/u, "the affected node must remain visible");
+assert.match(renderedProxmoxDiagnostic, /GET \/api2\/json\/nodes\/pve-a\/tasks\?source=archive&amp;limit=100 failed\./u, "the safe operation and endpoint scope must remain visible");
 assert.match(renderedProxmoxDiagnostic, /HTTP 400/u, "the safe upstream status must remain visible");
 assert.match(renderedProxmoxDiagnostic, /Verify Proxmox API compatibility.*configured base URL.*retry/iu, "the suggested action must remain visible");
 assert.doesNotMatch(renderedProxmoxDiagnostic, new RegExp(`${proxmoxDiagnosticSecret}|${proxmoxUpstreamBody}`, "u"), "unknown credential and raw upstream fields must not render");
@@ -475,7 +463,7 @@ const proxmoxConfiguration = [{
   id: proxmoxTargetId,
   type: "proxmox",
   displayName: "Lab Cluster",
-  url: "https://192.168.0.4:8006",
+  url: "https://10.44.0.11:8006",
   enabled: true,
   monitoringEnabled: true,
   tlsMode: "pinned",

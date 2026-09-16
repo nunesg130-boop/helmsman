@@ -20,7 +20,7 @@ function healthyPortainer(checkedAt) {
     version: "3.0.0",
     checks: [{
       id: "containers-1",
-      label: "Main Docker containers",
+      label: "Example Docker containers",
       ok: true,
       state: "healthy",
       importance: "important",
@@ -38,7 +38,7 @@ function healthyPortainer(checkedAt) {
     inventory: {
       environments: [{
         id: 1,
-        name: "Main Docker",
+        name: "Example Docker",
         state: "up",
         platform: "Docker",
         containerCapable: true,
@@ -50,7 +50,7 @@ function healthyPortainer(checkedAt) {
         name: "maintenance-job",
         image: "example/maintenance:latest",
         environmentId: 1,
-        environmentName: "Main Docker",
+        environmentName: "Example Docker",
         state: "exited",
         status: "Exited (0) 1 hour ago",
         health: "informational",
@@ -65,7 +65,7 @@ function healthyPortainer(checkedAt) {
         state: "active",
         type: 2,
         environmentId: 1,
-        environmentName: "Main Docker",
+        environmentName: "Example Docker",
         createdAt: "2026-08-01T00:00:00.000Z",
         updatedAt: null,
         env: [{ value: "must-not-survive" }]

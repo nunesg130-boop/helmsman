@@ -37,12 +37,12 @@ test("publishes Proxmox targets in a separate bounded infrastructure snapshot", 
   const target = {
     id: TARGET_ID,
     type: "proxmox",
-    displayName: "Main Proxmox",
-    url: "https://192.168.0.4:8006",
+    displayName: "Example Proxmox",
+    url: "https://10.44.0.11:8006",
     targetRevision: TARGET_REVISION,
     tlsMode: "pinned",
     certificateFingerprint: "a".repeat(64),
-    approvedHostCidrs: ["192.168.0.4/32"],
+    approvedHostCidrs: ["10.44.0.11/32"],
     tokenSecret: "raw-target-secret-must-not-survive",
     enabled: true,
     monitoringEnabled: true,
@@ -74,7 +74,7 @@ test("publishes Proxmox targets in a separate bounded infrastructure snapshot", 
     id: TARGET_ID,
     targetRevision: TARGET_REVISION,
     type: "proxmox",
-    displayName: "Main Proxmox",
+    displayName: "Example Proxmox",
     state: "healthy",
     connectionState: "connected",
     latencyMs: 12,
@@ -116,7 +116,7 @@ test("publishes Proxmox targets in a separate bounded infrastructure snapshot", 
     }]
   });
   const serialized = JSON.stringify(snapshot.infrastructure);
-  assert.equal(serialized.includes("192.168.0.4"), false);
+  assert.equal(serialized.includes("10.44.0.11"), false);
   assert.equal(serialized.includes("certificateFingerprint"), false);
   assert.equal(serialized.includes("approvedHostCidrs"), false);
   assert.equal(serialized.includes("raw-target-secret"), false);

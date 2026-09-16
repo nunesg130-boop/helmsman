@@ -1,0 +1,8 @@
+# The project owner reviews all changes, with security-sensitive automation
+# called out explicitly so GitHub can require the appropriate review.
+* @nunesg130-boop
+/.github/ @nunesg130-boop
+/Dockerfile @nunesg130-boop
+/server/ @nunesg130-boop
+/scripts/Publish-HelmsmanRelease.ps1 @nunesg130-boop
+/Publish-Helmsman.ps1 @nunesg130-boop

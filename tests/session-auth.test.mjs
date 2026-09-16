@@ -56,7 +56,7 @@ test("origin and Host helpers enforce a first-run-safe exact binding", () => {
     "SECURE_ORIGIN_REQUIRED"
   );
   expectCode(
-    () => claimRequestBinding(request({ host: "192.168.0.5:4180", origin: "http://192.168.0.5:4180" }), "http://192.168.0.5:4180"),
+    () => claimRequestBinding(request({ host: "10.44.0.12:4180", origin: "http://10.44.0.12:4180" }), "http://10.44.0.12:4180"),
     "SECURE_ORIGIN_REQUIRED"
   );
   expectCode(

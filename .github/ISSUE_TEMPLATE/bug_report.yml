@@ -1,0 +1,63 @@
+name: Bug report
+description: Report a reproducible Helmsman defect using sanitized data.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Search existing issues first. For vulnerabilities, stop and use the
+        private reporting link in SECURITY.md.
+  - type: input
+    id: version
+    attributes:
+      label: Helmsman version
+      description: Use the exact release tag or commit SHA.
+      placeholder: v1.0.0-beta.1
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: Installation method
+      options:
+        - GitHub Release Compose assets
+        - Source build
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What happened, and what did you expect instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction
+      description: Provide the smallest numbered steps using synthetic data.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Sanitized environment
+      description: Include architecture and Docker/Compose/browser versions when relevant.
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Sanitized evidence
+      description: Paste only bounded, redacted output. Do not upload live state, .env, API responses, or data volumes.
+      render: shell
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety check
+      options:
+        - label: I removed credentials, tokens, cookies, keys, real hostnames and addresses, personal data, and private media details.
+          required: true
+        - label: This is not a security vulnerability.
+          required: true

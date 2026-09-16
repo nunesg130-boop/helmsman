@@ -223,7 +223,7 @@ test("authenticated Proxmox target CRUD and tests keep credentials write-only", 
       ...authentication,
       body: {
         type: "proxmox",
-        displayName: " Main Proxmox ",
+        displayName: " Example Proxmox ",
         url: "https://proxmox.test:8006/",
         enabled: true,
         monitoringEnabled: true,
@@ -235,7 +235,7 @@ test("authenticated Proxmox target CRUD and tests keep credentials write-only", 
     });
     assert.equal(created.status, 201, JSON.stringify(created.json));
     assert.match(created.json.id, /^[a-f0-9-]{36}$/u);
-    assert.equal(created.json.displayName, "Main Proxmox");
+    assert.equal(created.json.displayName, "Example Proxmox");
     assert.equal(created.json.url, "https://proxmox.test:8006");
     assert.equal(created.json.credentialConfigured, true);
     assert.equal(created.json.tlsMode, "system");

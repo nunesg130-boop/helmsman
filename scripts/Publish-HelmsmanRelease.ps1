@@ -6,7 +6,9 @@ param(
     [ValidateNotNullOrEmpty()]
     [string]$SourcePath,
     [string]$RepositoryPath,
-    [switch]$SkipLocalTests,
+    [string]$DeploymentHost,
+    [string]$DeploymentUser,
+    [string]$DeploymentRoot,
     [switch]$SelfTest
 )
 
@@ -390,6 +392,56 @@ function ConvertTo-PowerShellLiteral {
     return "'" + $Value.Replace("'", "''") + "'"
 }
 
+function Get-ValidatedDeploymentSettings {
+    param(
+        [string]$DeploymentHost,
+        [string]$DeploymentUser,
+        [string]$DeploymentRoot
+    )
+
+    $providedCount = @(
+        @($DeploymentHost, $DeploymentUser, $DeploymentRoot) |
+            Where-Object { ![string]::IsNullOrWhiteSpace($_) }
+    ).Count
+    if ($providedCount -eq 0) { return $null }
+    if ($providedCount -ne 3) {
+        throw 'DeploymentHost, DeploymentUser, and DeploymentRoot must be supplied together or all omitted.'
+    }
+
+    if ($DeploymentUser -notmatch '^[A-Za-z_][A-Za-z0-9._-]{0,31}$') {
+        throw 'DeploymentUser must be a simple SSH user name containing at most 32 letters, numbers, periods, underscores, or hyphens.'
+    }
+
+    if ($DeploymentHost.Length -gt 253 -or $DeploymentHost -match '[\x00-\x20\x7f]') {
+        throw 'DeploymentHost must be a DNS host name or IPv4 address without whitespace or control characters.'
+    }
+    if ($DeploymentHost -match '^[0-9.]+$') {
+        $parsedAddress = $null
+        if (![Net.IPAddress]::TryParse($DeploymentHost, [ref]$parsedAddress) -or
+            $parsedAddress.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork) {
+            throw 'DeploymentHost contains an invalid IPv4 address.'
+        }
+    }
+    elseif ($DeploymentHost -notmatch '^(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)(?:[.](?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?))*$') {
+        throw 'DeploymentHost must be a valid DNS host name or IPv4 address.'
+    }
+
+    if ($DeploymentRoot.Length -gt 1024 -or
+        $DeploymentRoot -notmatch '^/[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*/?$') {
+        throw 'DeploymentRoot must be a non-root absolute POSIX path using only letters, numbers, periods, underscores, hyphens, and slashes.'
+    }
+    $rootSegments = @($DeploymentRoot.Trim([char[]]@('/')).Split([char[]]@('/')))
+    if ($rootSegments -contains '.' -or $rootSegments -contains '..') {
+        throw 'DeploymentRoot cannot contain dot or parent-directory path segments.'
+    }
+
+    return [PSCustomObject]@{
+        Host = $DeploymentHost
+        User = $DeploymentUser
+        Root = $DeploymentRoot.TrimEnd([char[]]@('/'))
+    }
+}
+
 function Get-SafeRelativePath {
     param(
         [Parameter(Mandatory = $true)][string]$Root,
@@ -480,7 +532,7 @@ function Test-ProhibitedReleasePath {
     }
     if ($name -match '^(?:state|sessions|credentials)\.(?:json|key)(?:[.-].*)?$') { return $true }
     if ($name -match '^master-key\.hex(?:[.-].*)?$') { return $true }
-    if ($name -match '\.(key|pem|crt|cer|p12|pfx|log|zip|tar|tgz)$') { return $true }
+    if ($name -match '\.(key|pem|crt|cer|p12|pfx|log|zip|tar|tgz|db|sqlite|sqlite3|bak|old|orig|rej|swp|swo|tmp|temp|patch|diff)$') { return $true }
     if ($name -match '\.tar\.gz$') { return $true }
     if ($name -match '\.(corrupt|unrecoverable)-') { return $true }
     return $false
@@ -507,11 +559,17 @@ function Assert-NoEmbeddedSecrets {
 
     $textExtensions = @(
         '.cjs', '.conf', '.config', '.cs', '.css', '.env', '.example', '.go',
-        '.gradle', '.html', '.ini', '.java', '.js', '.json', '.jsx', '.md',
+        '.cmd', '.gradle', '.html', '.ini', '.java', '.js', '.json', '.jsx', '.md',
         '.mjs', '.properties', '.ps1', '.py', '.rb', '.rs', '.sh', '.svg',
-        '.toml', '.ts', '.tsx', '.txt', '.xml', '.yaml', '.yml'
+        '.toml', '.ts', '.tsx', '.txt', '.webmanifest', '.xml', '.yaml', '.yml'
     )
-    $textNames = @('dockerfile', 'caddyfile', '.dockerignore', '.gitattributes', '.gitignore')
+    $textNames = @('codeowners', 'dockerfile', 'caddyfile', 'license', '.dockerignore', '.gitattributes', '.gitignore')
+    $allowedBinaryPaths = @(
+        'assets/helmsman-logo.png',
+        'assets/icon-192.png',
+        'assets/icon-512.png',
+        'assets/icon-maskable-512.png'
+    )
     $patterns = @(
         [PSCustomObject]@{ Label = 'private key material'; Pattern = '-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?' + 'PRIVATE KEY-----' },
         [PSCustomObject]@{ Label = 'PGP private key material'; Pattern = '-----BEGIN PGP ' + 'PRIVATE KEY BLOCK-----' },
@@ -528,6 +586,10 @@ function Assert-NoEmbeddedSecrets {
         $item = Get-Item -LiteralPath $fullName
         $extension = [IO.Path]::GetExtension($item.Name).ToLowerInvariant()
         if (($textExtensions -notcontains $extension) -and ($textNames -notcontains $item.Name.ToLowerInvariant())) {
+            $normalizedRelative = $relative.Replace('\', '/').ToLowerInvariant()
+            if ($allowedBinaryPaths -notcontains $normalizedRelative) {
+                throw "$Context contains an unreviewed binary or unknown file type: $relative"
+            }
             continue
         }
         if ($item.Length -gt 5MB) {
@@ -1147,59 +1209,10 @@ function Assert-StagedTreeUnchanged {
         [Parameter(Mandatory = $true)][string]$ExpectedTree
     )
 
-    $actualTree = Invoke-NativeText -FilePath $Tools.Git -ArgumentList @('-C', $RepoRoot, 'write-tree') -FailureMessage 'Post-test staged tree identity'
+    $actualTree = Invoke-NativeText -FilePath $Tools.Git -ArgumentList @('-C', $RepoRoot, 'write-tree') -FailureMessage 'Pre-confirmation staged tree identity'
     if ($actualTree -cne $ExpectedTree) {
         throw 'The staged tree changed after it was reviewed. Nothing was committed or pushed.'
     }
-}
-
-function Assert-NoUnstagedReleaseChanges {
-    param(
-        [Parameter(Mandatory = $true)][string]$RepoRoot,
-        [Parameter(Mandatory = $true)]$Tools
-    )
-
-    $unstaged = Invoke-NativeProbe -FilePath $Tools.Git -ArgumentList @('-C', $RepoRoot, 'diff', '--quiet')
-    if ($unstaged.ExitCode -eq 1) { throw 'Local tests changed a tracked file after staging.' }
-    if ($unstaged.ExitCode -ne 0) { throw 'The post-test working-tree check failed.' }
-    $untracked = Invoke-NativeText -FilePath $Tools.Git -ArgumentList @('-C', $RepoRoot, 'ls-files', '--others', '--exclude-standard') -FailureMessage 'Post-test untracked-file check'
-    if (![string]::IsNullOrWhiteSpace($untracked)) {
-        throw 'Local tests created an unexpected untracked file.'
-    }
-}
-
-function Invoke-LocalTestsIfAvailable {
-    param(
-        [Parameter(Mandatory = $true)][string]$RepoRoot,
-        [Parameter(Mandatory = $true)]$Tools,
-        [Parameter(Mandatory = $true)][bool]$Skip
-    )
-
-    if ($Skip) {
-        Write-Warning 'Local npm tests were explicitly skipped. GitHub Actions will still gate both pushes.'
-        return
-    }
-    $node = Get-RequiredApplication -Name 'node.exe' -InstallHint 'Install Node.js 24.19.x, or rerun with -SkipLocalTests to rely on GitHub Actions.'
-    $npm = Get-RequiredApplication -Name 'npm.cmd' -InstallHint 'Install Node.js 24.19.x, or rerun with -SkipLocalTests to rely on GitHub Actions.'
-    $nodeText = Invoke-NativeText -FilePath $node -ArgumentList @('-p', 'process.versions.node') -FailureMessage 'Node.js version check'
-    try { $nodeVersion = [version]$nodeText }
-    catch { throw "Node.js returned an invalid version: $nodeText" }
-    if ($nodeVersion -lt [version]'24.19.0' -or $nodeVersion -ge [version]'25.0.0') {
-        throw "Node.js 24.19.x is required for local release tests; found $nodeVersion."
-    }
-    $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('helmsman-tests-' + [guid]::NewGuid().ToString('N'))
-    $null = New-Item -ItemType Directory -Path $testRoot
-    try {
-        $gitPrefix = $testRoot.Replace('\', '/') + '/'
-        Invoke-NativeLive -FilePath $Tools.Git -ArgumentList @('-C', $RepoRoot, 'checkout-index', '--all', "--prefix=$gitPrefix") -FailureMessage 'Test-tree export'
-        Invoke-NativeLive -FilePath $npm -ArgumentList @('--prefix', $testRoot, 'test') -FailureMessage 'Local Helmsman test suite'
-    }
-    finally {
-        if (Test-Path -LiteralPath $testRoot -PathType Container) {
-            [IO.Directory]::Delete($testRoot, $true)
-        }
-    }
-    Assert-NoUnstagedReleaseChanges -RepoRoot $RepoRoot -Tools $Tools
 }
 
 function Show-StagedSummary {
@@ -1529,35 +1542,48 @@ function Assert-PublishedRelease {
     }
 }
 
-function Show-ServerUpdateCommands {
+function Show-DeploymentHandoff {
     param(
         [Parameter(Mandatory = $true)]$Release,
-        [Parameter(Mandatory = $true)]$Publication
+        [Parameter(Mandatory = $true)]$Publication,
+        $Deployment
     )
 
     $image = $Publication.Image
-    $remoteReleaseDirectory = '/opt/helmsman/releases/' + $Release.Tag
     $localCompose = Join-Path $Publication.Directory 'compose.yaml'
     $localEnvironmentExample = Join-Path $Publication.Directory 'container.env.example'
     $localChecksums = Join-Path $Publication.Directory 'SHA256SUMS'
     Write-Host ''
-    Write-Host "Release complete. The Jellyfin server was not changed." -ForegroundColor Green
+    Write-Host 'Release complete. No deployment host was changed.' -ForegroundColor Green
     Write-Host "Published image: $image"
     Write-Host "Verified deployment files: $($Publication.Directory)"
-    Write-Host 'The server block is for the standard single-file Compose install. If that host uses an override file, adapt every Compose command before running it.' -ForegroundColor Yellow
+    if ($null -eq $Deployment) {
+        Write-Host ''
+        Write-Host 'No deployment target was supplied, so no host-specific commands were generated.' -ForegroundColor Yellow
+        Write-Host 'Use the published image with your normal Compose update workflow.'
+        Write-Host 'For future releases, supply all three optional parameters before publication to receive a manual SSH handoff:'
+        Write-Host "  -DeploymentHost '<server-host>' -DeploymentUser '<ssh-user>' -DeploymentRoot '<absolute-install-directory>'"
+        return
+    }
+
+    $target = $Deployment.User + '@' + $Deployment.Host
+    $remoteReleaseDirectory = $Deployment.Root + '/releases/' + $Release.Tag
+    Write-Host "Deployment target: $target"
+    Write-Host "Deployment root: $($Deployment.Root)"
+    Write-Host 'The generated block is for a standard single-file Compose install. If that host uses an override file, adapt every Compose command before running it.' -ForegroundColor Yellow
     Write-Host ''
     Write-Host 'Run these transfer commands from this Windows PowerShell window:' -ForegroundColor Yellow
-    Write-Host ('ssh root@192.168.0.7 "mkdir -p ' + $remoteReleaseDirectory + '"')
-    Write-Host ('scp ' + (ConvertTo-PowerShellLiteral -Value $localCompose) + ' root@192.168.0.7:' + $remoteReleaseDirectory + '/')
-    Write-Host ('scp ' + (ConvertTo-PowerShellLiteral -Value $localEnvironmentExample) + ' root@192.168.0.7:' + $remoteReleaseDirectory + '/')
-    Write-Host ('scp ' + (ConvertTo-PowerShellLiteral -Value $localChecksums) + ' root@192.168.0.7:' + $remoteReleaseDirectory + '/')
-    Write-Host 'ssh root@192.168.0.7'
+    Write-Host ('ssh ' + $target + ' "mkdir -p -- ' + $remoteReleaseDirectory + '"')
+    Write-Host ('scp ' + (ConvertTo-PowerShellLiteral -Value $localCompose) + ' ' + $target + ':' + $remoteReleaseDirectory + '/')
+    Write-Host ('scp ' + (ConvertTo-PowerShellLiteral -Value $localEnvironmentExample) + ' ' + $target + ':' + $remoteReleaseDirectory + '/')
+    Write-Host ('scp ' + (ConvertTo-PowerShellLiteral -Value $localChecksums) + ' ' + $target + ':' + $remoteReleaseDirectory + '/')
+    Write-Host ('ssh ' + $target)
     Write-Host ''
-    Write-Host 'Then run these commands inside the Jellyfin SSH session:' -ForegroundColor Yellow
+    Write-Host 'Then run these commands inside the remote SSH session:' -ForegroundColor Yellow
     Write-Host 'set -euo pipefail'
     Write-Host ('cd ' + $remoteReleaseDirectory)
     Write-Host 'sha256sum --strict --check SHA256SUMS'
-    Write-Host 'cd /opt/helmsman'
+    Write-Host ('cd ' + $Deployment.Root)
     Write-Host "if [ -e compose.yaml.before-$($Release.Version) ] || [ -e .env.before-$($Release.Version) ]; then echo 'A backup for this version already exists; inspect or resume the prior attempt manually.' >&2; exit 1; fi"
     Write-Host "cp -- compose.yaml compose.yaml.before-$($Release.Version)"
     Write-Host 'unset HELMSMAN_IMAGE COMPOSE_FILE COMPOSE_ENV_FILES COMPOSE_PROJECT_NAME COMPOSE_PROFILES'
@@ -1570,7 +1596,7 @@ function Show-ServerUpdateCommands {
     Write-Host 'mv -- "$helmsman_env_tmp" .env'
     Write-Host 'trap - EXIT HUP INT TERM'
     Write-Host 'unset helmsman_env_source helmsman_env_tmp'
-    Write-Host ('cp ' + $remoteReleaseDirectory + '/compose.yaml compose.yaml')
+    Write-Host ('cp -- ' + $remoteReleaseDirectory + '/compose.yaml compose.yaml')
     Write-Host 'docker compose --file compose.yaml --env-file .env config'
     Write-Host 'docker compose --file compose.yaml --env-file .env config --images'
     Write-Host ("test `"`$(docker compose --file compose.yaml --env-file .env config --images)`" = '" + $image + "' || { echo 'Resolved image does not match the verified release digest.' >&2; exit 1; }")
@@ -1621,6 +1647,44 @@ function Invoke-PublisherSelfTest {
             -StatusText "  - Token scopes: 'repo:status', 'workflow'" `
             -RequiredScope 'repo')) {
         throw 'Publisher self-test did not require exact GitHub scope names.'
+    }
+
+    $emptyDeployment = Get-ValidatedDeploymentSettings
+    if ($null -ne $emptyDeployment) {
+        throw 'Publisher self-test did not treat omitted deployment settings as optional.'
+    }
+    $deployment = Get-ValidatedDeploymentSettings `
+        -DeploymentHost 'host.example.test' `
+        -DeploymentUser 'deploy-user' `
+        -DeploymentRoot '/srv/apps/helmsman/'
+    if ($deployment.Host -cne 'host.example.test' -or
+        $deployment.User -cne 'deploy-user' -or
+        $deployment.Root -cne '/srv/apps/helmsman') {
+        throw 'Publisher self-test did not normalize valid deployment settings.'
+    }
+    $invalidDeploymentCases = @(
+        [PSCustomObject]@{ Name = 'partial settings'; HostName = 'host.example.test'; UserName = ''; RootPath = '' },
+        [PSCustomObject]@{ Name = 'host command separator'; HostName = 'host;whoami'; UserName = 'deploy'; RootPath = '/srv/helmsman' },
+        [PSCustomObject]@{ Name = 'credential-like host'; HostName = 'user@example.test'; UserName = 'deploy'; RootPath = '/srv/helmsman' },
+        [PSCustomObject]@{ Name = 'invalid IPv4 address'; HostName = '999.1.1.1'; UserName = 'deploy'; RootPath = '/srv/helmsman' },
+        [PSCustomObject]@{ Name = 'unsafe user'; HostName = 'host.example.test'; UserName = 'deploy user'; RootPath = '/srv/helmsman' },
+        [PSCustomObject]@{ Name = 'relative root'; HostName = 'host.example.test'; UserName = 'deploy'; RootPath = 'srv/helmsman' },
+        [PSCustomObject]@{ Name = 'parent root segment'; HostName = 'host.example.test'; UserName = 'deploy'; RootPath = '/srv/../helmsman' }
+    )
+    foreach ($invalidDeployment in $invalidDeploymentCases) {
+        $rejected = $false
+        try {
+            $null = Get-ValidatedDeploymentSettings `
+                -DeploymentHost $invalidDeployment.HostName `
+                -DeploymentUser $invalidDeployment.UserName `
+                -DeploymentRoot $invalidDeployment.RootPath
+        }
+        catch {
+            $rejected = $true
+        }
+        if (!$rejected) {
+            throw "Publisher self-test accepted invalid deployment settings: $($invalidDeployment.Name)."
+        }
     }
 
     $emptyRuns = @(ConvertFrom-GitHubRunListJson -Json '[]' -Context 'Self-test empty run list')
@@ -1716,6 +1780,11 @@ try {
     # commits, tags, or pushes. Child npm processes inherit the same protection.
     $gitHooksIsolation = Enter-GitHooksIsolation
 
+    $deployment = Get-ValidatedDeploymentSettings `
+        -DeploymentHost $DeploymentHost `
+        -DeploymentUser $DeploymentUser `
+        -DeploymentRoot $DeploymentRoot
+
     Write-Step 'Validating release tools and paths'
     $tools = Assert-RequiredTool
 
@@ -1766,8 +1835,9 @@ try {
     Sync-SourceTree -Release $release -RepoRoot $canonical.Root -Tools $tools -PublisherPath $publisherPath
     $reviewedTree = Stage-AndValidateRelease -RepoRoot $canonical.Root -Tools $tools -Release $release -PublisherPath $publisherPath
 
-    Write-Step 'Running local release tests'
-    Invoke-LocalTestsIfAvailable -RepoRoot $canonical.Root -Tools $tools -Skip ([bool]$SkipLocalTests)
+    # Candidate code is never executed in the maintainer's authenticated
+    # publishing process. The exact staged tree is reviewed here, then the
+    # mandatory hosted main workflow tests that commit before a tag exists.
     Assert-StagedTreeUnchanged -RepoRoot $canonical.Root -Tools $tools -ExpectedTree $reviewedTree
 
     Show-StagedSummary -RepoRoot $canonical.Root -Tools $tools -Release $release -ExpectedRepository $Repository
@@ -1799,7 +1869,7 @@ try {
     $tagRun = Wait-WorkflowForCommit -Tools $tools -ExpectedRepository $Repository -WorkflowName $Workflow -CommitSha $commitSha -RefName $release.Tag -ExcludedRunIds $existingTagRuns
     $publication = Assert-PublishedRelease -Tools $tools -ExpectedRepository $Repository -Release $release -DeploymentDirectory $deploymentDirectory
 
-    Show-ServerUpdateCommands -Release $release -Publication $publication
+    Show-DeploymentHandoff -Release $release -Publication $publication -Deployment $deployment
 }
 finally {
     try {

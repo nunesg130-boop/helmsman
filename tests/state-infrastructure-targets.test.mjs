@@ -12,7 +12,7 @@ function target(id = randomUUID()) {
   const saved = {
     id,
     type: "proxmox",
-    displayName: "Main Proxmox",
+    displayName: "Example Proxmox",
     url: "https://10.20.30.40:8006",
     targetRevision,
     enabled: true,
@@ -45,7 +45,7 @@ function infrastructureService(id = randomUUID()) {
   return {
     id,
     type: "portainer",
-    displayName: "Main Portainer",
+    displayName: "Example Portainer",
     url: "https://10.20.30.50:9443",
     targetRevision: randomUUID(),
     enabled: true,

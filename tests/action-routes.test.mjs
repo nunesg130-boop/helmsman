@@ -42,11 +42,11 @@ test("fixed action authorizers construct only approved provider requests", () =>
     `/api/endpoints/12/docker/containers/${CONTAINER_ID}/stop?t=30`
   );
 
-  const qemu = authorizeProxmoxWorkloadAction("reboot", { node: "Main", type: "qemu", vmid: 101 });
+  const qemu = authorizeProxmoxWorkloadAction("reboot", { node: "pve-a", type: "qemu", vmid: 2101 });
   assert.equal(qemu.method, "POST");
-  assert.equal(qemu.upstreamPathAndQuery, "/api2/json/nodes/Main/qemu/101/status/reboot");
-  const lxc = authorizeProxmoxWorkloadAction("shutdown", { node: "Unitrend", type: "lxc", vmid: 104 });
-  assert.equal(lxc.upstreamPathAndQuery, "/api2/json/nodes/Unitrend/lxc/104/status/shutdown");
+  assert.equal(qemu.upstreamPathAndQuery, "/api2/json/nodes/pve-a/qemu/2101/status/reboot");
+  const lxc = authorizeProxmoxWorkloadAction("shutdown", { node: "pve-b", type: "lxc", vmid: 2201 });
+  assert.equal(lxc.upstreamPathAndQuery, "/api2/json/nodes/pve-b/lxc/2201/status/shutdown");
 
   const retry = authorizeMediaAction("retryRequest", { service: "seerr", resourceId: 41 });
   assert.equal(retry.upstreamPathAndQuery, "/api/v1/request/41/retry");
@@ -72,7 +72,7 @@ test("fixed action authorizers construct only approved provider requests", () =>
 
 test("Proxmox action acknowledgements require one bounded UPID and never need exposure", () => {
   assert.equal(validProxmoxActionAcknowledgement(
-    Buffer.from('{"data":"UPID:Main:00000001:00000002:00000003:qmreboot:101:helmsman@pve:"}')
+    Buffer.from('{"data":"UPID:pve-a:00000001:00000002:00000003:qmreboot:2101:helmsman@pve:"}')
   ), true);
   for (const value of [
     Buffer.from(""),
@@ -91,9 +91,9 @@ test("action authorizers reject short IDs, invalid tuples, and path-like values"
     authorizePortainerContainerAction("restart", { endpointId: 1, containerId: "a".repeat(12) }),
     authorizePortainerContainerAction("remove", { endpointId: 1, containerId: CONTAINER_ID }),
     authorizePortainerContainerAction("start", { endpointId: "1/containers", containerId: CONTAINER_ID }),
-    authorizeProxmoxWorkloadAction("stop", { node: "Main", type: "qemu", vmid: 101 }),
-    authorizeProxmoxWorkloadAction("reboot", { node: "../Main", type: "qemu", vmid: 101 }),
-    authorizeProxmoxWorkloadAction("reboot", { node: "Main", type: "storage", vmid: 101 }),
+    authorizeProxmoxWorkloadAction("stop", { node: "pve-a", type: "qemu", vmid: 2101 }),
+    authorizeProxmoxWorkloadAction("reboot", { node: "../pve-a", type: "qemu", vmid: 2101 }),
+    authorizeProxmoxWorkloadAction("reboot", { node: "pve-a", type: "storage", vmid: 2101 }),
     authorizeMediaAction("searchMovie", { service: "sonarr", resourceId: 22 }),
     authorizeMediaAction("retryRequest", { service: "seerr", resourceId: "1/2" }),
     authorizeMediaAction("requestSeasons", { service: "seerr", resourceId: 1396, seasonNumbers: [] }),
@@ -130,7 +130,7 @@ test("action transports reconstruct their route and reject forged parity before 
     (error) => error?.code === "ROUTE_NOT_ALLOWED"
   );
 
-  const proxmox = authorizeProxmoxWorkloadAction("reboot", { node: "Main", type: "qemu", vmid: 101 });
+  const proxmox = authorizeProxmoxWorkloadAction("reboot", { node: "pve-a", type: "qemu", vmid: 2101 });
   await assert.rejects(
     performProxmoxUpstreamRequest({
       targetResolution: null,

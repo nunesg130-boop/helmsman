@@ -1,18 +1,29 @@
-# Publish Helmsman through GitHub
+# Maintainer release process
 
 Helmsman uses GitHub as the release boundary: a versioned source package is
-copied into a clean clone, tested, committed to `main`, and then tagged only
-after the exact `main` workflow succeeds. The tag workflow publishes Linux
+statically validated, copied into a clean clone, reviewed, and committed to
+`main`. Candidate code runs only on hosted GitHub Actions; the version is
+tagged only after the exact `main` workflow succeeds. The tag workflow publishes Linux
 AMD64 and ARM64 images to GHCR and creates the matching GitHub prerelease.
 
+This guide is for maintainers of the canonical repository. Normal operators
+should install the checksum-verified assets documented in
+[deploy/DOCKER.md](deploy/DOCKER.md); they do not need the publisher or GitHub
+write access.
+
 Use local source builds for experiments. Publish every version that you intend
-to deploy on the Jellyfin server, so each deployed image has an immutable tag
+to deploy on a Helmsman host, so each deployed image has an immutable tag
 and an easy rollback point. There is no need to publish every intermediate
 local edit.
 
-Start with a private repository and private container package until a source
-license is chosen and redistribution rights for every bundled third-party mark
-have been confirmed.
+For the public launch, verify the canonical repository and GHCR package are
+both public; GitHub controls their visibility separately. Source code is
+released under AGPL-3.0-only. The interface uses project-owned service text
+badges and original generic workload SVGs; compatible-service names and
+trademarks remain their owners' property as documented in
+`assets/services/THIRD_PARTY_NOTICES.md`. Complete
+[PUBLIC_RELEASE_CHECKLIST.md](PUBLIC_RELEASE_CHECKLIST.md) before the first
+public release or after a material change to repository security settings.
 
 ## Recommended workflow: one launcher on any computer
 
@@ -67,7 +78,7 @@ checklist. It:
    2.57.0 or newer;
 2. starts browser-based GitHub authentication when needed and verifies the
    exact active `nunesg130-boop` account, the `repo` and `workflow`
-   permissions, write access to the private repository, and noninteractive
+   permissions, write access to the canonical repository, and noninteractive
    HTTPS Git access without SSH or URL rewriting;
 3. creates or validates the persistent
    `%USERPROFILE%\Downloads\helmsman-github` clone of
@@ -126,27 +137,27 @@ publisher stops unless the clone is the exact repository root, is on a clean
 and push URLs without credential overrides, and the expected active GitHub CLI
 account has write access plus `repo` and `workflow` permissions. It then:
 
-1. validates the extracted source and release version;
+1. statically validates the extracted source and release version without
+   executing candidate code;
 2. synchronizes it into the clone and stages the exact result;
-3. runs the local test suite;
-4. shows the staged file list and diff statistics;
-5. asks once for the exact confirmation `PUBLISH <version>`;
-6. commits and pushes `main`;
-7. waits for the successful **Container** workflow for that exact commit on
+3. shows the staged file list and diff statistics;
+4. asks once for the exact confirmation `PUBLISH <version>`;
+5. commits and pushes `main`;
+6. waits for the successful **Container** workflow for that exact commit on
    `main`;
-8. creates and pushes the annotated version tag;
-9. waits for the successful tag workflow for the same commit; and
-10. downloads the three GitHub Release assets, verifies their checksums and
+7. creates and pushes the annotated version tag;
+8. waits for the successful tag workflow for the same commit; and
+9. downloads the three GitHub Release assets, verifies their checksums and
     common digest-pinned image reference, and saves them in a new local
     `helmsman-<version>-deployment-assets` directory beside the source folder;
-11. prints the exact transfer and deployment commands without running them.
+10. when deployment details were supplied, prints the exact transfer and
+    deployment commands without running them.
 
 Nothing is committed or pushed before the typed confirmation. The tag is not
-created if the `main` workflow fails. Local tests use Node.js 24.19.0 or newer
-within Node 24 (`>=24.19.0 <25`). When Node is missing or incompatible, the
-launcher automatically skips only the local test pass. Both GitHub workflow
-gates remain mandatory, so a failure that local tests could have caught is then
-reported after the release commit reaches `main`.
+created if the `main` workflow fails. The publisher deliberately does not run
+candidate source on the credential-bearing maintainer workstation. Both hosted
+GitHub workflow gates are mandatory, and each is matched to the exact commit
+and ref before publication advances.
 
 ## Advanced: call the guarded publisher directly
 
@@ -176,14 +187,23 @@ credential configuration. They reject ambient `GH_TOKEN`, `GITHUB_TOKEN`,
 the root launcher when browser authentication or authorization refresh is
 needed. The effective destination and credential overrides are checked again
 immediately before both the `main` and tag pushes.
-Append `-SkipLocalTests` to skip local tests explicitly; the launcher also
-selects that behavior automatically when Node.js `>=24.19.0 <25` is
-unavailable. The `main` and tag workflows still gate publication, but local
-failures will be reported later.
+
+To make the publisher print deployment-transfer guidance after a successful
+release, supply all three generic deployment values to the root launcher:
+
+```powershell
+.\Publish-Helmsman.ps1 `
+  -DeploymentHost 'helmsman-host.example' `
+  -DeploymentUser 'deploy-user' `
+  -DeploymentRoot '/srv/apps/helmsman'
+```
+
+Omit all three to publish without deployment instructions. The publisher never
+opens the SSH connection or runs the printed commands.
 
 ## Cancellation and recovery
 
-If validation, staging, or tests fail—or if confirmation is declined—nothing
+If local validation or staging fails—or if confirmation is declined—nothing
 has been committed, tagged, or pushed. The synchronized changes intentionally
 remain staged so they can be inspected:
 
@@ -253,40 +273,40 @@ The successful tag workflow publishes the exact version tag, the moving
 prerelease. The release deployment files are pinned to the multi-architecture
 manifest digest created by that workflow.
 
-## Jellyfin server remains manual
+## Deployment remains manual
 
-Publishing never connects to, changes, or restarts the Jellyfin server. After
+Publishing never connects to, changes, or restarts a deployment host. After
 the GitHub Release passes verification, the script keeps the downloaded assets
 in a local directory such as:
 
 ```text
-C:\Users\admin\Downloads\helmsman-v0.10.0-beta.14\helmsman-0.10.0-beta.14-deployment-assets
+%USERPROFILE%\Downloads\helmsman-v1.0.0-beta.1\helmsman-1.0.0-beta.1-deployment-assets
 ```
 
 It then prints—but does not execute—the exact `ssh` and `scp` commands that
-create `/opt/helmsman/releases/v0.10.0-beta.14` and transfer the verified
+create the configured release directory and transfer the verified
 `compose.yaml`, `container.env.example`, and `SHA256SUMS` files there. Run those
 printed commands from the same PowerShell window. Their shape is:
 
 ```powershell
-$Assets = "C:\Users\admin\Downloads\helmsman-v0.10.0-beta.14\helmsman-0.10.0-beta.14-deployment-assets"
-ssh root@192.168.0.7 "mkdir -p /opt/helmsman/releases/v0.10.0-beta.14"
-scp "$Assets\compose.yaml" root@192.168.0.7:/opt/helmsman/releases/v0.10.0-beta.14/
-scp "$Assets\container.env.example" root@192.168.0.7:/opt/helmsman/releases/v0.10.0-beta.14/
-scp "$Assets\SHA256SUMS" root@192.168.0.7:/opt/helmsman/releases/v0.10.0-beta.14/
-ssh root@192.168.0.7
+$Assets = "$env:USERPROFILE\Downloads\helmsman-v1.0.0-beta.1\helmsman-1.0.0-beta.1-deployment-assets"
+$DeployHost = "deploy-user@helmsman-host.example"
+ssh $DeployHost "mkdir -p /srv/apps/helmsman/releases/v1.0.0-beta.1"
+scp "$Assets\compose.yaml" "${DeployHost}:/srv/apps/helmsman/releases/v1.0.0-beta.1/"
+scp "$Assets\container.env.example" "${DeployHost}:/srv/apps/helmsman/releases/v1.0.0-beta.1/"
+scp "$Assets\SHA256SUMS" "${DeployHost}:/srv/apps/helmsman/releases/v1.0.0-beta.1/"
+ssh $DeployHost
 ```
 
 After the transfer, enter the printed SSH session and run its server block. The
-printed block targets the standard single-file Compose installation used on the
-current Jellyfin host. If an installation uses
+printed block targets the standard single-file Compose installation. If an installation uses
 `deploy/compose.upgrade-v0.5.yaml`, `deploy/compose.hardened.yaml`, or another
 override, include that exact override stack in every Compose command instead
 of running the printed block unchanged. The standard block first executes:
 
 ```sh
 set -euo pipefail
-cd /opt/helmsman/releases/v0.10.0-beta.14
+cd /srv/apps/helmsman/releases/v1.0.0-beta.1
 sha256sum --strict --check SHA256SUMS
 ```
 
@@ -295,16 +315,16 @@ Only verified assets proceed to installation. The remaining printed commands:
 - stop before changing anything if a backup for that version already exists,
   so a retry cannot overwrite the original rollback point; inspect or resume a
   partially completed attempt manually;
-- back up `/opt/helmsman/compose.yaml` and, when present, `.env` as
-  `compose.yaml.before-0.10.0-beta.14` and
-  `.env.before-0.10.0-beta.14`;
+- back up the configured installation's `compose.yaml` and, when present,
+  `.env` as `compose.yaml.before-1.0.0-beta.1` and
+  `.env.before-1.0.0-beta.1`;
 - explicitly unset shell-level image and Compose selector variables so they
   cannot override the verified configuration or the project choice retained
   in `.env`;
 - preserve every existing `.env` setting except all old
   `HELMSMAN_IMAGE` assignments, then append one canonical assignment containing
   the release's exact `ghcr.io/nunesg130-boop/helmsman@sha256:...` digest;
-- build the replacement `.env` in `/opt/helmsman` and atomically rename it into
+- build the replacement `.env` in the configured installation directory and atomically rename it into
   place while retaining the old file's ownership and mode;
 - use the verified `container.env.example` as the starting `.env` when no
   previous `.env` exists, with mode `0600`;
@@ -330,10 +350,10 @@ the resolved image before recreating the container:
 
 ```sh
 set -euo pipefail
-cd /opt/helmsman
-cp -- compose.yaml.before-0.10.0-beta.14 compose.yaml
-if [ -f .env.before-0.10.0-beta.14 ]; then
-  cp -- .env.before-0.10.0-beta.14 .env
+cd /srv/apps/helmsman
+cp -- compose.yaml.before-1.0.0-beta.1 compose.yaml
+if [ -f .env.before-1.0.0-beta.1 ]; then
+  cp -- .env.before-1.0.0-beta.1 .env
   helmsman_env_file=.env
 else
   rm -f -- .env

@@ -111,7 +111,7 @@ test("Portainer models normalize only bounded display and inventory fields", () 
   const environments = environmentsFromPortainer([
     {
       Id: 1,
-      Name: "Main\u0000 Docker",
+      Name: "Example\u0000 Docker",
       Status: 1,
       ContainerEngine: "Docker",
       AgentVersion: "2.39.7",
@@ -134,6 +134,15 @@ test("Portainer models normalize only bounded display and inventory fields", () 
       agentVersion: null
     },
     {
+      id: 1,
+      name: "Example Docker",
+      state: "up",
+      platform: "Docker",
+      containerCapable: true,
+      edge: false,
+      agentVersion: "2.39.7"
+    },
+    {
       id: 3,
       name: "Kubernetes",
       state: "provisioning",
@@ -141,15 +150,6 @@ test("Portainer models normalize only bounded display and inventory fields", () 
       containerCapable: false,
       edge: false,
       agentVersion: null
-    },
-    {
-      id: 1,
-      name: "Main Docker",
-      state: "up",
-      platform: "Docker",
-      containerCapable: true,
-      edge: false,
-      agentVersion: "2.39.7"
     }
   ]);
 
@@ -198,7 +198,7 @@ test("Portainer models normalize only bounded display and inventory fields", () 
     GitConfig: { Authentication: { Password: droppedSecret } },
     EntryPoint: `/srv/${droppedSecret}/compose.yml`,
     ProjectPath: `/srv/${droppedSecret}`
-  }], new Map([[1, "Main Docker"]]));
+  }], new Map([[1, "Example Docker"]]));
   assert.equal(stacks.length, 1);
   assert.deepEqual(Object.keys(stacks[0]), [
     "id",
@@ -243,7 +243,7 @@ test("Portainer container ports retain first-seen order while removing exact dup
   ];
   const [normalized] = containersFromPortainer([
     container("a", { Ports: boundedPorts })
-  ], { id: 1, name: "Main Docker" });
+  ], { id: 1, name: "Example Docker" });
 
   assert.deepEqual(normalized.ports.slice(0, 3), [
     { privatePort: 8096, publicPort: 8096, protocol: "tcp" },
@@ -268,7 +268,7 @@ test("Portainer probe uses v3 status, bounded pagination, and Docker gateway inv
     if (routeId === "identity") return { status: 200, body: { Id: 7, Username: "helmsman" } };
     if (routeId === "environments" && options.start === 1) return { status: 200, body: firstPage };
     if (routeId === "environments" && options.start === 101) {
-      return { status: 200, body: [dockerEnvironment(101, { Name: "Main Docker" })] };
+      return { status: 200, body: [dockerEnvironment(101, { Name: "Example Docker" })] };
     }
     if (routeId === "stacks") return { status: 200, body: [{ Id: 1, Name: "Media", Status: 1, EndpointId: 101 }] };
     if (routeId === "containers" && options.endpointId === 101) {

@@ -32,7 +32,12 @@ const requiredFiles = [
   ".dockerignore",
   ".gitattributes",
   ".gitignore",
+  "LICENSE",
+  "CONTRIBUTING.md",
+  "CODE_OF_CONDUCT.md",
   "SECURITY.md",
+  "SUPPORT.md",
+  "PUBLIC_RELEASE_CHECKLIST.md",
   "container.env.example",
   "GITHUB.md",
   "package.json",
@@ -83,18 +88,9 @@ const requiredFiles = [
   "assets/icon-192.png",
   "assets/icon-512.png",
   "assets/icon-maskable-512.png",
-  "assets/services/jellyfin.svg",
-  "assets/services/seerr.png",
-  "assets/services/radarr.png",
-  "assets/services/sonarr.png",
-  "assets/services/prowlarr.png",
-  "assets/services/qbittorrent.svg",
-  "assets/services/bazarr.svg",
-  "assets/services/proxmox.png",
-  "assets/services/portainer.svg",
   "assets/services/THIRD_PARTY_NOTICES.md",
-  "assets/workloads/vm.png",
-  "assets/workloads/container.png",
+  "assets/workloads/vm.svg",
+  "assets/workloads/container.svg",
   ".github/dependabot.yml",
   ".github/workflows/container.yml",
   "deploy/DOCKER.md",
@@ -107,7 +103,7 @@ const requiredFiles = [
 const missing = requiredFiles.filter((path) => !existsSync(join(root, path)));
 record(
   missing.length === 0,
-  "Helmsman v0.10 includes its unified media model, bounded fixed actions, Proxmox and Portainer infrastructure monitors, encrypted store, retro operations UI, and deployment contracts",
+  "Helmsman v1 beta includes its unified media model, bounded fixed actions, Proxmox and Portainer infrastructure monitors, encrypted store, retro operations UI, and deployment contracts",
   missing.join(", ")
 );
 
@@ -128,11 +124,12 @@ if (existsSync(join(root, "Dockerfile"))) {
   );
 
   record(
-    /^ARG HELMSMAN_VERSION=0\.10\.0-beta\.14$/mu.test(dockerfile)
+    /^ARG HELMSMAN_VERSION=1\.0\.0-beta\.1$/mu.test(dockerfile)
       && /^ARG HELMSMAN_REVISION=unknown$/mu.test(dockerfile)
       && /org\.opencontainers\.image\.title="Helmsman"/u.test(dockerfile)
+      && /org\.opencontainers\.image\.licenses="AGPL-3\.0-only"/u.test(dockerfile)
       && !/org\.opencontainers\.image\.title="Jellofin Command"/u.test(dockerfile),
-    "image metadata carries the Helmsman v0.10 identity"
+    "image metadata carries the Helmsman v1 beta identity and license"
   );
 
   record(
@@ -150,12 +147,13 @@ if (existsSync(join(root, "Dockerfile"))) {
   const expectedCopies = [
     "COPY --chown=0:0 index.html styles.css manifest.webmanifest sw.js ./",
     "COPY --chown=0:0 assets/helmsman-logo.png assets/icon-192.png assets/icon-512.png assets/icon-maskable-512.png ./assets/",
-    "COPY --chown=0:0 assets/services/jellyfin.svg assets/services/seerr.png assets/services/radarr.png assets/services/sonarr.png assets/services/prowlarr.png assets/services/qbittorrent.svg assets/services/bazarr.svg assets/services/proxmox.png assets/services/portainer.svg assets/services/THIRD_PARTY_NOTICES.md ./assets/services/",
-    "COPY --chown=0:0 assets/workloads/vm.png assets/workloads/container.png ./assets/workloads/",
+    "COPY --chown=0:0 assets/services/THIRD_PARTY_NOTICES.md ./assets/services/",
+    "COPY --chown=0:0 assets/workloads/vm.svg assets/workloads/container.svg ./assets/workloads/",
     "COPY --chown=0:0 src/app-v5.js ./src/app-v5.js",
     "COPY --chown=0:0 src/ui/operations-views.js src/ui/operations.css src/ui/control.css src/ui/retro.css ./src/ui/",
     "COPY --chown=0:0 server ./server",
-    "COPY --chown=0:0 package.json ./package.json"
+    "COPY --chown=0:0 package.json ./package.json",
+    "COPY --chown=0:0 LICENSE ./LICENSE"
   ];
   record(
     copyLines.length === expectedCopies.length
@@ -191,10 +189,10 @@ if (existsSync(join(root, "Dockerfile"))) {
 if (existsSync(join(root, "server/broker.mjs"))) {
   const broker = read("server/broker.mjs");
   record(
-    /const DEFAULT_VERSION = "0\.10\.0-beta\.14"/u.test(broker)
+    /const DEFAULT_VERSION = "1\.0\.0-beta\.1"/u.test(broker)
       && /process\.env\.HELMSMAN_VERSION/u.test(broker)
       && /\^\[0-9A-Za-z\]\[0-9A-Za-z\.\+-\]\{0,63\}\$/u.test(broker),
-    "runtime version follows the validated immutable v0.10 image metadata"
+    "runtime version follows the validated immutable v1 beta image metadata"
   );
 }
 
@@ -267,7 +265,7 @@ if (existsSync(join(root, "compose.yaml"))) {
   record(
     /^name:\s*helmsman\s*$/mu.test(compose)
       && /^services:\s*\n\s{2}helmsman:\s*$/mu.test(compose)
-      && compose.includes('${HELMSMAN_IMAGE:-ghcr.io/OWNER/REPOSITORY:0.10.0-beta.14}')
+      && compose.includes('${HELMSMAN_IMAGE:-ghcr.io/OWNER/REPOSITORY:1.0.0-beta.1}')
       && !/^\s{4}build:/mu.test(compose),
     "production Compose has a stable project name and pulls the versioned GHCR image without a local build"
   );
@@ -326,9 +324,9 @@ if (existsSync(join(root, "compose.dev.yaml"))) {
       && /^\s{4}build:\s*$/mu.test(developmentCompose)
       && /^\s{6}context:\s*[.]\s*$/mu.test(developmentCompose)
       && /^\s{6}dockerfile:\s*Dockerfile\s*$/mu.test(developmentCompose)
-      && /HELMSMAN_VERSION:\s*["']0\.10\.0-beta\.14["']/u.test(developmentCompose)
+      && /HELMSMAN_VERSION:\s*["']1\.0\.0-beta\.1["']/u.test(developmentCompose)
       && /HELMSMAN_REVISION:\s*["']local["']/u.test(developmentCompose)
-      && /image:\s*["']helmsman:0\.10\.0-beta\.14["']/u.test(developmentCompose),
+      && /image:\s*["']helmsman:1\.0\.0-beta\.1["']/u.test(developmentCompose),
     "developer Compose override keeps source builds separate from the production pull contract"
   );
 }
@@ -456,7 +454,7 @@ if (existsSync(join(root, "container.env.example"))) {
   const allowed = new Set(["HELMSMAN_IMAGE", "HELMSMAN_BIND_IP", "HELMSMAN_PORT"]);
   const unexpected = keys.filter((key) => !allowed.has(key));
   record(
-    assignments.includes("HELMSMAN_IMAGE=ghcr.io/OWNER/REPOSITORY:0.10.0-beta.14")
+    assignments.includes("HELMSMAN_IMAGE=ghcr.io/OWNER/REPOSITORY:1.0.0-beta.1")
       && assignments.includes("HELMSMAN_BIND_IP=127.0.0.1")
       && assignments.includes("HELMSMAN_PORT=4180")
       && !assignments.some((line) => line.startsWith("HELMSMAN_DATA_VOLUME="))
@@ -488,6 +486,7 @@ if (existsSync(join(root, ".dockerignore"))) {
   const lines = dockerignore.split(/\r?\n/u);
   const requiredAllowlist = [
     "!Dockerfile",
+    "!LICENSE",
     "!package.json",
     "!index.html",
     "!styles.css",
@@ -499,19 +498,10 @@ if (existsSync(join(root, ".dockerignore"))) {
     "!assets/icon-512.png",
     "!assets/icon-maskable-512.png",
     "!assets/services",
-    "!assets/services/jellyfin.svg",
-    "!assets/services/seerr.png",
-    "!assets/services/radarr.png",
-    "!assets/services/sonarr.png",
-    "!assets/services/prowlarr.png",
-    "!assets/services/qbittorrent.svg",
-    "!assets/services/bazarr.svg",
-    "!assets/services/proxmox.png",
-    "!assets/services/portainer.svg",
     "!assets/services/THIRD_PARTY_NOTICES.md",
     "!assets/workloads",
-    "!assets/workloads/vm.png",
-    "!assets/workloads/container.png",
+    "!assets/workloads/vm.svg",
+    "!assets/workloads/container.svg",
     "!src/app-v5.js",
     "!src/ui/operations-views.js",
     "!src/ui/operations.css",
@@ -559,10 +549,10 @@ if (existsSync(join(root, "manifest.webmanifest"))) {
         && manifest.icons.some(({ src, sizes }) => src === "./assets/icon-192.png" && sizes === "192x192")
         && manifest.icons.some(({ src, sizes, purpose }) => src === "./assets/icon-512.png" && sizes === "512x512" && purpose === "any")
         && manifest.icons.some(({ src, sizes, purpose }) => src === "./assets/icon-maskable-512.png" && sizes === "512x512" && purpose === "maskable"),
-      "the v0.10 installed-app manifest opens Media Home and retains dedicated local application icons"
+      "the v1 beta installed-app manifest opens Media Home and retains dedicated local application icons"
     );
   } catch (error) {
-    record(false, "the v0.10 installed-app manifest opens Media Home and retains dedicated local application icons", error.message);
+    record(false, "the v1 beta installed-app manifest opens Media Home and retains dedicated local application icons", error.message);
   }
 }
 
@@ -583,17 +573,8 @@ if (existsSync(join(root, "sw.js"))) {
 }
 
 const localMarkPaths = [
-  "assets/services/jellyfin.svg",
-  "assets/services/seerr.png",
-  "assets/services/radarr.png",
-  "assets/services/sonarr.png",
-  "assets/services/prowlarr.png",
-  "assets/services/qbittorrent.svg",
-  "assets/services/bazarr.svg",
-  "assets/services/proxmox.png",
-  "assets/services/portainer.svg",
-  "assets/workloads/vm.png",
-  "assets/workloads/container.png"
+  "assets/workloads/vm.svg",
+  "assets/workloads/container.svg"
 ];
 if (localMarkPaths.every((iconPath) => existsSync(join(root, iconPath)))) {
   const unsafeSvg = /<(?:script|foreignObject|iframe|object|embed|image)\b|\son[a-z]+\s*=|\sstyle\s*=|(?:href|src)\s*=\s*["'](?!#)/iu;
@@ -619,13 +600,16 @@ if (localMarkPaths.every((iconPath) => existsSync(join(root, iconPath)))) {
   const notices = existsSync(join(root, "assets/services/THIRD_PARTY_NOTICES.md"))
     ? read("assets/services/THIRD_PARTY_NOTICES.md")
     : "";
-  const markNames = ["Jellyfin", "Seerr", "Radarr", "Sonarr", "Prowlarr", "qBittorrent", "Bazarr", "Proxmox", "Portainer", "VM", "LXC"];
+  const serviceNames = ["Jellyfin", "Seerr", "Radarr", "Sonarr", "Prowlarr", "qBittorrent", "Bazarr", "Proxmox", "Portainer"];
   record(
     invalidIcons.length === 0
-      && /make no network requests/iu.test(notices)
-      && /does not imply sponsorship,\s*affiliation, or endorsement/iu.test(notices)
-      && markNames.every((name) => notices.includes(name)),
-    "locally bundled service and workload marks are bounded inert assets with source and trademark notices",
+      && !existsSync(join(root, "assets/services/portainer.svg"))
+      && !existsSync(join(root, "assets/workloads/lxc.svg"))
+      && /does not bundle those services' logos/iu.test(notices)
+      && /does not\s+imply sponsorship, affiliation, or endorsement/iu.test(notices)
+      && /original, generic Helmsman drawings/iu.test(notices)
+      && serviceNames.every((name) => notices.includes(name)),
+    "public artwork is project-owned, bounded, inert, and documents the third-party trademark boundary",
     invalidIcons.join(", ")
   );
 }
@@ -731,7 +715,9 @@ if (existsSync(join(root, "src/app-v5.js")) && existsSync(join(root, "src/ui/ope
       && /state\.route === "portainer"/u.test(application)
       && /\/api\/v2\/infrastructure\/services/u.test(application)
       && /open-portainer-service/u.test(application)
-      && /assets\/services\/portainer\.svg/u.test(operationsViews)
+      && /portainer:\s*"PT"/u.test(operationsViews)
+      && /service-brand-icon__fallback--\$\{key\}/u.test(operationsViews)
+      && !/assets\/services\/portainer\.svg/u.test(operationsViews)
       && /startsWith\("portainer-"\)/u.test(operationsViews),
     "the authenticated Infrastructure client renders Portainer servers and inventory without adding Portainer to Media"
   );
@@ -742,7 +728,7 @@ if (existsSync(join(root, "package.json"))) {
     const packageJson = JSON.parse(read("package.json"));
     record(
       packageJson.name === "helmsman"
-        && packageJson.version === "0.10.0-beta.14"
+        && packageJson.version === "1.0.0-beta.1"
         && packageJson.scripts?.serve === "node server/index.mjs serve"
         && packageJson.scripts?.["check:broker"] === "node --test tests/control-plane.test.mjs"
         && /tests\/secrets[.]test[.]mjs/u.test(packageJson.scripts?.["check:security"] || "")
@@ -767,7 +753,9 @@ if (existsSync(join(root, "package.json"))) {
         && /operations-view-contract[.]mjs/u.test(packageJson.scripts?.["check:operations"] || "")
         && /runtime-v5-smoke[.]mjs/u.test(packageJson.scripts?.["check:operations"] || "")
         && /container-contract[.]mjs/u.test(packageJson.scripts?.["check:container"] || "")
-        && /publisher-contract[.]mjs/u.test(packageJson.scripts?.["check:container"] || ""),
+        && /publisher-contract[.]mjs/u.test(packageJson.scripts?.["check:container"] || "")
+        && packageJson.scripts?.["check:public"] === "node scripts/public-release-contract.mjs"
+        && /check:public/u.test(packageJson.scripts?.check || ""),
       "package identity and checks cover the Helmsman media/infrastructure control plane, sessions, monitor, probes, and operations UI"
     );
   } catch (error) {
@@ -851,7 +839,7 @@ if (existsSync(join(root, "README.md")) && existsSync(join(root, "deploy/DOCKER.
       && keyGuides.every((guide) => /opaque[^.\n]*(?:artwork|Helmsman URL)|artwork[^.\n]*opaque/iu.test(guide))
       && keyGuides.every((guide) => /(?:artwork cache|cache)[^.\n]*in memory|in-memory[^.\n]*(?:artwork|cache)/iu.test(guide))
       && keyGuides.every((guide) => /cannot approve requests/iu.test(guide))
-      && keyGuides.every((guide) => /(?:service marks|marks)[^.\n]*(?:bundled locally|icon CDN|runtime icon CDN)/iu.test(guide))
+      && keyGuides.every((guide) => /(?:service (?:marks|badges)|marks|badges)[^.\n]*(?:bundled locally|icon CDN|runtime icon CDN)/iu.test(guide))
       && keyGuides.every((guide) => /state schema(?: to)? [34]/iu.test(guide))
       && /state schema(?: to)? 4/iu.test(keyGuides[0])
       && keyGuides.every((guide) => /(?:each visible node|node's fixed read-only task route)/iu.test(guide))

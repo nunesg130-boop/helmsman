@@ -62,10 +62,27 @@ record(
     && /\$MinimumGitHubCliVersion = \[version\]'2[.]57[.]0'/u.test(source)
     && /\$Workflow = 'container[.]yml'/u.test(source)
     && /\[string\]\$RepositoryPath/u.test(source)
-    && /\[switch\]\$SkipLocalTests/u.test(source)
+    && /\[string\]\$DeploymentHost/u.test(source)
+    && /\[string\]\$DeploymentUser/u.test(source)
+    && /\[string\]\$DeploymentRoot/u.test(source)
     && /\[switch\]\$SelfTest/u.test(source)
+    && !/SkipLocalTests|Invoke-LocalTestsIfAvailable|npm[.]cmd|node[.]exe/u.test(source)
     && !/\?\?|ForEach-Object\s+-Parallel|\[IO[.]Path\]::GetRelativePath|^\s*[^#\r\n]+\s(?:&&|\|\|)\s/imu.test(sourceWithoutStringLiterals),
-  "publisher accepts one source tree plus an explicit clone target and remains compatible with Windows PowerShell 5.1"
+  "publisher accepts optional deployment guidance inputs and remains compatible with Windows PowerShell 5.1"
+);
+
+const deploymentSettings = functionBlock("Get-ValidatedDeploymentSettings");
+record(
+  /DeploymentHost, DeploymentUser, and DeploymentRoot must be supplied together or all omitted/u.test(deploymentSettings)
+    && /\^\[A-Za-z_\]\[A-Za-z0-9[.]_-\]\{0,31\}\$/u.test(deploymentSettings)
+    && /IPAddress\]::TryParse/u.test(deploymentSettings)
+    && /AddressFamily\]::InterNetwork/u.test(deploymentSettings)
+    && /valid DNS host name or IPv4 address/u.test(deploymentSettings)
+    && /\^\/\[A-Za-z0-9[.]_-\]\+/u.test(deploymentSettings)
+    && /\$rootSegments -contains '[.]'/u.test(deploymentSettings)
+    && /\$rootSegments -contains '[.][.]'/u.test(deploymentSettings)
+    && /Root = \$DeploymentRoot[.]TrimEnd\(\[char\[\]\]@\('\/'\)\)/u.test(deploymentSettings),
+  "optional deployment inputs are all-or-none and reject shell syntax, credentials, relative paths, traversal, and malformed hosts"
 );
 
 const enterHooksIsolation = functionBlock("Enter-GitHooksIsolation");
@@ -201,12 +218,15 @@ record(
     && ["state.json", "sessions.json", "credentials.json", "credentials.key", "master-key.hex"]
       .every((name) => prohibitedPaths.includes(`'${name}'`))
     && /[.]env[.]example/u.test(prohibitedPaths)
-    && /key\|pem\|crt\|cer\|p12\|pfx\|log\|zip\|tar\|tgz/u.test(prohibitedPaths)
+    && /key\|pem\|crt\|cer\|p12\|pfx\|log\|zip\|tar\|tgz\|db\|sqlite\|sqlite3\|bak\|old\|orig\|rej\|swp\|swo\|tmp\|temp\|patch\|diff/u.test(prohibitedPaths)
     && /PRIVATE KEY/u.test(embeddedSecrets)
     && /GitHub classic token/u.test(embeddedSecrets)
     && /GitHub fine-grained token/u.test(embeddedSecrets)
-    && /HELMSMAN_ACCESS_KEY\|CLOUDFLARE_API_TOKEN\|CF_API_TOKEN/u.test(embeddedSecrets),
-  "source and staged trees reject credentials, runtime state, dependencies, backups, and release archives"
+    && /HELMSMAN_ACCESS_KEY\|CLOUDFLARE_API_TOKEN\|CF_API_TOKEN/u.test(embeddedSecrets)
+    && /allowedBinaryPaths/u.test(embeddedSecrets)
+    && /assets\/helmsman-logo[.]png/u.test(embeddedSecrets)
+    && /unreviewed binary or unknown file type/u.test(embeddedSecrets),
+  "source and staged trees reject credentials, runtime state, dependencies, backups, archives, and unreviewed binary types"
 );
 
 const scannerPatternSources = [
@@ -326,24 +346,12 @@ record(
   "staging includes deletions and rejects empty, malformed, linked, secret-bearing, or version-mismatched releases"
 );
 
-const localTests = functionBlock("Invoke-LocalTestsIfAvailable");
-const postTest = functionBlock("Assert-NoUnstagedReleaseChanges");
 const stagedTree = functionBlock("Assert-StagedTreeUnchanged");
 record(
-  /Local npm tests were explicitly skipped/u.test(localTests)
-    && /node[.]exe/u.test(localTests)
-    && /npm[.]cmd/u.test(localTests)
-    && /24[.]19[.]0/u.test(localTests)
-    && /25[.]0[.]0/u.test(localTests)
-    && /'checkout-index', '--all', "--prefix=\$gitPrefix"/u.test(localTests)
-    && /'--prefix', \$testRoot, 'test'/u.test(localTests)
-    && /'test'/u.test(localTests)
-    && /Assert-NoUnstagedReleaseChanges/u.test(localTests)
-    && /'diff', '--quiet'/u.test(postTest)
-    && /'ls-files', '--others', '--exclude-standard'/u.test(postTest)
+  !/SkipLocalTests|Invoke-LocalTestsIfAvailable|Assert-NoUnstagedReleaseChanges|npm[.]cmd|node[.]exe/u.test(source)
     && /'write-tree'/u.test(stagedTree)
     && /\$actualTree -cne \$ExpectedTree/u.test(stagedTree),
-  "local Node 24 tests are the default and cannot silently alter the reviewed release tree"
+  "authenticated publisher never executes candidate code and rechecks the reviewed staged tree before confirmation"
 );
 
 const confirmation = functionBlock("Confirm-Release");
@@ -410,6 +418,13 @@ record(
 
 record(
   /ConvertFrom-GitHubRunListJson -Json '\[\]'/u.test(publisherSelfTest)
+    && /Get-ValidatedDeploymentSettings/u.test(publisherSelfTest)
+    && /host[.]example[.]test/u.test(publisherSelfTest)
+    && /invalidDeploymentCases/u.test(publisherSelfTest)
+    && /host;whoami/u.test(publisherSelfTest)
+    && /user@example[.]test/u.test(publisherSelfTest)
+    && /999[.]1[.]1[.]1/u.test(publisherSelfTest)
+    && /\/srv\/[.][.]\/helmsman/u.test(publisherSelfTest)
     && /singleRuns[.]Count -ne 1/u.test(publisherSelfTest)
     && /twoRuns[.]Count -ne 2/u.test(publisherSelfTest)
     && /missingPropertyRejected/u.test(publisherSelfTest)
@@ -418,7 +433,7 @@ record(
     && /malformedViewRejected/u.test(publisherSelfTest)
     && /if \(\$SelfTest\)\s*\{\s*Invoke-PublisherSelfTest\s*return\s*\}/su.test(source)
     && !source.includes("$runs = @($json | ConvertFrom-Json)"),
-  "Windows PowerShell self-test covers empty, singleton, multiple, null, missing, and wrong-shaped GitHub workflow JSON"
+  "Windows PowerShell self-test covers malformed workflow JSON and unsafe optional deployment inputs"
 );
 
 const mainPush = functionBlock("Push-Main");
@@ -476,6 +491,7 @@ record(
 const orchestrationMarker = source.indexOf("# ORCHESTRATION");
 const orchestration = orchestrationMarker >= 0 ? source.slice(orchestrationMarker) : "";
 const orderedCalls = [
+  "Get-ValidatedDeploymentSettings",
   "Assert-RequiredTool",
   "Get-CanonicalRepository",
   "Assert-GitHubAuthentication",
@@ -485,7 +501,6 @@ const orderedCalls = [
   "Assert-ReleaseIsNew",
   "Sync-SourceTree",
   "Stage-AndValidateRelease",
-  "Invoke-LocalTestsIfAvailable",
   "Assert-StagedTreeUnchanged",
   "Show-StagedSummary",
   "Confirm-Release",
@@ -497,7 +512,7 @@ const orderedCalls = [
   "New-AndPushReleaseTag",
   "Wait-WorkflowForCommit",
   "Assert-PublishedRelease",
-  "Show-ServerUpdateCommands"
+  "Show-DeploymentHandoff"
 ];
 let cursor = -1;
 let orchestrationValid = orchestrationMarker >= 0;
@@ -520,6 +535,9 @@ for (const [name, expected] of expectedCallCounts) {
 }
 record(
   orchestrationValid
+    && /-DeploymentHost \$DeploymentHost/u.test(orchestration)
+    && /-DeploymentUser \$DeploymentUser/u.test(orchestration)
+    && /-DeploymentRoot \$DeploymentRoot/u.test(orchestration)
     && /Resolve-Path -LiteralPath \$SourcePath/u.test(orchestration)
     && /\$repositoryCandidate = if \(\[string\]::IsNullOrWhiteSpace\(\$RepositoryPath\)\)/u.test(orchestration)
     && /Resolve-Path -LiteralPath \$repositoryCandidate/u.test(orchestration)
@@ -539,38 +557,43 @@ record(
   orderedCalls.join(" -> ")
 );
 
-const serverCommands = functionBlock("Show-ServerUpdateCommands");
+const deploymentHandoff = functionBlock("Show-DeploymentHandoff");
 record(
-  /The Jellyfin server was not changed/u.test(serverCommands)
-    && /\$image = \$Publication[.]Image/u.test(serverCommands)
-    && /\$remoteReleaseDirectory = '\/opt\/helmsman\/releases\/' \+ \$Release[.]Tag/u.test(serverCommands)
-    && /Join-Path \$Publication[.]Directory 'compose[.]yaml'/u.test(serverCommands)
-    && /Join-Path \$Publication[.]Directory 'container[.]env[.]example'/u.test(serverCommands)
-    && /Join-Path \$Publication[.]Directory 'SHA256SUMS'/u.test(serverCommands)
-    && /scp [^\n]*\$localCompose/u.test(serverCommands)
-    && /scp [^\n]*\$localEnvironmentExample/u.test(serverCommands)
-    && /scp [^\n]*\$localChecksums/u.test(serverCommands)
-    && /sha256sum --strict --check SHA256SUMS/u.test(serverCommands)
-    && /if \[ -e compose[.]yaml[.]before-\$\(\$Release[.]Version\) \] \|\| \[ -e [.]env[.]before-\$\(\$Release[.]Version\) \]/u.test(serverCommands)
-    && /cp -- compose[.]yaml compose[.]yaml[.]before-\$\(\$Release[.]Version\)/u.test(serverCommands)
-    && /unset HELMSMAN_IMAGE COMPOSE_FILE COMPOSE_ENV_FILES COMPOSE_PROJECT_NAME COMPOSE_PROFILES/u.test(serverCommands)
-    && /if \[ -f [.]env \]; then cp -- [.]env [.]env[.]before-\$\(\$Release[.]Version\)/u.test(serverCommands)
-    && /awk [^\n]*HELMSMAN_IMAGE/u.test(serverCommands)
-    && /HELMSMAN_IMAGE=" \+ \$image/u.test(serverCommands)
-    && /chmod --reference=[.]env/u.test(serverCommands)
-    && /chown --reference=[.]env/u.test(serverCommands)
-    && /mv -- [^\n]*[.]env/u.test(serverCommands)
-    && /docker compose --file compose[.]yaml --env-file [.]env config/u.test(serverCommands)
-    && /docker compose --file compose[.]yaml --env-file [.]env config --images/u.test(serverCommands)
-    && /Resolved image does not match the verified release digest/u.test(serverCommands)
-    && /docker compose --file compose[.]yaml --env-file [.]env pull helmsman/u.test(serverCommands)
-    && /docker compose --file compose[.]yaml --env-file [.]env up -d --force-recreate helmsman/u.test(serverCommands)
-    && /docker compose --file compose[.]yaml --env-file [.]env ps/u.test(serverCommands)
-    && /docker compose --file compose[.]yaml --env-file [.]env logs --tail=100 helmsman/u.test(serverCommands)
-    && !/Invoke-Native/u.test(serverCommands)
+  /No deployment host was changed/u.test(deploymentHandoff)
+    && /No deployment target was supplied/u.test(deploymentHandoff)
+    && /For future releases, supply all three optional parameters before publication/u.test(deploymentHandoff)
+    && /-DeploymentHost '<server-host>' -DeploymentUser '<ssh-user>' -DeploymentRoot '<absolute-install-directory>'/u.test(deploymentHandoff)
+    && /if \(\$null -eq \$Deployment\)/u.test(deploymentHandoff)
+    && /\$target = \$Deployment[.]User \+ '@' \+ \$Deployment[.]Host/u.test(deploymentHandoff)
+    && /\$remoteReleaseDirectory = \$Deployment[.]Root \+ '\/releases\/' \+ \$Release[.]Tag/u.test(deploymentHandoff)
+    && /Join-Path \$Publication[.]Directory 'compose[.]yaml'/u.test(deploymentHandoff)
+    && /Join-Path \$Publication[.]Directory 'container[.]env[.]example'/u.test(deploymentHandoff)
+    && /Join-Path \$Publication[.]Directory 'SHA256SUMS'/u.test(deploymentHandoff)
+    && /scp [^\n]*\$localCompose/u.test(deploymentHandoff)
+    && /scp [^\n]*\$localEnvironmentExample/u.test(deploymentHandoff)
+    && /scp [^\n]*\$localChecksums/u.test(deploymentHandoff)
+    && /sha256sum --strict --check SHA256SUMS/u.test(deploymentHandoff)
+    && /if \[ -e compose[.]yaml[.]before-\$\(\$Release[.]Version\) \] \|\| \[ -e [.]env[.]before-\$\(\$Release[.]Version\) \]/u.test(deploymentHandoff)
+    && /cp -- compose[.]yaml compose[.]yaml[.]before-\$\(\$Release[.]Version\)/u.test(deploymentHandoff)
+    && /unset HELMSMAN_IMAGE COMPOSE_FILE COMPOSE_ENV_FILES COMPOSE_PROJECT_NAME COMPOSE_PROFILES/u.test(deploymentHandoff)
+    && /if \[ -f [.]env \]; then cp -- [.]env [.]env[.]before-\$\(\$Release[.]Version\)/u.test(deploymentHandoff)
+    && /awk [^\n]*HELMSMAN_IMAGE/u.test(deploymentHandoff)
+    && /HELMSMAN_IMAGE=" \+ \$image/u.test(deploymentHandoff)
+    && /chmod --reference=[.]env/u.test(deploymentHandoff)
+    && /chown --reference=[.]env/u.test(deploymentHandoff)
+    && /mv -- [^\n]*[.]env/u.test(deploymentHandoff)
+    && /docker compose --file compose[.]yaml --env-file [.]env config/u.test(deploymentHandoff)
+    && /docker compose --file compose[.]yaml --env-file [.]env config --images/u.test(deploymentHandoff)
+    && /Resolved image does not match the verified release digest/u.test(deploymentHandoff)
+    && /docker compose --file compose[.]yaml --env-file [.]env pull helmsman/u.test(deploymentHandoff)
+    && /docker compose --file compose[.]yaml --env-file [.]env up -d --force-recreate helmsman/u.test(deploymentHandoff)
+    && /docker compose --file compose[.]yaml --env-file [.]env ps/u.test(deploymentHandoff)
+    && /docker compose --file compose[.]yaml --env-file [.]env logs --tail=100 helmsman/u.test(deploymentHandoff)
+    && !/Invoke-Native/u.test(deploymentHandoff)
+    && !/\$remoteReleaseDirectory = '|The .* server was not changed/u.test(source)
     && !/docker compose down -v/iu.test(source)
     && !/^\s*(?:docker|ssh)\s/imu.test(source),
-  "Jellyfin handoff transfers verified assets, canonicalizes one digest-pinned environment value, and remains manual"
+  "generic deployment handoff is optional, validates its target, transfers verified assets, and remains manual"
 );
 
 if (failures.length) {

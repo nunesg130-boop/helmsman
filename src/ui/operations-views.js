@@ -52,24 +52,25 @@ const SERVICE_COPY = Object.freeze({
   portainer: { name: "Portainer", role: "Container infrastructure" }
 });
 
-// Keep icon selection independent from upstream service data. In particular,
-// never turn an arbitrary service id into an asset path: this registry is the
-// complete set of local marks the renderer may request.
-const SERVICE_ICON_PATHS = Object.freeze({
-  jellyfin: "./assets/services/jellyfin.svg?v=2",
-  seerr: "./assets/services/seerr.png",
-  radarr: "./assets/services/radarr.png",
-  sonarr: "./assets/services/sonarr.png",
-  prowlarr: "./assets/services/prowlarr.png",
-  qbittorrent: "./assets/services/qbittorrent.svg?v=2",
-  bazarr: "./assets/services/bazarr.svg",
-  proxmox: "./assets/services/proxmox.png",
-  portainer: "./assets/services/portainer.svg"
+// Public builds use project-drawn text badges instead of redistributing
+// third-party service artwork without exact source and license provenance.
+// Keep this registry closed so upstream ids can never become CSS classes or
+// asset paths.
+const SERVICE_BADGE_GLYPHS = Object.freeze({
+  jellyfin: "JF",
+  seerr: "SE",
+  radarr: "RA",
+  sonarr: "SO",
+  prowlarr: "PR",
+  qbittorrent: "qB",
+  bazarr: "BZ",
+  proxmox: "PX",
+  portainer: "PT"
 });
 
 const WORKLOAD_ICON_PATHS = Object.freeze({
-  qemu: "./assets/workloads/vm.png?v=2",
-  lxc: "./assets/workloads/container.png"
+  qemu: "./assets/workloads/vm.svg",
+  lxc: "./assets/workloads/container.svg"
 });
 
 const PIPELINE_COPY = Object.freeze({
@@ -189,21 +190,21 @@ export function escapeOperationsHtml(value) {
 }
 
 /**
- * Returns a decorative, local-only service mark for a known integration.
- * Unknown ids receive a single escaped glyph and can never affect an image URL.
+ * Returns a decorative, project-owned badge for a known integration.
+ * Unknown ids receive one escaped glyph and can never affect a class or URL.
  */
 export function serviceIconMarkup(serviceId, fallback = "?") {
   const candidate = boundedText(serviceId, "", 120).toLowerCase();
-  const key = candidate === "proxmox" || candidate.startsWith("proxmox-")
+  const prefixedKey = candidate.startsWith("proxmox-")
     ? "proxmox"
-    : candidate === "portainer" || candidate.startsWith("portainer-")
+    : candidate.startsWith("portainer-")
       ? "portainer"
-    : Object.prototype.hasOwnProperty.call(SERVICE_ICON_PATHS, candidate)
-      ? candidate
-      : "";
+      : candidate;
+  const key = Object.prototype.hasOwnProperty.call(SERVICE_BADGE_GLYPHS, prefixedKey)
+    ? prefixedKey
+    : "";
   if (key) {
-    const plateClass = key === "proxmox" || key === "radarr" || key === "portainer" ? " service-brand-icon--light-plate" : "";
-    return `<img class="service-brand-icon${plateClass}" src="${SERVICE_ICON_PATHS[key]}" width="32" height="32" alt="" aria-hidden="true" decoding="async">`;
+    return `<span class="service-brand-icon__fallback service-brand-icon__fallback--${key}" aria-hidden="true">${SERVICE_BADGE_GLYPHS[key]}</span>`;
   }
   const fallbackText = boundedText(fallback, "?", 24);
   const glyph = (Array.from(fallbackText)[0] || "?").toUpperCase();

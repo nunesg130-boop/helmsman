@@ -173,7 +173,7 @@ test("manual CIDRs remain an explicit registration boundary", async () => {
   await assert.rejects(
     resolveAndAuthorizeExplicitTarget(
       "http://media.test:8096",
-      { allowedCidrs: ["192.168.0.0/16"], allowPublicHttps: false },
+      { allowedCidrs: ["10.44.0.0/16"], allowPublicHttps: false },
       { lookup }
     ),
     (error) => error.code === "TARGET_NOT_ALLOWED"

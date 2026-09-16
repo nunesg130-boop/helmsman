@@ -652,7 +652,7 @@ test("returns the Arr services' own actionable health reports", async () => {
       {
         source: "IndexerLongTermStatusCheck",
         type: "warning",
-        message: "Indexers unavailable for more than 6 hours: 1337x (Prowlarr) at 192.168.0.7:9696."
+        message: "Indexers unavailable for more than 6 hours: ExampleIndexer (Prowlarr) at 10.44.1.20:9696."
       }
     ],
     sonarr: [
@@ -702,16 +702,16 @@ test("bounds and sanitizes Arr health reports without losing operational details
   const uuidSecret = "123e4567-e89b-42d3-a456-426614174000";
   const longSource = `Health<script>alert(1)</script>\u0000\u001b[31m ${"source ".repeat(40)}`;
   const longMessage = [
-    "Indexer 1337x failed at http://192.168.0.7:9696 and path /data/downloads/movies.",
+    "Indexer ExampleIndexer failed at http://10.44.1.20:9696 and path /data/downloads/movies.",
     `<img src=x onerror=alert(1)>\r\nSecond line\u0007`,
     `apiKey=${apiSecret}&safe=true`,
     `Authorization: Bearer ${bearerSecret}`,
     `Cookie: connect.sid=${cookieSecret}; Path=/`,
-    `URL http://admin:super-secret-password@192.168.0.7:7878/api/v3/health`,
-    `single userinfo https://${userinfoSecret}@192.168.0.7:7878/api/v3/health`,
+    `URL http://admin:super-secret-password@10.44.1.20:7878/api/v3/health`,
+    `single userinfo https://${userinfoSecret}@10.44.1.20:7878/api/v3/health`,
     `opaque ${opaqueSecret}`,
     `request ${uuidSecret}`,
-    `webhook http://192.168.0.7:7878/hooks/${pathSecret}/notify`,
+    `webhook http://10.44.1.20:7878/hooks/${pathSecret}/notify`,
     "x".repeat(900)
   ].join(" ");
   const fixtures = baseFixtures();
@@ -730,8 +730,8 @@ test("bounds and sanitizes Arr health reports without losing operational details
   assert.equal(check.reports[0].severity, "error");
   assert.ok(Array.from(check.reports[0].source).length <= SERVICE_REPORT_LIMITS.sourceCodePoints);
   assert.ok(Array.from(check.reports[0].message).length <= SERVICE_REPORT_LIMITS.messageCodePoints);
-  assert.match(check.reports[0].message, /1337x/u);
-  assert.match(check.reports[0].message, /192\.168\.0\.7:9696/u);
+  assert.match(check.reports[0].message, /ExampleIndexer/u);
+  assert.match(check.reports[0].message, /10\.44\.1\.20:9696/u);
   assert.match(check.reports[0].message, /\/data\/downloads\/movies/u);
   assert.match(check.reports[0].message, /\[REDACTED\]/u);
   assert.doesNotMatch(check.reports[0].source, /[<>\u0000-\u001f\u007f-\u009f]/u);

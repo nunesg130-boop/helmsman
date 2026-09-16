@@ -204,17 +204,17 @@ test("Proxmox action transport sends the exact authenticated POST and returns a 
         body: Buffer.concat(chunks).toString("utf8")
       });
       response.writeHead(200, { "content-type": "application/json" });
-      response.end('{"data":"UPID:Main:00000001:00000002:00000003:qmreboot:101:helmsman@pve:"}');
+      response.end('{"data":"UPID:pve-a:00000001:00000002:00000003:qmreboot:2101:helmsman@pve:"}');
     });
   });
   t.after(fixture.close);
-  const route = authorizeProxmoxWorkloadAction("reboot", { node: "Main", type: "qemu", vmid: 101 });
+  const route = authorizeProxmoxWorkloadAction("reboot", { node: "pve-a", type: "qemu", vmid: 2101 });
   const result = await performProxmoxUpstreamRequest(requestOptions(fixture.resolution, { route }));
   assert.equal(result.status, 200);
   assert.ok(result.body.length < 1024);
   assert.deepEqual(requests, [{
     method: "POST",
-    url: "/api2/json/nodes/Main/qemu/101/status/reboot",
+    url: "/api2/json/nodes/pve-a/qemu/2101/status/reboot",
     authorization: `PVEAPIToken=${TOKEN_ID}=${TOKEN_SECRET}`,
     body: ""
   }]);

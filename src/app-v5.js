@@ -25,6 +25,8 @@ const modeBadge = document.querySelector("#mode-badge");
 const incidentCount = document.querySelector("#incident-count");
 const monitorSummary = document.querySelector("#monitor-summary");
 const sessionButton = document.querySelector("#session-button");
+const privacyButton = document.querySelector("#privacy-button");
+const skipLink = document.querySelector("#skip-link");
 let infrastructureFilterTimer = null;
 let mediaFilterTimer = null;
 let filterAnnouncementRevision = 0;
@@ -60,6 +62,15 @@ function setMarkup(element, markup) {
 }
 
 const SERVICE_ORDER = ["jellyfin", "seerr", "radarr", "sonarr", "prowlarr", "qbittorrent", "bazarr"];
+const SERVICE_URL_PLACEHOLDERS = Object.freeze({
+  jellyfin: "http://media-server:8096",
+  seerr: "http://request-manager:5055",
+  radarr: "http://movie-manager:7878",
+  sonarr: "http://series-manager:8989",
+  prowlarr: "http://indexer-manager:9696",
+  qbittorrent: "http://download-client:8080",
+  bazarr: "http://subtitle-manager:6767"
+});
 const MEDIA_CONNECTION_CATEGORIES = Object.freeze([
   Object.freeze({ id: "media-server", kicker: "Playback", title: "Media server", description: "Library discovery, playback state, and recently added media.", services: Object.freeze(["jellyfin"]) }),
   Object.freeze({ id: "requests", kicker: "Discovery", title: "Requests", description: "Audience discovery and request workflow visibility.", services: Object.freeze(["seerr"]) }),
@@ -268,7 +279,8 @@ const state = {
   },
   modalReturnFocus: null,
   confirmationResolver: null,
-  confirmationReturnFocus: null
+  confirmationReturnFocus: null,
+  authGateFocusApplied: false
 };
 
 // Compare the bounded view model rather than the raw monitor payload. Raw
@@ -527,7 +539,7 @@ async function api(path, options = {}) {
   } catch (error) {
     throw new ApiError(0, "NETWORK_ERROR", error?.name === "AbortError"
       ? "The request was cancelled."
-      : "The local container could not be reached.");
+      : "The Helmsman server could not be reached.");
   }
   let payload = null;
   const contentType = String(response.headers.get("content-type") || "").toLowerCase();
@@ -535,14 +547,14 @@ async function api(path, options = {}) {
     try {
       payload = await response.json();
     } catch {
-      throw new ApiError(response.status, "INVALID_RESPONSE", "The container returned malformed data.");
+      throw new ApiError(response.status, "INVALID_RESPONSE", "Helmsman returned malformed data.");
     }
   }
   if (!response.ok) {
     throw new ApiError(
       response.status,
       payload?.code || "HTTP_ERROR",
-      payload?.message || `The container returned HTTP ${response.status}.`
+      payload?.message || `Helmsman returned HTTP ${response.status}.`
     );
   }
   return payload;
@@ -799,7 +811,7 @@ function renderNetworkPolicyFields(policy = {}, idPrefix = "network") {
         </label>
       </div>
       <div class="network-cidr-fields" id="${cidrsRegionId}" data-network-cidr-fields ${manual ? "" : "hidden"}>
-        <label for="${cidrsId}"><span>Allowed private CIDRs · one per line</span><textarea id="${cidrsId}" name="allowedCidrs" rows="5" aria-describedby="${cidrsHelpId}" ${manual ? "required" : "disabled"} placeholder="192.168.0.7/32&#10;192.168.0.104/32">${escapeHtml(allowedCidrs.join("\n"))}</textarea><small id="${cidrsHelpId}">CIDR mode permits every safe private address inside these ranges. Prefer exact service addresses unless that broader access is intentional.</small></label>
+        <label for="${cidrsId}"><span>Allowed private CIDRs · one per line</span><textarea id="${cidrsId}" name="allowedCidrs" rows="5" aria-describedby="${cidrsHelpId}" ${manual ? "required" : "disabled"} placeholder="10.44.1.20/32&#10;10.44.1.30/32">${escapeHtml(allowedCidrs.join("\n"))}</textarea><small id="${cidrsHelpId}">CIDR mode permits every safe private address inside these ranges. Prefer exact service addresses unless that broader access is intentional.</small></label>
       </div>
     </fieldset>
     <label class="check-row"><input type="checkbox" name="allowPublicHttps" ${policy.allowPublicHttps ? "checked" : ""}/><span><strong>Allow registered public HTTPS targets</strong><small>Independent of the private-address mode. Only exact HTTPS URLs you save may be reached; public HTTP, redirects, and protected system ranges remain blocked.</small></span></label>`;
@@ -809,9 +821,6 @@ function renderSetup() {
   return `
     <section class="setup-v5" aria-labelledby="setup-title">
       ${renderGateHeader("First-time setup", "Claim this container", "Define what the broker may reach, then create the reusable access key that unlocks Helmsman on your browsers.", "setup-title")}
-      <div class="setup-v5__steps" aria-hidden="true">
-        <span class="is-active"><b>01</b> Claim</span><span><b>02</b> Network</span><span><b>03</b> Connect</span>
-      </div>
       <form class="glass-form" id="setup-form" autocomplete="off" data-form-type="other" data-network-mode="exact">
         <div class="form-section">
           <div class="form-section__number">01</div>
@@ -872,11 +881,11 @@ function renderAccessRecovery() {
 }
 
 function renderStarting() {
-  return `<section class="state-page"><span class="state-page__spinner">${icon("refresh")}</span><h2>Starting Helmsman</h2><p>Opening the local control plane…</p></section>`;
+  return `<section class="state-page"><span class="state-page__spinner">${icon("refresh")}</span><h2>Starting Helmsman</h2><p>Connecting to the Helmsman server…</p></section>`;
 }
 
 function renderFatal() {
-  return `<section class="state-page state-page--error">${icon("x")}<h2>Container unavailable</h2><p>${escapeHtml(state.fatalError)}</p><button class="button" type="button" data-action="retry-startup">Try again</button></section>`;
+  return `<section class="state-page state-page--error">${icon("x")}<h2>Helmsman unavailable</h2><p>${escapeHtml(state.fatalError)}</p><button class="button" type="button" data-action="retry-startup">Try again</button></section>`;
 }
 
 function snapshotForUi() {
@@ -2821,6 +2830,7 @@ function renderSettingsPage() {
   const policy = state.config?.policy || { allowedCidrs: [], allowPublicHttps: false };
   const networkMode = Array.isArray(policy.allowedCidrs) && policy.allowedCidrs.length ? "manual" : "exact";
   const accessKeyConfigured = Boolean(state.status?.accessKeyConfigured);
+  const appVersion = safeSessionText(state.status?.version, "Version unavailable", 48);
   return `
     <section class="detail-page settings-page-v5">
       <header class="detail-hero"><div><span class="section-kicker">Control plane</span><h2>Security and access</h2><p>Local mode stays simple; HTTPS and Authentik remain optional deployment layers for LAN or external access.</p></div></header>
@@ -2839,6 +2849,7 @@ function renderSettingsPage() {
         </div></section>
         <section class="glass-panel settings-card-v5"><header><div><span class="section-kicker">At rest</span><h3>Credential encryption</h3></div>${icon("shield")}</header><div class="settings-card-v5__body"><p>Secrets use AES-256-GCM and never return through the API. ${state.status?.storage?.externalKey ? "This deployment uses an external key file." : "This local deployment uses an automatically generated key in its protected data volume."}</p><div class="security-note security-note--good">${icon("check")}<div><strong>No extra unlock step</strong><span>The container keeps monitoring after every browser closes.</span></div></div></div></section>
         <section class="glass-panel settings-card-v5"><header><div><span class="section-kicker">Deployment edge</span><h3>Authentik and HTTPS</h3></div>${icon("shield")}</header><div class="settings-card-v5__body"><p>Optional for localhost. For LAN or external access, terminate HTTPS at a trusted reverse proxy, put Authentik in front, and firewall the container port so that proxy cannot be bypassed.</p></div></section>
+        <section class="glass-panel settings-card-v5"><header><div><span class="section-kicker">About</span><h3>Helmsman release</h3></div>${icon("logs")}</header><div class="settings-card-v5__body app-version-v5"><p>Include this exact version when reporting a problem or checking release notes.</p><dl><div><dt>Version</dt><dd data-app-version>${escapeHtml(appVersion)}</dd></div></dl></div></section>
       </div>
     </section>`;
 }
@@ -3149,9 +3160,9 @@ function renderInfrastructureWorkloadsPage() {
       <label class="filter-search"><span>Name or VMID</span><input id="infrastructure-workload-search" type="search" value="${escapeHtml(filters.search)}" placeholder="Search workloads" data-infrastructure-filter="search" /></label>
       <span class="filter-result-count">${workloads.length} result${workloads.length === 1 ? "" : "s"}</span>
     </div>
-    <section class="glass-panel infrastructure-workload-panel"><div class="infrastructure-workload-table" role="table" aria-label="Proxmox workloads">
-      <div class="workload-row workload-row--header" role="row"><span>Name</span><span>Type / VMID</span><span>Environment</span><span>Node</span><span>State</span><span>Memory</span><span></span></div>
-      ${workloads.length ? workloads.map((workload) => `<button class="workload-row" type="button" role="row" data-action="open-infrastructure-workload" data-infrastructure-workload-id="${escapeHtml(workload.id)}"><span class="workload-name"><i class="workload-type is-${escapeHtml(workload.type)}">${workloadIconMarkup(workload.type)}</i><span><strong>${escapeHtml(workload.name)}</strong>${workload.template ? "<small>Template</small>" : ""}</span></span><span><b>${escapeHtml(workload.kind)}</b><small>${workload.vmid ?? "—"}</small></span><span>${escapeHtml(workload.environmentName)}</span><span>${escapeHtml(workload.node)}</span><span class="workload-state is-${escapeHtml(workload.status)}"><i></i>${escapeHtml(workload.status)}</span><span><b>${escapeHtml(formatMetricRatio(workload.memoryUsedBytes, workload.memoryTotalBytes))}</b><small>${workload.memoryUsedBytes === null ? "—" : formatMetricBytes(workload.memoryUsedBytes)}</small></span>${icon("chevron")}</button>`).join("") : `<div class="empty-state"><strong>No matching workloads</strong><span>Adjust the filters or wait for the first inventory cycle.</span></div>`}
+    <section class="glass-panel infrastructure-workload-panel"><div class="infrastructure-workload-table" role="group" aria-label="Proxmox workloads">
+      <div class="workload-row workload-row--header" aria-hidden="true"><span>Name</span><span>Type / VMID</span><span>Environment</span><span>Node</span><span>State</span><span>Memory</span><span></span></div>
+      ${workloads.length ? workloads.map((workload) => `<button class="workload-row" type="button" data-action="open-infrastructure-workload" data-infrastructure-workload-id="${escapeHtml(workload.id)}"><span class="workload-name"><i class="workload-type is-${escapeHtml(workload.type)}">${workloadIconMarkup(workload.type)}</i><span><strong>${escapeHtml(workload.name)}</strong>${workload.template ? "<small>Template</small>" : ""}</span></span><span><b>${escapeHtml(workload.kind)}</b><small>${workload.vmid ?? "—"}</small></span><span>${escapeHtml(workload.environmentName)}</span><span>${escapeHtml(workload.node)}</span><span class="workload-state is-${escapeHtml(workload.status)}"><i></i>${escapeHtml(workload.status)}</span><span><b>${escapeHtml(formatMetricRatio(workload.memoryUsedBytes, workload.memoryTotalBytes))}</b><small>${workload.memoryUsedBytes === null ? "—" : formatMetricBytes(workload.memoryUsedBytes)}</small></span>${icon("chevron")}</button>`).join("") : `<div class="empty-state"><strong>No matching workloads</strong><span>Adjust the filters or wait for the first inventory cycle.</span></div>`}
     </div></section>
   </section>`;
 }
@@ -3448,7 +3459,8 @@ function renderPage({ force = false, preserveFocus = false } = {}) {
     if (active) link.setAttribute("aria-current", "page");
     else link.removeAttribute("aria-current");
   });
-  pageTitle.textContent = ROUTE_TITLES[state.route] || "Overview";
+  const routeTitle = ROUTE_TITLES[state.route] || "Overview";
+  pageTitle.textContent = routeTitle;
 
   let markup;
   if (state.starting) markup = renderStarting();
@@ -3456,6 +3468,16 @@ function renderPage({ force = false, preserveFocus = false } = {}) {
   else if (state.status?.setupRequired) markup = renderSetup();
   else if (!state.status?.authenticated) markup = state.status?.accessKeyConfigured ? renderAccessLogin() : renderAccessRecovery();
   else markup = renderAuthenticatedRoute();
+  const viewTitle = state.starting
+    ? "Starting"
+    : state.fatalError
+      ? "Unavailable"
+      : state.status?.setupRequired
+        ? "First-time setup"
+        : !state.status?.authenticated
+          ? state.status?.accessKeyConfigured ? "Unlock" : "Access setup"
+          : routeTitle;
+  document.title = `${viewTitle} · Helmsman`;
 
   if (!force && markup === state.lastMarkup) return;
   const focusedReference = preserveFocus ? focusReference(document.activeElement) : null;
@@ -3465,6 +3487,17 @@ function renderPage({ force = false, preserveFocus = false } = {}) {
   state.lastMarkup = markup;
   setMarkup(main, markup);
   if (preserveFocus) resolveFocusReference(focusedReference, main)?.focus({ preventScroll: true });
+  if (state.status?.authenticated) {
+    state.authGateFocusApplied = false;
+  } else if (!preserveFocus && !state.authGateFocusApplied && !state.starting && !state.fatalError) {
+    const focusTarget = state.status?.setupRequired
+      ? main.querySelector("input[name='setupToken']")
+      : state.status?.accessKeyConfigured ? main.querySelector("input[name='accessKey']") : null;
+    if (focusTarget) {
+      focusTarget.focus({ preventScroll: true });
+      state.authGateFocusApplied = true;
+    }
+  }
   if (preserveFocus && Number.isFinite(documentScrollTop)) {
     if (typeof globalThis.scrollTo === "function") globalThis.scrollTo({ top: documentScrollTop, left: 0, behavior: "instant" });
     else if (document.documentElement) document.documentElement.scrollTop = documentScrollTop;
@@ -3555,7 +3588,8 @@ function updateChrome() {
     element.textContent = String(infrastructureCount);
     element.hidden = infrastructureCount === 0;
   });
-  modeBadge.textContent = state.status?.authenticated ? statusLabel(overall) : "Local container";
+  const authenticated = Boolean(state.status?.authenticated);
+  modeBadge.textContent = authenticated ? statusLabel(overall) : "Helmsman server";
   modeBadge.dataset.state = statusClass(overall);
   monitorSummary.setAttribute("href", infrastructureWorkspace ? "#/incidents" : "#/health");
   monitorSummary.setAttribute("aria-label", infrastructureWorkspace ? "Open infrastructure incidents" : "Open media health");
@@ -3573,6 +3607,14 @@ function updateChrome() {
   }
   const initials = String(state.status?.session?.name || "HM").split(/\s+/u).map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "HM";
   sessionButton.querySelector("span").textContent = initials;
+  sessionButton.disabled = !authenticated;
+  sessionButton.setAttribute("aria-disabled", authenticated ? "false" : "true");
+  sessionButton.setAttribute("aria-label", authenticated ? "Open browser session settings" : "Browser session unavailable until signed in");
+  sessionButton.setAttribute("title", authenticated ? "Browser session settings" : "Sign in to manage browser sessions");
+  if (privacyButton) {
+    privacyButton.setAttribute("aria-label", authenticated ? "Open privacy and security settings" : "Privacy and security information");
+    privacyButton.setAttribute("title", authenticated ? "Privacy and security settings" : "Sign in to review privacy and security settings");
+  }
   applySidebarState();
 }
 
@@ -4317,11 +4359,12 @@ function renderServiceModal(service) {
   const reportsFingerprint = reportFingerprint(reports);
   const options = serviceAuthOptions(service);
   const selectedMode = selectedServiceAuthMode(service, options);
+  const urlPlaceholder = SERVICE_URL_PLACEHOLDERS[service.id] || "https://service.example";
   return `<section class="modal-card modal-card--service" role="dialog" aria-modal="true" aria-labelledby="service-modal-title">
     <header class="modal-card__header"><span class="service-card-v5__letter service-card-v5__brand">${serviceIconMarkup(service.id, service.name.slice(0, 1))}</span><div><span class="section-kicker">Service connection</span><h2 id="service-modal-title">${escapeHtml(service.name)}</h2><p>${escapeHtml(service.role)}</p></div><button class="icon-button" data-action="close-modal" aria-label="Close">${icon("x")}</button></header>
     <form id="service-form" data-service-id="${escapeHtml(service.id)}" data-original-url="${escapeHtml(service.url)}" data-original-auth-mode="${escapeHtml(selectedMode)}" data-auth-mode="${escapeHtml(selectedMode)}" data-credential-configured="${service.credentialConfigured ? "true" : "false"}" autocomplete="off" data-form-type="${options.find((option) => option.id === selectedMode)?.input === "login" ? "login" : "other"}">
       <div class="modal-card__body">
-        <label><span>Full service URL</span><input name="url" type="url" autocomplete="url" value="${escapeHtml(service.url)}" required placeholder="http://192.168.0.7:8096" /><small>Use an address reachable from inside this container. The target must fit the allowed network policy.</small></label>
+        <label><span>Full service URL</span><input name="url" type="url" autocomplete="url" value="${escapeHtml(service.url)}" required placeholder="${escapeHtml(urlPlaceholder)}" /><small>Use an address reachable from inside this container. The target must fit the allowed network policy.</small></label>
         ${renderServiceAuthentication(service)}
         <label class="check-row"><input name="monitoringEnabled" type="checkbox" ${service.monitoringEnabled !== false ? "checked" : ""}/><span><strong>Monitor this service</strong><small>Run safe read-only checks in the container even when no browser is open.</small></span></label>
         <div class="credential-state ${service.credentialConfigured ? "is-configured" : ""}">${icon(service.credentialConfigured ? "check" : "lock")}<div><strong>${service.credentialConfigured ? "Encrypted credential saved" : "No credential saved"}</strong><span>Saved values are write-only and cannot be displayed by this interface.</span></div></div>
@@ -4512,7 +4555,7 @@ function renderProxmoxModal(target = null) {
     <form id="proxmox-form" data-infrastructure-target-id="${escapeHtml(target?.id || "")}" data-original-url="${escapeHtml(target?.url || "")}" data-original-tls-mode="${escapeHtml(tlsMode)}" data-original-fingerprint="${escapeHtml(target?.certificateFingerprint || "")}" data-credential-configured="${target?.credentialConfigured ? "true" : "false"}" data-target-enabled="${target?.enabled === false ? "false" : "true"}" data-monitoring-interval-seconds="${target?.monitoringIntervalSeconds || 60}" data-discovery-confirmed="false" autocomplete="off" data-form-type="other">
       <div class="modal-card__body">
         <div class="form-grid form-grid--two">
-          <label for="proxmox-display-name"><span>Display name</span><input id="proxmox-display-name" name="displayName" type="text" autocomplete="off" autocapitalize="words" maxlength="80" value="${escapeHtml(displayName)}" required placeholder="Main Proxmox" /></label>
+          <label for="proxmox-display-name"><span>Display name</span><input id="proxmox-display-name" name="displayName" type="text" autocomplete="off" autocapitalize="words" maxlength="80" value="${escapeHtml(displayName)}" required placeholder="Example Proxmox" /></label>
           <label for="proxmox-url"><span>Full Proxmox URL</span><input id="proxmox-url" name="url" type="url" inputmode="url" autocomplete="url" autocapitalize="off" spellcheck="false" value="${escapeHtml(target?.url || "")}" required placeholder="https://proxmox.example.internal:8006" /><small>HTTPS only. Use an address reachable from inside this container.</small></label>
         </div>
 
@@ -4670,7 +4713,7 @@ function renderPortainerModal(service = null) {
     <header class="modal-card__header"><span class="service-card-v5__letter service-card-v5__brand">${serviceIconMarkup("portainer", "P")}</span><div><span class="section-kicker">Container infrastructure</span><h2 id="portainer-modal-title" tabindex="-1">${existing ? escapeHtml(service.displayName) : "Connect Portainer"}</h2><p id="portainer-modal-description">${existing ? "Edit this Portainer connection without exposing its saved access token." : "Connect one Portainer server to discover permitted environments and use confirmed container controls."}</p></div><button class="icon-button" type="button" data-action="close-modal" aria-label="Close">${icon("x")}</button></header>
     <form id="portainer-form" data-portainer-service-id="${escapeHtml(service?.id || "")}" data-original-url="${escapeHtml(service?.url || "")}" data-original-tls-mode="${escapeHtml(tlsMode)}" data-original-fingerprint="${escapeHtml(service?.certificateFingerprint || "")}" data-credential-configured="${service?.credentialConfigured ? "true" : "false"}" autocomplete="off" data-form-type="other">
       <div class="modal-card__body">
-        <div class="form-grid form-grid--two"><label for="portainer-display-name"><span>Display name</span><input id="portainer-display-name" name="displayName" type="text" maxlength="80" autocomplete="off" value="${escapeHtml(service?.displayName || "")}" required placeholder="Main Portainer" /></label><label for="portainer-url"><span>Full Portainer URL</span><input id="portainer-url" name="url" type="url" inputmode="url" autocomplete="url" autocapitalize="off" spellcheck="false" value="${escapeHtml(service?.url || "")}" required placeholder="https://portainer.example.internal:9443" /><small>HTTPS only. Use an address reachable from inside this container.</small></label></div>
+        <div class="form-grid form-grid--two"><label for="portainer-display-name"><span>Display name</span><input id="portainer-display-name" name="displayName" type="text" maxlength="80" autocomplete="off" value="${escapeHtml(service?.displayName || "")}" required placeholder="Example Portainer" /></label><label for="portainer-url"><span>Full Portainer URL</span><input id="portainer-url" name="url" type="url" inputmode="url" autocomplete="url" autocapitalize="off" spellcheck="false" value="${escapeHtml(service?.url || "")}" required placeholder="https://portainer.example.internal:9443" /><small>HTTPS only. Use an address reachable from inside this container.</small></label></div>
         <fieldset class="auth-method-fieldset portainer-tls-fieldset"><legend>Certificate trust</legend><p class="network-policy-help">Helmsman verifies the server certificate and never offers an insecure skip-verification mode.</p><div class="auth-mode-grid"><label class="option-card-v5"><input name="tlsMode" type="radio" value="system" ${tlsMode === "system" ? "checked" : ""}/><span><strong>System trust</strong><small>Use a trusted CA and matching hostname.</small></span></label><label class="option-card-v5"><input name="tlsMode" type="radio" value="pinned" ${tlsMode === "pinned" ? "checked" : ""}/><span><strong>Pinned fingerprint</strong><small>Use the exact SHA-256 leaf certificate.</small></span></label></div></fieldset>
         <div class="service-auth-panel" data-tls-panel="pinned" ${tlsMode === "pinned" ? "" : "hidden"}><label for="portainer-certificate-fingerprint"><span>SHA-256 certificate fingerprint</span><input id="portainer-certificate-fingerprint" name="certificateFingerprint" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" data-1p-ignore="true" data-bwignore="true" data-lpignore="true" value="${escapeHtml(service?.certificateFingerprint || "")}" ${tlsMode === "pinned" ? "required" : "disabled"} placeholder="64 hexadecimal characters" /><small>Verify the fingerprint through a trusted local channel before saving it.</small></label></div>
         <fieldset class="auth-method-fieldset portainer-token-fieldset"><legend>Portainer access token</legend><label for="portainer-access-token"><span>Access token</span><input id="portainer-access-token" name="accessToken" type="password" autocomplete="new-password" autocapitalize="off" spellcheck="false" data-1p-ignore="true" data-bwignore="true" data-lpignore="true" placeholder="${service?.credentialConfigured ? "Blank keeps the saved token" : "Paste the Portainer access token"}" ${service?.credentialConfigured ? "" : "required"}/><small>Create it for a dedicated user limited to the intended environments. Start, restart, and stop require container-management access in that scope.</small></label><p class="auth-retention-note" data-portainer-credential-note>${service?.credentialConfigured ? "Leave this blank to keep the protected token." : "The token is write-only and never returned to this browser."}</p></fieldset>
@@ -4790,7 +4833,32 @@ function allowedCidrsForForm(form, data) {
     : [];
 }
 
+function beginGateSubmission(form, busyLabel) {
+  if (!form || form.dataset.submitting === "true") return null;
+  const submit = form.querySelector("button[type='submit']");
+  const originalLabel = submit?.textContent || "";
+  form.dataset.submitting = "true";
+  form.setAttribute("aria-busy", "true");
+  if (submit) {
+    submit.disabled = true;
+    submit.textContent = busyLabel;
+  }
+  return { submit, originalLabel };
+}
+
+function endGateSubmission(form, submission) {
+  if (!form || !submission) return;
+  delete form.dataset.submitting;
+  form.removeAttribute("aria-busy");
+  if (submission.submit?.isConnected) {
+    submission.submit.disabled = false;
+    submission.submit.textContent = submission.originalLabel;
+  }
+}
+
 async function submitSetup(form) {
+  const submission = beginGateSubmission(form, "Claiming…");
+  if (!submission) return;
   const error = form.querySelector("#setup-error");
   const data = new FormData(form);
   error.textContent = "";
@@ -4821,10 +4889,14 @@ async function submitSetup(form) {
     showToast("Container claimed. Save the new access key now.", "success");
   } catch (caught) {
     error.textContent = caught.message;
+  } finally {
+    endGateSubmission(form, submission);
   }
 }
 
 async function submitAccessLogin(form) {
+  const submission = beginGateSubmission(form, "Unlocking…");
+  if (!submission) return;
   const error = form.querySelector("#access-login-error");
   const data = new FormData(form);
   const accessKeyInput = form.querySelector("input[name='accessKey']");
@@ -4851,6 +4923,7 @@ async function submitAccessLogin(form) {
     else error.textContent = "This browser could not be unlocked. Use the same HTTPS or localhost origin and try again.";
   } finally {
     if (accessKeyInput) accessKeyInput.value = "";
+    endGateSubmission(form, submission);
   }
 }
 
@@ -6339,6 +6412,19 @@ window.addEventListener("keydown", (event) => {
 
 sessionButton.addEventListener("click", () => {
   if (state.status?.authenticated) location.hash = "#/settings";
+});
+
+privacyButton?.addEventListener("click", () => {
+  if (state.status?.authenticated) {
+    location.hash = "#/settings";
+    return;
+  }
+  showToast("Complete setup or sign in to review privacy and security settings.");
+});
+
+skipLink?.addEventListener("click", (event) => {
+  event.preventDefault();
+  main.focus({ preventScroll: false });
 });
 
 if (!location.hash || !ROUTES.has(rawRoute())) location.replace(state.workspace === "infrastructure" ? "#/overview" : "#/home");

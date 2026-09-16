@@ -19,44 +19,44 @@ function healthyFixtures() {
     version: { data: { version: "9.1.7", release: "9.1" } },
     clusterStatus: {
       data: [
-        { type: "cluster", name: "Jellofin", nodes: 2, quorate: 1 },
-        { type: "node", name: "main", nodeid: 1, online: 1, local: 1 },
-        { type: "node", name: "unitrend", nodeid: 2, online: 1, local: 0 }
+        { type: "cluster", name: "example-cluster", nodes: 2, quorate: 1 },
+        { type: "node", name: "pve-a", nodeid: 1, online: 1, local: 1 },
+        { type: "node", name: "pve-b", nodeid: 2, online: 1, local: 0 }
       ]
     },
     nodes: {
       data: [
-        { node: "main", status: "online", uptime: 86_400, maxcpu: 8, maxmem: 16_000, maxdisk: 100_000 },
-        { node: "unitrend", status: "online", uptime: 172_800, maxcpu: 16, maxmem: 32_000, maxdisk: 100_000 }
+        { node: "pve-a", status: "online", uptime: 86_400, maxcpu: 8, maxmem: 16_000, maxdisk: 100_000 },
+        { node: "pve-b", status: "online", uptime: 172_800, maxcpu: 16, maxmem: 32_000, maxdisk: 100_000 }
       ]
     },
     nodeResources: {
       data: [
-        { node: "main", status: "online", cpu: 0.25, maxcpu: 8, mem: 8_000, maxmem: 16_000, disk: 20_000, maxdisk: 100_000, uptime: 86_400 },
-        { node: "unitrend", status: "online", cpu: 0.5, maxcpu: 16, mem: 12_000, maxmem: 32_000, disk: 30_000, maxdisk: 100_000, uptime: 172_800 }
+        { node: "pve-a", status: "online", cpu: 0.25, maxcpu: 8, mem: 8_000, maxmem: 16_000, disk: 20_000, maxdisk: 100_000, uptime: 86_400 },
+        { node: "pve-b", status: "online", cpu: 0.5, maxcpu: 16, mem: 12_000, maxmem: 32_000, disk: 30_000, maxdisk: 100_000, uptime: 172_800 }
       ]
     },
     guests: {
       data: [
-        { vmid: 100, type: "qemu", node: "main", name: "Jelly-Arr", status: "running", cpu: 0.2, maxcpu: 4, mem: 4_000, maxmem: 8_000, disk: 10_000, maxdisk: 100_000, uptime: 3_600 },
-        { vmid: 104, type: "lxc", node: "unitrend", name: "Seerr", status: "running", cpu: 0.1, maxcpu: 2, mem: 1_000, maxmem: 2_000, disk: 4_000, maxdisk: 20_000, uptime: 7_200 },
-        { vmid: 113, type: "lxc", node: "unitrend", name: "Lab", status: "stopped", maxcpu: 2, maxmem: 2_000, maxdisk: 20_000 }
+        { vmid: 2101, type: "qemu", node: "pve-a", name: "example-media-vm", status: "running", cpu: 0.2, maxcpu: 4, mem: 4_000, maxmem: 8_000, disk: 10_000, maxdisk: 100_000, uptime: 3_600 },
+        { vmid: 2201, type: "lxc", node: "pve-b", name: "example-requests-lxc", status: "running", cpu: 0.1, maxcpu: 2, mem: 1_000, maxmem: 2_000, disk: 4_000, maxdisk: 20_000, uptime: 7_200 },
+        { vmid: 2202, type: "lxc", node: "pve-b", name: "example-lab-lxc", status: "stopped", maxcpu: 2, maxmem: 2_000, maxdisk: 20_000 }
       ]
     },
     storage: {
       data: [
-        { node: "main", storage: "local-zfs", status: "available", disk: 20_000, maxdisk: 100_000 },
-        { node: "unitrend", storage: "Main-Backups", status: "available", disk: 50_000, maxdisk: 100_000 }
+        { node: "pve-a", storage: "example-local", status: "available", disk: 20_000, maxdisk: 100_000 },
+        { node: "pve-b", storage: "example-backups", status: "available", disk: 50_000, maxdisk: 100_000 }
       ]
     },
     tasks: {
       data: [
-        { type: "qmstart", node: "main", status: "OK", endtime: NOW_SECONDS - 30 }
+        { type: "qmstart", node: "pve-a", status: "OK", endtime: NOW_SECONDS - 30 }
       ]
     },
     backups: {
       data: [
-        { type: "vzdump", id: 100, node: "main", status: "OK", endtime: NOW_SECONDS - 3_600 }
+        { type: "vzdump", id: 2101, node: "pve-a", status: "OK", endtime: NOW_SECONDS - 3_600 }
       ]
     }
   };
@@ -78,7 +78,7 @@ test("Proxmox internal routes are a fixed GET-only allowlist", () => {
     const route = authorizeProxmoxRoute(
       routeId,
       "GET",
-      ["tasks", "backups"].includes(routeId) ? { node: "main" } : {}
+      ["tasks", "backups"].includes(routeId) ? { node: "pve-a" } : {}
     );
     assert.equal(route.allowed, true);
     assert.equal(route.service, "proxmox");
@@ -88,24 +88,24 @@ test("Proxmox internal routes are a fixed GET-only allowlist", () => {
     assert.equal(Object.isFrozen(route), true);
   }
   assert.equal(
-    authorizeProxmoxRoute("tasks", "GET", { node: "main" }).upstreamPathAndQuery,
-    "/api2/json/nodes/main/tasks?source=archive&limit=100"
+    authorizeProxmoxRoute("tasks", "GET", { node: "pve-a" }).upstreamPathAndQuery,
+    "/api2/json/nodes/pve-a/tasks?source=archive&limit=100"
   );
   assert.equal(
-    authorizeProxmoxRoute("backups", "GET", { node: "unitrend" }).upstreamPathAndQuery,
-    "/api2/json/nodes/unitrend/tasks?source=archive&typefilter=vzdump&limit=100"
+    authorizeProxmoxRoute("backups", "GET", { node: "pve-b" }).upstreamPathAndQuery,
+    "/api2/json/nodes/pve-b/tasks?source=archive&typefilter=vzdump&limit=100"
   );
-  assert.doesNotMatch(authorizeProxmoxRoute("tasks", "GET", { node: "main" }).upstreamPathAndQuery, /statusfilter/iu);
-  assert.doesNotMatch(authorizeProxmoxRoute("backups", "GET", { node: "main" }).upstreamPathAndQuery, /statusfilter/iu);
+  assert.doesNotMatch(authorizeProxmoxRoute("tasks", "GET", { node: "pve-a" }).upstreamPathAndQuery, /statusfilter/iu);
+  assert.doesNotMatch(authorizeProxmoxRoute("backups", "GET", { node: "pve-a" }).upstreamPathAndQuery, /statusfilter/iu);
   assert.doesNotMatch(
     PROXMOX_ROUTE_IDS.map((routeId) => authorizeProxmoxRoute(
       routeId,
       "GET",
-      ["tasks", "backups"].includes(routeId) ? { node: "main" } : {}
+      ["tasks", "backups"].includes(routeId) ? { node: "pve-a" } : {}
     ).upstreamPathAndQuery).join("\n"),
     /\/cluster\/tasks/u
   );
-  for (const node of [undefined, "", " main", "main ", ".", "..", "../access", "main/../access", "main\\tasks", "main%2ftasks", "main\u0000evil", `a${"b".repeat(63)}`]) {
+  for (const node of [undefined, "", " pve-a", "pve-a ", ".", "..", "../access", "pve-a/../access", "pve-a\\tasks", "pve-a%2ftasks", "pve-a\u0000evil", `a${"b".repeat(63)}`]) {
     assert.equal(authorizeProxmoxRoute("tasks", "GET", { node }).code, "ROUTE_NOT_ALLOWED");
     assert.equal(authorizeProxmoxRoute("backups", "GET", { node }).code, "ROUTE_NOT_ALLOWED");
   }
@@ -166,10 +166,10 @@ test("returns a deterministic healthy Proxmox capability snapshot", async () => 
   assert.deepEqual(
     calls.filter(({ routeId }) => ["tasks", "backups"].includes(routeId)).map(({ routeId, node }) => ({ routeId, node })),
     [
-      { routeId: "tasks", node: "main" },
-      { routeId: "tasks", node: "unitrend" },
-      { routeId: "backups", node: "main" },
-      { routeId: "backups", node: "unitrend" }
+      { routeId: "tasks", node: "pve-a" },
+      { routeId: "tasks", node: "pve-b" },
+      { routeId: "backups", node: "pve-a" },
+      { routeId: "backups", node: "pve-b" }
     ]
   );
   assert.ok(calls.every(({ method }) => method === "GET"));
@@ -207,21 +207,21 @@ test("returns a deterministic healthy Proxmox capability snapshot", async () => 
   });
   assert.deepEqual(result.discovery, {
     kind: "cluster",
-    name: "Jellofin",
-    clusterName: "Jellofin",
+    name: "example-cluster",
+    clusterName: "example-cluster",
     quorate: true,
-    nodeNames: ["main", "unitrend"],
-    localNode: "main",
+    nodeNames: ["pve-a", "pve-b"],
+    localNode: "pve-a",
     nodes: [
-      { name: "main", online: true, local: true, nodeId: 1 },
-      { name: "unitrend", online: true, local: false, nodeId: 2 }
+      { name: "pve-a", online: true, local: true, nodeId: 1 },
+      { name: "pve-b", online: true, local: false, nodeId: 2 }
     ]
   });
   assert.equal(result.inventory.nodes.length, 2);
-  assert.equal(result.inventory.nodes.find(({ name }) => name === "main").virtualMachineCount, 1);
-  assert.equal(result.inventory.nodes.find(({ name }) => name === "unitrend").containerCount, 2);
+  assert.equal(result.inventory.nodes.find(({ name }) => name === "pve-a").virtualMachineCount, 1);
+  assert.equal(result.inventory.nodes.find(({ name }) => name === "pve-b").containerCount, 2);
   assert.equal(result.inventory.workloads.length, 3);
-  assert.deepEqual(result.inventory.workloads.find(({ vmid }) => vmid === 100).backup, {
+  assert.deepEqual(result.inventory.workloads.find(({ vmid }) => vmid === 2101).backup, {
     status: "success",
     endedAt: new Date((NOW_SECONDS - 3_600) * 1_000).toISOString(),
     ageSeconds: 3_600
@@ -234,19 +234,19 @@ test("returns a deterministic healthy Proxmox capability snapshot", async () => 
 test("aggregates and deduplicates node-scoped task history while filtering backup rows defensively", async () => {
   const fixtures = healthyFixtures();
   const duplicateTask = {
-    upid: "UPID:main:00000001:00000001:00000001:qmstart:100:helmsman@pam:",
+    upid: "UPID:pve-a:00000001:00000001:00000001:qmstart:2101:helmsman@pam:",
     type: "qmstart",
-    id: 100,
-    node: "main",
+    id: 2101,
+    node: "pve-a",
     status: "OK",
     starttime: NOW_SECONDS - 120,
     endtime: NOW_SECONDS - 60
   };
   const duplicateBackup = {
-    upid: "UPID:main:00000002:00000002:00000002:vzdump:100:helmsman@pam:",
+    upid: "UPID:pve-a:00000002:00000002:00000002:vzdump:2101:helmsman@pam:",
     type: "vzdump",
-    id: 100,
-    node: "main",
+    id: 2101,
+    node: "pve-a",
     status: "OK",
     starttime: NOW_SECONDS - 7_300,
     endtime: NOW_SECONDS - 7_200
@@ -255,13 +255,13 @@ test("aggregates and deduplicates node-scoped task history while filtering backu
     if (routeId === "tasks") {
       return {
         status: 200,
-        body: { data: options.node === "main"
+        body: { data: options.node === "pve-a"
           ? [duplicateTask]
           : [duplicateTask, {
-              upid: "UPID:unitrend:00000003:00000003:00000003:qmstop:104:helmsman@pam:",
+              upid: "UPID:pve-b:00000003:00000003:00000003:qmstop:2201:helmsman@pam:",
               type: "qmstop",
-              id: 104,
-              node: "unitrend",
+              id: 2201,
+              node: "pve-b",
               status: "ERROR",
               starttime: NOW_SECONDS - 90,
               endtime: NOW_SECONDS - 30
@@ -271,19 +271,19 @@ test("aggregates and deduplicates node-scoped task history while filtering backu
     if (routeId === "backups") {
       return {
         status: 200,
-        body: { data: options.node === "main"
+        body: { data: options.node === "pve-a"
           ? [duplicateBackup, {
               type: "qmstart",
               id: 999,
-              node: "main",
+              node: "pve-a",
               status: "OK",
               endtime: NOW_SECONDS - 10
             }]
           : [duplicateBackup, {
-              upid: "UPID:unitrend:00000004:00000004:00000004:vzdump:104:helmsman@pam:",
+              upid: "UPID:pve-b:00000004:00000004:00000004:vzdump:2201:helmsman@pam:",
               type: "vzdump",
-              id: 104,
-              node: "unitrend",
+              id: 2201,
+              node: "pve-b",
               status: "OK",
               starttime: NOW_SECONDS - 3_700,
               endtime: NOW_SECONDS - 3_600
@@ -298,8 +298,8 @@ test("aggregates and deduplicates node-scoped task history while filtering backu
   assert.equal(result.metrics.backupTasksObserved, 2);
   assert.equal(result.metrics.backupFailures24h, 0);
   assert.equal(result.inventory.activity.filter(({ type }) => type === "qmstart").length, 1);
-  assert.equal(result.inventory.workloads.find(({ vmid }) => vmid === 100).backup.status, "success");
-  assert.equal(result.inventory.workloads.find(({ vmid }) => vmid === 104).backup.status, "success");
+  assert.equal(result.inventory.workloads.find(({ vmid }) => vmid === 2101).backup.status, "success");
+  assert.equal(result.inventory.workloads.find(({ vmid }) => vmid === 2201).backup.status, "success");
   assert.equal(JSON.stringify(result).includes("UPID:"), false);
   assert.equal(JSON.stringify(result).includes("helmsman@pam"), false);
 });
@@ -308,10 +308,10 @@ test("keeps successful node history and reports partial task and backup coverage
   const fixtures = healthyFixtures();
   const rawSecret = "partial-history-secret-must-not-escape";
   const result = await probeProxmox(async (routeId, options) => {
-    if (routeId === "tasks" && options.node === "unitrend") {
+    if (routeId === "tasks" && options.node === "pve-b") {
       return { status: 500, body: { message: rawSecret } };
     }
-    if (routeId === "backups" && options.node === "unitrend") {
+    if (routeId === "backups" && options.node === "pve-b") {
       return { status: 403, body: { message: rawSecret } };
     }
     return { status: 200, body: fixtures[routeId] };
@@ -325,15 +325,15 @@ test("keeps successful node history and reports partial task and backup coverage
   assert.equal(tasks.code, "TASK_HISTORY_PARTIAL");
   assert.equal(tasks.httpStatus, null);
   assert.match(tasks.reports[0].message, /1 of 2 discovered nodes/u);
-  assert.equal(tasks.reports[1].source, "Recent failed tasks · Node unitrend");
-  assert.match(tasks.reports[1].message, /GET \/api2\/json\/nodes\/unitrend\/tasks\?source=archive&limit=100 failed/u);
+  assert.equal(tasks.reports[1].source, "Recent failed tasks · Node pve-b");
+  assert.match(tasks.reports[1].message, /GET \/api2\/json\/nodes\/pve-b\/tasks\?source=archive&limit=100 failed/u);
   assert.match(tasks.reports[1].message, /HTTP 500/u);
   assert.match(tasks.reports[1].message, /Review the Proxmox service logs/u);
   assert.equal(backups.state, "limited");
   assert.equal(backups.code, "BACKUP_HISTORY_PARTIAL");
   assert.match(backups.reports[0].message, /1 of 2 discovered nodes/u);
-  assert.equal(backups.reports[1].source, "Backup freshness · Node unitrend");
-  assert.match(backups.reports[1].message, /GET \/api2\/json\/nodes\/unitrend\/tasks\?source=archive&typefilter=vzdump&limit=100 failed/u);
+  assert.equal(backups.reports[1].source, "Backup freshness · Node pve-b");
+  assert.match(backups.reports[1].message, /GET \/api2\/json\/nodes\/pve-b\/tasks\?source=archive&typefilter=vzdump&limit=100 failed/u);
   assert.match(backups.reports[1].message, /Sys\.Audit/u);
   assert.match(backups.reports[1].message, /HTTP 403/u);
   assert.equal(result.metrics.taskRecordsObserved, 1);
@@ -398,7 +398,7 @@ test("multiple nodes without a named cluster do not become a trusted environment
   assert.equal(result.connectionState, "connected");
   assert.equal(result.discovery.kind, "unknown");
   assert.equal(result.discovery.clusterName, null);
-  assert.deepEqual(result.discovery.nodeNames, ["main", "unitrend"]);
+  assert.deepEqual(result.discovery.nodeNames, ["pve-a", "pve-b"]);
 });
 
 test("surfaces bounded service-reported infrastructure failures without leaking secrets", async () => {
@@ -408,13 +408,13 @@ test("surfaces bounded service-reported infrastructure failures without leaking 
   fixtures.storage.data[1].status = "offline";
   fixtures.tasks.data = [{
     type: "qmigrate",
-    node: "unitrend",
+    node: "pve-b",
     status: `failed token=${RAW_SECRET} <script>alert(1)</script>`,
     endtime: NOW_SECONDS - 60
   }];
   fixtures.backups.data = [
-    { type: "vzdump", node: "main", status: "OK", endtime: NOW_SECONDS - 86_400 },
-    { type: "vzdump", node: "main", status: "storage unavailable", endtime: NOW_SECONDS - 60 }
+    { type: "vzdump", node: "pve-a", status: "OK", endtime: NOW_SECONDS - 86_400 },
+    { type: "vzdump", node: "pve-a", status: "storage unavailable", endtime: NOW_SECONDS - 60 }
   ];
 
   const result = await probeProxmox(async (routeId) => ({ status: 200, body: fixtures[routeId] }), {
@@ -492,7 +492,7 @@ test("omits backup age metrics when that outcome was not observed", async () => 
 
   fixtures.backups.data = [{
     type: "vzdump",
-    node: "main",
+    node: "pve-a",
     status: "--password hunter2 --token abc123 -p short",
     endtime: NOW_SECONDS - 30
   }];
@@ -511,12 +511,12 @@ test("ignores in-progress task rows without an end time", async () => {
   const fixtures = healthyFixtures();
   fixtures.tasks.data.unshift({
     type: "qmigrate",
-    node: "main",
+    node: "pve-a",
     status: "running"
   });
   fixtures.backups.data.unshift({
     type: "vzdump",
-    node: "main",
+    node: "pve-a",
     status: "running"
   });
   const result = await probeProxmox(async (routeId) => ({ status: 200, body: fixtures[routeId] }), {
@@ -545,15 +545,15 @@ test("reports unavailable node history with fixed actionable copy and no upstrea
   assert.equal(tasks.code, "TASK_HISTORY_UNAVAILABLE");
   assert.equal(tasks.httpStatus, 400);
   assert.match(tasks.reports[0].message, /any of 2 discovered nodes/u);
-  assert.equal(tasks.reports[1].source, "Recent failed tasks · Node main");
-  assert.match(tasks.reports[1].message, /GET \/api2\/json\/nodes\/main\/tasks\?source=archive&limit=100 failed/u);
+  assert.equal(tasks.reports[1].source, "Recent failed tasks · Node pve-a");
+  assert.match(tasks.reports[1].message, /GET \/api2\/json\/nodes\/pve-a\/tasks\?source=archive&limit=100 failed/u);
   assert.match(tasks.reports[1].message, /node-scoped task-history request \(HTTP 400\)/u);
   assert.match(tasks.reports[1].message, /Verify Proxmox API compatibility/u);
   assert.equal(backups.code, "BACKUP_HISTORY_UNAVAILABLE");
   assert.equal(backups.httpStatus, null);
   assert.match(backups.reports[0].message, /any of 2 discovered nodes/u);
-  assert.equal(backups.reports[1].source, "Backup freshness · Node main");
-  assert.match(backups.reports[1].message, /GET \/api2\/json\/nodes\/main\/tasks\?source=archive&typefilter=vzdump&limit=100 failed/u);
+  assert.equal(backups.reports[1].source, "Backup freshness · Node pve-a");
+  assert.match(backups.reports[1].message, /GET \/api2\/json\/nodes\/pve-a\/tasks\?source=archive&typefilter=vzdump&limit=100 failed/u);
   assert.match(backups.reports[1].message, /timed out/u);
   assert.match(backups.reports[1].message, /Verify node reachability/u);
   assert.equal(JSON.stringify(result).includes(rawSecret), false);

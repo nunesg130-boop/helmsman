@@ -1551,7 +1551,7 @@ async function seriesSeasonControlsContract() {
   const initialDetailRevision = "a".repeat(64);
   const refreshedDetailRevision = "b".repeat(64);
   const acceptedDetailRevision = "c".repeat(64);
-  const mediaId = "episode:tvdb:11893146";
+  const mediaId = "episode:tvdb:99000001";
   let actionAccepted = false;
   let rejectStaleDetailOnce = false;
   let currentDetailRevision = initialDetailRevision;
@@ -1567,15 +1567,15 @@ async function seriesSeasonControlsContract() {
         nowPlaying: [],
         continueWatching: [{
           id: mediaId,
-          title: "President Curtis",
+          title: "Example Episode",
           mediaType: "episode",
           year: "2026",
-          providerIds: { tvdb: "11893146", imdb: "tt43716930" },
+          providerIds: { tvdb: "99000001", imdb: "tt99000001" },
           sources: ["jellyfin"],
           available: true,
-          progress: 18.3,
+          progress: 42,
           lifecycle: { stage: "available" },
-          seasonRequestTarget: { service: "seerr", resourceId: 500 }
+          seasonRequestTarget: { service: "seerr", resourceId: 990001 }
         }],
         recentlyAdded: [], pendingRequests: [], activeDownloads: [], blockedImports: [],
         upcoming: [], missing: [], subtitleBacklog: []
@@ -1585,7 +1585,7 @@ async function seriesSeasonControlsContract() {
     }
   };
   const seasonPayload = () => ({
-    tmdbId: 500,
+    tmdbId: 990001,
     targetRevision: seerrRevision,
     detailRevision: currentDetailRevision,
     seasons: [
@@ -1610,7 +1610,7 @@ async function seriesSeasonControlsContract() {
     });
     if (path === "/api/v2/operations/snapshot") return jsonResponse(clone(snapshot));
     if (path === "/api/v2/operations/refresh" && method === "POST") return jsonResponse(clone(snapshot));
-    if (path === `/api/v2/media/series/500/seasons?targetRevision=${seerrRevision}`) return jsonResponse(seasonPayload());
+    if (path === `/api/v2/media/series/990001/seasons?targetRevision=${seerrRevision}`) return jsonResponse(seasonPayload());
     if (path === "/api/v2/actions/media" && method === "POST") {
       if (rejectStaleDetailOnce) {
         rejectStaleDetailOnce = false;
@@ -1619,7 +1619,7 @@ async function seriesSeasonControlsContract() {
       }
       actionAccepted = true;
       currentDetailRevision = acceptedDetailRevision;
-      return jsonResponse({ ok: true, provider: "seerr", operation: "requestSeasons", resourceId: 500 });
+      return jsonResponse({ ok: true, provider: "seerr", operation: "requestSeasons", resourceId: 990001 });
     }
     if (path === "/api/v2/sessions") return jsonResponse({ currentSessionId: "", sessions: [] });
     return jsonResponse({ code: "NOT_FOUND", message: "Unexpected test route." }, 404);
@@ -1627,7 +1627,7 @@ async function seriesSeasonControlsContract() {
 
   environment.location.hash = "#/home";
   await importShell(environment);
-  await waitFor(() => environment.main.innerHTML.includes("President Curtis"), "season-control media home");
+  await waitFor(() => environment.main.innerHTML.includes("Example Episode"), "season-control media home");
 
   const drawer = environment.elements.get("#drawer-layer");
   const panel = new FakeElement({ id: "season-panel" });
@@ -1641,7 +1641,7 @@ async function seriesSeasonControlsContract() {
   opener.closest = (selector) => selector === "[data-action]" ? opener : null;
   await environment.dispatchDocument("click", { target: opener });
   await waitFor(
-    () => environment.requestLog.some(({ path }) => path === `/api/v2/media/series/500/seasons?targetRevision=${seerrRevision}`),
+    () => environment.requestLog.some(({ path }) => path === `/api/v2/media/series/990001/seasons?targetRevision=${seerrRevision}`),
     "typed series-season detail request"
   );
   await waitFor(() => panel.innerHTML.includes("Season &lt;Two&gt;"), "sanitized season panel");
@@ -1671,7 +1671,7 @@ async function seriesSeasonControlsContract() {
     action: "request-seasons",
     mediaId,
     controlOperation: "requestSeasons",
-    controlKey: "media:seerr:requestSeasons:500"
+    controlKey: "media:seerr:requestSeasons:990001"
   });
   requestButton.disabled = true;
   for (const checkbox of [seasonFour, seasonTwo, duplicateSeasonTwo]) {
@@ -1706,7 +1706,7 @@ async function seriesSeasonControlsContract() {
   await waitFor(() => environment.confirmationLayer.classList.contains("is-open"), "season request confirmation");
   assert.match(
     environment.confirmationLayer.innerHTML,
-    /Request Season 2 and Season 4 for the parent series linked to President Curtis \(TMDb 500\) through Seerr/u,
+    /Request Season 2 and Season 4 for the parent series linked to Example Episode \(TMDb 990001\) through Seerr/u,
     "an episode action must identify the parent series and exact TMDb target"
   );
   assert.equal(drawer.inert, true);
@@ -1740,13 +1740,13 @@ async function seriesSeasonControlsContract() {
   assert.deepEqual(JSON.parse(actionCalls[0].options.body), {
     serviceId: "seerr",
     operation: "requestSeasons",
-    resourceId: 500,
+    resourceId: 990001,
     seasonNumbers: [2, 4],
     targetRevision: seerrRevision,
     detailRevision: initialDetailRevision
   });
   assert.equal(
-    environment.requestLog.filter(({ path }) => path === `/api/v2/media/series/500/seasons?targetRevision=${seerrRevision}`).length,
+    environment.requestLog.filter(({ path }) => path === `/api/v2/media/series/990001/seasons?targetRevision=${seerrRevision}`).length,
     2,
     "a stale-detail rejection must invalidate and reload the season catalog"
   );
@@ -1761,7 +1761,7 @@ async function seriesSeasonControlsContract() {
   assert.deepEqual(JSON.parse(actionCalls[1].options.body), {
     serviceId: "seerr",
     operation: "requestSeasons",
-    resourceId: 500,
+    resourceId: 990001,
     seasonNumbers: [2, 4],
     targetRevision: seerrRevision,
     detailRevision: refreshedDetailRevision
@@ -1770,7 +1770,7 @@ async function seriesSeasonControlsContract() {
   assert.equal(actionCalls[1].options.headers.get("X-Jellofin-CSRF"), "season-controls-csrf");
   assert.equal(environment.requestLog.filter(({ path }) => path === "/api/v2/operations/refresh").length, 2);
   assert.equal(
-    environment.requestLog.filter(({ path }) => path === `/api/v2/media/series/500/seasons?targetRevision=${seerrRevision}`).length,
+    environment.requestLog.filter(({ path }) => path === `/api/v2/media/series/990001/seasons?targetRevision=${seerrRevision}`).length,
     3,
     "an accepted action must reload the authoritative season catalog"
   );
@@ -1778,15 +1778,15 @@ async function seriesSeasonControlsContract() {
   assert.equal(environment.document.activeElement, drawerTitle, "post-action refresh must focus the drawer heading when the rebuilt season action is disabled");
   assert.deepEqual(environment.browserConfirmCalls, []);
 
-  const directSeriesId = "series:tmdb:500";
+  const directSeriesId = "series:tmdb:990001";
   const directSeriesSnapshot = clone(snapshot);
   directSeriesSnapshot.media.home.continueWatching = [{
     ...directSeriesSnapshot.media.home.continueWatching[0],
     id: directSeriesId,
     title: "Orbital House",
     mediaType: "series",
-    providerIds: { tmdb: "500" },
-    seasonRequestTarget: { service: "seerr", resourceId: 500 }
+    providerIds: { tmdb: "990001" },
+    seasonRequestTarget: { service: "seerr", resourceId: 990001 }
   }];
   let failedCatalogCalls = 0;
   const failedCatalog = installFakeBrowser(({ path }) => {
@@ -1801,12 +1801,12 @@ async function seriesSeasonControlsContract() {
       services: [{ id: "seerr", configured: true, enabled: true, monitoringEnabled: true, targetRevision: seerrRevision }]
     });
     if (path === "/api/v2/operations/snapshot") return jsonResponse(clone(directSeriesSnapshot));
-    if (path === `/api/v2/media/series/500/seasons?targetRevision=${seerrRevision}`) {
+    if (path === `/api/v2/media/series/990001/seasons?targetRevision=${seerrRevision}`) {
       failedCatalogCalls += 1;
       return failedCatalogCalls === 1
         ? jsonResponse({ code: "UPSTREAM_UNAVAILABLE", message: "Unsafe <img src=x onerror=season_error>" }, 502)
         : jsonResponse({
-            tmdbId: 500,
+            tmdbId: 990001,
             targetRevision: seerrRevision,
             detailRevision: "d".repeat(64),
             seasons: [{
@@ -1858,13 +1858,13 @@ async function seriesSeasonControlsContract() {
       services: [{ id: "seerr", configured: true, enabled: true, monitoringEnabled: true, targetRevision: seerrRevision }]
     });
     if (path === "/api/v2/operations/snapshot") return jsonResponse(clone({ ...snapshot, services: [{ id: "seerr", targetRevision: seerrRevision, connectionState: "connected", checkedAt }] }));
-    if (path.startsWith("/api/v2/media/series/500/seasons?")) return jsonResponse({ code: "AUTH_REQUIRED", message: "Expired" }, 401);
+    if (path.startsWith("/api/v2/media/series/990001/seasons?")) return jsonResponse({ code: "AUTH_REQUIRED", message: "Expired" }, 401);
     if (path === "/api/v2/sessions") return jsonResponse({ currentSessionId: "", sessions: [] });
     return jsonResponse({ code: "NOT_FOUND", message: "Unexpected test route." }, 404);
   }, "season-detail-auth-expiry");
   expired.location.hash = "#/home";
   await importShell(expired);
-  await waitFor(() => expired.main.innerHTML.includes("President Curtis"), "expiring season media home");
+  await waitFor(() => expired.main.innerHTML.includes("Example Episode"), "expiring season media home");
   const expiredDrawer = expired.elements.get("#drawer-layer");
   const expiredPanel = new FakeElement({ id: "expired-season-panel" });
   expiredPanel.dataset.mediaId = mediaId;
@@ -1901,10 +1901,10 @@ async function seriesSeasonControlsContract() {
     }));
     if (path === "/api/v2/sessions") return jsonResponse({ currentSessionId: "", sessions: [] });
     if (path === "/api/v2/session" && method === "DELETE") return jsonResponse({ ok: true });
-    if (path === `/api/v2/media/series/500/seasons?targetRevision=${seerrRevision}`) {
+    if (path === `/api/v2/media/series/990001/seasons?targetRevision=${seerrRevision}`) {
       seasonDetailCalls += 1;
       return seasonDetailCalls === 1 ? staleSeasonDetail : jsonResponse({
-        tmdbId: 500,
+        tmdbId: 990001,
         targetRevision: seerrRevision,
         detailRevision: "b".repeat(64),
         seasons: [{
@@ -1922,7 +1922,7 @@ async function seriesSeasonControlsContract() {
   }, "season-detail-logout-race");
   logoutRace.location.hash = "#/home";
   await importShell(logoutRace);
-  await waitFor(() => logoutRace.main.innerHTML.includes("President Curtis"), "logout-race media home");
+  await waitFor(() => logoutRace.main.innerHTML.includes("Example Episode"), "logout-race media home");
   const raceDrawer = logoutRace.elements.get("#drawer-layer");
   const racePanel = new FakeElement({ id: "race-season-panel" });
   racePanel.dataset.mediaId = mediaId;
@@ -1943,7 +1943,7 @@ async function seriesSeasonControlsContract() {
   retryStartup.dataset.action = "retry-startup";
   retryStartup.closest = (selector) => selector === "[data-action]" ? retryStartup : null;
   await logoutRace.dispatchDocument("click", { target: retryStartup });
-  await waitFor(() => logoutRace.main.innerHTML.includes("President Curtis"), "reauthenticated season media home");
+  await waitFor(() => logoutRace.main.innerHTML.includes("Example Episode"), "reauthenticated season media home");
   await logoutRace.dispatchDocument("click", { target: raceOpener });
   await waitFor(() => seasonDetailCalls === 2, "fresh season detail after logout race");
   await waitFor(() => racePanel.innerHTML.includes("Fresh season catalog"), "fresh post-logout season catalog");
@@ -1953,12 +1953,12 @@ async function seriesSeasonControlsContract() {
 async function serviceDialogInteractionContract() {
   const csrfToken = "service-dialog-csrf-token";
   const config = {
-    policy: { allowedCidrs: ["192.168.0.7/32"], allowPublicHttps: false },
+    policy: { allowedCidrs: ["10.44.1.20/32"], allowPublicHttps: false },
     services: [{
       id: "jellyfin",
       name: "Jellyfin",
       role: "Library and playback",
-      url: "http://192.168.0.7:8096",
+      url: "http://10.44.1.20:8096",
       configured: true,
       authMode: "token",
       credentialConfigured: true,
@@ -2201,7 +2201,7 @@ async function serviceDialogInteractionContract() {
   assert.equal(monitorCheckbox.checked, false, "the user's checkbox choice must survive delegated click handling");
 
   urlInput.closest = (selector) => selector === "#service-form" ? serviceForm : null;
-  urlInput.value = "http://192.168.0.8:8096";
+  urlInput.value = "http://10.44.1.21:8096";
   serviceForm.formDataValues.set("url", urlInput.value);
   await environment.dispatchDocument("input", { target: urlInput });
   assert.equal(credentialInput.required, true, "changing the URL must require a fresh credential");
@@ -2578,7 +2578,7 @@ async function infrastructureWorkspaceContract() {
   const csrfToken = "infrastructure-csrf-token";
   const targetId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
   const fingerprint = "ab".repeat(32);
-  const targetUrl = "https://192.168.0.4:8006";
+  const targetUrl = "https://10.44.0.11:8006";
   const tokenIdValue = "helmsman@pve!monitoring";
   const tokenSecretValue = "proxmox-token-secret";
   let targets = [];
@@ -2613,10 +2613,10 @@ async function infrastructureWorkspaceContract() {
     version: "8.4.1",
     discovery: {
       kind: "standalone",
-      name: "pve-main",
+      name: "pve-a",
       clusterName: null,
       quorate: null,
-      nodeNames: ["pve-main"]
+      nodeNames: ["pve-a"]
     },
     checks: [
       { id: "reachability", state: "healthy", status: 200, latencyMs: 7 },
@@ -2659,7 +2659,7 @@ async function infrastructureWorkspaceContract() {
         type: "proxmox",
         typeName: "Proxmox VE",
         role: "Virtualization",
-        displayName: "Main Proxmox",
+        displayName: "Example Proxmox",
         url: targetUrl,
         enabled: true,
         monitoringEnabled: true,
@@ -2669,7 +2669,7 @@ async function infrastructureWorkspaceContract() {
         credentialConfigured: true,
         targetRevision: targetId,
         environmentKind: "standalone",
-        environmentName: "pve-main"
+        environmentName: "pve-a"
       }];
       snapshot.infrastructure = {
         generatedAt: checkedAt,
@@ -2677,7 +2677,7 @@ async function infrastructureWorkspaceContract() {
         targets: [{
           id: targetId,
           type: "proxmox",
-          displayName: "Main Proxmox",
+          displayName: "Example Proxmox",
           state: "healthy",
           connectionState: "connected",
           targetRevision: targetId,
@@ -2694,7 +2694,7 @@ async function infrastructureWorkspaceContract() {
             checkedAt: "2026-09-13T01:00:10.000Z"
           }],
           nodes: [{
-            name: "pve-main",
+            name: "pve-a",
             status: "online",
             local: true,
             cpuPercent: 14,
@@ -2711,11 +2711,11 @@ async function infrastructureWorkspaceContract() {
             containerCount: 1
           }],
           workloads: [
-            { vmid: 100, type: "qemu", node: "pve-main", name: "Jellyfin", status: "running", cpuPercent: 12, memoryUsedBytes: 2_000, memoryTotalBytes: 4_000, diskUsedBytes: 10_000, diskTotalBytes: 50_000, uptimeSeconds: 3_600 },
-            { vmid: 104, type: "lxc", node: "pve-main", name: "Lab", status: "stopped", memoryTotalBytes: 2_000, diskTotalBytes: 20_000 }
+            { vmid: 2101, type: "qemu", node: "pve-a", name: "example-media-vm", status: "running", cpuPercent: 12, memoryUsedBytes: 2_000, memoryTotalBytes: 4_000, diskUsedBytes: 10_000, diskTotalBytes: 50_000, uptimeSeconds: 3_600 },
+            { vmid: 2201, type: "lxc", node: "pve-a", name: "example-lab-lxc", status: "stopped", memoryTotalBytes: 2_000, diskTotalBytes: 20_000 }
           ],
-          storage: [{ name: "local-zfs", node: "pve-main", status: "available", type: "zfspool", usedBytes: 20_000, totalBytes: 100_000, usagePercent: 20 }],
-          activity: [{ id: "task-1", type: "qmstart", node: "pve-main", vmid: 100, status: "success", endedAt: "2026-09-13T01:00:00.000Z" }],
+          storage: [{ name: "example-local", node: "pve-a", status: "available", type: "zfspool", usedBytes: 20_000, totalBytes: 100_000, usagePercent: 20 }],
+          activity: [{ id: "task-1", type: "qmstart", node: "pve-a", vmid: 2101, status: "success", endedAt: "2026-09-13T01:00:00.000Z" }],
           metrics: {
             nodeTotal: 1,
             nodesOnline: 1,
@@ -2895,7 +2895,7 @@ async function infrastructureWorkspaceContract() {
   assert.match(modal.innerHTML, /data-action="test-infrastructure-target">Connect and discover/u);
 
   const writesAfterAddOpen = modal.markupWrites;
-  displayName.value = "Main Proxmox";
+  displayName.value = "Example Proxmox";
   displayName.focus();
   await environment.dispatchDocument("click", { target: displayName });
   assert.equal(modal.markupWrites, writesAfterAddOpen, "clicking the Proxmox name must not rebuild the modal");
@@ -2965,7 +2965,7 @@ async function infrastructureWorkspaceContract() {
   assert.match(testCapabilities.innerHTML, /API authorization/u);
   assert.match(testNote.textContent, /nothing was saved/u);
   assert.equal(form.dataset.discoveryConfirmed, "true");
-  assert.match(discoveryResult.innerHTML, /Discovered standalone server pve-main/u);
+  assert.match(discoveryResult.innerHTML, /Discovered standalone server pve-a/u);
   assert.equal(modal.markupWrites, writesAfterAddOpen, "testing Proxmox must not rebuild the modal");
   assert.equal(environment.document.activeElement, tokenSecret, "testing must not steal field focus");
   assert.equal(
@@ -2987,7 +2987,7 @@ async function infrastructureWorkspaceContract() {
   assert.equal(createCall.options.headers.get("X-Jellofin-CSRF"), csrfToken);
   assert.deepEqual(JSON.parse(createCall.options.body), {
     type: "proxmox",
-    displayName: "Main Proxmox",
+    displayName: "Example Proxmox",
     url: targetUrl,
     enabled: true,
     monitoringEnabled: true,
@@ -3003,8 +3003,8 @@ async function infrastructureWorkspaceContract() {
   assert.match(environment.main.innerHTML, /id="proxmox-environments-title">Environments/u);
   assert.match(environment.main.innerHTML, /id="proxmox-nodes-title">Nodes/u);
   assert.match(environment.main.innerHTML, /id="proxmox-storage-title">Storage/u, "the merged Proxmox page must include storage inventory");
-  assert.match(environment.main.innerHTML, /local-zfs/u, "saving Proxmox must refresh node-scoped storage without waiting for the polling interval");
-  assert.match(environment.main.innerHTML, /local-zfs[\s\S]*?Status available/u, "storage availability must be stated in text rather than communicated by color alone");
+  assert.match(environment.main.innerHTML, /example-local/u, "saving Proxmox must refresh node-scoped storage without waiting for the polling interval");
+  assert.match(environment.main.innerHTML, /example-local[\s\S]*?Status available/u, "storage availability must be stated in text rather than communicated by color alone");
   assert.match(environment.main.innerHTML, /class="storage-usage"><i class="health-dot is-healthy" aria-hidden="true"><\/i>20%/u, "the redundant storage health dot must remain hidden from assistive technology");
   assert.match(environment.main.innerHTML, /20%/u);
   const createRefreshCall = environment.requestLog.find(({ path }) => path === "/api/v2/operations/refresh");
@@ -3016,13 +3016,13 @@ async function infrastructureWorkspaceContract() {
   environment.location.hash = "#/overview";
   await environment.dispatchWindow("hashchange", { type: "hashchange" });
   assert.match(environment.main.innerHTML, /id="infrastructure-overview"/u);
-  assert.match(environment.main.innerHTML, /Main Proxmox/u, "Overview must include the configured Proxmox environment");
+  assert.match(environment.main.innerHTML, /Example Proxmox/u, "Overview must include the configured Proxmox environment");
   assert.doesNotMatch(environment.main.innerHTML, /Connect and discover|Connect Portainer|Portainer servers/u, "Overview must omit unconfigured providers and every setup CTA");
   environment.location.hash = "#/connectors";
   await environment.dispatchWindow("hashchange", { type: "hashchange" });
   assert.equal(environment.elements.get("#page-title").textContent, "Connectors");
   assert.match(environment.main.innerHTML, /id="infrastructure-connectors"/u);
-  assert.match(environment.main.innerHTML, /Main Proxmox/u, "Connectors must include current connections");
+  assert.match(environment.main.innerHTML, /Example Proxmox/u, "Connectors must include current connections");
   assert.match(environment.main.innerHTML, /data-connector-provider="portainer"[\s\S]*Available/u, "Connectors must retain supported but unconfigured providers");
   assert.match(environment.main.innerHTML, /Add environment/u, "a configured provider must still allow another connection");
   const connectorWritesBeforeConnectionChange = environment.main.markupWrites;
@@ -3048,8 +3048,8 @@ async function infrastructureWorkspaceContract() {
 
   const taskHistoryDiagnostic = {
     severity: "warning",
-    source: "Recent failed tasks · Node pve-main",
-    message: "GET /api2/json/nodes/pve-main/tasks?source=archive&limit=100 failed. Proxmox rejected the node-scoped task-history request (HTTP 400). Verify Proxmox API compatibility and the configured base URL.",
+    source: "Recent failed tasks · Node pve-a",
+    message: "GET /api2/json/nodes/pve-a/tasks?source=archive&limit=100 failed. Proxmox rejected the node-scoped task-history request (HTTP 400). Verify Proxmox API compatibility and the configured base URL.",
     tokenSecret: "pve-root@pam!helmsman=runtime-secret-must-not-render",
     upstreamBody: "raw upstream body must not render"
   };
@@ -3094,8 +3094,8 @@ async function infrastructureWorkspaceContract() {
   await environment.dispatchWindow("hashchange", { type: "hashchange" });
   assert.match(environment.main.innerHTML, /Infrastructure incident is visible/u, "Infrastructure Incidents must include Proxmox incidents");
   assert.match(environment.main.innerHTML, /TASK_HISTORY_UNAVAILABLE · HTTP 400/u, "Infrastructure Incidents must retain the safe code and HTTP status");
-  assert.match(environment.main.innerHTML, /Recent failed tasks · Node pve-main/u, "Infrastructure Incidents must identify the affected node");
-  assert.match(environment.main.innerHTML, /GET \/api2\/json\/nodes\/pve-main\/tasks\?source=archive&amp;limit=100 failed/u, "Infrastructure Incidents must show the fixed safe operation");
+  assert.match(environment.main.innerHTML, /Recent failed tasks · Node pve-a/u, "Infrastructure Incidents must identify the affected node");
+  assert.match(environment.main.innerHTML, /GET \/api2\/json\/nodes\/pve-a\/tasks\?source=archive&amp;limit=100 failed/u, "Infrastructure Incidents must show the fixed safe operation");
   assert.match(environment.main.innerHTML, /Verify Proxmox API compatibility and the configured base URL/u, "Infrastructure Incidents must show the fixed diagnostic action");
   assert.match(environment.main.innerHTML, /Next step.*Verify the configured Proxmox base URL and PVE API compatibility.*retest/su, "Infrastructure Incidents must show actionable HTTP 400 guidance");
   assert.doesNotMatch(environment.main.innerHTML, /runtime-secret-must-not-render|raw upstream body must not render/u, "Infrastructure Incidents must omit unknown credential and upstream-body fields");
@@ -3110,7 +3110,7 @@ async function infrastructureWorkspaceContract() {
   environmentDetailButton.closest = (selector) => selector === "[data-action]" ? environmentDetailButton : null;
   await environment.dispatchDocument("click", { target: environmentDetailButton });
   assert.match(modal.innerHTML, /API endpoints/u);
-  assert.match(modal.innerHTML, /pve-main/u);
+  assert.match(modal.innerHTML, /pve-a/u);
   const closeDetail = new FakeElement({ id: "close-environment-detail" });
   closeDetail.dataset.action = "close-modal";
   closeDetail.closest = (selector) => selector === "[data-action]" ? closeDetail : null;
@@ -3121,40 +3121,40 @@ async function infrastructureWorkspaceContract() {
   assert.match(environment.main.innerHTML, /id="infrastructure-proxmox"/u);
   assert.match(environment.main.innerHTML, /id="proxmox-nodes-title">Nodes/u);
   assert.match(environment.main.innerHTML, /id="proxmox-storage-title">Storage/u, "the legacy Nodes alias must retain the merged storage section");
-  assert.match(environment.main.innerHTML, /pve-main/u);
+  assert.match(environment.main.innerHTML, /pve-a/u);
   assert.match(environment.main.innerHTML, /API 1\/1/u, "node cards must keep environment endpoint availability separate from node state");
-  assert.match(environment.main.innerHTML, /node-mark"><img class="service-brand-icon service-brand-icon--light-plate" src="\.\/assets\/services\/proxmox\.png"/u, "node cards must use the normalized Proxmox mark on its light plate");
+  assert.match(environment.main.innerHTML, /node-mark"><span class="service-brand-icon__fallback service-brand-icon__fallback--proxmox" aria-hidden="true">PX<\/span>/u, "node cards must use the project-owned Proxmox text badge");
   const nodeDetailButton = new FakeElement({ id: "node-detail" });
   nodeDetailButton.dataset.action = "open-infrastructure-node";
-  nodeDetailButton.dataset.infrastructureNodeId = `${targetId}:pve-main`;
+  nodeDetailButton.dataset.infrastructureNodeId = `${targetId}:pve-a`;
   nodeDetailButton.closest = (selector) => selector === "[data-action]" ? nodeDetailButton : null;
   await environment.dispatchDocument("click", { target: nodeDetailButton });
   assert.match(modal.innerHTML, /Environment API · 1 of 1 endpoints available/u);
   assert.match(modal.innerHTML, /does not override the node state/u);
-  assert.match(modal.innerHTML, /detail-modal-mark"><img class="service-brand-icon service-brand-icon--light-plate" src="\.\/assets\/services\/proxmox\.png"/u, "node detail must use the normalized Proxmox mark on its light plate");
+  assert.match(modal.innerHTML, /detail-modal-mark"><span class="service-brand-icon__fallback service-brand-icon__fallback--proxmox" aria-hidden="true">PX<\/span>/u, "node detail must use the project-owned Proxmox text badge");
   await environment.dispatchDocument("click", { target: closeDetail });
   environment.location.hash = "#/workloads";
   await environment.dispatchWindow("hashchange", { type: "hashchange" });
-  assert.match(environment.main.innerHTML, /Jellyfin/u);
-  assert.match(environment.main.innerHTML, /Lab/u);
+  assert.match(environment.main.innerHTML, /example-media-vm/u);
+  assert.match(environment.main.innerHTML, /example-lab-lxc/u);
   const stoppedWorkloadButton = new FakeElement({ id: "stopped-workload" });
   stoppedWorkloadButton.dataset.action = "open-infrastructure-workload";
-  stoppedWorkloadButton.dataset.infrastructureWorkloadId = `${targetId}:pve-main:lxc:104`;
+  stoppedWorkloadButton.dataset.infrastructureWorkloadId = `${targetId}:pve-a:lxc:2201`;
   stoppedWorkloadButton.closest = (selector) => selector === "[data-action]" ? stoppedWorkloadButton : null;
   await environment.dispatchDocument("click", { target: stoppedWorkloadButton });
   assert.match(modal.innerHTML, /deliberately stopped guest is informational/u);
   assert.match(modal.innerHTML, /data-action="run-proxmox-control"[^>]+data-control-operation="start"/u);
   const startWorkload = new FakeElement({ id: "start-stopped-workload" });
   startWorkload.dataset.action = "run-proxmox-control";
-  startWorkload.dataset.infrastructureWorkloadId = `${targetId}:pve-main:lxc:104`;
+  startWorkload.dataset.infrastructureWorkloadId = `${targetId}:pve-a:lxc:2201`;
   startWorkload.dataset.controlOperation = "start";
-  startWorkload.dataset.controlKey = `proxmox:${targetId}:pve-main:lxc:104:start`;
+  startWorkload.dataset.controlKey = `proxmox:${targetId}:pve-a:lxc:2201:start`;
   startWorkload.closest = (selector) => selector === "[data-action]" ? startWorkload : null;
   const refreshesBeforeWorkloadAction = environment.requestLog.filter(({ path }) => path === "/api/v2/operations/refresh").length;
   const workloadModalBeforeConfirmation = modal.innerHTML;
   const pendingWorkloadAction = environment.dispatchDocument("click", { target: startWorkload });
   await waitFor(() => environment.confirmationLayer.classList.contains("is-open"), "Proxmox action confirmation");
-  assert.match(environment.confirmationLayer.innerHTML, /Start Lab/u, "a Proxmox guest mutation must use the in-app confirmation");
+  assert.match(environment.confirmationLayer.innerHTML, /Start example-lab-lxc/u, "a Proxmox guest mutation must use the in-app confirmation");
   assert.equal(modal.innerHTML, workloadModalBeforeConfirmation, "confirmation must not replace the underlying workload detail");
   assert.equal(modal.inert, true, "the underlying workload detail must be inert during confirmation");
   await environment.dispatchDocument("click", { target: environment.confirmationApprove });
@@ -3163,9 +3163,9 @@ async function infrastructureWorkspaceContract() {
   assert.ok(startCall, "the confirmed Proxmox action must use the bounded local action route");
   assert.deepEqual(JSON.parse(startCall.options.body), {
     environmentId: targetId,
-    node: "pve-main",
+    node: "pve-a",
     type: "lxc",
-    vmid: 104,
+    vmid: 2201,
     operation: "start",
     targetRevision: targetId
   });
@@ -3186,7 +3186,7 @@ async function infrastructureWorkspaceContract() {
   form.dataset.credentialConfigured = "true";
   form.dataset.targetEnabled = "true";
   form.dataset.monitoringIntervalSeconds = "60";
-  displayName.value = "Main Proxmox";
+  displayName.value = "Example Proxmox";
   urlInput.value = `${targetUrl}/`;
   fingerprintInput.value = fingerprint;
   tokenId.value = "";
@@ -3198,7 +3198,7 @@ async function infrastructureWorkspaceContract() {
   testCapabilities.innerHTML = "";
   testNote.textContent = "";
   form.formDataValues = new Map([
-    ["displayName", "Main Proxmox"],
+    ["displayName", "Example Proxmox"],
     ["url", urlInput.value],
     ["tlsMode", "pinned"],
     ["certificateFingerprint", fingerprint],
@@ -3299,7 +3299,7 @@ async function infrastructureWorkspaceContract() {
   );
   environment.location.hash = "#/logs";
   await environment.dispatchWindow("hashchange", { type: "hashchange" });
-  assert.match(environment.main.innerHTML, /Main Proxmox · storage/u, "global Logs must resolve a Proxmox target to its display name");
+  assert.match(environment.main.innerHTML, /Example Proxmox · storage/u, "global Logs must resolve a Proxmox target to its display name");
   assert.match(environment.main.innerHTML, /HTTP_ERROR · HTTP 503/u, "Logs must retain safe error code and bounded HTTP status evidence");
   assert.doesNotMatch(environment.main.innerHTML, new RegExp(`proxmox-${targetId}`, "u"), "global Logs must not expose an opaque target id as the operator label");
 
@@ -3479,7 +3479,7 @@ async function portainerInfrastructureContract() {
   assert.equal(environment.elements.get("#monitor-summary").attributes.get("href"), "#/incidents");
   assert.equal(environment.elements.get("#monitor-summary").attributes.get("aria-label"), "Open infrastructure incidents");
   assert.equal(environment.elements.get("#page-title").textContent, "Portainer");
-  assert.match(markup, /assets\/services\/portainer\.svg/u);
+  assert.match(markup, /service-brand-icon__fallback--portainer" aria-hidden="true">PT<\/span>/u, "Portainer views must use the project-owned text badge");
   assert.match(markup, /Container Control/u);
   assert.match(markup, /Portainer 2\.45\.0/u);
   assert.match(markup, /Connected · Degraded/u, "a container-environment 403 must not erase verified Portainer identity");
@@ -3738,13 +3738,13 @@ async function authenticatedRuntimeContract() {
     message: index === 0 ? hostileReportMessage : `Indexer report ${index + 1}`
   }));
   const config = {
-    policy: { allowedCidrs: ["192.168.0.7/32"], allowPublicHttps: false },
+    policy: { allowedCidrs: ["10.44.1.20/32"], allowPublicHttps: false },
     services: [
       {
         id: "jellyfin",
         name: "Jellyfin",
         role: "Library and playback",
-        url: "http://192.168.0.7:8096",
+        url: "http://10.44.1.20:8096",
         configured: true,
         authMode: "token",
         credentialConfigured: true,
@@ -3756,7 +3756,7 @@ async function authenticatedRuntimeContract() {
         id: "seerr",
         name: "Seerr",
         role: "Discovery and requests",
-        url: "http://192.168.0.104:5055",
+        url: "http://10.44.1.30:5055",
         configured: true,
         authMode: "apiKey",
         credentialConfigured: true,

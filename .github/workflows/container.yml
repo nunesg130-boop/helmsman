@@ -2,6 +2,8 @@ name: Container
 
 on:
   pull_request:
+    branches:
+      - main
   push:
     branches:
       - main
@@ -24,6 +26,7 @@ jobs:
   test:
     name: Node 24 contracts
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     outputs:
       version: ${{ steps.release.outputs.version }}
       is_prerelease: ${{ steps.release.outputs.is_prerelease }}
@@ -33,6 +36,9 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
 
       - name: Use Node 24.19.0
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -65,6 +71,11 @@ jobs:
               echo "Release tag ${RELEASE_TAG} does not match package.json (${expected})." >&2
               exit 1
             fi
+            release_commit="$(git rev-parse "${GITHUB_SHA}^{commit}")"
+            if ! git merge-base --is-ancestor "${release_commit}" refs/remotes/origin/main; then
+              echo "Release tag ${RELEASE_TAG} does not point to a commit on origin/main." >&2
+              exit 1
+            fi
           fi
 
           is_prerelease=false
@@ -85,6 +96,7 @@ jobs:
           } >> "${GITHUB_OUTPUT}"
 
       - name: Detect an existing immutable release
+        if: startsWith(github.ref, 'refs/tags/v')
         id: release_state
         shell: bash
         env:
@@ -112,9 +124,12 @@ jobs:
   publisher-syntax:
     name: Windows PowerShell 5.1 publisher contracts
     runs-on: windows-latest
+    timeout-minutes: 15
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Parse the portable and guarded publishers
         shell: powershell
@@ -165,6 +180,7 @@ jobs:
     name: Linux ${{ matrix.arch }} runtime smoke
     needs: test
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -174,6 +190,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4.3.0
@@ -237,6 +255,7 @@ jobs:
       - smoke
       - publisher-syntax
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     outputs:
       digest: ${{ steps.push.outputs.digest }}
     permissions:
@@ -245,6 +264,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4.3.0
@@ -323,11 +344,13 @@ jobs:
             org.opencontainers.image.description=Local-first media and infrastructure operations center with a hardened self-hosted control plane
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.documentation=${{ github.server_url }}/${{ github.repository }}/blob/${{ github.sha }}/README.md
+            org.opencontainers.image.licenses=AGPL-3.0-only
           annotations: |
             org.opencontainers.image.title=Helmsman
             org.opencontainers.image.description=Local-first media and infrastructure operations center with a hardened self-hosted control plane
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.documentation=${{ github.server_url }}/${{ github.repository }}/blob/${{ github.sha }}/README.md
+            org.opencontainers.image.licenses=AGPL-3.0-only
 
       - name: Build and publish the manifest
         id: push
@@ -355,6 +378,7 @@ jobs:
       - test
       - image
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write
     env:
@@ -456,6 +480,19 @@ jobs:
             exit 1
           fi
 
+          notes_file="${release_dir}/RELEASE_NOTES.md"
+          {
+            printf '%s\n' '> [!WARNING]'
+            printf '%s\n\n' '> This is beta software. Back up the persistent `/data` directory before installing or upgrading, and test the release before relying on it for critical workloads.'
+            printf '%s\n\n' '## Install or upgrade'
+            printf '%s\n' "Download the digest-pinned deployment assets from the [${tag} release](https://github.com/${GITHUB_REPOSITORY}/releases/tag/${tag}):"
+            printf '%s\n' '- `compose.yaml`'
+            printf '%s\n' '- `container.env.example`'
+            printf '%s\n\n' '- `SHA256SUMS`'
+            printf '%s\n\n' 'Verify both downloaded configuration files before use: `sha256sum --check SHA256SUMS`.'
+            printf '%s\n' "Read the [Docker deployment guide](https://github.com/${GITHUB_REPOSITORY}/blob/${tag}/deploy/DOCKER.md) for installation, backup, and upgrade instructions."
+          } > "${notes_file}"
+
           create_args=(
             "${tag}"
             "${release_dir}/compose.yaml"
@@ -465,6 +502,7 @@ jobs:
             --verify-tag
             --title "Helmsman ${RELEASE_VERSION}"
             --generate-notes
+            --notes "$(cat "${notes_file}")"
           )
           if [[ "${RELEASE_PRERELEASE}" == "true" ]]; then
             create_args+=(--prerelease)
@@ -478,6 +516,7 @@ jobs:
       - test
       - publisher-syntax
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
       packages: read

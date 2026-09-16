@@ -75,14 +75,16 @@ record(
   JSON.stringify(publicParameters) === JSON.stringify([
     "SourcePath",
     "RepositoryPath",
-    "SkipLocalTests",
+    "DeploymentHost",
+    "DeploymentUser",
+    "DeploymentRoot",
     "SelfTest"
   ])
     && /\$script:ExpectedRepository = 'nunesg130-boop\/helmsman'/u.test(launcher)
     && /\$script:ExpectedGitHubLogin = 'nunesg130-boop'/u.test(launcher)
     && /\$script:ExpectedCloneUrl = 'https:\/\/github[.]com\/nunesg130-boop\/helmsman[.]git'/u.test(launcher)
     && /\$script:MaximumRecoveryClones = 20/u.test(launcher)
-    && /\$script:GitAuthorName = 'Gabriel Nunes'/u.test(launcher)
+    && /'config', '--local', 'user[.]name', \$Account[.]Login/u.test(launcher)
     && launcher.includes(`$script:ExpectedPublisherSha256 = '${publisherSha256}'`)
     && !/\[string\]\$(?:ExpectedRepository|ExpectedGitHubLogin|ExpectedCloneUrl|Workflow)/u.test(parameterBlock)
     && !/0[.]10[.]0-beta[.][0-9]+/u.test(launcher),
@@ -152,7 +154,6 @@ record(
 );
 
 const picker = functionBlock(launcher, "Select-ReleaseSourceDirectory");
-const localTests = functionBlock(launcher, "Get-LocalTestDecision");
 record(
   /Add-Type -AssemblyName System[.]Windows[.]Forms/u.test(picker)
     && /Windows[.]Forms[.]FolderBrowserDialog/u.test(picker)
@@ -179,10 +180,9 @@ record(
   "bootstrap uses an explicit source, then an adjacent extracted release, and otherwise asks for an extracted folder"
 );
 record(
-  /\[version\]\$version/u.test(localTests)
-    && /\$nodeVersion -lt \[version\]'24[.]19[.]0'/u.test(localTests)
-    && /\$nodeVersion -ge \[version\]'25[.]0[.]0'/u.test(localTests),
-  "local test detection accepts the complete supported Node range from 24.19.0 through Node 24"
+  !/SkipLocalTests|Get-LocalTestDecision|npm[.]cmd|node[.]exe/u.test(launcher)
+    && !/SkipLocalTests|Invoke-LocalTestsIfAvailable|npm[.]cmd|node[.]exe/u.test(publisher),
+  "authenticated launcher and publisher never execute candidate project code"
 );
 record(
   /\$launcherNormalized = Get-NormalizedPath \$PSScriptRoot/u.test(bootstrapCore)
@@ -211,7 +211,7 @@ record(
     && /'api', 'user', '--jq', '[.]login'/u.test(expectedLogin)
     && /\$login -cne \$script:ExpectedGitHubLogin/u.test(expectedLogin)
     && /'auth', 'refresh', '--hostname', 'github[.]com', '--scopes', 'repo,workflow'/u.test(authentication)
-    && /private-repository and workflow permissions/u.test(authentication)
+    && /repository and workflow permissions/u.test(authentication)
     && /Test-GitHubAuthenticationScope -StatusText \$status[.]Text -RequiredScope 'repo'/u.test(authentication)
     && /Test-GitHubAuthenticationScope -StatusText \$status[.]Text -RequiredScope 'workflow'/u.test(authentication)
     && /Token scopes:/u.test(authenticationScope)
@@ -230,7 +230,7 @@ record(
     && /'ls-remote', '--exit-code', \$script:ExpectedCloneUrl, 'refs\/heads\/main'/u.test(authentication)
     && authentication.indexOf("'repo', 'view'") < authentication.indexOf("'auth', 'setup-git'")
     && authentication.indexOf("'auth', 'setup-git'") < authentication.indexOf("'ls-remote'"),
-  "launcher verifies the exact account, private-repository write access, repo/workflow scopes, and authenticated HTTPS Git transport before cloning"
+  "launcher verifies the exact account, repository write access, repo/workflow scopes, and authenticated HTTPS Git transport before cloning"
 );
 
 const correctRepository = functionBlock(launcher, "Assert-CorrectRepository");
@@ -325,7 +325,10 @@ record(
     && /\$publisherSha256 -cne \$script:ExpectedPublisherSha256/u.test(bootstrapCore)
     && /SourcePath = \$release[.]Root/u.test(bootstrapCore)
     && /RepositoryPath = \$repoRoot/u.test(bootstrapCore)
-    && /if \(\$skip\) \{ \$publisherParameters[.]SkipLocalTests = \$true \}/u.test(bootstrapCore)
+    && /DeploymentHost = \$DeploymentHost/u.test(bootstrapCore)
+    && /DeploymentUser = \$DeploymentUser/u.test(bootstrapCore)
+    && /DeploymentRoot = \$DeploymentRoot/u.test(bootstrapCore)
+    && !/SkipLocalTests|Get-LocalTestDecision/u.test(bootstrapCore)
     && /& \$publisher @publisherParameters/u.test(bootstrapCore)
     && (launcher.match(/& \$publisher @publisherParameters/gu) || []).length === 1
     && /if \(\$MyInvocation[.]InvocationName -eq '[.]'\) \{ return \}/u.test(launcher)
@@ -368,7 +371,7 @@ record(
     && /Assert-SelfTestThrows -Name 'repository contains release source'/u.test(selfTest)
     && /9[.]8[.]7-test[.]1/u.test(selfTest)
     && /Extracted-folder discovery: PASS/u.test(selfTest)
-    && /Private-repository metadata: PASS/u.test(selfTest)
+    && /Repository metadata: PASS/u.test(selfTest)
     && /Get-PublishingRepositorySelection -UserProfile \$profileRoot/u.test(selfTest)
     && /Get-PublishingRepositorySelection -RequestedPath \$explicitClone/u.test(selfTest)
     && /Get-RecoveryRepositoryCandidate -BasePath \$recoveryClone/u.test(selfTest)

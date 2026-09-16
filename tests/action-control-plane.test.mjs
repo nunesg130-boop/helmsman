@@ -82,10 +82,10 @@ async function start() {
       version: "9.2.1",
       discovery: {
         kind: "cluster",
-        name: "homelab",
-        clusterName: "homelab",
+        name: "example-cluster",
+        clusterName: "example-cluster",
         quorate: true,
-        nodeNames: ["Main", "Unitrend"]
+        nodeNames: ["pve-a", "pve-b"]
       }
     }),
     executePortainerContainerAction: async (input) => {
@@ -248,7 +248,7 @@ test("minor controls require CSRF, current inventory, exact revisions, and saved
       ...authentication,
       body: {
         type: "proxmox",
-        displayName: "Main",
+        displayName: "Example Proxmox",
         url: "https://proxmox.test:8006",
         enabled: true,
         monitoringEnabled: true,
@@ -296,7 +296,7 @@ test("minor controls require CSRF, current inventory, exact revisions, and saved
           checkedAt,
           connectionState: "connected",
           selectedEndpointId: proxmox.json.primaryEndpointId,
-          workloads: [{ node: "Main", type: "qemu", vmid: 101, status: "running", template: false, lock: null }]
+          workloads: [{ node: "pve-a", type: "qemu", vmid: 2101, status: "running", template: false, lock: null }]
         }]
       },
       media: {
@@ -390,9 +390,9 @@ test("minor controls require CSRF, current inventory, exact revisions, and saved
       ...authentication,
       body: {
         environmentId: proxmox.json.id,
-        node: "Main",
+        node: "pve-a",
         type: "qemu",
-        vmid: 101,
+        vmid: 2101,
         operation: "reboot",
         targetRevision: proxmox.json.targetRevision
       }
@@ -438,9 +438,9 @@ test("minor controls require CSRF, current inventory, exact revisions, and saved
       ...authentication,
       body: {
         environmentId: proxmox.json.id,
-        node: "Main",
+        node: "pve-a",
         type: "qemu",
-        vmid: 101,
+        vmid: 2101,
         operation: "shutdown",
         targetRevision: "11111111-1111-4111-8111-111111111111"
       }
@@ -487,9 +487,9 @@ test("minor controls require CSRF, current inventory, exact revisions, and saved
       ...authentication,
       body: {
         environmentId: proxmox.json.id,
-        node: "Main",
+        node: "pve-a",
         type: "qemu",
-        vmid: 101,
+        vmid: 2101,
         operation: "shutdown",
         targetRevision: proxmox.json.targetRevision
       }

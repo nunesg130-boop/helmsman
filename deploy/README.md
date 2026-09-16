@@ -1,10 +1,22 @@
 # Deployment files
 
-The supported Helmsman v0.10 production deployment uses the GitHub Release `compose.yaml` and environment example to pull the exact multi-architecture image digest published by GitHub Container Registry. It does not build application source on the Docker host. Full installation, update, rollback, GitHub publication, and source-build instructions are in [DOCKER.md](DOCKER.md).
+The supported Helmsman v1.0 beta deployment uses the GitHub Release
+`compose.yaml` and environment example to pull the exact multi-architecture
+image digest published by GitHub Container Registry. It does not build
+application source on the Docker host. This is prerelease software: back up
+the `/data` volume before every update and use the newest published release.
+Full installation, update, rollback, maintainer publication, and source-build
+instructions are in [DOCKER.md](DOCKER.md).
 
 ## Published deployment
 
-Pushing the Git tag `v0.10.0-beta.14` runs the Node contracts and Linux AMD64/ARM64 smoke tests. A successful tagged workflow publishes version, beta, and full-commit tags with provenance and an SBOM, then creates a GitHub Release containing `compose.yaml`, `container.env.example`, and `SHA256SUMS`. The workflow replaces the source tree's tagged placeholder with the actual lowercase GHCR image path and exact manifest digest, then checksums both deployment files before publishing the release and all three assets together.
+Pushing the Git tag `v1.0.0-beta.1` runs the Node contracts and Linux
+AMD64/ARM64 smoke tests. A successful tagged workflow publishes version, beta,
+and full-commit tags with provenance and an SBOM, then creates a GitHub Release
+containing `compose.yaml`, `container.env.example`, and `SHA256SUMS`. The
+workflow replaces the source tree's tagged placeholder with the canonical
+lowercase GHCR image path and exact manifest digest, then checksums both
+deployment files before publishing the release and all three assets together.
 
 After downloading those three files into one directory and verifying `sha256sum -c SHA256SUMS`:
 
@@ -46,10 +58,20 @@ Use the same Compose file set for every command so the same service and volume a
 
 The default network policy needs no allowed CIDRs: it records only the resolved safe private `/32` or `/128` addresses for each registered media connection, Proxmox endpoint, or Portainer server. Manual private CIDRs are an optional advanced boundary; immutable SSRF blocks and the public-HTTP prohibition still apply.
 
-Caddy and Authentik are not installed or started in the application container. Localhost use requires neither, and another trusted HTTPS proxy such as Cloudflare Tunnel may be used. External authentication and MFA protect browser access only; they do not replace the credentials Helmsman needs for Jellyfin, Seerr, Proxmox, Portainer, or another upstream system. The reusable Helmsman access key does not change those edge configurations or the container's direct upstream connections.
+Caddy and Authentik are not installed or started in the application container.
+Localhost use requires neither. For first claim from another computer, keep the
+loopback bind and tunnel it with
+`ssh -L 4180:127.0.0.1:4180 user@your-helmsman-host`, then open
+`http://127.0.0.1:4180`; for permanent remote access, use a trusted HTTPS proxy
+and firewall the inner port to it. Another trusted edge such as Cloudflare
+Tunnel may be used. External authentication and MFA protect browser access
+only; they do not replace the credentials Helmsman needs for Jellyfin, Seerr,
+Proxmox, Portainer, or another upstream system. The reusable Helmsman access
+key does not change those edge configurations or the container's direct
+upstream connections.
 
 A fresh claim creates one reusable 256-bit access key and shows it once. The same key unlocks any browser into its own one-year, origin-bound HttpOnly session. Helmsman stores only the key's SHA-256 verifier: the plaintext value is never configured through `.env`, put in a URL or browser storage, or written to application logs. Settings can create or rotate the key; rotation revokes prior browser sessions, replaces the rotating browser's session, and leaves service configuration and encrypted credentials unchanged. Operators locked out of every session can stop the service and run `docker compose run --rm --no-deps helmsman rotate-access-key --confirm`; that CLI prints the new key once.
 
 Media and Infrastructure are separate workspaces in the same container. Infrastructure models standalone Proxmox servers and clusters as environments, with separately approved API endpoints, physical nodes, and VM/LXC workloads. It also holds up to eight independent Portainer servers using HTTPS with system or pinned certificate trust and encrypted write-only `X-API-Key` access tokens. The responsive Portainer inventory groups containers by server and environment and keeps identity, stack, runtime, unique reported ports, and controls separate while labeling private-only ports as internal. Monitoring and probes remain fixed read-only GET routes. Separate actions use Helmsman's accessible in-app confirmation, revalidate the current record after approval, and use fixed method, path, query, and body templates for Portainer container start/restart/graceful stop and Proxmox QEMU/LXC start/reboot/graceful shutdown. The browser cannot supply an arbitrary upstream path or request body. The image exposes no general Proxmox, Portainer, or Docker API proxy and has no SSH credential, shell, console, Docker socket, host mount, delete/remove, force-stop, reset, kill, or bulk action. Stopped Portainer containers remain informational.
 
-The v0.10 Media workspace monitors through fixed read-only GET routes. Its only media writes are a Helmsman-confirmed Seerr failed-request retry, a selected standard-season request for one exact current series through Seerr, and a targeted Radarr/Sonarr search when one exact current record can be resolved; it cannot approve requests or delete requests, request movies or 4K/Specials, choose Seerr routing/profile fields, change monitoring, pause downloads, or run free-form searches. Series and parent-resolved episode drawers load a bounded current season catalog on demand, confirm the exact requestable standard seasons, and revalidate the current series, target, detail revision, and selection before dispatch. It correlates bounded Jellyfin, Seerr, Radarr, Sonarr, qBittorrent, and Bazarr records by provider/download identifiers, exposes current lifecycle and activity state, and serves artwork only through an authenticated opaque Helmsman URL. A fixed Jellyfin Now Playing check retains media/play-state fields while discarding session identity metadata. Its normalized catalog and bounded positive/negative artwork cache remain in memory. Locally bundled service marks, including Portainer, require no runtime icon CDN; their source and trademark notice is included beside the assets. The authenticated shell uses an original hard-framed retro-web treatment while retaining the Helmsman slate-and-teal palette.
+The v1.0 beta Media workspace monitors through fixed read-only GET routes. Its only media writes are a Helmsman-confirmed Seerr failed-request retry, a selected standard-season request for one exact current series through Seerr, and a targeted Radarr/Sonarr search when one exact current record can be resolved; it cannot approve requests or delete requests, request movies or 4K/Specials, choose Seerr routing/profile fields, change monitoring, pause downloads, or run free-form searches. Series and parent-resolved episode drawers load a bounded current season catalog on demand, confirm the exact requestable standard seasons, and revalidate the current series, target, detail revision, and selection before dispatch. It correlates bounded Jellyfin, Seerr, Radarr, Sonarr, qBittorrent, and Bazarr records by provider/download identifiers, exposes current lifecycle and activity state, and serves artwork only through an authenticated opaque Helmsman URL. A fixed Jellyfin Now Playing check retains media/play-state fields while discarding session identity metadata. Its normalized catalog and bounded positive/negative artwork cache remain in memory. Project-owned service text badges and original generic workload SVGs require no runtime icon CDN; compatible-service names and trademarks remain their owners' property. The authenticated shell uses an original hard-framed retro-web treatment while retaining the Helmsman slate-and-teal palette.

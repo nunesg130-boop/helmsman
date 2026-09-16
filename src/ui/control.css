@@ -1,3 +1,31 @@
+.skip-link {
+  position: fixed;
+  z-index: 1200;
+  top: max(10px, env(safe-area-inset-top));
+  left: 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--accent-border);
+  border-radius: 12px;
+  outline: 0;
+  background: var(--surface-solid);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 760;
+  box-shadow: var(--shadow-float);
+  transform: translateY(calc(-100% - 18px));
+  transition: transform var(--motion-fast) ease;
+}
+
+.skip-link:focus {
+  transform: translateY(0);
+}
+
+.profile-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+  transform: none;
+}
+
 .main-content > :where(.operations-page, .detail-page, .setup-v5, .state-page) {
   width: min(1660px, 100%);
   margin: 0 auto;
@@ -133,37 +161,10 @@
 
 .setup-v5__mark svg { width: 29px; height: 29px; }
 
-.setup-v5__steps {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 10px;
-}
-
-.setup-v5__steps span {
-  display: flex;
-  min-height: 54px;
-  align-items: center;
-  gap: 11px;
-  padding: 0 16px;
-  border: 1px solid var(--line);
-  border-radius: 17px;
-  background: rgba(255, 255, 255, 0.035);
-  color: var(--muted);
-  font-size: 13px;
-  font-weight: 680;
-}
-
-.setup-v5__steps b,
 .form-section__number {
   color: var(--accent);
   font-size: 11px;
   letter-spacing: 0.08em;
-}
-
-.setup-v5__steps span.is-active {
-  border-color: var(--accent-border);
-  background: var(--accent-soft);
-  color: var(--text);
 }
 
 .glass-form,
@@ -1212,6 +1213,27 @@ label > small {
   text-transform: uppercase;
 }
 
+.app-version-v5 dl { margin: 0; }
+.app-version-v5 dl > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 15px 16px;
+  border: 1px solid var(--line);
+  border-radius: 15px;
+  background: rgba(3, 7, 12, 0.28);
+}
+.app-version-v5 dt { color: var(--muted); font-size: 12px; }
+.app-version-v5 dd {
+  margin: 0;
+  color: var(--accent);
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 13px;
+  font-weight: 760;
+  overflow-wrap: anywhere;
+}
+
 .log-panel-v5 { grid-column: 1 / -1; }
 .log-list-v5 article { display: grid; grid-template-columns: 190px 80px minmax(0, 1fr); gap: 16px; align-items: start; padding: 17px 24px; border-bottom: 1px solid var(--line); }
 .log-list-v5 article:last-child { border-bottom: 0; }
@@ -1441,7 +1463,6 @@ label > small {
   .proxmox-section__heading { align-items: flex-start; }
   .proxmox-filterbar { position: static; }
   .setup-v5__mark { display: none; }
-  .setup-v5__steps { grid-template-columns: 1fr; }
   .form-grid--two,
   .network-mode-grid,
   .auth-mode-grid,

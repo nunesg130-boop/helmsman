@@ -1,48 +1,62 @@
-# Helmsman Docker deployment — v0.10.0-beta.14
+# Helmsman Docker deployment — v1.0.0-beta.1
+
+> [!WARNING]
+> Helmsman v1.0 is still a beta. Breaking changes and data migrations are
+> possible. Back up the `/data` volume before every update, run only the newest
+> published release, and do not scale multiple instances against one volume.
+> Access is controlled by one shared key; there are no per-user roles or audit
+> attribution in this beta.
 
 The supported image contains one non-root Node.js process. It serves the Media and Infrastructure workspaces, owns the encrypted credential store and browser sessions, runs safe background health checks, and exposes only the bounded actions documented below. It does not contain Caddy, Authentik, a database, a Docker socket, SSH, a shell, a hypervisor console, or host mounts.
 
 ## 1. Prepare
 
-The GitHub Release for `v0.10.0-beta.14` publishes three deployment assets:
+The GitHub Release for `v1.0.0-beta.1` publishes three deployment assets:
 
 - `compose.yaml` — the pull-only production service definition pinned to the released multi-architecture image digest;
 - `container.env.example` — the same digest-pinned image reference plus non-secret bind-address and port settings;
 - `SHA256SUMS` — SHA-256 checksums for both deployment files.
 
-The release workflow replaces `ghcr.io/OWNER/REPOSITORY:0.10.0-beta.14` in the tagged source files with the repository's actual lowercase GHCR path and exact multi-architecture manifest digest (`ghcr.io/owner/repository@sha256:...`) before publishing them. Do not deploy the placeholder-bearing files directly from a source checkout unless you first set `HELMSMAN_IMAGE` to a published image reference.
+The release workflow replaces the source checkout's image placeholder with
+`ghcr.io/nunesg130-boop/helmsman` and the exact multi-architecture manifest
+digest (`@sha256:...`) before publishing the assets. Do not deploy the
+placeholder-bearing files directly from a source checkout; use the matching
+GitHub Release assets.
 
 The three release assets are the complete base deployment. Optional Caddy examples, migration overrides, the external-key override, and `compose.dev.yaml` remain available from the repository at the matching Git tag and should be downloaded only when that deployment mode is needed.
 
-For a public GitHub repository, download and verify the assets on Linux:
+Download and verify the public release assets on Linux:
 
 ```sh
 sudo install -d -o "$(id -u)" -g "$(id -g)" -m 0755 /opt/helmsman
 cd /opt/helmsman
-curl -fLO https://github.com/OWNER/REPOSITORY/releases/download/v0.10.0-beta.14/compose.yaml
-curl -fLO https://github.com/OWNER/REPOSITORY/releases/download/v0.10.0-beta.14/container.env.example
-curl -fLO https://github.com/OWNER/REPOSITORY/releases/download/v0.10.0-beta.14/SHA256SUMS
-sha256sum -c SHA256SUMS
+curl -fLO https://github.com/nunesg130-boop/helmsman/releases/download/v1.0.0-beta.1/compose.yaml
+curl -fLO https://github.com/nunesg130-boop/helmsman/releases/download/v1.0.0-beta.1/container.env.example
+curl -fLO https://github.com/nunesg130-boop/helmsman/releases/download/v1.0.0-beta.1/SHA256SUMS
+sha256sum --strict --check SHA256SUMS
 ```
 
-For a private repository, authenticate GitHub CLI and download the same release assets:
+On macOS, use the same downloads and verify them with:
 
 ```sh
-sudo install -d -o "$(id -u)" -g "$(id -g)" -m 0755 /opt/helmsman
-cd /opt/helmsman
-gh auth login
-gh release download v0.10.0-beta.14 --repo OWNER/REPOSITORY \
-  --pattern compose.yaml \
-  --pattern container.env.example \
-  --pattern SHA256SUMS
-sha256sum -c SHA256SUMS
+shasum -a 256 -c SHA256SUMS
 ```
 
-Windows users can download those same three assets from the GitHub Release page or use `gh release download`, then compare their SHA-256 hashes with `SHA256SUMS`. Open a terminal in the directory containing the downloaded files.
+Windows users can download the same three files from the GitHub Release page.
+Open PowerShell in that directory and verify both payloads before creating
+`.env`:
 
 Windows PowerShell:
 
 ```powershell
+$Expected = @{}
+Get-Content .\SHA256SUMS | ForEach-Object {
+  if ($_ -notmatch '^([0-9a-fA-F]{64})  (compose\.yaml|container\.env\.example)$') { throw "Invalid SHA256SUMS entry: $_" }
+  $Expected[$Matches[2]] = $Matches[1].ToLowerInvariant()
+}
+foreach ($File in 'compose.yaml','container.env.example') {
+  if ((Get-FileHash -Algorithm SHA256 $File).Hash.ToLowerInvariant() -ne $Expected[$File]) { throw "Checksum mismatch: $File" }
+}
 Copy-Item .\container.env.example .\.env
 ```
 
@@ -55,7 +69,7 @@ cp container.env.example .env
 The default file is enough for same-computer use:
 
 ```dotenv
-HELMSMAN_IMAGE=ghcr.io/owner/repository@sha256:<release-manifest-digest>
+HELMSMAN_IMAGE=ghcr.io/nunesg130-boop/helmsman@sha256:<release-manifest-digest>
 HELMSMAN_BIND_IP=127.0.0.1
 HELMSMAN_PORT=4180
 ```
@@ -64,15 +78,9 @@ Fresh installs receive a Compose-project-scoped `helmsman-data` volume. Do not a
 
 ## 2. Pull and start
 
-If the GHCR package is public, no registry login is required. If it remains private, authenticate once on each Docker host using a GitHub personal access token (classic) with `read:packages` and access to the package:
-
-```bash
-read -rsp "GitHub package token: " GHCR_TOKEN; echo
-printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username GITHUB_USER --password-stdin
-unset GHCR_TOKEN
-```
-
-Do not use a GitHub Actions `GITHUB_TOKEN` on the server, and do not save the personal access token in `.env`, Compose YAML, the repository, or shell history. A public package can be pulled anonymously even when the source repository remains private, although a private repository's release assets still require repository access. Repository and package visibility are separate settings.
+The canonical GHCR package is public and requires no registry login. Private
+forks must manage their own registry authentication; never save a registry
+token in `.env`, Compose YAML, the repository, or shell history.
 
 ```sh
 docker compose config
@@ -100,7 +108,19 @@ Helmsman setup token: <one-time value>
 
 Only its SHA-256 digest is stored. Restarting before claim invalidates the previous value. This setup token is distinct from the reusable access key created during the claim.
 
-Open `http://127.0.0.1:4180`. Enter:
+On the Docker host, open `http://127.0.0.1:4180`. From another computer, keep
+the default loopback bind and start an SSH tunnel:
+
+```sh
+ssh -L 4180:127.0.0.1:4180 user@your-helmsman-host
+```
+
+Then open `http://127.0.0.1:4180` in the local browser. For permanent remote
+access, configure a trusted HTTPS reverse proxy and firewall port 4180 so only
+that proxy can reach it. Do not expose the loopback-oriented HTTP deployment
+directly; Helmsman rejects first claim from an untrusted remote HTTP origin.
+
+Enter:
 
 1. the setup token;
 2. a name for this browser session;
@@ -117,11 +137,11 @@ The default mode needs no CIDR entries. Each time a private service is explicitl
 
 Select Media **Connections** to configure Jellyfin, Seerr, Radarr, Sonarr, Prowlarr, qBittorrent, or Bazarr in their purpose-based categories. Select Infrastructure **Connectors** to connect one or more Proxmox environments or Portainer servers; Infrastructure **Overview** then shows only the connections already configured. A Proxmox environment is either one standalone server or one multi-node cluster; API endpoints, physical nodes, and VM/LXC workloads remain separate records. Portainer is a separate Infrastructure service and never appears in Media. Enter each full URL and credential in the interface. The container registers the exact URL after validating it against the current network policy. It encrypts each credential independently with AES-256-GCM, a fresh 96-bit nonce, and authenticated instance/connection/field/revision metadata.
 
-Media monitoring remains read-only in v0.10. Home summarizes current Jellyfin playback, continue-watching items, requests, downloads, blocked imports, releases, recently added and missing media, and subtitle backlog. Continue Watching resolves an episode to its series poster instead of displaying the episode's resume frame. The fixed Now Playing query retains only bounded media and play-state fields and discards user, device, client, network, and stream-session metadata. Discover displays the bounded Seerr discovery feed and labels ordinary unmatched titles **Not requested** instead of exposing an internal unknown state; only Jellyfin evidence can label an item available in Helmsman's library. Library joins Jellyfin availability with Radarr/Sonarr monitoring and import evidence. Requests preserve separate request IDs, Seerr approval state, acquisition state, exact season scope, and 4K scope. Availability comes from Seerr's media record, an exact provider-ID match to a Jellyfin movie, or the matching requested-season availability records—not the separate request-workflow season status—so completed media no longer remains labeled **Awaiting Jellyfin**, while an older Jellyfin series record still cannot falsely fulfill a new season request. Activity correlates qBittorrent download identifiers with Sonarr/Radarr queue entries and can display their bounded sanitized status error. Calendar keeps episodes distinct and shows episode coordinates without repeating series titles. Health retains service and pipeline monitoring, while Connections owns service enrollment. The only Media writes are a Helmsman-confirmed Seerr failed-request retry, a selected standard-season request for one exact current series through Seerr, and a targeted Radarr/Sonarr search when Helmsman can resolve one exact current record. Series and parent-resolved episode drawers load a bounded current season catalog from Seerr on demand. The operator can select requestable standard seasons, review the exact selection in Helmsman's accessible in-app confirmation instead of a browser-native prompt, and submit one standard-quality request. Specials, 4K selection, arbitrary Seerr users, servers, profiles, root folders, and request bodies are not exposed. Helmsman revalidates the current series, Seerr target revision, season-detail revision, and selected seasons immediately before dispatch. Helmsman cannot approve requests or delete requests, request movies or 4K/Specials, choose Seerr routing/profile fields, change monitoring, pause or remove downloads, alter files, or run free-form searches.
+Media monitoring remains read-only by default in this beta. Home summarizes current Jellyfin playback, continue-watching items, requests, downloads, blocked imports, releases, recently added and missing media, and subtitle backlog. Continue Watching resolves an episode to its series poster instead of displaying the episode's resume frame. The fixed Now Playing query retains only bounded media and play-state fields and discards user, device, client, network, and stream-session metadata. Discover displays the bounded Seerr discovery feed and labels ordinary unmatched titles **Not requested** instead of exposing an internal unknown state; only Jellyfin evidence can label an item available in Helmsman's library. Library joins Jellyfin availability with Radarr/Sonarr monitoring and import evidence. Requests preserve separate request IDs, Seerr approval state, acquisition state, exact season scope, and 4K scope. Availability comes from Seerr's media record, an exact provider-ID match to a Jellyfin movie, or the matching requested-season availability records—not the separate request-workflow season status—so completed media no longer remains labeled **Awaiting Jellyfin**, while an older Jellyfin series record still cannot falsely fulfill a new season request. Activity correlates qBittorrent download identifiers with Sonarr/Radarr queue entries and can display their bounded sanitized status error. Calendar keeps episodes distinct and shows episode coordinates without repeating series titles. Health retains service and pipeline monitoring, while Connections owns service enrollment. The only Media writes are a Helmsman-confirmed Seerr failed-request retry, a selected standard-season request for one exact current series through Seerr, and a targeted Radarr/Sonarr search when Helmsman can resolve one exact current record. Series and parent-resolved episode drawers load a bounded current season catalog from Seerr on demand. The operator can select requestable standard seasons, review the exact selection in Helmsman's accessible in-app confirmation instead of a browser-native prompt, and submit one standard-quality request. Specials, 4K selection, arbitrary Seerr users, servers, profiles, root folders, and request bodies are not exposed. Helmsman revalidates the current series, Seerr target revision, season-detail revision, and selected seasons immediately before dispatch. Helmsman cannot approve requests or delete requests, request movies or 4K/Specials, choose Seerr routing/profile fields, change monitoring, pause or remove downloads, alter files, or run free-form searches.
 
 Media records are joined by TMDb, TVDb, IMDb, download, and service identifiers rather than titles. The lifecycle is **Requested → Monitored → Downloading → Imported → Available**. Normalized titles, identifiers, progress, dates, and status errors live only in the current in-memory operations snapshot; they are not written to `state.json` or another catalog.
 
-The browser receives only opaque same-origin artwork URLs. The authenticated broker tries Jellyfin first, fixed 250 px, 500 px, and original Radarr/Sonarr covers second, and Seerr last. If Sonarr supplies only a TVDB remote poster, Helmsman performs a typed Seerr TV lookup with Sonarr's validated TMDb ID and then requests only Seerr's fixed TMDb image-proxy route; it never follows the remote URL. It requests revisioned 342 px Jellyfin/Seerr thumbnails, accepts only bounded raster responses, and never returns upstream URLs or credentials. Duplicate misses are coalesced, and at most three upstream artwork requests run concurrently with 64 pending requests. Positive results are cached in memory for up to 24 hours. General failures are cached for 15 minutes, versioned Arr cover misses for 30 seconds, and unrevisioned Arr misses are not negative-cached. The cache remains bounded to 512 entries, 64 MiB total, and 4 MiB per image. Browser responses use ETags, a one-day private cache lifetime, and one-week stale revalidation/error windows. Artwork is not stored in the Docker volume. Service and workload marks are bundled locally under `assets/services` and `assets/workloads`, carry source/trademark notices, and require no icon CDN.
+The browser receives only opaque same-origin artwork URLs. The authenticated broker tries Jellyfin first, fixed 250 px, 500 px, and original Radarr/Sonarr covers second, and Seerr last. If Sonarr supplies only a TVDB remote poster, Helmsman performs a typed Seerr TV lookup with Sonarr's validated TMDb ID and then requests only Seerr's fixed TMDb image-proxy route; it never follows the remote URL. It requests revisioned 342 px Jellyfin/Seerr thumbnails, accepts only bounded raster responses, and never returns upstream URLs or credentials. Duplicate misses are coalesced, and at most three upstream artwork requests run concurrently with 64 pending requests. Positive results are cached in memory for up to 24 hours. General failures are cached for 15 minutes, versioned Arr cover misses for 30 seconds, and unrevisioned Arr misses are not negative-cached. The cache remains bounded to 512 entries, 64 MiB total, and 4 MiB per image. Browser responses use ETags, a one-day private cache lifetime, and one-week stale revalidation/error windows. Artwork is not stored in the Docker volume. Project-owned service text badges and original generic workload SVGs are bundled locally, require no icon CDN, and do not reproduce third-party logo artwork.
 
 The encrypted credential is also bound to that canonical destination. Changing a service URL requires entering a fresh credential; editing or restoring state with a different URL makes the old credential unavailable rather than forwarding it to the new host.
 
@@ -147,7 +167,7 @@ After the environment is saved, its detail view can register additional endpoint
 
 Proxmox monitoring and probes use fixed read-only GET routes. Separate actions use Helmsman's accessible in-app confirmation, revalidate the current workload after approval, and use fixed method, path, query, and body templates to start, reboot, or gracefully shut down one current QEMU VM or LXC. The browser selects a supported action and normalized workload record; it cannot supply an arbitrary upstream path or request body. Helmsman exposes no general Proxmox API proxy and cannot force-stop, reset, kill, delete, remove, migrate, back up, restore, reconfigure, open a console, or perform a bulk action. It also has no SSH credential, shell, Docker socket, or host mount.
 
-The v0.10.0-beta.14 snapshot exposes a bounded read-only inventory to the authenticated UI: each node, VM, LXC, storage entry, and recent activity/backup result is normalized and sanitized. Cluster-wide inventory is collected only once per environment and monitoring cycle through one healthy, identity-matched endpoint, which prevents duplicate workloads and incidents. Recent tasks and backup tasks are queried through each visible node's fixed read-only route and merged with their node identity retained; raw UPIDs and command-bearing task status text are discarded. Endpoint health is reported separately from actual node health; losing a primary endpoint can leave the environment Limited and inventory available through an approved alternate.
+The v1.0 beta exposes a bounded read-only inventory to the authenticated UI: each node, VM, LXC, storage entry, and recent activity/backup result is normalized and sanitized. Cluster-wide inventory is collected only once per environment and monitoring cycle through one healthy, identity-matched endpoint, which prevents duplicate workloads and incidents. Recent tasks and backup tasks are queried through each visible node's fixed read-only route and merged with their node identity retained; raw UPIDs and command-bearing task status text are discarded. Endpoint health is reported separately from actual node health; losing a primary endpoint can leave the environment Limited and inventory available through an approved alternate.
 
 ### Proxmox token preparation
 
@@ -380,9 +400,9 @@ not only the image line:
 ```sh
 set -euo pipefail
 cd /opt/helmsman
-cp -- compose.yaml.before-0.10.0-beta.14 compose.yaml
-if [ -f .env.before-0.10.0-beta.14 ]; then
-  cp -- .env.before-0.10.0-beta.14 .env
+cp -- compose.yaml.before-1.0.0-beta.1 compose.yaml
+if [ -f .env.before-1.0.0-beta.1 ]; then
+  cp -- .env.before-1.0.0-beta.1 .env
   helmsman_env_file=.env
 else
   rm -f -- .env
@@ -457,10 +477,12 @@ docker compose down
 
 `/healthz` confirms only that the local process and state are available. Upstream outages belong in the incident UI and intentionally do not create a restart loop.
 
-## Publish through GitHub
+## Maintainers: publish through GitHub
 
 Use local source builds for intermediate development, but publish each version
-that will actually run on the Jellyfin server. That keeps every deployed image
+that will actually run on a deployment host. This section is for maintainers
+of the canonical repository; normal operators should install the checksum-
+verified GitHub Release assets from section 1. Publishing each deployed version keeps its image
 identifiable and gives it a fixed rollback tag without turning every experiment
 into a public release.
 
@@ -470,7 +492,7 @@ Helmsman source archive on a Windows computer and double-click the root
 from `package.json`, so no release-specific path or command needs editing. It
 checks or installs Git, requires GitHub CLI 2.57.0 or newer, and authenticates
 the expected active GitHub user,
-verifies `repo` and `workflow` permissions plus write access to the private
+verifies `repo` and `workflow` permissions plus write access to the canonical
 repository, proves noninteractive HTTPS Git access without SSH or URL rewriting,
 and creates or validates the persistent
 `%USERPROFILE%\Downloads\helmsman-github` clone, configures its local author,
@@ -514,8 +536,8 @@ bound to the `nunesg130-boop/helmsman` repository and
 
 The script requires a clean `main` synchronized with the exact expected
 `origin`, validates the source and new SemVer version, scans prohibited paths
-and common embedded-secret forms, stages the synchronized release, runs the
-local suite, and shows the staged file list and statistics. It makes no commit
+and common embedded-secret forms, stages the synchronized release, and shows
+the staged file list and statistics. It makes no commit
 or GitHub change until the operator types the single exact confirmation
 `PUBLISH <version>`.
 
@@ -530,12 +552,11 @@ the two configuration files to contain the same expected digest-pinned image.
 The workflow publishes Linux AMD64 and ARM64 images under version, beta, and
 full-commit tags.
 
-Local tests require Node.js 24.19.0 or newer within Node 24
-(`>=24.19.0 <25`). The launcher automatically skips only the local pass when
-Node is missing or incompatible, and `-SkipLocalTests` can select that behavior
-explicitly when the underlying publisher is called directly. Both GitHub
-Actions gates remain mandatory; without local tests, validation failures are
-discovered only after the release commit reaches `main`.
+The publisher deliberately does not execute candidate source while maintainer
+GitHub credentials are available. Both GitHub Actions gates are mandatory: the
+hosted `main` workflow must pass for the exact pushed commit before a tag is
+created, and the hosted tag workflow must pass before release assets are
+accepted.
 
 If the process stops before confirmation, nothing was committed, tagged, or
 pushed, but the synchronized changes remain staged for review. Inspect them
@@ -548,19 +569,22 @@ The complete recovery and manual command sequence is in [GITHUB.md](../GITHUB.md
 
 After a successful release, verify that:
 
-- `ghcr.io/OWNER/REPOSITORY:<version>` contains Linux AMD64 and ARM64 manifests;
+- `ghcr.io/nunesg130-boop/helmsman:<version>` contains Linux AMD64 and ARM64 manifests;
 - the GitHub Release has the expected prerelease state;
 - `compose.yaml`, `container.env.example`, and `SHA256SUMS` are attached;
-- both downloaded deployment files contain the same lowercase
-  `ghcr.io/owner/repository@sha256:...` manifest reference and no
-  `OWNER/REPOSITORY` placeholder; and
+- both downloaded deployment files contain the same
+  `ghcr.io/nunesg130-boop/helmsman@sha256:...` manifest reference and no source
+  placeholder; and
 - `sha256sum -c SHA256SUMS` succeeds beside the two downloaded deployment files.
 
-Publishing and deployment deliberately remain separate. The publisher never
-connects to `192.168.0.7`, changes `/opt/helmsman`, or restarts the service. It
-prints Windows `ssh`/`scp` transfer commands and the Jellyfin-host command block
-only after the assets are downloaded and verified. The operator runs them
-manually during the chosen deployment window. If a backup for that version
+Publishing and deployment deliberately remain separate. By default, the
+publisher never connects to a deployment host, changes an installation, or
+restarts a service. If a maintainer supplies all three optional
+`-DeploymentHost`, `-DeploymentUser`, and `-DeploymentRoot` values, it prints
+matching Windows `ssh`/`scp` transfer commands and a server command block only
+after the assets are downloaded and verified; it still does not execute those
+commands. The operator runs them manually during the chosen deployment window.
+If a backup for that version
 already exists, the block stops before mutation so it cannot erase the original
 rollback point; inspect or resume that attempt manually. The server block rechecks the
 transferred checksum file, backs up Compose and `.env`, atomically preserves the

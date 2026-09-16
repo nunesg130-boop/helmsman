@@ -4,7 +4,9 @@
 param(
     [string]$SourcePath,
     [string]$RepositoryPath,
-    [switch]$SkipLocalTests,
+    [string]$DeploymentHost,
+    [string]$DeploymentUser,
+    [string]$DeploymentRoot,
     [switch]$SelfTest
 )
 
@@ -15,8 +17,7 @@ $script:ExpectedRepository = 'nunesg130-boop/helmsman'
 $script:ExpectedGitHubLogin = 'nunesg130-boop'
 $script:ExpectedCloneUrl = 'https://github.com/nunesg130-boop/helmsman.git'
 $script:MinimumGitHubCliVersion = [version]'2.57.0'
-$script:GitAuthorName = 'Gabriel Nunes'
-$script:ExpectedPublisherSha256 = 'a3af5623eeb5a2ce149b5320f866a3a6a9eb84e77d7f41429fb3f55d5cdc4baf'
+$script:ExpectedPublisherSha256 = '96cba7f9e182ee3aff0ed852a78f6835607e620104d10fd796be6a6c396a73d1'
 $script:MaximumRecoveryClones = 20
 
 function Write-Step {
@@ -688,7 +689,7 @@ function Initialize-GitHubAuthentication {
     $refreshed = $false
     if (!(Test-GitHubAuthenticationScope -StatusText $status.Text -RequiredScope 'repo') -or
         !(Test-GitHubAuthenticationScope -StatusText $status.Text -RequiredScope 'workflow')) {
-        Write-Host 'Adding the GitHub private-repository and workflow permissions required to publish releases.' -ForegroundColor Yellow
+        Write-Host 'Adding the GitHub repository and workflow permissions required to publish releases.' -ForegroundColor Yellow
         Invoke-NativeLive -FilePath $Tools.GitHub -ArgumentList @(
             'auth', 'refresh', '--hostname', 'github.com', '--scopes', 'repo,workflow'
         ) -FailureMessage 'GitHub repository and workflow authorization'
@@ -699,7 +700,7 @@ function Initialize-GitHubAuthentication {
         if ($status.ExitCode -ne 0 -or
             !(Test-GitHubAuthenticationScope -StatusText $status.Text -RequiredScope 'repo') -or
             !(Test-GitHubAuthenticationScope -StatusText $status.Text -RequiredScope 'workflow')) {
-            throw 'GitHub CLI did not confirm the private-repository and workflow permissions after authorization.'
+            throw 'GitHub CLI did not confirm the repository and workflow permissions after authorization.'
         }
         $login = Get-ExpectedGitHubLogin -Tools $Tools
     }
@@ -711,10 +712,10 @@ function Initialize-GitHubAuthentication {
     )
     $repositoryProbe = Invoke-NativeProbe -FilePath $Tools.GitHub -ArgumentList $repositoryArguments
     if ($repositoryProbe.ExitCode -ne 0 -and !$refreshed) {
-        Write-Host 'GitHub is signed in, but private Helmsman repository access must be refreshed in the browser.' -ForegroundColor Yellow
+        Write-Host 'GitHub is signed in, but Helmsman repository access must be refreshed in the browser.' -ForegroundColor Yellow
         Invoke-NativeLive -FilePath $Tools.GitHub -ArgumentList @(
             'auth', 'refresh', '--hostname', 'github.com', '--scopes', 'repo,workflow'
-        ) -FailureMessage 'GitHub private-repository authorization'
+        ) -FailureMessage 'GitHub repository authorization'
         $refreshed = $true
         $status = Invoke-NativeProbe -FilePath $Tools.GitHub -ArgumentList @(
             'auth', 'status', '--active', '--hostname', 'github.com'
@@ -722,13 +723,13 @@ function Initialize-GitHubAuthentication {
         if ($status.ExitCode -ne 0 -or
             !(Test-GitHubAuthenticationScope -StatusText $status.Text -RequiredScope 'repo') -or
             !(Test-GitHubAuthenticationScope -StatusText $status.Text -RequiredScope 'workflow')) {
-            throw 'GitHub CLI authentication was lost while refreshing private-repository access.'
+            throw 'GitHub CLI authentication was lost while refreshing repository access.'
         }
         $login = Get-ExpectedGitHubLogin -Tools $Tools
         $repositoryProbe = Invoke-NativeProbe -FilePath $Tools.GitHub -ArgumentList $repositoryArguments
     }
     if ($repositoryProbe.ExitCode -ne 0) {
-        throw "GitHub CLI is signed in as '$login' but cannot access $script:ExpectedRepository. Confirm that the private repository still exists and grant this account repository access, then retry."
+        throw "GitHub CLI is signed in as '$login' but cannot access $script:ExpectedRepository. Confirm that the repository still exists and grant this account repository access, then retry."
     }
     $null = ConvertFrom-GitHubRepositoryJson -Json $repositoryProbe.StdOut
 
@@ -944,45 +945,13 @@ function Initialize-Repository {
     }
     $email = $githubId + '+' + $Account.Login + '@users.noreply.github.com'
     Invoke-NativeText -FilePath $Tools.Git -ArgumentList @(
-        '-C', $RepoRoot, 'config', '--local', 'user.name', $script:GitAuthorName
+        '-C', $RepoRoot, 'config', '--local', 'user.name', $Account.Login
     ) -FailureMessage 'Repository-local Git author-name setup' | Out-Null
     Invoke-NativeText -FilePath $Tools.Git -ArgumentList @(
         '-C', $RepoRoot, 'config', '--local', 'user.email', $email
     ) -FailureMessage 'Repository-local Git author-email setup' | Out-Null
 
     return $RepoRoot
-}
-
-function Get-LocalTestDecision {
-    param([Parameter(Mandatory = $true)][bool]$ExplicitSkip)
-
-    if ($ExplicitSkip) {
-        Write-Warning 'Local tests were explicitly skipped. GitHub Actions will still gate the release.'
-        return $true
-    }
-
-    $node = Get-ApplicationPath -Name 'node.exe'
-    $npm = Get-ApplicationPath -Name 'npm.cmd'
-    if ($null -eq $node -or $null -eq $npm) {
-        Write-Warning 'Node.js 24.19.0 or newer within Node 24 and npm were not found. Local tests will be skipped; GitHub Actions will still gate the release.'
-        return $true
-    }
-    $versionResult = Invoke-NativeProbe -FilePath $node -ArgumentList @('-p', 'process.versions.node')
-    $version = $versionResult.StdOut.Trim()
-    $nodeVersion = $null
-    if ($versionResult.ExitCode -eq 0) {
-        try { $nodeVersion = [version]$version }
-        catch { $nodeVersion = $null }
-    }
-    if ($null -eq $nodeVersion -or
-        $nodeVersion -lt [version]'24.19.0' -or
-        $nodeVersion -ge [version]'25.0.0') {
-        $found = if ([string]::IsNullOrWhiteSpace($version)) { 'unknown' } else { $version }
-        Write-Warning "Node.js 24.19.0 or newer within Node 24 is required for local tests; found $found. Local tests will be skipped and GitHub Actions will still gate the release."
-        return $true
-    }
-    Write-Host "Local tests enabled with Node.js $version." -ForegroundColor Green
-    return $false
 }
 
 function Assert-SelfTestThrows {
@@ -1052,7 +1021,7 @@ function Invoke-LauncherSelfTest {
         $repositoryMetadata = ConvertFrom-GitHubRepositoryJson -Json '{"nameWithOwner":"nunesg130-boop/helmsman","viewerPermission":"WRITE","defaultBranchRef":{"name":"main"},"isArchived":false}'
         if ([string]$repositoryMetadata.nameWithOwner -cne $script:ExpectedRepository -or
             [string]$repositoryMetadata.viewerPermission -cne 'WRITE') {
-            throw 'GitHub private-repository metadata validation returned the wrong repository.'
+            throw 'GitHub repository metadata validation returned the wrong repository.'
         }
         Assert-SelfTestThrows -Name 'read-only repository permission' -Action {
             ConvertFrom-GitHubRepositoryJson -Json '{"nameWithOwner":"nunesg130-boop/helmsman","viewerPermission":"READ","defaultBranchRef":{"name":"main"},"isArchived":false}'
@@ -1296,7 +1265,7 @@ function Invoke-LauncherSelfTest {
 
         Write-Host 'Extracted-folder discovery: PASS' -ForegroundColor Green
         Write-Host 'GitHub CLI compatibility: PASS' -ForegroundColor Green
-        Write-Host 'Private-repository metadata: PASS' -ForegroundColor Green
+        Write-Host 'Repository metadata: PASS' -ForegroundColor Green
         Write-Host 'Partial recovery preservation: PASS' -ForegroundColor Green
         Write-Host 'Clean-ahead failed-clone recovery routing: PASS' -ForegroundColor Green
         Write-Host 'Launcher self-test: PASS' -ForegroundColor Green
@@ -1381,14 +1350,15 @@ function Invoke-HelmsmanBootstrapCore {
         throw 'The guarded publisher does not match the publisher bound to this launcher.'
     }
 
-    $skip = Get-LocalTestDecision -ExplicitSkip ([bool]$SkipLocalTests)
     Write-Step "Starting the guarded publisher for $($release.Tag)"
-    Write-Host 'The guarded publisher will validate the source and retain its final PUBLISH confirmation.' -ForegroundColor Yellow
+    Write-Host 'The guarded publisher will validate the source, retain its final PUBLISH confirmation, and require hosted CI before tagging.' -ForegroundColor Yellow
     $publisherParameters = @{
         SourcePath = $release.Root
         RepositoryPath = $repoRoot
+        DeploymentHost = $DeploymentHost
+        DeploymentUser = $DeploymentUser
+        DeploymentRoot = $DeploymentRoot
     }
-    if ($skip) { $publisherParameters.SkipLocalTests = $true }
     & $publisher @publisherParameters
 }
 

@@ -11,14 +11,29 @@ digest after backing up the data volume.
 
 ## Reporting a vulnerability
 
-Use GitHub's private vulnerability-reporting feature for this repository when
-it is enabled. Otherwise contact the repository owner privately. Do not open a
-public issue containing credentials, tokens, setup links, internal addresses,
-Helmsman access keys, logs, state files, or exploit details.
+Submit reports through [GitHub private vulnerability reporting](https://github.com/nunesg130-boop/helmsman/security/advisories/new).
+Do not open a public issue with vulnerability or exploit details. If private
+reporting is temporarily unavailable, open a sanitized issue that asks the
+maintainer to establish a private contact channel and include no technical
+details.
 
 Include the affected version, deployment topology, reproducible steps using
 sanitized data, impact, and any proposed mitigation. Never attach a real
 Helmsman data volume or `.env` file.
+
+The maintainer will acknowledge a complete report when practical, investigate
+it privately, and coordinate disclosure after a fix or mitigation is ready.
+Because this is a volunteer beta project, no fixed response or resolution time
+is guaranteed.
+
+## Public reports and diagnostics
+
+Public issues and pull requests must use synthetic hostnames and RFC 5737 or
+RFC 3849 documentation addresses. Remove credentials, cookies, setup tokens,
+access keys, certificate material, internal DNS names, public IP addresses,
+real media titles, usernames, file paths, container labels, and raw API
+responses. Prefer the smallest reproducible test fixture over screenshots or
+logs from a live installation.
 
 ## Deployment boundary
 

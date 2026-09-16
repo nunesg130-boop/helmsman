@@ -357,7 +357,7 @@ test("createBroker routes Portainer draft tests and saved monitoring through dis
       const bodies = {
         systemStatus: { Version: "3.0.0" },
         identity: { Id: 1, Username: "helmsman" },
-        environments: [{ Id: 1, Name: "Main Docker", Status: 1, ContainerEngine: "Docker" }],
+        environments: [{ Id: 1, Name: "Example Docker", Status: 1, ContainerEngine: "Docker" }],
         stacks: [],
         containers: [
           { Id: stoppedContainerId, Names: ["/stopped-test"], Image: "test:latest", State: "running", Status: "Up" },

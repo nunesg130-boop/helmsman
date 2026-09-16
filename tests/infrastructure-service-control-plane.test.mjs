@@ -186,7 +186,7 @@ test("Portainer infrastructure service CRUD and tests keep access tokens write-o
       ...authentication,
       body: {
         type: "portainer",
-        displayName: " Main Portainer ",
+        displayName: " Example Portainer ",
         url: "https://portainer-1.test:9443/",
         enabled: true,
         monitoringEnabled: true,
@@ -196,7 +196,7 @@ test("Portainer infrastructure service CRUD and tests keep access tokens write-o
       }
     });
     assert.equal(created.status, 201, JSON.stringify(created.json));
-    assert.equal(created.json.displayName, "Main Portainer");
+    assert.equal(created.json.displayName, "Example Portainer");
     assert.equal(created.json.url, "https://portainer-1.test:9443");
     assert.equal(created.json.credentialConfigured, true);
     assert.equal(created.json.certificateFingerprint, null);
@@ -222,7 +222,7 @@ test("Portainer infrastructure service CRUD and tests keep access tokens write-o
     const listed = await request(context.port, "/api/v2/infrastructure/services", authentication);
     assert.equal(listed.status, 200);
     assert.deepEqual(listed.json.definitions.map(({ id }) => id), ["portainer"]);
-    assert.deepEqual(listed.json.services.map(({ displayName }) => displayName), ["Backup Portainer", "Main Portainer"]);
+    assert.deepEqual(listed.json.services.map(({ displayName }) => displayName), ["Backup Portainer", "Example Portainer"]);
     const config = await request(context.port, "/api/v2/config", authentication);
     assert.equal(config.status, 200);
     assert.equal(config.json.infrastructureServices.length, 2);

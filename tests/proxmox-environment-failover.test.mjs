@@ -60,7 +60,7 @@ function fixture(routeId) {
     permissions: { data: { "/": { "Sys.Audit": 1 } } },
     version: { data: { version: "9.1.7" } },
     clusterStatus: { data: [
-      { type: "cluster", name: "HomeLab", nodes: 2, quorate: 1 },
+      { type: "cluster", name: "example-cluster", nodes: 2, quorate: 1 },
       { type: "node", name: "pve-1", nodeid: 1, online: 1, local: 1 },
       { type: "node", name: "pve-2", nodeid: 2, online: 1, local: 0 }
     ] },
@@ -73,12 +73,12 @@ function fixture(routeId) {
       { node: "pve-2", status: "online", cpu: 0.3, maxcpu: 8, mem: 5_000, maxmem: 16_000, disk: 30_000, maxdisk: 100_000, uptime: 172_800 }
     ] },
     guests: { data: [
-      { vmid: 100, type: "qemu", node: "pve-1", name: "Jellyfin", status: "running", mem: 2_000, maxmem: 4_000 },
-      { vmid: 104, type: "lxc", node: "pve-2", name: "Seerr", status: "running", mem: 1_000, maxmem: 2_000 }
+      { vmid: 2101, type: "qemu", node: "pve-1", name: "example-media-vm", status: "running", mem: 2_000, maxmem: 4_000 },
+      { vmid: 2201, type: "lxc", node: "pve-2", name: "example-requests-lxc", status: "running", mem: 1_000, maxmem: 2_000 }
     ] },
     storage: { data: [{ node: "pve-1", storage: "local-zfs", status: "available", disk: 20_000, maxdisk: 100_000 }] },
     tasks: { data: [{ type: "qmstart", node: "pve-1", status: "OK", endtime: now - 60 }] },
-    backups: { data: [{ type: "vzdump", id: 100, node: "pve-1", status: "OK", endtime: now - 3_600 }] }
+    backups: { data: [{ type: "vzdump", id: 2101, node: "pve-1", status: "OK", endtime: now - 3_600 }] }
   };
   return values[routeId];
 }
@@ -144,7 +144,7 @@ test("cluster inventory fails over once without duplicating nodes or workloads",
     ...authentication,
     body: {
       type: "proxmox",
-      displayName: "HomeLab",
+      displayName: "Example Cluster",
       url: "https://pve-1.test:8006",
       enabled: true,
       monitoringEnabled: true,
@@ -188,7 +188,7 @@ test("cluster inventory fails over once without duplicating nodes or workloads",
   assert.equal(observed.endpoints.find(({ id }) => id === environment.json.primaryEndpointId).state, "down");
   assert.equal(observed.endpoints.find(({ id }) => id === alternate.json.id).state, "healthy");
   assert.deepEqual(observed.nodes.map(({ name }) => name), ["pve-1", "pve-2"]);
-  assert.deepEqual(observed.workloads.map(({ vmid }) => vmid), [100, 104]);
+  assert.deepEqual(observed.workloads.map(({ vmid }) => vmid), [2101, 2201]);
   assert.equal(observed.nodes.find(({ name }) => name === "pve-1").status, "online", "node health remains independent from its failed API endpoint");
 
   const clusterResources = calls.filter(({ routeId }) => ["nodes", "nodeResources", "guests", "storage"].includes(routeId));
@@ -214,7 +214,7 @@ test("cluster inventory fails over once without duplicating nodes or workloads",
       environmentId: environment.json.id,
       node: "pve-1",
       type: "qemu",
-      vmid: 100,
+      vmid: 2101,
       operation: "reboot",
       targetRevision: observed.targetRevision
     };

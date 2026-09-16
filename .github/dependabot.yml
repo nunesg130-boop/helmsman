@@ -4,10 +4,26 @@ updates:
     directory: /
     schedule:
       interval: monthly
+      time: "09:00"
+      timezone: America/New_York
     open-pull-requests-limit: 5
+    commit-message:
+      prefix: ci
+    groups:
+      github-actions:
+        patterns:
+          - "*"
 
   - package-ecosystem: docker
     directory: /
     schedule:
       interval: monthly
+      time: "09:15"
+      timezone: America/New_York
     open-pull-requests-limit: 5
+    commit-message:
+      prefix: build
+    groups:
+      container-base-images:
+        patterns:
+          - "*"
