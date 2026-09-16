@@ -1140,6 +1140,38 @@ progress::-moz-progress-bar {
   font-size: 12px;
 }
 
+.control-action-list {
+  display: grid;
+  gap: 10px;
+}
+
+.control-action-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.control-action-row > span {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.control-action-row small {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.control-action-row .button {
+  flex: 0 0 auto;
+}
+
 .poster-rail {
   display: grid;
   grid-auto-columns: clamp(140px, 11vw, 176px);
@@ -4611,6 +4643,8 @@ body.has-overlay :is(.sidebar, .topbar, .hero-live, .library-toolbar, .segmented
   .pipeline-steps { grid-template-columns: repeat(3, 1fr); row-gap: 18px; }
   .pipeline-steps::before { display: none; }
   .drawer-live-progress { grid-template-columns: 1fr auto; }
+  .control-action-row { align-items: stretch; flex-direction: column; }
+  .control-action-row .button { width: 100%; }
   .episode-preview { grid-template-columns: 1fr auto; }
   .subtitle-flags { grid-column: 1 / -1; }
   .privacy-principles { grid-template-columns: 1fr; }

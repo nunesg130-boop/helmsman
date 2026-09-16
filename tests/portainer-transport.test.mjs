@@ -14,7 +14,7 @@ import {
   createHttpServer,
   performPortainerUpstreamRequest
 } from "../server/broker.mjs";
-import { authorizePortainerRoute } from "../server/routes.mjs";
+import { authorizePortainerContainerAction, authorizePortainerRoute } from "../server/routes.mjs";
 import { createSelfSignedTlsFixture } from "./helpers/self-signed-tls.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -233,6 +233,36 @@ test("Portainer transport reconstructs dynamic routes and rejects forged parity"
   assert.equal(requests, 1, "forged dynamic routes must fail before a token-bearing request is sent");
 });
 
+test("Portainer action transport sends the exact token-bound POST and accepts an empty 204", async (t) => {
+  const requests = [];
+  const fixture = await fixtureServer((request, response) => {
+    const chunks = [];
+    request.on("data", (chunk) => chunks.push(chunk));
+    request.on("end", () => {
+      requests.push({
+        method: request.method,
+        url: request.url,
+        token: request.headers["x-api-key"],
+        body: Buffer.concat(chunks).toString("utf8")
+      });
+      response.writeHead(204);
+      response.end();
+    });
+  });
+  t.after(fixture.close);
+  const containerId = "d".repeat(64);
+  const route = authorizePortainerContainerAction("restart", { endpointId: 7, containerId });
+  const result = await performPortainerUpstreamRequest(transportOptions(fixture.resolution, "identity", { route }));
+  assert.equal(result.status, 204);
+  assert.equal(result.body.length, 0);
+  assert.deepEqual(requests, [{
+    method: "POST",
+    url: `/api/endpoints/7/docker/containers/${containerId}/restart?t=30`,
+    token: ACCESS_TOKEN,
+    body: ""
+  }]);
+});
+
 test("Portainer transport rejects redirects, oversized bodies, and stalled responses", async (t) => {
   const redirect = await fixtureServer((_request, response) => {
     response.writeHead(302, { location: "https://example.invalid/steal" });
@@ -292,6 +322,9 @@ test("Portainer transport rejects nonliteral and family-mismatched SSRF pins", a
 test("createBroker routes Portainer draft tests and saved monitoring through dispatchPortainer", async (t) => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "helmsman-portainer-broker-"));
   const calls = [];
+  const stoppedContainerId = "a".repeat(64);
+  const restartedContainerId = "b".repeat(64);
+  const ambiguousContainerId = "c".repeat(64);
   const broker = await createBroker({
     dataDir,
     monitorIntervalMs: 60_000,
@@ -302,6 +335,9 @@ test("createBroker routes Portainer draft tests and saved monitoring through dis
     dispatchPortainer: async ({ targetResolution, route, credentials, targetRevision, tlsMode }) => {
       calls.push({
         routeId: route.routeId,
+        actionId: route.actionId,
+        operation: route.operation,
+        containerId: route.containerId,
         endpointId: route.endpointId ?? null,
         start: route.start ?? null,
         targetRevision,
@@ -309,12 +345,25 @@ test("createBroker routes Portainer draft tests and saved monitoring through dis
         address: targetResolution.pinned.address,
         accessToken: credentials.accessToken.toString("utf8")
       });
+      if (route.actionId === "container") {
+        if (route.containerId === ambiguousContainerId) {
+          const error = new Error("response timed out after dispatch");
+          error.status = 502;
+          error.code = "UPSTREAM_TIMEOUT";
+          throw error;
+        }
+        return { status: 304, body: Buffer.alloc(0), contentType: "application/octet-stream" };
+      }
       const bodies = {
         systemStatus: { Version: "3.0.0" },
         identity: { Id: 1, Username: "helmsman" },
         environments: [{ Id: 1, Name: "Main Docker", Status: 1, ContainerEngine: "Docker" }],
         stacks: [],
-        containers: []
+        containers: [
+          { Id: stoppedContainerId, Names: ["/stopped-test"], Image: "test:latest", State: "running", Status: "Up" },
+          { Id: restartedContainerId, Names: ["/restarted-test"], Image: "test:latest", State: "running", Status: "Up" },
+          { Id: ambiguousContainerId, Names: ["/ambiguous-test"], Image: "test:latest", State: "running", Status: "Up" }
+        ]
       };
       return {
         status: 200,
@@ -412,4 +461,42 @@ test("createBroker routes Portainer draft tests and saved monitoring through dis
   assert.ok(monitoringCalls.every(({ tlsMode }) => tlsMode === "system"));
   assert.ok(monitoringCalls.every(({ accessToken }) => accessToken === ACCESS_TOKEN));
   assert.equal(JSON.stringify(refreshed.json).includes(ACCESS_TOKEN), false);
+
+  const actionBody = (containerId, operation) => ({
+    serviceId: created.json.id,
+    environmentId: 1,
+    containerId,
+    operation,
+    targetRevision: created.json.targetRevision
+  });
+  const stopped = await jsonRequest(port, "/api/v2/actions/portainer/container", {
+    method: "POST",
+    ...authentication,
+    body: actionBody(stoppedContainerId, "stop")
+  });
+  assert.equal(stopped.status, 200, JSON.stringify(stopped.json));
+  assert.equal(stopped.json.noOp, true, "Docker 304 is an idempotent no-op for stop");
+
+  const restarted = await jsonRequest(port, "/api/v2/actions/portainer/container", {
+    method: "POST",
+    ...authentication,
+    body: actionBody(restartedContainerId, "restart")
+  });
+  assert.equal(restarted.status, 502);
+  assert.equal(restarted.json.code, "UPSTREAM_ACTION_FAILED", "Docker 304 must not be accepted for restart");
+
+  const ambiguous = await jsonRequest(port, "/api/v2/actions/portainer/container", {
+    method: "POST",
+    ...authentication,
+    body: actionBody(ambiguousContainerId, "restart")
+  });
+  assert.equal(ambiguous.status, 502);
+  assert.equal(ambiguous.json.code, "ACTION_OUTCOME_UNKNOWN");
+  const immediateRetry = await jsonRequest(port, "/api/v2/actions/portainer/container", {
+    method: "POST",
+    ...authentication,
+    body: actionBody(ambiguousContainerId, "restart")
+  });
+  assert.equal(immediateRetry.status, 409);
+  assert.equal(immediateRetry.json.code, "ACTION_RECENTLY_ACCEPTED");
 });

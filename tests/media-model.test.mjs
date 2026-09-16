@@ -106,6 +106,7 @@ test("unifies media by provider identifiers and derives the full lifecycle", () 
   assert.equal(signalRecords.length, 1, "provider-ID aliases must collapse to one record");
   const signal = signalRecords[0];
   assert.deepEqual(signal.sources, ["jellyfin", "radarr", "seerr", "bazarr"]);
+  assert.deepEqual(signal.actionTargets, [{ service: "radarr", resourceId: 9 }]);
   assert.equal(signal.lifecycle.stage, "available");
   assert.deepEqual(signal.lifecycle.steps.map(({ complete }) => complete), [true, true, true, true, true]);
   assert.match(signal.artworkUrl, /^\/api\/v2\/media\/artwork\/[a-f0-9]{32}$/u);
@@ -137,6 +138,7 @@ test("unifies media by provider identifiers and derives the full lifecycle", () 
   assert.equal(media.activity[0].downloadSpeedBps, 2048);
   assert.equal(media.activity[0].etaSeconds, 320);
   assert.equal(media.requests[0].mediaId, signal.id);
+  assert.deepEqual(media.requests[0].actionTargets, [{ service: "radarr", resourceId: 9 }]);
   assert.equal(media.calendar[0].mediaId, signal.id);
   assert.equal(media.subtitleBacklog[0].mediaId, signal.id);
   assert.equal(media.home.recentlyAdded[0].id, signal.id);

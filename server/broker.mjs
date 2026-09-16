@@ -9,7 +9,10 @@ import { fileURLToPath } from "node:url";
 import {
   canonicalServiceId,
   authorizeBridgeRoute,
+  authorizeMediaAction,
+  authorizePortainerContainerAction,
   authorizePortainerRoute,
+  authorizeProxmoxWorkloadAction,
   authorizeProxmoxRoute
 } from "./routes.mjs";
 import { createControlPlane, ControlPlaneError } from "./control-plane.mjs";
@@ -30,7 +33,7 @@ import {
 } from "./network.mjs";
 import { generateSecretToken, hashToken, StateStore, tokenMatches } from "./state.mjs";
 
-const DEFAULT_VERSION = "0.10.0-beta.11";
+const DEFAULT_VERSION = "0.10.0-beta.12";
 const requestedVersion = String(process.env.HELMSMAN_VERSION || DEFAULT_VERSION);
 const VERSION = /^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/u.test(requestedVersion)
   ? requestedVersion
@@ -88,6 +91,19 @@ function asBrokerError(error) {
     return new BrokerError(error.status || 400, error.code || "NETWORK_POLICY_ERROR", error.message);
   }
   return new BrokerError(500, "INTERNAL_ERROR", "The broker could not complete the request.");
+}
+
+export function validProxmoxActionAcknowledgement(value) {
+  let parsed;
+  try {
+    parsed = JSON.parse(Buffer.isBuffer(value) ? value.toString("utf8") : String(value ?? ""));
+  } catch {
+    return false;
+  }
+  const data = parsed && typeof parsed === "object" && !Array.isArray(parsed) && typeof parsed.data === "string"
+    ? parsed.data
+    : null;
+  return Boolean(data && /^UPID:[A-Za-z0-9.-]{1,63}:[A-Fa-f0-9]{8}:[A-Fa-f0-9]{8}:[A-Fa-f0-9]{8}:[A-Za-z0-9._-]{1,64}:[A-Za-z0-9._-]{0,128}:[^:\u0000-\u001f\u007f-\u009f]{1,256}:$/u.test(data));
 }
 
 function setCommonSecurityHeaders(response) {
@@ -608,6 +624,49 @@ export async function performUpstreamRequest({
   });
 }
 
+export async function performMediaActionUpstreamRequest({
+  targetResolution,
+  route,
+  credentialHeaders,
+  targetRevision,
+  limits,
+  shutdownSignal
+}) {
+  const authorizedRoute = authorizeMediaAction(route?.operation, {
+    service: route?.service,
+    resourceId: route?.resourceId
+  });
+  if (!authorizedRoute.allowed
+    || !route?.allowed
+    || route.actionId !== "media"
+    || route.service !== authorizedRoute.service
+    || route.operation !== authorizedRoute.operation
+    || route.resourceId !== authorizedRoute.resourceId
+    || route.method !== "POST"
+    || route.upstreamPathAndQuery !== authorizedRoute.upstreamPathAndQuery
+    || route.body !== authorizedRoute.body
+    || route.internalOnly !== true) {
+    throw new BrokerError(404, "ROUTE_NOT_ALLOWED", "That media recovery action is not allowed.");
+  }
+  const body = Buffer.from(authorizedRoute.body, "utf8");
+  return performUpstreamRequest({
+    request: {
+      method: "POST",
+      headers: {
+        ...(credentialHeaders || {}),
+        ...(body.length ? { "content-type": "application/json" } : {})
+      }
+    },
+    body,
+    targetResolution,
+    route: authorizedRoute,
+    deviceOrigin: "http://127.0.0.1",
+    targetRevision,
+    limits,
+    shutdownSignal
+  });
+}
+
 const PROXMOX_TOKEN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}@[A-Za-z0-9][A-Za-z0-9._-]{0,63}![A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
 const PROXMOX_TOKEN_SECRET = /^[^\u0000-\u0020\u007f-\u009f]{1,4096}$/u;
 const SHA256_FINGERPRINT = /^[a-f0-9]{64}$/u;
@@ -723,14 +782,26 @@ export async function performProxmoxUpstreamRequest({
   limits,
   shutdownSignal
 }) {
-  const authorizedRoute = authorizeProxmoxRoute(route?.routeId, route?.method, { node: route?.node });
+  const actionRoute = route?.actionId === "workload";
+  const authorizedRoute = actionRoute
+    ? authorizeProxmoxWorkloadAction(route?.operation, {
+        node: route?.node,
+        type: route?.type,
+        vmid: route?.vmid
+      })
+    : authorizeProxmoxRoute(route?.routeId, route?.method, { node: route?.node });
   if (!authorizedRoute.allowed
     || !route?.allowed
     || route.service !== authorizedRoute.service
+    || route.actionId !== authorizedRoute.actionId
+    || route.operation !== authorizedRoute.operation
     || route.node !== authorizedRoute.node
+    || route.type !== authorizedRoute.type
+    || route.vmid !== authorizedRoute.vmid
+    || route.method !== authorizedRoute.method
     || route.upstreamPathAndQuery !== authorizedRoute.upstreamPathAndQuery
     || route.internalOnly !== true) {
-    throw new BrokerError(404, "ROUTE_NOT_ALLOWED", "That Proxmox monitoring capability is not allowed.");
+    throw new BrokerError(404, "ROUTE_NOT_ALLOWED", "That Proxmox capability is not allowed.");
   }
   const { target, pinned } = targetResolution || {};
   if (!target || !pinned || target.protocol !== "https:") {
@@ -779,7 +850,7 @@ export async function performProxmoxUpstreamRequest({
     protocol: "https:",
     hostname: target.hostname,
     port: target.port,
-    method: "GET",
+    method: authorizedRoute.method,
     path: appendTargetPath(target, authorizedRoute.upstreamPathAndQuery),
     headers,
     agent: false,
@@ -946,18 +1017,28 @@ export async function performPortainerUpstreamRequest({
   limits,
   shutdownSignal
 }) {
-  const authorizedRoute = authorizePortainerRoute(route?.routeId, route?.method, {
-    endpointId: route?.endpointId,
-    start: route?.start
-  });
+  const actionRoute = route?.actionId === "container";
+  const authorizedRoute = actionRoute
+    ? authorizePortainerContainerAction(route?.operation, {
+        endpointId: route?.endpointId,
+        containerId: route?.containerId
+      })
+    : authorizePortainerRoute(route?.routeId, route?.method, {
+        endpointId: route?.endpointId,
+        start: route?.start
+      });
   if (!authorizedRoute.allowed
     || !route?.allowed
     || route.service !== authorizedRoute.service
+    || route.actionId !== authorizedRoute.actionId
+    || route.operation !== authorizedRoute.operation
     || route.endpointId !== authorizedRoute.endpointId
+    || route.containerId !== authorizedRoute.containerId
     || route.start !== authorizedRoute.start
+    || route.method !== authorizedRoute.method
     || route.upstreamPathAndQuery !== authorizedRoute.upstreamPathAndQuery
     || route.internalOnly !== true) {
-    throw new BrokerError(404, "ROUTE_NOT_ALLOWED", "That Portainer monitoring capability is not allowed.");
+    throw new BrokerError(404, "ROUTE_NOT_ALLOWED", "That Portainer capability is not allowed.");
   }
   const { target, pinned } = targetResolution || {};
   if (!target || !pinned || target.protocol !== "https:") {
@@ -1013,7 +1094,7 @@ export async function performPortainerUpstreamRequest({
       protocol: "https:",
       hostname: target.hostname,
       port: target.port,
-      method: "GET",
+      method: authorizedRoute.method,
       path: appendTargetPath(target, authorizedRoute.upstreamPathAndQuery),
       headers,
       agent: false,
@@ -1030,7 +1111,7 @@ export async function performPortainerUpstreamRequest({
     }
     const upstream = https.request(requestOptions, (upstreamResponse) => {
       const status = Number(upstreamResponse.statusCode || 502);
-      if (status >= 300 && status < 400) {
+      if (status >= 300 && status < 400 && !(actionRoute && status === 304)) {
         upstreamResponse.resume();
         finishReject(new BrokerError(502, "UPSTREAM_REDIRECT_REJECTED", "The configured Portainer service redirected the API request."));
         return;
@@ -1144,6 +1225,7 @@ export async function createBroker(options = {}) {
   const log = typeof options.log === "function" ? options.log : (message) => console.log(message);
   const lookup = options.lookup;
   const dispatchUpstream = options.dispatchUpstream || performUpstreamRequest;
+  const dispatchMediaAction = options.dispatchMediaAction || performMediaActionUpstreamRequest;
   const dispatchProxmox = options.dispatchProxmox || performProxmoxUpstreamRequest;
   const dispatchPortainer = options.dispatchPortainer || performPortainerUpstreamRequest;
   const limits = {
@@ -1630,6 +1712,152 @@ export async function createBroker(options = {}) {
     return runPortainerProbe(input);
   }
 
+  function acceptedActionStatus(upstream, provider, options = {}) {
+    const status = Number(upstream?.status);
+    if (Number.isSafeInteger(status) && status >= 200 && status < 300) {
+      return { status, noOp: false };
+    }
+    if (provider === "portainer" && options.allowNotModified === true && status === 304) {
+      return { status, noOp: true };
+    }
+    if ([404, 409].includes(status)) {
+      throw new BrokerError(409, "ACTION_TARGET_CHANGED", `The ${provider} resource changed; refresh it before trying again.`);
+    }
+    if ([401, 403].includes(status)) {
+      throw new BrokerError(502, "ACTION_PERMISSION_DENIED", `${provider} rejected the saved credential for this action.`);
+    }
+    throw new BrokerError(502, "UPSTREAM_ACTION_FAILED", `${provider} did not accept the requested action.`);
+  }
+
+  function actionDispatchError(error, provider) {
+    if ([
+      "UPSTREAM_TIMEOUT",
+      "UPSTREAM_RESPONSE_FAILED",
+      "UPSTREAM_UNREACHABLE",
+      "UPSTREAM_RESPONSE_INVALID",
+      "UPSTREAM_RESPONSE_TOO_LARGE",
+      "UPSTREAM_CONTENT_REJECTED",
+      "UPSTREAM_REDIRECT_REJECTED"
+    ].includes(error?.code)) {
+      return new BrokerError(
+        502,
+        "ACTION_OUTCOME_UNKNOWN",
+        `${provider} did not return a trustworthy completion response after the action began. Refresh its state before deciding whether to try again.`
+      );
+    }
+    return error;
+  }
+
+  async function executePortainerContainerAction(input) {
+    const route = authorizePortainerContainerAction(input?.operation, {
+      endpointId: input?.environmentId,
+      containerId: input?.containerId
+    });
+    if (!route.allowed) throw new BrokerError(route.status || 404, route.code, route.message);
+    const release = reserveServiceCapacity(`portainer:${input.service.id}`);
+    try {
+      const upstream = await dispatchPortainer({
+        targetResolution: input.targetResolution,
+        route,
+        credentials: input.credentials,
+        targetRevision: input.service.targetRevision,
+        tlsMode: input.service.tlsMode,
+        certificateFingerprint: input.service.certificateFingerprint,
+        limits,
+        shutdownSignal: shutdownController.signal
+      });
+      const accepted = acceptedActionStatus(upstream, "portainer", {
+        allowNotModified: route.operation === "start" || route.operation === "stop"
+      });
+      return {
+        ok: true,
+        provider: "portainer",
+        operation: route.operation,
+        serviceId: input.service.id,
+        environmentId: route.endpointId,
+        containerId: route.containerId,
+        providerStatus: accepted.status,
+        noOp: accepted.noOp
+      };
+    } catch (error) {
+      throw actionDispatchError(error, "Portainer");
+    } finally {
+      release();
+    }
+  }
+
+  async function executeProxmoxWorkloadAction(input) {
+    const route = authorizeProxmoxWorkloadAction(input?.operation, {
+      node: input?.node,
+      type: input?.type,
+      vmid: input?.vmid
+    });
+    if (!route.allowed) throw new BrokerError(route.status || 404, route.code, route.message);
+    const release = reserveServiceCapacity(`proxmox:${input.environment.id}`);
+    try {
+      const upstream = await dispatchProxmox({
+        targetResolution: input.targetResolution,
+        route,
+        credentials: input.credentials,
+        tlsMode: input.endpoint.tlsMode,
+        certificateFingerprint: input.endpoint.certificateFingerprint,
+        limits,
+        shutdownSignal: shutdownController.signal
+      });
+      const accepted = acceptedActionStatus(upstream, "proxmox");
+      if (!validProxmoxActionAcknowledgement(upstream?.body)) {
+        throw new BrokerError(502, "UPSTREAM_RESPONSE_INVALID", "Proxmox did not return a valid task acknowledgement.");
+      }
+      // The upstream task ID is deliberately verified but not exposed. It can
+      // contain node/user details and is not needed by the browser to refresh.
+      return {
+        ok: true,
+        provider: "proxmox",
+        operation: route.operation,
+        environmentId: input.environment.id,
+        node: route.node,
+        type: route.type,
+        vmid: route.vmid,
+        providerStatus: accepted.status
+      };
+    } catch (error) {
+      throw actionDispatchError(error, "Proxmox");
+    } finally {
+      release();
+    }
+  }
+
+  async function executeMediaRecoveryAction(input) {
+    const route = authorizeMediaAction(input?.operation, {
+      service: input?.serviceId,
+      resourceId: input?.resourceId
+    });
+    if (!route.allowed) throw new BrokerError(route.status || 404, route.code, route.message);
+    const release = reserveServiceCapacity(route.service);
+    try {
+      const upstream = await dispatchMediaAction({
+        targetResolution: input.targetResolution,
+        route,
+        credentialHeaders: monitorCredentialHeaders(route.service, input.credential, input.connection),
+        targetRevision: input.connection.targetRevision,
+        limits,
+        shutdownSignal: shutdownController.signal
+      });
+      const accepted = acceptedActionStatus(upstream, route.service);
+      return {
+        ok: true,
+        provider: route.service,
+        operation: route.operation,
+        resourceId: route.resourceId,
+        providerStatus: accepted.status
+      };
+    } catch (error) {
+      throw actionDispatchError(error, route.service);
+    } finally {
+      release();
+    }
+  }
+
   const seerrRequestMetadata = createSeerrRequestMetadataEnricher({
     fetchDetail: async (candidate, context) => {
       const type = candidate.mediaType === "movie" ? "movie" : "tv";
@@ -1680,6 +1908,9 @@ export async function createBroker(options = {}) {
     testServiceConnection: testDraftServiceConnection,
     testInfrastructureConnection: testDraftInfrastructureConnection,
     testInfrastructureServiceConnection: testDraftInfrastructureServiceConnection,
+    executePortainerContainerAction,
+    executeProxmoxWorkloadAction,
+    executeMediaRecoveryAction,
     fetchMediaArtwork: (descriptor, context = {}) => mediaArtwork.get(descriptor, { signal: context.signal }),
     exchangeServiceLogin,
     stateGuard: options.stateGuard,

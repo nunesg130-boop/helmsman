@@ -93,10 +93,21 @@ test("cluster inventory fails over once without duplicating nodes or workloads",
     lookup: async (hostname) => [{ address: hostname === "pve-1.test" ? "10.20.30.41" : "10.20.30.42", family: 4 }],
     dispatchProxmox: async ({ targetResolution, route, credentials }) => {
       const endpointPort = targetResolution.target.port;
-      calls.push({ endpointPort, routeId: route.routeId, node: route.node || null });
+      calls.push({
+        endpointPort,
+        routeId: route.routeId,
+        actionId: route.actionId,
+        operation: route.operation,
+        node: route.node || null,
+        type: route.type,
+        vmid: route.vmid
+      });
       assert.equal(Buffer.isBuffer(credentials.tokenId), true);
       assert.equal(Buffer.isBuffer(credentials.tokenSecret), true);
       if (primaryUnavailable && endpointPort === 8006) throw new Error("simulated primary TLS failure");
+      if (route.actionId === "workload") {
+        return { status: 200, body: Buffer.from('{"data":"not-a-valid-upid"}', "utf8") };
+      }
       return { status: 200, body: Buffer.from(JSON.stringify(fixture(route.routeId)), "utf8") };
     }
   });
@@ -197,4 +208,33 @@ test("cluster inventory fails over once without duplicating nodes or workloads",
     true,
     "the available alternate supplies the one inventory collection and node-scoped history"
   );
+
+  await t.test("an invalid 2xx Proxmox action acknowledgement has an unknown outcome and a retry cooldown", async () => {
+    const body = {
+      environmentId: environment.json.id,
+      node: "pve-1",
+      type: "qemu",
+      vmid: 100,
+      operation: "reboot",
+      targetRevision: observed.targetRevision
+    };
+    const action = await request(port, "/api/v2/actions/proxmox/workload", {
+      method: "POST",
+      ...authentication,
+      body
+    });
+    assert.equal(action.status, 502);
+    assert.equal(action.json.code, "ACTION_OUTCOME_UNKNOWN");
+    assert.equal(Object.hasOwn(action.json, "taskId"), false);
+    const retry = await request(port, "/api/v2/actions/proxmox/workload", {
+      method: "POST",
+      ...authentication,
+      body
+    });
+    assert.equal(retry.status, 409);
+    assert.equal(retry.json.code, "ACTION_RECENTLY_ACCEPTED");
+    const actionCalls = calls.filter(({ actionId }) => actionId === "workload");
+    assert.equal(actionCalls.length, 1, "the cooldown must prevent a duplicate Proxmox task");
+    assert.equal(actionCalls[0].endpointPort, 8007);
+  });
 });

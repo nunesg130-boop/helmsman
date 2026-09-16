@@ -12,6 +12,8 @@ const SEERR_ARTWORK_PATH = /^\/imageproxy\/tmdb\/t\/p\/w342\/[A-Za-z0-9_-]{1,200
 const JELLYFIN_IMAGE_TAG = /^[A-Za-z0-9_-]{1,96}$/u;
 const PROXMOX_NODE_NAME = /^(?=.{1,63}$)[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$/u;
 const PORTAINER_ENDPOINT_ID = /^[1-9][0-9]{0,9}$/u;
+const PORTAINER_CONTAINER_ID = /^[a-f0-9]{64}$/u;
+const POSITIVE_RESOURCE_ID = /^[1-9][0-9]{0,9}$/u;
 
 // Proxmox monitoring is intentionally not exposed through the browser bridge.
 // Internal callers select one of these opaque identifiers; no request path or
@@ -62,6 +64,148 @@ export function normalizeProxmoxNodeName(value) {
   if (typeof value !== "string") return null;
   const node = value;
   return PROXMOX_NODE_NAME.test(node) && !node.includes("..") ? node : null;
+}
+
+function normalizePositiveResourceId(value, maximum = 2_147_483_647) {
+  const candidate = typeof value === "number" && Number.isSafeInteger(value)
+    ? String(value)
+    : typeof value === "string" ? value : "";
+  if (!POSITIVE_RESOURCE_ID.test(candidate)) return null;
+  const numeric = Number(candidate);
+  return Number.isSafeInteger(numeric) && numeric <= maximum ? numeric : null;
+}
+
+function normalizePortainerContainerId(value) {
+  return typeof value === "string" && PORTAINER_CONTAINER_ID.test(value) ? value : null;
+}
+
+const PORTAINER_CONTAINER_ACTIONS = Object.freeze({
+  start: Object.freeze({ suffix: "start", query: "" }),
+  restart: Object.freeze({ suffix: "restart", query: "?t=30" }),
+  stop: Object.freeze({ suffix: "stop", query: "?t=30" })
+});
+
+/**
+ * Builds one exact Portainer container lifecycle request. This is separate
+ * from the monitoring authorizer so read-only probes can never be upgraded to
+ * writes by changing their HTTP method.
+ */
+export function authorizePortainerContainerAction(operationValue, parameters = {}) {
+  const operation = typeof operationValue === "string" ? operationValue : "";
+  const definition = PORTAINER_CONTAINER_ACTIONS[operation];
+  const endpointId = normalizePortainerEndpointId(parameters?.endpointId);
+  const containerId = normalizePortainerContainerId(parameters?.containerId);
+  if (!definition || endpointId === null || !containerId) {
+    return {
+      allowed: false,
+      code: "ROUTE_NOT_ALLOWED",
+      message: "That Portainer container action is not allowed.",
+      status: 404
+    };
+  }
+  const upstreamPath = `/api/endpoints/${endpointId}/docker/containers/${containerId}/${definition.suffix}`;
+  return Object.freeze({
+    allowed: true,
+    service: "portainer",
+    actionId: "container",
+    operation,
+    endpointId,
+    containerId,
+    method: "POST",
+    upstreamPath,
+    upstreamPathAndQuery: `${upstreamPath}${definition.query}`,
+    isArtwork: false,
+    isLogin: false,
+    internalOnly: true,
+    credentialRequired: true
+  });
+}
+
+const PROXMOX_WORKLOAD_ACTIONS = new Set(["start", "reboot", "shutdown"]);
+
+/** Builds one exact Proxmox VM/LXC lifecycle request. */
+export function authorizeProxmoxWorkloadAction(operationValue, parameters = {}) {
+  const operation = typeof operationValue === "string" ? operationValue : "";
+  const node = normalizeProxmoxNodeName(parameters?.node);
+  const type = parameters?.type === "qemu" ? "qemu" : parameters?.type === "lxc" ? "lxc" : null;
+  const vmid = normalizePositiveResourceId(parameters?.vmid, 999_999_999);
+  if (!PROXMOX_WORKLOAD_ACTIONS.has(operation) || !node || !type || vmid === null) {
+    return {
+      allowed: false,
+      code: "ROUTE_NOT_ALLOWED",
+      message: "That Proxmox workload action is not allowed.",
+      status: 404
+    };
+  }
+  const upstreamPath = `/api2/json/nodes/${encodeURIComponent(node)}/${type}/${vmid}/status/${operation}`;
+  return Object.freeze({
+    allowed: true,
+    service: "proxmox",
+    actionId: "workload",
+    operation,
+    node,
+    type,
+    vmid,
+    method: "POST",
+    upstreamPath,
+    upstreamPathAndQuery: upstreamPath,
+    isArtwork: false,
+    isLogin: false,
+    internalOnly: true
+  });
+}
+
+const MEDIA_ACTIONS = Object.freeze({
+  retryRequest: Object.freeze({
+    service: "seerr",
+    path: (id) => `/api/v1/request/${id}/retry`,
+    body: ""
+  }),
+  searchMovie: Object.freeze({
+    service: "radarr",
+    path: () => "/api/v3/command",
+    body: (id) => JSON.stringify({ name: "MoviesSearch", movieIds: [id] })
+  }),
+  searchSeries: Object.freeze({
+    service: "sonarr",
+    path: () => "/api/v3/command",
+    body: (id) => JSON.stringify({ name: "SeriesSearch", seriesId: id })
+  })
+});
+
+/**
+ * Builds the complete path and body for a narrowly supported media recovery
+ * action. The caller supplies only a current local resource identifier.
+ */
+export function authorizeMediaAction(operationValue, parameters = {}) {
+  const operation = typeof operationValue === "string" ? operationValue : "";
+  const definition = MEDIA_ACTIONS[operation];
+  const service = canonicalServiceId(parameters?.service);
+  const resourceId = normalizePositiveResourceId(parameters?.resourceId, 9_999_999_999);
+  if (!definition || service !== definition.service || resourceId === null) {
+    return {
+      allowed: false,
+      code: "ROUTE_NOT_ALLOWED",
+      message: "That media recovery action is not allowed.",
+      status: 404
+    };
+  }
+  const upstreamPath = definition.path(resourceId);
+  const body = typeof definition.body === "function" ? definition.body(resourceId) : definition.body;
+  return Object.freeze({
+    allowed: true,
+    service,
+    actionId: "media",
+    operation,
+    resourceId,
+    method: "POST",
+    upstreamPath,
+    upstreamPathAndQuery: upstreamPath,
+    body,
+    isArtwork: false,
+    isLogin: false,
+    internalOnly: true
+  });
 }
 
 const policies = {

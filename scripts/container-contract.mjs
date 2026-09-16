@@ -60,6 +60,7 @@ const requiredFiles = [
   "server/state.mjs",
   "tests/state-infrastructure-targets.test.mjs",
   "tests/infrastructure-control-plane.test.mjs",
+  "tests/action-routes.test.mjs",
   "tests/proxmox-probes.test.mjs",
   "tests/proxmox-monitor.test.mjs",
   "tests/proxmox-transport.test.mjs",
@@ -104,7 +105,7 @@ const requiredFiles = [
 const missing = requiredFiles.filter((path) => !existsSync(join(root, path)));
 record(
   missing.length === 0,
-  "Helmsman v0.10 includes its unified read-only media model, Proxmox and Portainer infrastructure monitors, encrypted store, retro operations UI, and deployment contracts",
+  "Helmsman v0.10 includes its unified media model, bounded fixed actions, Proxmox and Portainer infrastructure monitors, encrypted store, retro operations UI, and deployment contracts",
   missing.join(", ")
 );
 
@@ -125,7 +126,7 @@ if (existsSync(join(root, "Dockerfile"))) {
   );
 
   record(
-    /^ARG HELMSMAN_VERSION=0\.10\.0-beta\.11$/mu.test(dockerfile)
+    /^ARG HELMSMAN_VERSION=0\.10\.0-beta\.12$/mu.test(dockerfile)
       && /^ARG HELMSMAN_REVISION=unknown$/mu.test(dockerfile)
       && /org\.opencontainers\.image\.title="Helmsman"/u.test(dockerfile)
       && !/org\.opencontainers\.image\.title="Jellofin Command"/u.test(dockerfile),
@@ -188,7 +189,7 @@ if (existsSync(join(root, "Dockerfile"))) {
 if (existsSync(join(root, "server/broker.mjs"))) {
   const broker = read("server/broker.mjs");
   record(
-    /const DEFAULT_VERSION = "0\.10\.0-beta\.11"/u.test(broker)
+    /const DEFAULT_VERSION = "0\.10\.0-beta\.12"/u.test(broker)
       && /process\.env\.HELMSMAN_VERSION/u.test(broker)
       && /\^\[0-9A-Za-z\]\[0-9A-Za-z\.\+-\]\{0,63\}\$/u.test(broker),
     "runtime version follows the validated immutable v0.10 image metadata"
@@ -264,7 +265,7 @@ if (existsSync(join(root, "compose.yaml"))) {
   record(
     /^name:\s*helmsman\s*$/mu.test(compose)
       && /^services:\s*\n\s{2}helmsman:\s*$/mu.test(compose)
-      && compose.includes('${HELMSMAN_IMAGE:-ghcr.io/OWNER/REPOSITORY:0.10.0-beta.11}')
+      && compose.includes('${HELMSMAN_IMAGE:-ghcr.io/OWNER/REPOSITORY:0.10.0-beta.12}')
       && !/^\s{4}build:/mu.test(compose),
     "production Compose has a stable project name and pulls the versioned GHCR image without a local build"
   );
@@ -323,9 +324,9 @@ if (existsSync(join(root, "compose.dev.yaml"))) {
       && /^\s{4}build:\s*$/mu.test(developmentCompose)
       && /^\s{6}context:\s*[.]\s*$/mu.test(developmentCompose)
       && /^\s{6}dockerfile:\s*Dockerfile\s*$/mu.test(developmentCompose)
-      && /HELMSMAN_VERSION:\s*["']0\.10\.0-beta\.11["']/u.test(developmentCompose)
+      && /HELMSMAN_VERSION:\s*["']0\.10\.0-beta\.12["']/u.test(developmentCompose)
       && /HELMSMAN_REVISION:\s*["']local["']/u.test(developmentCompose)
-      && /image:\s*["']helmsman:0\.10\.0-beta\.11["']/u.test(developmentCompose),
+      && /image:\s*["']helmsman:0\.10\.0-beta\.12["']/u.test(developmentCompose),
     "developer Compose override keeps source builds separate from the production pull contract"
   );
 }
@@ -453,7 +454,7 @@ if (existsSync(join(root, "container.env.example"))) {
   const allowed = new Set(["HELMSMAN_IMAGE", "HELMSMAN_BIND_IP", "HELMSMAN_PORT"]);
   const unexpected = keys.filter((key) => !allowed.has(key));
   record(
-    assignments.includes("HELMSMAN_IMAGE=ghcr.io/OWNER/REPOSITORY:0.10.0-beta.11")
+    assignments.includes("HELMSMAN_IMAGE=ghcr.io/OWNER/REPOSITORY:0.10.0-beta.12")
       && assignments.includes("HELMSMAN_BIND_IP=127.0.0.1")
       && assignments.includes("HELMSMAN_PORT=4180")
       && !assignments.some((line) => line.startsWith("HELMSMAN_DATA_VOLUME="))
@@ -738,7 +739,7 @@ if (existsSync(join(root, "package.json"))) {
     const packageJson = JSON.parse(read("package.json"));
     record(
       packageJson.name === "helmsman"
-        && packageJson.version === "0.10.0-beta.11"
+        && packageJson.version === "0.10.0-beta.12"
         && packageJson.scripts?.serve === "node server/index.mjs serve"
         && packageJson.scripts?.["check:broker"] === "node --test tests/control-plane.test.mjs"
         && /tests\/secrets[.]test[.]mjs/u.test(packageJson.scripts?.["check:security"] || "")
@@ -747,6 +748,7 @@ if (existsSync(join(root, "package.json"))) {
         && /tests\/monitor[.]test[.]mjs/u.test(packageJson.scripts?.["check:security"] || "")
         && /tests\/state-infrastructure-targets[.]test[.]mjs/u.test(packageJson.scripts?.["check:security"] || "")
         && /tests\/infrastructure-control-plane[.]test[.]mjs/u.test(packageJson.scripts?.["check:security"] || "")
+        && /tests\/action-routes[.]test[.]mjs/u.test(packageJson.scripts?.["check:security"] || "")
         && /tests\/proxmox-environment-failover[.]test[.]mjs/u.test(packageJson.scripts?.["check:security"] || "")
         && /tests\/proxmox-probes[.]test[.]mjs/u.test(packageJson.scripts?.["check:security"] || "")
         && /tests\/proxmox-monitor[.]test[.]mjs/u.test(packageJson.scripts?.["check:security"] || "")
@@ -815,14 +817,26 @@ if (existsSync(join(root, "README.md")) && existsSync(join(root, "deploy/DOCKER.
   record(
     keyGuides.every((guide) => /Media and Infrastructure/iu.test(guide))
       && keyGuides.every((guide) => /Proxmox/iu.test(guide))
-      && keyGuides.every((guide) => /read-only/iu.test(guide))
+      && keyGuides.every((guide) => /(?:monitoring|probes?)[^\.\n]*read-only|read-only[^\.\n]*(?:monitoring|probes?)/iu.test(guide))
       && keyGuides.every((guide) => /API token ID/iu.test(guide))
       && keyGuides.every((guide) => /token secret/iu.test(guide))
       && keyGuides.every((guide) => /write-only/iu.test(guide))
       && keyGuides.every((guide) => /Pinned SHA-256 fingerprint/iu.test(guide))
-      && keyGuides.every((guide) => /no (?:Docker socket|infrastructure control actions)|no Docker socket/iu.test(guide))
+      && keyGuides.every((guide) => /no Docker socket|never mounts? the Docker socket/iu.test(guide))
       && keyGuides.every((guide) => /(?:do not place|Do not add)[^.\n]*[.]env/iu.test(guide)),
-    "operator guides define the multi-instance read-only Proxmox boundary without environment secrets or host control"
+    "operator guides define the multi-instance Proxmox monitoring boundary without environment secrets or direct host access"
+  );
+  record(
+    keyGuides.every((guide) => /only media writes[^.\n]*explicitly confirmed Seerr failed-request retry[^.\n]*targeted Radarr\/Sonarr search[^.\n]*one exact current record/iu.test(guide))
+      && keyGuides.every((guide) => /(?:Portainer container start, restart, and graceful stop|start, restart, or gracefully stop one current Docker-compatible container)/iu.test(guide))
+      && keyGuides.every((guide) => /(?:Proxmox QEMU\/LXC start, reboot, and graceful shutdown|start, reboot, or gracefully shut down one current QEMU VM or LXC)/iu.test(guide))
+      && keyGuides.every((guide) => /explicitly confirmed/iu.test(guide))
+      && keyGuides.every((guide) => /fixed method, path, query, and body templates/iu.test(guide))
+      && keyGuides.every((guide) => /browser[^.\n]*(?:cannot|never)[^.\n]*arbitrary upstream path or request body/iu.test(guide))
+      && keyGuides.every((guide) => /no (?:general|generic)[^.\n]*(?:API|upstream|Docker)[^.\n]*proxy/iu.test(guide))
+      && keyGuides.every((guide) => ["delete", "remove", "force-stop", "reset", "kill", "bulk action"]
+        .every((term) => new RegExp(term.replace(" ", "[- ]"), "iu").test(guide))),
+    "operator guides limit user-confirmed recovery to fixed action templates and reject generic upstream mutations"
   );
   record(
     keyGuides.every((guide) => ["Home", "Discover", "Library", "Requests", "Activity", "Calendar", "Health", "Connections"]
@@ -836,7 +850,7 @@ if (existsSync(join(root, "README.md")) && existsSync(join(root, "deploy/DOCKER.
       && /state schema(?: to)? 4/iu.test(keyGuides[0])
       && keyGuides.every((guide) => /(?:each visible node|node's fixed read-only task route)/iu.test(guide))
       && keyGuides.every((guide) => /raw UPIDs/iu.test(guide)),
-    "operator guides document the read-only desktop media lifecycle, opaque in-memory artwork, local marks, schema compatibility, and per-node Proxmox activity"
+    "operator guides document the monitored desktop media lifecycle, opaque in-memory artwork, local marks, schema compatibility, and per-node Proxmox activity"
   );
   record(
     keyGuides.every((guide) => /Portainer/iu.test(guide))
@@ -847,7 +861,7 @@ if (existsSync(join(root, "README.md")) && existsSync(join(root, "deploy/DOCKER.
       && keyGuides.every((guide) => /stopped (?:Portainer )?containers? (?:remain|are) informational/iu.test(guide))
       && keyGuides.every((guide) => /no (?:general )?(?:Portainer or Docker|Portainer write operations|Docker) API proxy|There is no general Portainer or Docker API proxy/iu.test(guide))
       && keyGuides.every((guide) => /(?:do not put|Do not place)[^\n]*Portainer[^\n]*[.]env|Do not add[^\n]*Portainer[^\n]*[.]env/iu.test(guide)),
-    "operator guides keep Portainer HTTPS-only, read-only, Infrastructure-scoped, and free of environment credentials"
+    "operator guides keep Portainer HTTPS-only, fixed-route, Infrastructure-scoped, and free of environment credentials"
   );
 }
 

@@ -881,6 +881,7 @@ function normalizeInfrastructureTarget(value, index, configured = null) {
       : normalizeHealthState(own(source, "state"), capabilities.length ? "stale" : "stale"),
     message: boundedText(own(source, "message") ?? own(source, "summary"), "", 220),
     version: boundedText(own(source, "version") ?? own(metrics, "version"), "", 80),
+    targetRevision: boundedText(own(source, "targetRevision"), configured?.targetRevision || "", 100),
     connectionState: normalizeConnectionState(own(source, "connectionState")),
     lastCheckedAt: normalizeTimestamp(own(source, "lastCheckedAt") ?? own(source, "checkedAt")),
     latencyMs: Number.isFinite(Number(suppliedLatency))

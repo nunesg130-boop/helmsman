@@ -23,10 +23,20 @@ Helmsman data volume or `.env` file.
 ## Deployment boundary
 
 Keep the published container port private or restricted to a trusted HTTPS
-edge, protect the data volume and backups, use read-only upstream credentials,
-and never mount the Docker socket. Authentik or another identity-aware proxy
+edge, protect the data volume and backups, use dedicated least-privilege
+upstream credentials scoped only to visible resources and the actions you want
+Helmsman to perform, and never mount the Docker socket. Authentik or another identity-aware proxy
 protects browser entry only; it does not replace the credentials Helmsman uses
 for upstream services.
+
+Monitoring and probes use fixed read-only GET routes. The only writes are
+explicitly confirmed Portainer container start/restart/graceful-stop, Proxmox
+QEMU/LXC start/reboot/graceful-shutdown, Seerr failed-request retry, and
+targeted Radarr/Sonarr search actions. Each action uses a fixed method, path,
+query, and request-body template; the browser cannot provide an arbitrary
+upstream path or body. Helmsman exposes no general upstream or Docker API
+proxy, SSH, shell, console, host mount, delete/remove, force-stop, reset, kill,
+or bulk action.
 
 The reusable 256-bit Helmsman access key is a bearer secret. Store it in a
 password manager and enter it only in Helmsman's unlock form. Never place it in

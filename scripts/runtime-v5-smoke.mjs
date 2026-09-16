@@ -843,7 +843,12 @@ async function emptyStateLayoutContract() {
     assert.match(application, new RegExp(`${code}: "${copy.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}"`, "u"), `${code} needs specific operator-facing evidence`);
   }
   assert.match(application, /function safeMediaFocusKey[\s\S]*?\^m-\[a-z0-9\]/u, "media focus restoration must validate its stable DOM key");
-  assert.match(application, /\[data-media-key='\$\{focusedMediaKey\}'\]\[data-action='\$\{focusedMediaAction\}'\]/u, "structural media refreshes must restore a focused card by safe key and action");
+  assert.match(application, /function resolveFocusReference[\s\S]*?element\.dataset\?\.mediaKey === reference\.mediaKey[\s\S]*?element\.dataset\?\.action === reference\.mediaAction/u, "structural media refreshes must restore a focused card by safe key and action");
+  assert.match(application, /function confirmControl\(message\)\s*\{\s*return typeof globalThis\.confirm === "function" && globalThis\.confirm\(message\) === true;/u, "control actions must fail closed when confirmation is unavailable");
+  assert.match(application, /await refreshOperations\(\{ afterCurrent: true \}\)/u, "every dispatched control attempt must wait for a post-action inventory refresh");
+  assert.match(application, /\["ACTION_OUTCOME_UNKNOWN", "NETWORK_ERROR", "INVALID_RESPONSE"\]\.includes\(error\?\.code\)[\s\S]*?error\?\.status === 0/u, "lost or malformed action responses must retain the refresh lock until fresh evidence arrives");
+  assert.match(application, /if \(state\.operationsRefreshPromise\) return state\.operationsRefreshPromise;/u, "background snapshot polling must not race an action refresh");
+  assert.match(application, /const requestGeneration = \+\+state\.operationsRequestGeneration;[\s\S]*?if \(requestGeneration !== state\.operationsRequestGeneration\) return false;/u, "late snapshot responses must not overwrite newer post-action evidence");
   assert.match(application, /api\("\/api\/v2\/access\/login"/u, "the unauthenticated gate must use the reusable access-key login route");
   assert.match(application, /api\("\/api\/v2\/access\/rotate"/u, "Settings must use the authenticated access-key rotation route");
   assert.doesNotMatch(application, /\/api\/v2\/session\/(?:invite|pair)/u, "the retired browser-invite routes must not remain reachable from the runtime");
@@ -1008,11 +1013,16 @@ async function mediaArtworkLoadingContract() {
 
 async function mediaSemanticsContract() {
   const today = new Date().toISOString();
+  const seerrRevision = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+  const radarrRevision = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
   const snapshot = {
     version: 1,
     generatedAt: today,
     overall: { state: "healthy", headline: "Ready", summary: "Ready." },
-    services: [],
+    services: [
+      { id: "seerr", targetRevision: seerrRevision, connectionState: "connected", checkedAt: today },
+      { id: "radarr", targetRevision: radarrRevision, connectionState: "connected", checkedAt: today }
+    ],
     pipeline: { state: "healthy", stages: [] },
     incidents: { open: [], recent: [] },
     workload: {},
@@ -1030,6 +1040,7 @@ async function mediaSemanticsContract() {
           requested: true,
           monitored: true,
           available: false,
+          actionTargets: [{ service: "radarr", resourceId: 42 }],
           lifecycle: { stage: "monitored" }
         },
         {
@@ -1268,6 +1279,7 @@ async function mediaSemanticsContract() {
           mediaType: "movie",
           state: "upcoming",
           monitored: true,
+          actionTargets: [{ service: "radarr", resourceId: 400 }],
           releaseAt: today,
           lifecycle: { stage: "monitored" }
         }
@@ -1276,7 +1288,8 @@ async function mediaSemanticsContract() {
       metrics: { libraryTotal: 1 }
     }
   };
-  const environment = installFakeBrowser(({ path }) => {
+  const environment = installFakeBrowser(({ path, options }) => {
+    const method = String(options.method || "GET").toUpperCase();
     if (path === "/api/v2/status") {
       return jsonResponse({
         setupRequired: false,
@@ -1286,8 +1299,16 @@ async function mediaSemanticsContract() {
         storage: { credentialsEncrypted: true, externalKey: false }
       });
     }
-    if (path === "/api/v2/config") return jsonResponse({ policy: { allowedCidrs: [] }, services: [] });
+    if (path === "/api/v2/config") return jsonResponse({
+      policy: { allowedCidrs: [] },
+      services: [
+        { id: "seerr", configured: true, enabled: true, monitoringEnabled: true, targetRevision: seerrRevision },
+        { id: "radarr", configured: true, enabled: true, monitoringEnabled: true, targetRevision: radarrRevision }
+      ]
+    });
     if (path === "/api/v2/operations/snapshot") return jsonResponse(clone(snapshot));
+    if (path === "/api/v2/operations/refresh" && method === "POST") return jsonResponse(clone(snapshot));
+    if (path === "/api/v2/actions/media" && method === "POST") return jsonResponse({ ok: true, provider: "media" });
     if (path === "/api/v2/sessions") return jsonResponse({ currentSessionId: "", sessions: [] });
     return jsonResponse({ code: "NOT_FOUND", message: "Unexpected test route." }, 404);
   }, "media-semantics");
@@ -1389,6 +1410,33 @@ async function mediaSemanticsContract() {
   assert.match(scopedDrawer, /<li class="is-current">[\s\S]*?<strong>Requested<\/strong><small>Awaiting acquisition<\/small>/u, "title-wide processing must not advance a season-scoped request journey");
   const failedDrawer = await openRequest(106);
   assert.match(failedDrawer, /<li class="has-issue">[\s\S]*?<strong>Requested<\/strong><small>Needs attention<\/small>/u, "a failed request needs an issue marker even without a free-text error");
+  assert.match(failedDrawer, /data-action="run-media-control"[^>]+data-control-operation="retryRequest"/u);
+  const retryRequest = new FakeElement({ id: "retry-failed-request" });
+  retryRequest.dataset.action = "run-media-control";
+  retryRequest.dataset.mediaId = "request:106";
+  retryRequest.dataset.controlService = "seerr";
+  retryRequest.dataset.controlOperation = "retryRequest";
+  retryRequest.dataset.controlResourceId = "106";
+  retryRequest.dataset.controlKey = "media:seerr:retryRequest:106";
+  retryRequest.closest = (selector) => selector === "[data-action]" ? retryRequest : null;
+  const refreshesBeforeRetry = environment.requestLog.filter(({ path }) => path === "/api/v2/operations/refresh").length;
+  await environment.dispatchDocument("click", { target: retryRequest });
+  assert.match(environment.confirmCalls.at(-1), /Retry the failed Seerr request for Failed Signal/u);
+  const retryCall = environment.requestLog.find(({ path, options }) => (
+    path === "/api/v2/actions/media" && JSON.parse(options.body).operation === "retryRequest"
+  ));
+  assert.deepEqual(JSON.parse(retryCall.options.body), {
+    serviceId: "seerr",
+    operation: "retryRequest",
+    resourceId: 106,
+    targetRevision: seerrRevision
+  }, "media resource IDs must be sent as JSON numbers");
+  assert.equal(retryCall.options.headers.get("X-Jellofin-CSRF"), "media-semantics-csrf");
+  assert.equal(
+    environment.requestLog.filter(({ path }) => path === "/api/v2/operations/refresh").length,
+    refreshesBeforeRetry + 1,
+    "a media control attempt must refresh current evidence before unlocking actions"
+  );
   const drawerCloser = new FakeElement({ id: "close-request-drawer" });
   drawerCloser.dataset.action = "close-media-drawer";
   drawerCloser.closest = (selector) => selector === "[data-action]" ? drawerCloser : null;
@@ -1400,6 +1448,31 @@ async function mediaSemanticsContract() {
   assert.match(environment.main.innerHTML, /<strong>Lights Out<\/strong><small>S01E01<\/small><em>Upcoming<\/em>/u);
   assert.match(environment.main.innerHTML, /<strong>400<\/strong><small>Movie<\/small><em>Upcoming<\/em>/u);
   assert.doesNotMatch(environment.main.innerHTML, />Unknown</u, "monitored calendar entries should be called upcoming, not unknown");
+  const openSearchTitle = new FakeElement({ id: "open-search-title" });
+  openSearchTitle.dataset.action = "open-media-detail";
+  openSearchTitle.dataset.mediaId = "radarr:movie:400";
+  openSearchTitle.closest = (selector) => selector === "[data-action]" ? openSearchTitle : null;
+  await environment.dispatchDocument("click", { target: openSearchTitle });
+  assert.match(drawer.innerHTML, /data-action="run-media-control"[^>]+data-control-operation="searchMovie"/u);
+  const searchTitle = new FakeElement({ id: "search-title-again" });
+  searchTitle.dataset.action = "run-media-control";
+  searchTitle.dataset.mediaId = "radarr:movie:400";
+  searchTitle.dataset.controlService = "radarr";
+  searchTitle.dataset.controlOperation = "searchMovie";
+  searchTitle.dataset.controlResourceId = "400";
+  searchTitle.dataset.controlKey = "media:radarr:searchMovie:400";
+  searchTitle.closest = (selector) => selector === "[data-action]" ? searchTitle : null;
+  await environment.dispatchDocument("click", { target: searchTitle });
+  const searchCall = environment.requestLog.find(({ path, options }) => (
+    path === "/api/v2/actions/media" && JSON.parse(options.body).operation === "searchMovie"
+  ));
+  assert.deepEqual(JSON.parse(searchCall.options.body), {
+    serviceId: "radarr",
+    operation: "searchMovie",
+    resourceId: 400,
+    targetRevision: radarrRevision
+  });
+  await environment.dispatchDocument("click", { target: drawerCloser });
 
   environment.location.hash = "#/home";
   await environment.dispatchWindow("hashchange", { type: "hashchange" });
@@ -1992,6 +2065,7 @@ async function mediaConnectionCategoriesContract() {
 }
 
 async function infrastructureWorkspaceContract() {
+  const checkedAt = new Date().toISOString();
   const csrfToken = "infrastructure-csrf-token";
   const targetId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
   const fingerprint = "ab".repeat(32);
@@ -2084,12 +2158,12 @@ async function infrastructureWorkspaceContract() {
         tlsMode: "pinned",
         certificateFingerprint: fingerprint,
         credentialConfigured: true,
-        targetRevision: "revision-1",
+        targetRevision: targetId,
         environmentKind: "standalone",
         environmentName: "pve-main"
       }];
       snapshot.infrastructure = {
-        generatedAt: "2026-09-13T01:00:10.000Z",
+        generatedAt: checkedAt,
         overall: { state: "healthy", headline: "Infrastructure is healthy", summary: "The Proxmox target is healthy." },
         targets: [{
           id: targetId,
@@ -2097,9 +2171,10 @@ async function infrastructureWorkspaceContract() {
           displayName: "Main Proxmox",
           state: "healthy",
           connectionState: "connected",
+          targetRevision: targetId,
           version: "8.4.1",
           latencyMs: 10,
-          checkedAt: "2026-09-13T01:00:10.000Z",
+          checkedAt,
           discovery: clone(healthyTest.discovery),
           endpoints: [{
             id: targetId,
@@ -2152,6 +2227,9 @@ async function infrastructureWorkspaceContract() {
     }
     if (path === `/api/v2/infrastructure/environments/${targetId}` && method === "PUT") {
       return jsonResponse(clone(targets[0]));
+    }
+    if (path === "/api/v2/actions/proxmox/workload" && method === "POST") {
+      return jsonResponse({ ok: true, provider: "proxmox", operation: "start" });
     }
     return jsonResponse({ code: "NOT_FOUND", message: "Unexpected test route." }, 404);
   }, "infrastructure-workspace");
@@ -2556,6 +2634,32 @@ async function infrastructureWorkspaceContract() {
   stoppedWorkloadButton.closest = (selector) => selector === "[data-action]" ? stoppedWorkloadButton : null;
   await environment.dispatchDocument("click", { target: stoppedWorkloadButton });
   assert.match(modal.innerHTML, /deliberately stopped guest is informational/u);
+  assert.match(modal.innerHTML, /data-action="run-proxmox-control"[^>]+data-control-operation="start"/u);
+  const startWorkload = new FakeElement({ id: "start-stopped-workload" });
+  startWorkload.dataset.action = "run-proxmox-control";
+  startWorkload.dataset.infrastructureWorkloadId = `${targetId}:pve-main:lxc:104`;
+  startWorkload.dataset.controlOperation = "start";
+  startWorkload.dataset.controlKey = `proxmox:${targetId}:pve-main:lxc:104:start`;
+  startWorkload.closest = (selector) => selector === "[data-action]" ? startWorkload : null;
+  const refreshesBeforeWorkloadAction = environment.requestLog.filter(({ path }) => path === "/api/v2/operations/refresh").length;
+  await environment.dispatchDocument("click", { target: startWorkload });
+  assert.match(environment.confirmCalls.at(-1), /Start Lab/u, "a Proxmox guest mutation must require confirmation");
+  const startCall = environment.requestLog.find(({ path }) => path === "/api/v2/actions/proxmox/workload");
+  assert.ok(startCall, "the confirmed Proxmox action must use the bounded local action route");
+  assert.deepEqual(JSON.parse(startCall.options.body), {
+    environmentId: targetId,
+    node: "pve-main",
+    type: "lxc",
+    vmid: 104,
+    operation: "start",
+    targetRevision: targetId
+  });
+  assert.equal(startCall.options.headers.get("X-Jellofin-CSRF"), csrfToken);
+  assert.equal(
+    environment.requestLog.filter(({ path }) => path === "/api/v2/operations/refresh").length,
+    refreshesBeforeWorkloadAction + 1,
+    "a Proxmox control attempt must refresh current evidence before unlocking actions"
+  );
   await environment.dispatchDocument("click", { target: closeDetail });
   environment.location.hash = "#/environments";
   await environment.dispatchWindow("hashchange", { type: "hashchange" });
@@ -2710,7 +2814,10 @@ async function infrastructureWorkspaceContract() {
 }
 
 async function portainerInfrastructureContract() {
+  const checkedAt = new Date().toISOString();
+  let failNextOperationsRefresh = false;
   const serviceId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const containerId = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
   const hostileEnvironment = 'Docker host <img src=x onerror="portainer-environment-xss">';
   const hostileContainer = "reverse-proxy <script>portainer-container-xss</script>";
   const hiddenToken = "portainer-access-token-must-never-render";
@@ -2733,6 +2840,7 @@ async function portainerInfrastructureContract() {
       certificateFingerprint: null,
       credentialConfigured: true,
       credentialUpdatedAt: "2026-09-13T02:00:00.000Z",
+      targetRevision: serviceId,
       accessToken: hiddenToken
     }]
   };
@@ -2750,12 +2858,13 @@ async function portainerInfrastructureContract() {
       targets: [],
       services: [{
         id: serviceId,
+        targetRevision: serviceId,
         type: "portainer",
         displayName: "Container Control",
         state: "degraded",
         connectionState: "connected",
         version: "2.45.0",
-        checkedAt: "2026-09-13T02:00:00.000Z",
+        checkedAt,
         latencyMs: 18,
         capabilities: [
           { id: "status", label: "Server status", state: "healthy", status: 200, latencyMs: 5 },
@@ -2779,7 +2888,7 @@ async function portainerInfrastructureContract() {
         inventory: {
           environments: [{ id: 1, name: hostileEnvironment, state: "up", platform: "Docker", containerCapable: true, edge: false, agentVersion: "2.34.0" }],
           containers: [{
-            id: "abcdef0123456789abcdef0123456789",
+            id: containerId,
             shortId: "abcdef012345",
             name: hostileContainer,
             image: "traefik:v3.5",
@@ -2819,10 +2928,19 @@ async function portainerInfrastructureContract() {
       at: "2026-09-13T02:00:00.000Z"
     }]
   };
-  const environment = installFakeBrowser(({ path }) => {
+  const environment = installFakeBrowser(({ path, options }) => {
+    const method = String(options.method || "GET").toUpperCase();
     if (path === "/api/v2/status") return jsonResponse({ setupRequired: false, authenticated: true, csrfToken: "portainer-csrf", session: { name: "Portainer Browser" } });
     if (path === "/api/v2/config") return jsonResponse(clone(config));
     if (path === "/api/v2/operations/snapshot") return jsonResponse(clone(snapshot));
+    if (path === "/api/v2/operations/refresh" && method === "POST") {
+      if (failNextOperationsRefresh) {
+        failNextOperationsRefresh = false;
+        return jsonResponse({ code: "MONITOR_REFRESH_FAILED", message: "Current state could not be refreshed." }, 503);
+      }
+      return jsonResponse(clone(snapshot));
+    }
+    if (path === "/api/v2/actions/portainer/container" && method === "POST") return jsonResponse({ ok: true, provider: "portainer", operation: "restart" });
     if (path === "/api/v2/sessions") return jsonResponse({ currentSessionId: "", sessions: [] });
     return jsonResponse({ code: "NOT_FOUND", message: "Unexpected test route." }, 404);
   }, "portainer-infrastructure");
@@ -2846,11 +2964,53 @@ async function portainerInfrastructureContract() {
   assert.match(markup, /class="portainer-container-row is-down"/u);
   assert.match(markup, /class="portainer-stack-card"/u);
   assert.match(markup, /Stopped and exited containers are informational/u);
-  assert.match(markup, /No controls are sent to Portainer/u);
+  assert.match(markup, /Guarded container controls/u);
+  assert.match(markup, /data-action="run-portainer-control"[^>]+data-control-operation="restart"/u);
+  assert.match(markup, /data-action="run-portainer-control"[^>]+data-control-operation="stop"/u);
   assert.match(markup, /Docker host &lt;img src=x onerror=&quot;portainer-environment-xss&quot;&gt;/u);
   assert.match(markup, /reverse-proxy &lt;script&gt;portainer-container-xss&lt;\/script&gt;/u);
   assert.doesNotMatch(markup, /<script>portainer-container-xss<\/script>|<img src=x onerror="portainer-environment-xss">/u);
   assert.doesNotMatch(`${markup}${environment.elements.get("#modal-layer").innerHTML}`, new RegExp(hiddenToken, "u"));
+
+  const restartContainer = new FakeElement({ id: "restart-portainer-container" });
+  restartContainer.dataset.action = "run-portainer-control";
+  restartContainer.dataset.portainerContainerKey = `${serviceId}:1:${containerId}`;
+  restartContainer.dataset.controlOperation = "restart";
+  restartContainer.dataset.controlKey = `portainer:${serviceId}:1:${containerId}:restart`;
+  restartContainer.closest = (selector) => selector === "[data-action]" ? restartContainer : null;
+  const refreshesBeforeContainerAction = environment.requestLog.filter(({ path }) => path === "/api/v2/operations/refresh").length;
+  failNextOperationsRefresh = true;
+  await environment.dispatchDocument("click", { target: restartContainer });
+  assert.match(environment.confirmCalls.at(-1), /Restart reverse-proxy/u, "a Portainer mutation must require confirmation");
+  const restartCall = environment.requestLog.find(({ path }) => path === "/api/v2/actions/portainer/container");
+  assert.ok(restartCall, "the confirmed Portainer action must use the bounded local action route");
+  assert.deepEqual(JSON.parse(restartCall.options.body), {
+    serviceId,
+    environmentId: 1,
+    containerId,
+    operation: "restart",
+    targetRevision: serviceId
+  });
+  assert.equal(restartCall.options.headers.get("X-Jellofin-CSRF"), "portainer-csrf");
+  assert.equal(
+    environment.requestLog.filter(({ path }) => path === "/api/v2/operations/refresh").length,
+    refreshesBeforeContainerAction + 1,
+    "a Portainer control attempt must refresh current evidence before unlocking actions"
+  );
+  assert.match(environment.main.innerHTML, /data-action="run-portainer-control"[^>]+disabled[^>]*>Refresh required</u, "an accepted action must remain locked when its evidence refresh fails");
+  const actionCallsBeforeLockedRetry = environment.requestLog.filter(({ path }) => path === "/api/v2/actions/portainer/container").length;
+  await environment.dispatchDocument("click", { target: restartContainer });
+  assert.equal(
+    environment.requestLog.filter(({ path }) => path === "/api/v2/actions/portainer/container").length,
+    actionCallsBeforeLockedRetry,
+    "a stale control retry must stay blocked until fresh evidence arrives"
+  );
+  const manualRefresh = new FakeElement({ id: "refresh-after-action-failure" });
+  manualRefresh.dataset.action = "refresh-live";
+  manualRefresh.closest = (selector) => selector === "[data-action]" ? manualRefresh : null;
+  await environment.dispatchDocument("click", { target: manualRefresh });
+  await waitFor(() => !environment.main.innerHTML.includes("Refresh required"), "post-action refresh lock release");
+  assert.doesNotMatch(environment.main.innerHTML, /Refresh required/u, "a later successful refresh must release the local action lock");
 
   environment.location.hash = "#/overview";
   await environment.dispatchWindow("hashchange", { type: "hashchange" });
@@ -2916,9 +3076,9 @@ async function portainerInfrastructureContract() {
   assert.match(modal.innerHTML, /id="portainer-form"/u);
   assert.match(modal.innerHTML, /name="accessToken" type="password" autocomplete="new-password"/u);
   assert.match(modal.innerHTML, /Blank keeps the saved token/u);
-  assert.match(modal.innerHTML, /data-action="test-portainer-service">Test read-only access/u);
+  assert.match(modal.innerHTML, /data-action="test-portainer-service">Test connection/u);
   assert.match(modal.innerHTML, /data-action="delete-portainer-service"/u);
-  assert.match(modal.innerHTML, /No controls are sent to Portainer|GET-only checks/u);
+  assert.match(modal.innerHTML, /GET-only checks/u);
   assert.doesNotMatch(modal.innerHTML, new RegExp(hiddenToken, "u"));
   const closeConnection = new FakeElement({ id: "close-portainer" });
   closeConnection.dataset.action = "close-modal";

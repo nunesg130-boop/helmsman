@@ -260,20 +260,20 @@ the GitHub Release passes verification, the script keeps the downloaded assets
 in a local directory such as:
 
 ```text
-C:\Users\admin\Downloads\helmsman-v0.10.0-beta.11\helmsman-0.10.0-beta.11-deployment-assets
+C:\Users\admin\Downloads\helmsman-v0.10.0-beta.12\helmsman-0.10.0-beta.12-deployment-assets
 ```
 
 It then prints—but does not execute—the exact `ssh` and `scp` commands that
-create `/opt/helmsman/releases/v0.10.0-beta.11` and transfer the verified
+create `/opt/helmsman/releases/v0.10.0-beta.12` and transfer the verified
 `compose.yaml`, `container.env.example`, and `SHA256SUMS` files there. Run those
 printed commands from the same PowerShell window. Their shape is:
 
 ```powershell
-$Assets = "C:\Users\admin\Downloads\helmsman-v0.10.0-beta.11\helmsman-0.10.0-beta.11-deployment-assets"
-ssh root@192.168.0.7 "mkdir -p /opt/helmsman/releases/v0.10.0-beta.11"
-scp "$Assets\compose.yaml" root@192.168.0.7:/opt/helmsman/releases/v0.10.0-beta.11/
-scp "$Assets\container.env.example" root@192.168.0.7:/opt/helmsman/releases/v0.10.0-beta.11/
-scp "$Assets\SHA256SUMS" root@192.168.0.7:/opt/helmsman/releases/v0.10.0-beta.11/
+$Assets = "C:\Users\admin\Downloads\helmsman-v0.10.0-beta.12\helmsman-0.10.0-beta.12-deployment-assets"
+ssh root@192.168.0.7 "mkdir -p /opt/helmsman/releases/v0.10.0-beta.12"
+scp "$Assets\compose.yaml" root@192.168.0.7:/opt/helmsman/releases/v0.10.0-beta.12/
+scp "$Assets\container.env.example" root@192.168.0.7:/opt/helmsman/releases/v0.10.0-beta.12/
+scp "$Assets\SHA256SUMS" root@192.168.0.7:/opt/helmsman/releases/v0.10.0-beta.12/
 ssh root@192.168.0.7
 ```
 
@@ -286,7 +286,7 @@ of running the printed block unchanged. The standard block first executes:
 
 ```sh
 set -euo pipefail
-cd /opt/helmsman/releases/v0.10.0-beta.11
+cd /opt/helmsman/releases/v0.10.0-beta.12
 sha256sum --strict --check SHA256SUMS
 ```
 
@@ -296,8 +296,8 @@ Only verified assets proceed to installation. The remaining printed commands:
   so a retry cannot overwrite the original rollback point; inspect or resume a
   partially completed attempt manually;
 - back up `/opt/helmsman/compose.yaml` and, when present, `.env` as
-  `compose.yaml.before-0.10.0-beta.11` and
-  `.env.before-0.10.0-beta.11`;
+  `compose.yaml.before-0.10.0-beta.12` and
+  `.env.before-0.10.0-beta.12`;
 - explicitly unset shell-level image and Compose selector variables so they
   cannot override the verified configuration or the project choice retained
   in `.env`;
@@ -331,9 +331,9 @@ the resolved image before recreating the container:
 ```sh
 set -euo pipefail
 cd /opt/helmsman
-cp -- compose.yaml.before-0.10.0-beta.11 compose.yaml
-if [ -f .env.before-0.10.0-beta.11 ]; then
-  cp -- .env.before-0.10.0-beta.11 .env
+cp -- compose.yaml.before-0.10.0-beta.12 compose.yaml
+if [ -f .env.before-0.10.0-beta.12 ]; then
+  cp -- .env.before-0.10.0-beta.12 .env
   helmsman_env_file=.env
 else
   rm -f -- .env

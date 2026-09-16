@@ -1254,6 +1254,24 @@ function linkedLifecycleSemantics(linked) {
   } : {};
 }
 
+function mediaActionTargets(recordValue) {
+  const source = record(recordValue);
+  if (!source || !(source.sourceKeys instanceof Set)) return [];
+  const expected = source.mediaType === "movie"
+    ? ["radarr"]
+    : source.mediaType === "series" ? ["sonarr"] : [];
+  const targets = [];
+  for (const service of expected) {
+    const prefix = `${service}:`;
+    const matches = [...source.sourceKeys]
+      .filter((entry) => typeof entry === "string" && entry.startsWith(prefix))
+      .map((entry) => positiveInteger(entry.slice(prefix.length)))
+      .filter(Boolean);
+    if (matches.length === 1) targets.push({ service, resourceId: matches[0] });
+  }
+  return targets;
+}
+
 function requestLifecycleSemantics(item, linked) {
   const requestStatus = seerrRequestStatus(item.requestStatus ?? item.status);
   const mediaStatus = seerrMediaStatus(item.mediaStatus);
@@ -1329,6 +1347,7 @@ function enrichCollection(items, records, options = {}) {
       title: linked?.title || item.title,
       year: linked?.year || item.year || null,
       mediaId: linked?.id || null,
+      actionTargets: mediaActionTargets(parentSeries || linked),
       artworkUrl
     };
     delete enriched.titleFallback;
@@ -1378,6 +1397,7 @@ function publicRecord(record) {
     year: record.year,
     providerIds: { ...record.providerIds },
     sources: [...record.sources],
+    actionTargets: mediaActionTargets(record),
     lifecycle: record.lifecycle,
     requested: record.requested,
     monitored: record.monitored,

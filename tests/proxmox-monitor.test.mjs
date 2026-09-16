@@ -72,6 +72,7 @@ test("publishes Proxmox targets in a separate bounded infrastructure snapshot", 
   assert.equal(snapshot.infrastructure.affectedTargetCount, 0);
   assert.deepEqual(snapshot.infrastructure.targets[0], {
     id: TARGET_ID,
+    targetRevision: TARGET_REVISION,
     type: "proxmox",
     displayName: "Main Proxmox",
     state: "healthy",

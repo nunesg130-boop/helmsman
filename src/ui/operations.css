@@ -1018,7 +1018,7 @@ html[data-transparency="reduced"] :is(.operations-overall, .operations-panel) {
 .portainer-filterbar .filter-result-count { margin-left: auto; padding: 11px 3px; }
 
 .portainer-table-wrap { overflow-x: auto; margin: 0 18px 18px; border: 1px solid var(--line); border-radius: var(--radius, 14px); }
-.portainer-table { width: 100%; min-width: 940px; border-collapse: collapse; background: rgba(3, 7, 12, 0.22); }
+.portainer-table { width: 100%; min-width: 1080px; border-collapse: collapse; background: rgba(3, 7, 12, 0.22); }
 .portainer-table th,
 .portainer-table td { padding: 13px 14px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: middle; }
 .portainer-table th { color: var(--muted); font-size: 9px; letter-spacing: 0.09em; text-transform: uppercase; }
@@ -1026,6 +1026,9 @@ html[data-transparency="reduced"] :is(.operations-overall, .operations-panel) {
 .portainer-table td:first-child { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 10px; }
 .portainer-table td code { display: inline-block; max-width: 220px; overflow: hidden; color: var(--text-soft); font-size: 10px; text-overflow: ellipsis; vertical-align: middle; white-space: nowrap; }
 .portainer-table td:nth-child(5) { min-width: 185px; }
+.portainer-table td:last-child { min-width: 150px; }
+.container-control-buttons { display: flex; flex-wrap: wrap; gap: 6px; }
+.container-control-buttons .button { min-width: 64px; }
 .portainer-container-row.is-down { background: rgba(255, 107, 120, 0.055); }
 .portainer-container-row.is-limited { background: rgba(255, 209, 102, 0.045); }
 

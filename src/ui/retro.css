@@ -1495,7 +1495,7 @@ progress {
 
 .portainer-table {
   width: 100%;
-  min-width: 760px;
+  min-width: 1080px;
   border-collapse: collapse;
   box-shadow: none;
 }

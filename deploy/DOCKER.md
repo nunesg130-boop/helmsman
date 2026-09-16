@@ -1,16 +1,16 @@
-# Helmsman Docker deployment — v0.10.0-beta.11
+# Helmsman Docker deployment — v0.10.0-beta.12
 
-The supported image contains one non-root Node.js process. It serves the Media and Infrastructure workspaces, owns the encrypted credential store and browser sessions, and runs safe background health checks. It does not contain Caddy, Authentik, a database, or a Docker socket, and it has no infrastructure control actions.
+The supported image contains one non-root Node.js process. It serves the Media and Infrastructure workspaces, owns the encrypted credential store and browser sessions, runs safe background health checks, and exposes only the bounded actions documented below. It does not contain Caddy, Authentik, a database, a Docker socket, SSH, a shell, a hypervisor console, or host mounts.
 
 ## 1. Prepare
 
-The GitHub Release for `v0.10.0-beta.11` publishes three deployment assets:
+The GitHub Release for `v0.10.0-beta.12` publishes three deployment assets:
 
 - `compose.yaml` — the pull-only production service definition pinned to the released multi-architecture image digest;
 - `container.env.example` — the same digest-pinned image reference plus non-secret bind-address and port settings;
 - `SHA256SUMS` — SHA-256 checksums for both deployment files.
 
-The release workflow replaces `ghcr.io/OWNER/REPOSITORY:0.10.0-beta.11` in the tagged source files with the repository's actual lowercase GHCR path and exact multi-architecture manifest digest (`ghcr.io/owner/repository@sha256:...`) before publishing them. Do not deploy the placeholder-bearing files directly from a source checkout unless you first set `HELMSMAN_IMAGE` to a published image reference.
+The release workflow replaces `ghcr.io/OWNER/REPOSITORY:0.10.0-beta.12` in the tagged source files with the repository's actual lowercase GHCR path and exact multi-architecture manifest digest (`ghcr.io/owner/repository@sha256:...`) before publishing them. Do not deploy the placeholder-bearing files directly from a source checkout unless you first set `HELMSMAN_IMAGE` to a published image reference.
 
 The three release assets are the complete base deployment. Optional Caddy examples, migration overrides, the external-key override, and `compose.dev.yaml` remain available from the repository at the matching Git tag and should be downloaded only when that deployment mode is needed.
 
@@ -19,9 +19,9 @@ For a public GitHub repository, download and verify the assets on Linux:
 ```sh
 sudo install -d -o "$(id -u)" -g "$(id -g)" -m 0755 /opt/helmsman
 cd /opt/helmsman
-curl -fLO https://github.com/OWNER/REPOSITORY/releases/download/v0.10.0-beta.11/compose.yaml
-curl -fLO https://github.com/OWNER/REPOSITORY/releases/download/v0.10.0-beta.11/container.env.example
-curl -fLO https://github.com/OWNER/REPOSITORY/releases/download/v0.10.0-beta.11/SHA256SUMS
+curl -fLO https://github.com/OWNER/REPOSITORY/releases/download/v0.10.0-beta.12/compose.yaml
+curl -fLO https://github.com/OWNER/REPOSITORY/releases/download/v0.10.0-beta.12/container.env.example
+curl -fLO https://github.com/OWNER/REPOSITORY/releases/download/v0.10.0-beta.12/SHA256SUMS
 sha256sum -c SHA256SUMS
 ```
 
@@ -31,7 +31,7 @@ For a private repository, authenticate GitHub CLI and download the same release 
 sudo install -d -o "$(id -u)" -g "$(id -g)" -m 0755 /opt/helmsman
 cd /opt/helmsman
 gh auth login
-gh release download v0.10.0-beta.11 --repo OWNER/REPOSITORY \
+gh release download v0.10.0-beta.12 --repo OWNER/REPOSITORY \
   --pattern compose.yaml \
   --pattern container.env.example \
   --pattern SHA256SUMS
@@ -117,7 +117,7 @@ The default mode needs no CIDR entries. Each time a private service is explicitl
 
 Select Media **Connections** to configure Jellyfin, Seerr, Radarr, Sonarr, Prowlarr, qBittorrent, or Bazarr in their purpose-based categories. Select Infrastructure **Connectors** to connect one or more Proxmox environments or Portainer servers; Infrastructure **Overview** then shows only the connections already configured. A Proxmox environment is either one standalone server or one multi-node cluster; API endpoints, physical nodes, and VM/LXC workloads remain separate records. Portainer is a separate Infrastructure service and never appears in Media. Enter each full URL and credential in the interface. The container registers the exact URL after validating it against the current network policy. It encrypts each credential independently with AES-256-GCM, a fresh 96-bit nonce, and authenticated instance/connection/field/revision metadata.
 
-Media is read-only in v0.10. Home summarizes current Jellyfin playback, continue-watching items, requests, downloads, blocked imports, releases, recently added and missing media, and subtitle backlog. Continue Watching resolves an episode to its series poster instead of displaying the episode's resume frame. The fixed Now Playing query retains only bounded media and play-state fields and discards user, device, client, network, and stream-session metadata. Discover displays the bounded Seerr discovery feed and labels ordinary unmatched titles **Not requested** instead of exposing an internal unknown state; only Jellyfin evidence can label an item available in Helmsman's library. Library joins Jellyfin availability with Radarr/Sonarr monitoring and import evidence. Requests preserve separate request IDs, Seerr approval state, acquisition state, exact season scope, and 4K scope. Availability comes from Seerr's media record, an exact provider-ID match to a Jellyfin movie, or the matching requested-season availability records—not the separate request-workflow season status—so completed media no longer remains labeled **Awaiting Jellyfin**, while an older Jellyfin series record still cannot falsely fulfill a new season request. Activity correlates qBittorrent download identifiers with Sonarr/Radarr queue entries and can display their bounded sanitized status error. Calendar keeps episodes distinct and shows episode coordinates without repeating series titles. Health retains service and pipeline monitoring, while Connections owns service enrollment. Helmsman cannot approve requests, add titles, change monitoring, pause transfers, or delete media/data.
+Media monitoring remains read-only in v0.10. Home summarizes current Jellyfin playback, continue-watching items, requests, downloads, blocked imports, releases, recently added and missing media, and subtitle backlog. Continue Watching resolves an episode to its series poster instead of displaying the episode's resume frame. The fixed Now Playing query retains only bounded media and play-state fields and discards user, device, client, network, and stream-session metadata. Discover displays the bounded Seerr discovery feed and labels ordinary unmatched titles **Not requested** instead of exposing an internal unknown state; only Jellyfin evidence can label an item available in Helmsman's library. Library joins Jellyfin availability with Radarr/Sonarr monitoring and import evidence. Requests preserve separate request IDs, Seerr approval state, acquisition state, exact season scope, and 4K scope. Availability comes from Seerr's media record, an exact provider-ID match to a Jellyfin movie, or the matching requested-season availability records—not the separate request-workflow season status—so completed media no longer remains labeled **Awaiting Jellyfin**, while an older Jellyfin series record still cannot falsely fulfill a new season request. Activity correlates qBittorrent download identifiers with Sonarr/Radarr queue entries and can display their bounded sanitized status error. Calendar keeps episodes distinct and shows episode coordinates without repeating series titles. Health retains service and pipeline monitoring, while Connections owns service enrollment. The only Media writes are an explicitly confirmed Seerr failed-request retry and a targeted Radarr/Sonarr search when Helmsman can resolve one exact current record. Helmsman cannot approve requests, add or delete titles, change monitoring, pause or remove downloads, alter files, or run free-form searches.
 
 Media records are joined by TMDb, TVDb, IMDb, download, and service identifiers rather than titles. The lifecycle is **Requested → Monitored → Downloading → Imported → Available**. Normalized titles, identifiers, progress, dates, and status errors live only in the current in-memory operations snapshot; they are not written to `state.json` or another catalog.
 
@@ -135,7 +135,7 @@ It cannot request the saved credential, ciphertext, nonce, authentication tag, o
 
 A Jellyfin connection requires a Dashboard API key, a user access token, or a one-time username/password exchange. In exchange mode Helmsman immediately discards the password and encrypts only the access token returned by Jellyfin. A Seerr connection requires either the global API key from Settings > General or a one-time native local account email/password exchange. Seerr local authentication must be enabled for the exchange; Helmsman discards the password and encrypts only the returned session. Use service API keys for Radarr, Sonarr, Prowlarr, and Bazarr, and a qBittorrent 5.2+ `qbt_` API key. Password-based qBittorrent sessions are not suitable for an unattended monitor and are not used in this beta.
 
-Each Proxmox endpoint uses a dedicated API token ID in the form `user@realm!token-name` and its generated token secret. Both fields are write-only in the browser and encrypted at rest. Use a dedicated least-privilege audit user and token; do not enter a Proxmox username/password, `root@pam`, a root token, or an administrative token. One Helmsman instance accepts at most 25 environments and 25 total endpoints, with up to four explicitly approved endpoints in one environment.
+Each Proxmox endpoint uses a dedicated API token ID in the form `user@realm!token-name` and its generated token secret. Both fields are write-only in the browser and encrypted at rest. Use a dedicated least-privilege user and token scoped to the required inventory plus power-management access for only the guests Helmsman may control; do not enter a Proxmox username/password, `root@pam`, a root token, or an administrative token. One Helmsman instance accepts at most 25 environments and 25 total endpoints, with up to four explicitly approved endpoints in one environment.
 
 Use **System trust** when the Proxmox certificate chains to a CA trusted by the container. For a self-signed or local certificate, select **Pinned SHA-256 fingerprint** and enter the exact certificate fingerprint. Helmsman has no global or per-endpoint “ignore TLS errors” option. A certificate replacement therefore requires an explicit fingerprint review instead of silently weakening HTTPS.
 
@@ -145,21 +145,21 @@ Obtain a self-signed certificate fingerprint out of band: run `pvenode cert info
 
 After the environment is saved, its detail view can register additional endpoints for failover. Every alternate endpoint requires an operator-entered URL, explicit TLS verification, its own encrypted write-only token, and a successful identity match. Helmsman never trusts discovered IP addresses or certificates automatically. It also never combines existing environment configurations automatically, even if two endpoints later report the same cluster.
 
-The Proxmox connector permits only its fixed read-only API routes. It does not expose a generic Proxmox proxy and cannot start, stop, reset, migrate, back up, restore, reconfigure, or open a console for any node, VM, LXC, or storage resource. Helmsman also has no SSH credential and no Docker socket.
+Proxmox monitoring and probes use fixed read-only GET routes. Separate, explicitly confirmed actions use fixed method, path, query, and body templates to start, reboot, or gracefully shut down one current QEMU VM or LXC. The browser selects a supported action and normalized workload record; it cannot supply an arbitrary upstream path or request body. Helmsman exposes no general Proxmox API proxy and cannot force-stop, reset, kill, delete, remove, migrate, back up, restore, reconfigure, open a console, or perform a bulk action. It also has no SSH credential, shell, Docker socket, or host mount.
 
-The v0.10.0-beta.11 snapshot exposes a bounded read-only inventory to the authenticated UI: each node, VM, LXC, storage entry, and recent activity/backup result is normalized and sanitized. Cluster-wide inventory is collected only once per environment and monitoring cycle through one healthy, identity-matched endpoint, which prevents duplicate workloads and incidents. Recent tasks and backup tasks are queried through each visible node's fixed read-only route and merged with their node identity retained; raw UPIDs and command-bearing task status text are discarded. Endpoint health is reported separately from actual node health; losing a primary endpoint can leave the environment Limited and inventory available through an approved alternate.
+The v0.10.0-beta.12 snapshot exposes a bounded read-only inventory to the authenticated UI: each node, VM, LXC, storage entry, and recent activity/backup result is normalized and sanitized. Cluster-wide inventory is collected only once per environment and monitoring cycle through one healthy, identity-matched endpoint, which prevents duplicate workloads and incidents. Recent tasks and backup tasks are queried through each visible node's fixed read-only route and merged with their node identity retained; raw UPIDs and command-bearing task status text are discarded. Endpoint health is reported separately from actual node health; losing a primary endpoint can leave the environment Limited and inventory available through an approved alternate.
 
 ### Proxmox token preparation
 
-Create a dedicated Proxmox user and an API token with privilege separation enabled. Grant the token a read-only audit role only over the resources Helmsman should see. For complete cluster-level visibility, an operator may assign Proxmox's built-in `PVEAuditor` role at `/` with propagation; a narrower ACL is safer when complete visibility is unnecessary, but unavailable resources will remain absent or Limited in Helmsman. Copy the generated token secret when Proxmox displays it and store it directly through the Helmsman form.
+Create a dedicated Proxmox user and an API token with privilege separation enabled. Grant only the inventory privileges needed for resources Helmsman should see plus `VM.PowerMgmt` on the specific guests or pool it may control. For complete cluster-level visibility, an operator may assign Proxmox's built-in `PVEAuditor` role at `/` with propagation while assigning the power-management role at a narrower guest or pool path; narrower visibility is safer when complete inventory is unnecessary, but unavailable resources will remain absent or Limited in Helmsman. Do not grant administrator, node-control, storage-allocation, migration, backup, console, or configuration privileges. Copy the generated token secret when Proxmox displays it and store it directly through the Helmsman form.
 
 ### Portainer access-token preparation
 
 Open **Infrastructure → Connectors** and select **Portainer** to add up to eight independent Portainer servers. After the first connection is saved, the dedicated Portainer inventory view becomes available in the sidebar. For each one, enter its display name, full HTTPS URL (normally `https://host-or-ip:9443`), TLS trust mode, durable access token, and monitoring choice. Use **System trust** for a certificate chaining to a CA trusted by the container. For a self-signed or local certificate, use **Pinned SHA-256 fingerprint** and verify that fingerprint out of band. Plaintext Portainer URLs and “ignore TLS errors” behavior are not supported.
 
-Generate the access token for a dedicated least-privilege Portainer user whose visible environments are limited to what Helmsman should monitor. Access tokens inherit their Portainer user's permissions. Helmsman sends the token only as `X-API-Key`, stores it encrypted and write-only, and binds it to that exact URL and TLS identity. Do not use an administrator token and do not put the URL or token in `.env`.
+Generate the access token for a dedicated least-privilege Portainer user whose visible environments and container lifecycle permissions are limited to what Helmsman should monitor and control. Access tokens inherit their Portainer user's permissions. Helmsman sends the token only as `X-API-Key`, stores it encrypted and write-only, and binds it to that exact URL and TLS identity. Do not use an administrator token and do not put the URL or token in `.env`.
 
-The test verifies a Portainer status route and `/api/users/me` before saving. Monitoring then uses fixed GET-only calls for paged environments, stacks, and Docker-compatible container inventories. Multiple Docker or Podman environments can be reported by one server. Kubernetes and Azure environments may be listed, but Helmsman does not send them through the Docker container route. Stopped containers are informational; unavailable environments and unhealthy, dead, or restarting containers report bounded specific errors. There is no general Portainer or Docker API proxy. There are no Portainer write operations, container or stack controls, Docker socket, or host mount.
+The test verifies a Portainer status route and `/api/users/me` before saving. Monitoring and probes then use fixed read-only GET routes for paged environments, stacks, and Docker-compatible container inventories. Multiple Docker or Podman environments can be reported by one server. Kubernetes and Azure environments may be listed, but Helmsman does not send them through the Docker container route. Stopped containers are informational; unavailable environments and unhealthy, dead, or restarting containers report bounded specific errors. Separate, explicitly confirmed actions use fixed method, path, query, and body templates to start, restart, or gracefully stop one current Docker-compatible container. The browser cannot supply an arbitrary upstream path or request body. There is no general Portainer or Docker API proxy and no stack control, delete, remove, force-stop, reset, kill, or bulk action. Helmsman has no Docker socket or host mount.
 
 ## Container-to-target addressing
 
@@ -380,9 +380,9 @@ not only the image line:
 ```sh
 set -euo pipefail
 cd /opt/helmsman
-cp -- compose.yaml.before-0.10.0-beta.11 compose.yaml
-if [ -f .env.before-0.10.0-beta.11 ]; then
-  cp -- .env.before-0.10.0-beta.11 .env
+cp -- compose.yaml.before-0.10.0-beta.12 compose.yaml
+if [ -f .env.before-0.10.0-beta.12 ]; then
+  cp -- .env.before-0.10.0-beta.12 .env
   helmsman_env_file=.env
 else
   rm -f -- .env

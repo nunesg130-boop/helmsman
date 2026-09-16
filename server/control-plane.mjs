@@ -31,6 +31,9 @@ const MAX_INFRASTRUCTURE_ENDPOINTS = 25;
 const MAX_ENDPOINTS_PER_ENVIRONMENT = 4;
 const MAX_INFRASTRUCTURE_SERVICES = 8;
 const DEFAULT_INFRASTRUCTURE_MONITOR_INTERVAL_SECONDS = 60;
+const ACTION_INVENTORY_MAX_AGE_MS = 2 * 60 * 1000;
+const ACTION_COOLDOWN_MS = 30 * 1000;
+const MAX_RECENT_ACTIONS = 2_048;
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u;
 const PROXMOX_TOKEN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}@[A-Za-z0-9][A-Za-z0-9._-]{0,63}![A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
 const MEDIA_ARTWORK_TOKEN = /^[a-f0-9]{16,64}$/u;
@@ -134,13 +137,13 @@ export const SERVICE_DEFINITIONS = Object.freeze({
 export const INFRASTRUCTURE_DEFINITIONS = Object.freeze({
   proxmox: Object.freeze({
     name: "Proxmox VE",
-    role: "Virtualization",
+    role: "Virtualization inventory and controls",
     credentialFields: Object.freeze(["tokenId", "tokenSecret"]),
     credentials: Object.freeze([
       Object.freeze({
         id: "tokenId",
         label: "API token ID",
-        hint: "Use the complete Proxmox token ID, for example helmsman@pve!monitoring."
+        hint: "Use a dedicated token with VM.Audit and VM.PowerMgmt only where Helmsman should control guests."
       }),
       Object.freeze({
         id: "tokenSecret",
@@ -154,13 +157,13 @@ export const INFRASTRUCTURE_DEFINITIONS = Object.freeze({
 export const INFRASTRUCTURE_SERVICE_DEFINITIONS = Object.freeze({
   portainer: Object.freeze({
     name: "Portainer",
-    role: "Container management",
+    role: "Container inventory and controls",
     credentialFields: Object.freeze(["accessToken"]),
     credentials: Object.freeze([
       Object.freeze({
         id: "accessToken",
         label: "Access token",
-        hint: "Create an access token for a dedicated read-only Portainer user."
+        hint: "Use a dedicated least-privilege user allowed to inspect and start, restart, or stop managed containers."
       })
     ])
   })
@@ -823,6 +826,15 @@ export async function createControlPlane(options) {
   const fetchMediaArtwork = typeof options.fetchMediaArtwork === "function"
     ? options.fetchMediaArtwork
     : null;
+  const executePortainerContainerAction = typeof options.executePortainerContainerAction === "function"
+    ? options.executePortainerContainerAction
+    : null;
+  const executeProxmoxWorkloadAction = typeof options.executeProxmoxWorkloadAction === "function"
+    ? options.executeProxmoxWorkloadAction
+    : null;
+  const executeMediaRecoveryAction = typeof options.executeMediaRecoveryAction === "function"
+    ? options.executeMediaRecoveryAction
+    : null;
   const credentialStore = options.credentialStore || new CredentialStore(dataDir, {
     instanceId: stateStore.snapshot().instanceId,
     keyFilePath: options.keyFilePath,
@@ -871,6 +883,8 @@ export async function createControlPlane(options) {
   const accessLoginAttempts = new Map();
   let serviceMutationChain = Promise.resolve();
   let claimMutationChain = Promise.resolve();
+  const activeActions = new Set();
+  const recentActions = new Map();
 
   async function serializeServiceMutation(operation) {
     const pending = serviceMutationChain.catch(() => {}).then(operation);
@@ -2696,6 +2710,319 @@ export async function createControlPlane(options) {
     }
   }
 
+  function requiredActionRevision(value) {
+    if (typeof value !== "string" || !UUID.test(value)) {
+      fail(400, "INVALID_TARGET_REVISION", "Refresh the connection before sending an action.");
+    }
+    return value;
+  }
+
+  function requiredActionInteger(value, label, maximum = 2_147_483_647) {
+    if (!Number.isSafeInteger(value) || value < 1 || value > maximum) {
+      fail(400, "INVALID_ACTION_TARGET", `Choose a valid ${label}.`);
+    }
+    return value;
+  }
+
+  function currentOperationsSnapshot() {
+    if (!monitor) fail(503, "MONITOR_STARTING", "The operations monitor is still starting.");
+    const snapshot = monitor.getSnapshot();
+    if (!snapshot || typeof snapshot !== "object") {
+      fail(503, "MONITOR_STARTING", "Current inventory is not available yet.");
+    }
+    return snapshot;
+  }
+
+  function requireCurrentActionEvidence(evidence, targetRevision, label) {
+    const checkedAt = Date.parse(evidence?.checkedAt);
+    const age = Date.now() - checkedAt;
+    if (!evidence
+      || evidence.targetRevision !== targetRevision
+      || !Number.isFinite(checkedAt)
+      || age < -30_000
+      || age > ACTION_INVENTORY_MAX_AGE_MS) {
+      fail(409, "ACTION_INVENTORY_STALE", `Refresh ${label} before sending a control action.`);
+    }
+    return evidence;
+  }
+
+  function rememberRecentAction(key, now = Date.now()) {
+    recentActions.delete(key);
+    recentActions.set(key, now + ACTION_COOLDOWN_MS);
+    while (recentActions.size > MAX_RECENT_ACTIONS) {
+      recentActions.delete(recentActions.keys().next().value);
+    }
+  }
+
+  function pruneRecentActions(now = Date.now()) {
+    for (const [key, expiresAt] of recentActions) {
+      if (expiresAt <= now) recentActions.delete(key);
+    }
+  }
+
+  async function runSingleFlightAction(key, operation) {
+    const now = Date.now();
+    pruneRecentActions(now);
+    if (activeActions.has(key)) {
+      fail(409, "ACTION_IN_PROGRESS", "An action is already in progress for this resource.");
+    }
+    if ((recentActions.get(key) || 0) > now) {
+      fail(409, "ACTION_RECENTLY_ACCEPTED", "A recent action may still be taking effect. Refresh before trying again.");
+    }
+    activeActions.add(key);
+    try {
+      const result = await operation();
+      rememberRecentAction(key);
+      return result;
+    } catch (error) {
+      if (error?.code === "ACTION_OUTCOME_UNKNOWN") rememberRecentAction(key);
+      throw error;
+    } finally {
+      activeActions.delete(key);
+    }
+  }
+
+  async function portainerContainerAction(request, response) {
+    if (request.method !== "POST") fail(405, "METHOD_NOT_ALLOWED", "That method is not allowed.");
+    await authenticate(request, true);
+    if (!executePortainerContainerAction) fail(503, "ACTIONS_UNAVAILABLE", "Portainer controls are temporarily unavailable.");
+    const body = await readBoundedJson(request);
+    requireExactKeys(body, ["serviceId", "environmentId", "containerId", "operation", "targetRevision"]);
+    const serviceId = typeof body.serviceId === "string" && UUID.test(body.serviceId) ? body.serviceId : null;
+    const environmentId = requiredActionInteger(body.environmentId, "Portainer environment");
+    const containerId = typeof body.containerId === "string" && /^[a-f0-9]{64}$/u.test(body.containerId)
+      ? body.containerId
+      : null;
+    const operation = ["start", "restart", "stop"].includes(body.operation) ? body.operation : null;
+    const targetRevision = requiredActionRevision(body.targetRevision);
+    if (!serviceId || !containerId || !operation) {
+      fail(400, "INVALID_ACTION_TARGET", "Choose a current Portainer container and supported action.");
+    }
+
+    const { state, service } = infrastructureServiceById(serviceId);
+    if (service.type !== "portainer"
+      || service.enabled === false
+      || service.monitoringEnabled === false
+      || service.targetRevision !== targetRevision) {
+      fail(409, "TARGET_CHANGED", "The Portainer connection changed; refresh it before trying again.");
+    }
+    const snapshotService = requireCurrentActionEvidence(
+      (currentOperationsSnapshot().infrastructure?.portainer || [])
+        .find((candidate) => candidate?.id === serviceId),
+      targetRevision,
+      "Portainer inventory"
+    );
+    const environment = snapshotService?.inventory?.environments
+      ?.find((candidate) => candidate?.id === environmentId && candidate?.containerCapable === true);
+    const container = snapshotService?.inventory?.containers?.find((candidate) => (
+      candidate?.environmentId === environmentId && candidate?.id === containerId
+    ));
+    if (snapshotService?.connectionState !== "connected"
+      || environment?.state !== "up"
+      || !environment
+      || !container) {
+      fail(409, "ACTION_TARGET_NOT_CURRENT", "That container is not in the current Portainer inventory. Refresh and try again.");
+    }
+    const allowedState = operation === "start"
+      ? ["created", "exited"].includes(container.state)
+      : container.state === "running";
+    if (!allowedState) {
+      fail(409, "ACTION_NOT_AVAILABLE", `The ${operation} action is not available while this container is ${container.state}.`);
+    }
+
+    const target = parseInfrastructureServiceUrl(service.url);
+    const targetResolution = await resolveAndAuthorizeTarget(target, state.policy, {
+      lookup,
+      approvedHostCidrs: service.approvedHostCidrs || []
+    });
+    const result = await runSingleFlightAction(
+      `portainer:${serviceId}:${environmentId}:${containerId}`,
+      async () => {
+        try {
+          return await useInfrastructureServiceCredentials(serviceId, service, (credentials) => (
+            executePortainerContainerAction({
+              service,
+              environmentId,
+              containerId,
+              operation,
+              targetResolution,
+              credentials
+            })
+          ));
+        } finally {
+          monitor?.requestRefresh?.();
+        }
+      }
+    );
+    sendJson(response, 200, result);
+  }
+
+  async function proxmoxWorkloadAction(request, response) {
+    if (request.method !== "POST") fail(405, "METHOD_NOT_ALLOWED", "That method is not allowed.");
+    await authenticate(request, true);
+    if (!executeProxmoxWorkloadAction) fail(503, "ACTIONS_UNAVAILABLE", "Proxmox controls are temporarily unavailable.");
+    const body = await readBoundedJson(request);
+    requireExactKeys(body, ["environmentId", "node", "type", "vmid", "operation", "targetRevision"]);
+    const environmentId = typeof body.environmentId === "string" && UUID.test(body.environmentId)
+      ? body.environmentId
+      : null;
+    const node = typeof body.node === "string" && /^(?=.{1,63}$)[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$/u.test(body.node)
+      && !body.node.includes("..") ? body.node : null;
+    const type = ["qemu", "lxc"].includes(body.type) ? body.type : null;
+    const vmid = requiredActionInteger(body.vmid, "Proxmox workload", 999_999_999);
+    const operation = ["start", "reboot", "shutdown"].includes(body.operation) ? body.operation : null;
+    const targetRevision = requiredActionRevision(body.targetRevision);
+    if (!environmentId || !node || !type || !operation) {
+      fail(400, "INVALID_ACTION_TARGET", "Choose a current Proxmox workload and supported action.");
+    }
+
+    const { state, target: environment } = targetById(environmentId);
+    if (environment.type !== "proxmox"
+      || environment.enabled === false
+      || environment.monitoringEnabled === false
+      || environment.targetRevision !== targetRevision) {
+      fail(409, "TARGET_CHANGED", "The Proxmox environment changed; refresh it before trying again.");
+    }
+    const snapshotEnvironment = requireCurrentActionEvidence(
+      (currentOperationsSnapshot().infrastructure?.environments || [])
+        .find((candidate) => candidate?.id === environmentId),
+      targetRevision,
+      "Proxmox inventory"
+    );
+    const workload = snapshotEnvironment?.workloads?.find((candidate) => (
+      candidate?.node === node && candidate?.type === type && candidate?.vmid === vmid
+    ));
+    if (snapshotEnvironment?.connectionState !== "connected" || !workload || workload.template === true) {
+      fail(409, "ACTION_TARGET_NOT_CURRENT", "That workload is not in the current Proxmox inventory. Refresh and try again.");
+    }
+    if (workload.lock) {
+      fail(409, "ACTION_NOT_AVAILABLE", "Proxmox has locked this workload; wait for the current task to finish.");
+    }
+    const allowedState = operation === "start" ? workload.status === "stopped" : workload.status === "running";
+    if (!allowedState) {
+      fail(409, "ACTION_NOT_AVAILABLE", `The ${operation} action is not available while this workload is ${workload.status}.`);
+    }
+
+    const endpoints = infrastructureEndpoints(environment);
+    const endpoint = endpoints.find((candidate) => (
+      candidate.id === snapshotEnvironment?.selectedEndpointId && candidate.enabled !== false
+    )) || primaryInfrastructureEndpoint(environment);
+    if (!endpoint || endpoint.enabled === false) {
+      fail(409, "ACTION_ENDPOINT_UNAVAILABLE", "No enabled Proxmox endpoint is available for this environment.");
+    }
+    const target = parseInfrastructureTargetUrl(endpoint.url);
+    const targetResolution = await resolveAndAuthorizeTarget(target, state.policy, {
+      lookup,
+      approvedHostCidrs: endpoint.approvedHostCidrs || []
+    });
+    const result = await runSingleFlightAction(
+      `proxmox:${environmentId}:${node}:${type}:${vmid}`,
+      async () => {
+        try {
+          return await useInfrastructureCredentials(environmentId, environment, (credentials) => (
+            executeProxmoxWorkloadAction({
+              environment,
+              endpoint,
+              node,
+              type,
+              vmid,
+              operation,
+              targetResolution,
+              credentials
+            })
+          ), endpoint.id);
+        } finally {
+          monitor?.requestRefresh?.();
+        }
+      }
+    );
+    sendJson(response, 200, result);
+  }
+
+  async function mediaRecoveryAction(request, response) {
+    if (request.method !== "POST") fail(405, "METHOD_NOT_ALLOWED", "That method is not allowed.");
+    await authenticate(request, true);
+    if (!executeMediaRecoveryAction) fail(503, "ACTIONS_UNAVAILABLE", "Media recovery controls are temporarily unavailable.");
+    const body = await readBoundedJson(request);
+    requireExactKeys(body, ["serviceId", "operation", "resourceId", "targetRevision"]);
+    const serviceId = ["seerr", "radarr", "sonarr"].includes(body.serviceId) ? body.serviceId : null;
+    const operation = ["retryRequest", "searchMovie", "searchSeries"].includes(body.operation)
+      ? body.operation
+      : null;
+    const resourceId = requiredActionInteger(body.resourceId, "media resource", 9_999_999_999);
+    const targetRevision = requiredActionRevision(body.targetRevision);
+    const expectedOperation = { seerr: "retryRequest", radarr: "searchMovie", sonarr: "searchSeries" }[serviceId];
+    if (!serviceId || operation !== expectedOperation) {
+      fail(400, "INVALID_ACTION_TARGET", "Choose a supported media recovery action.");
+    }
+    const state = stateStore.snapshot();
+    const connection = state.connections[serviceId];
+    if (!connection || connection.monitoringEnabled === false || connection.targetRevision !== targetRevision) {
+      fail(409, "TARGET_CHANGED", "The media service connection changed; refresh it before trying again.");
+    }
+    const snapshot = currentOperationsSnapshot();
+    const provider = requireCurrentActionEvidence(
+      snapshot.services?.find((candidate) => candidate?.id === serviceId),
+      targetRevision,
+      `${serviceId} inventory`
+    );
+    if (provider?.connectionState !== "connected") {
+      fail(409, "ACTION_TARGET_NOT_CURRENT", `Current ${serviceId} inventory is not connected.`);
+    }
+    if (serviceId === "seerr") {
+      const requestRecord = snapshot.media?.requests?.find((candidate) => candidate?.requestId === resourceId);
+      if (!requestRecord || requestRecord.requestStatus !== "failed") {
+        fail(409, "ACTION_NOT_AVAILABLE", "That request is not currently marked failed by Seerr.");
+      }
+    } else {
+      const expectedType = serviceId === "radarr" ? "movie" : "series";
+      const matches = (provider?.inventory?.library || []).filter((candidate) => (
+        candidate?.mediaType === expectedType && Number(candidate?.sourceId) === resourceId
+      ));
+      const records = (snapshot.media?.records || []).filter((candidate) => (
+        candidate?.mediaType === expectedType
+        && Array.isArray(candidate.actionTargets)
+        && candidate.actionTargets.some((target) => (
+          target?.service === serviceId && target?.resourceId === resourceId
+        ))
+      ));
+      if (matches.length !== 1
+        || matches[0].monitored !== true
+        || records.length !== 1
+        || records[0].monitored !== true
+        || records[0].available === true
+        || records[0].downloading === true) {
+        fail(409, "ACTION_TARGET_NOT_CURRENT", `That ${expectedType} is not one current monitored ${serviceId} target.`);
+      }
+    }
+
+    const target = parseServiceUrl(connection.url);
+    const targetResolution = await resolveAndAuthorizeTarget(target, state.policy, {
+      lookup,
+      approvedHostCidrs: connection.approvedHostCidrs || []
+    });
+    const result = await runSingleFlightAction(
+      `media:${serviceId}:${resourceId}`,
+      async () => {
+        try {
+          return await useServiceCredential(serviceId, connection, (credential) => (
+            executeMediaRecoveryAction({
+              serviceId,
+              operation,
+              resourceId,
+              connection,
+              targetResolution,
+              credential
+            })
+          ));
+        } finally {
+          monitor?.requestRefresh?.();
+        }
+      }
+    );
+    sendJson(response, 200, result);
+  }
+
   async function operations(request, response, action) {
     await authenticate(request, request.method !== "GET");
     if (!monitor) fail(503, "MONITOR_STARTING", "The operations monitor is still starting.");
@@ -2796,6 +3123,21 @@ export async function createControlPlane(options) {
       }
       if (url.pathname === "/api/v2/config") {
         await configuration(request, response);
+        return true;
+      }
+      if (url.pathname === "/api/v2/actions/portainer/container") {
+        if (url.search) fail(404, "NOT_FOUND", "Not found.");
+        await portainerContainerAction(request, response);
+        return true;
+      }
+      if (url.pathname === "/api/v2/actions/proxmox/workload") {
+        if (url.search) fail(404, "NOT_FOUND", "Not found.");
+        await proxmoxWorkloadAction(request, response);
+        return true;
+      }
+      if (url.pathname === "/api/v2/actions/media") {
+        if (url.search) fail(404, "NOT_FOUND", "Not found.");
+        await mediaRecoveryAction(request, response);
         return true;
       }
       if (url.pathname === "/api/v2/infrastructure/services/test") {

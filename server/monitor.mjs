@@ -453,7 +453,7 @@ function checkFromResult(input, index, serviceId, checkedAt, measuredLatency) {
   };
 }
 
-function normalizeProbeResult(serviceId, result, checkedAt, measuredLatency) {
+function normalizeProbeResult(serviceId, result, checkedAt, measuredLatency, targetRevision = null) {
   const source = result && typeof result === "object" && !Array.isArray(result) ? result : {};
   const resultCheckedAt = validIso(source.checkedAt) || checkedAt;
   const rawChecks = Array.isArray(source.checks) && source.checks.length
@@ -483,6 +483,7 @@ function normalizeProbeResult(serviceId, result, checkedAt, measuredLatency) {
   const state = normalizeState(source.state, null) || worstState(checks.map((check) => check.state));
   return {
     id: serviceId,
+    targetRevision: typeof targetRevision === "string" && UUID.test(targetRevision) ? targetRevision : null,
     label: SERVICE_LABELS[serviceId] || serviceId,
     state,
     connectionState: normalizeConnectionState(source.connectionState),
@@ -705,6 +706,9 @@ function normalizeInfrastructureTargetResult(target, result, checkedAt, measured
   return {
     ...normalized,
     targetId,
+    targetRevision: typeof target?.targetRevision === "string" && UUID.test(target.targetRevision)
+      ? target.targetRevision
+      : null,
     type: "proxmox",
     displayName: safeDisplayText(target.displayName, "Proxmox", 80),
     capabilities,
@@ -722,6 +726,7 @@ function normalizeInfrastructureTargetResult(target, result, checkedAt, measured
 function publicInfrastructureTarget(result) {
   return {
     id: result.targetId,
+    targetRevision: result.targetRevision,
     type: result.type,
     displayName: result.displayName,
     state: result.state,
@@ -763,6 +768,9 @@ function normalizePortainerServiceResult(service, result, checkedAt, measuredLat
   return {
     ...normalized,
     serviceId,
+    targetRevision: typeof service?.targetRevision === "string" && UUID.test(service.targetRevision)
+      ? service.targetRevision
+      : null,
     type: "portainer",
     displayName: safeDisplayText(service.displayName, "Portainer", 80),
     capabilities,
@@ -774,6 +782,7 @@ function normalizePortainerServiceResult(service, result, checkedAt, measuredLat
 function publicInfrastructureService(result) {
   return {
     id: result.serviceId,
+    targetRevision: result.targetRevision,
     type: result.type,
     displayName: result.displayName,
     state: result.state,
@@ -1337,10 +1346,21 @@ export class OperationsMonitor {
         try {
           const result = await this.#probe(source, { signal, serviceId: id, checkedAt: iso(startedAt) });
           const completedAt = nowMs(this.#clock);
-          services[index] = normalizeProbeResult(id, result, iso(completedAt), latency(completedAt - startedAt));
+          services[index] = normalizeProbeResult(
+            id,
+            result,
+            iso(completedAt),
+            latency(completedAt - startedAt),
+            source.targetRevision
+          );
         } catch (error) {
           const completedAt = nowMs(this.#clock);
-          services[index] = failedProbeResult(id, error, iso(completedAt), latency(completedAt - startedAt));
+          services[index] = {
+            ...failedProbeResult(id, error, iso(completedAt), latency(completedAt - startedAt)),
+            targetRevision: typeof source.targetRevision === "string" && UUID.test(source.targetRevision)
+              ? source.targetRevision
+              : null
+          };
         }
       }
     }));

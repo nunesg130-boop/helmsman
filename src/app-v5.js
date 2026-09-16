@@ -79,6 +79,7 @@ const INFRASTRUCTURE_ROUTE_ALIASES = Object.freeze({
 });
 const SESSION_ID_PATTERN = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u;
 const INFRASTRUCTURE_ID_PATTERN = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u;
+const ACTION_INVENTORY_MAX_AGE_MS = 2 * 60 * 1_000;
 const CONNECTION_CAPABILITY_LABELS = Object.freeze({
   jellyfin: Object.freeze({ status: "Server status", identity: "Token authorization" }),
   seerr: Object.freeze({ status: "Server status", identity: "API authorization", requestcounts: "Request workflow" }),
@@ -226,6 +227,10 @@ const state = {
   csrfToken: "",
   starting: true,
   refreshing: false,
+  operationsRequestGeneration: 0,
+  operationsRefreshPromise: null,
+  actionMutation: "",
+  actionAwaitingRefresh: "",
   fatalError: "",
   pollTimer: null,
   lastMarkup: "",
@@ -939,6 +944,76 @@ function safeMediaFocusAction(value) {
   return value === "open-media-detail" ? value : "";
 }
 
+function safeControlFocusKey(value) {
+  const candidate = String(value || "");
+  return /^[A-Za-z0-9:._-]{1,320}$/u.test(candidate) ? candidate : "";
+}
+
+function focusReference(element) {
+  if (!element) return null;
+  return {
+    element,
+    id: typeof element.id === "string" ? element.id : "",
+    mediaKey: safeMediaFocusKey(element.dataset?.mediaKey),
+    mediaAction: safeMediaFocusAction(element.dataset?.action),
+    controlKey: safeControlFocusKey(element.dataset?.controlKey),
+    portainerContainerKey: safeControlFocusKey(element.dataset?.portainerContainerKey),
+    infrastructureWorkloadId: safeControlFocusKey(element.dataset?.infrastructureWorkloadId)
+  };
+}
+
+function elementByDataset(root, attribute, value) {
+  if (!root || !value) return null;
+  return [...(root.querySelectorAll?.(`[data-${attribute}]`) || [])]
+    .find((element) => String(element.dataset?.[attribute.replace(/-([a-z])/gu, (_match, letter) => letter.toUpperCase())] || "") === value)
+    || null;
+}
+
+function resolveFocusReference(reference, root = document) {
+  if (!reference) return null;
+  if (reference.element?.isConnected && typeof reference.element.focus === "function") return reference.element;
+  if (reference.id) {
+    const byId = document.getElementById(reference.id);
+    if (byId) return byId;
+  }
+  if (reference.controlKey) {
+    const control = elementByDataset(root, "control-key", reference.controlKey);
+    if (control) return control;
+  }
+  if (reference.mediaKey && reference.mediaAction) {
+    const mediaControl = [...(root?.querySelectorAll?.("[data-media-key]") || [])].find((element) => (
+      element.dataset?.mediaKey === reference.mediaKey && element.dataset?.action === reference.mediaAction
+    ));
+    if (mediaControl) return mediaControl;
+  }
+  if (reference.portainerContainerKey) {
+    const container = elementByDataset(root, "portainer-container-key", reference.portainerContainerKey);
+    if (container) return container;
+  }
+  if (reference.infrastructureWorkloadId) {
+    const workload = elementByDataset(root, "infrastructure-workload-id", reference.infrastructureWorkloadId);
+    if (workload) return workload;
+  }
+  return null;
+}
+
+function restoreFocusReference(reference, root = document) {
+  const target = resolveFocusReference(reference, root) || main;
+  if (typeof target?.focus === "function") target.focus({ preventScroll: true });
+}
+
+function actionEvidenceIsCurrent(evidence, targetRevision, checkedAt = evidence?.checkedAt ?? evidence?.lastCheckedAt) {
+  const observedAt = Date.parse(checkedAt);
+  const age = Date.now() - observedAt;
+  return Boolean(evidence
+    && targetRevision
+    && evidence.targetRevision === targetRevision
+    && evidence.connectionState === "connected"
+    && Number.isFinite(observedAt)
+    && age >= -30_000
+    && age <= ACTION_INVENTORY_MAX_AGE_MS);
+}
+
 function mediaArtworkUrl(value) {
   const candidate = typeof value === "string" ? value.trim() : "";
   return /^\/api\/v2\/media\/artwork\/[A-Za-z0-9._~-]{1,180}$/u.test(candidate) ? candidate : "";
@@ -959,6 +1034,24 @@ function normalizedMediaSources(value) {
       state: mediaText(entry.state || entry.status, "", 40).toLowerCase(),
       detail: mediaText(entry.detail || entry.resource || entry.kind, "", 180)
     }];
+  });
+}
+
+function normalizedMediaActionTargets(value) {
+  const candidates = Array.isArray(value)
+    ? value
+    : value && typeof value === "object" && !Array.isArray(value)
+      ? Object.entries(value).map(([service, resourceId]) => ({ service, resourceId }))
+      : [];
+  const seen = new Set();
+  return candidates.slice(0, 6).flatMap((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+    const service = safeCapabilityId(entry.service);
+    const resourceId = mediaText(entry.resourceId ?? entry.sourceId ?? entry.id, "", 24);
+    const key = `${service}:${resourceId}`;
+    if (!["radarr", "sonarr"].includes(service) || !/^[1-9][0-9]{0,9}$/u.test(resourceId) || seen.has(key)) return [];
+    seen.add(key);
+    return [{ service, resourceId }];
   });
 }
 
@@ -1023,6 +1116,7 @@ function normalizeMediaItem(value, fallbackSeed = "media") {
     error: mediaText(raw.error || raw.issue || raw.message, "", 320),
     providerIds,
     sources: normalizedMediaSources(raw.sources),
+    actionTargets: normalizedMediaActionTargets(raw.actionTargets),
     lifecycle: { stage },
     requested: raw.requested === true || requestCollection,
     monitored: Boolean(raw.monitored),
@@ -1066,6 +1160,7 @@ function normalizedMediaCollection(value, registry, collectionName, maximum = 50
           artworkUrl: entry.artworkUrl || base.artworkUrl,
           providerIds: { ...(base.providerIds || {}), ...(entry.providerIds || {}) },
           sources: entry.sources || base.sources,
+          actionTargets: entry.actionTargets || base.actionTargets,
           title,
           lifecycle: { ...(entry.lifecycle || {}) }
         };
@@ -1179,6 +1274,7 @@ function mediaStructuralFingerprint(value) {
     error: item.error,
     providerIds: item.providerIds,
     sources: item.sources,
+    actionTargets: item.actionTargets,
     lifecycle: item.lifecycle,
     requested: item.requested,
     monitored: item.monitored,
@@ -1546,7 +1642,7 @@ function renderRequestsPage() {
       { value: "available", label: "Available", active: selected === "available" },
       { value: "attention", label: "Needs attention", active: selected === "attention" },
       { value: "closed", label: "Closed", active: selected === "closed" }
-    ], { search: false })}<div class="results-line"><span data-media-result-count>${media.requests.length} requests</span><span>Read only</span></div><section class="request-list">${media.requests.length ? media.requests.map(renderRequestRow).join("") : renderMediaEmpty("No requests to show", "Seerr has not reported any requests yet.", "inbox")}</section>
+    ], { search: false })}<div class="results-line"><span data-media-result-count>${media.requests.length} requests</span><span>Failed requests can be retried from details</span></div><section class="request-list">${media.requests.length ? media.requests.map(renderRequestRow).join("") : renderMediaEmpty("No requests to show", "Seerr has not reported any requests yet.", "inbox")}</section>
   </div>`;
 }
 
@@ -1666,6 +1762,56 @@ function mediaRecordById(id) {
   return media.all.find((item) => item.id === id) || null;
 }
 
+function configuredMediaConnection(serviceId) {
+  const connection = state.config?.services?.find((service) => (
+    service.id === serviceId
+    && service.configured !== false
+    && service.enabled !== false
+    && service.monitoringEnabled !== false
+  )) || null;
+  return actionEvidenceIsCurrent(healthForService(serviceId), connection?.targetRevision)
+    ? connection
+    : null;
+}
+
+function mediaControlActions(item) {
+  if (!item) return [];
+  if (isMediaCollection(item, "requests")
+    && mediaRequestState(item) === "failed"
+    && /^[1-9][0-9]{0,9}$/u.test(String(item.requestId || ""))
+    && configuredMediaConnection("seerr")?.targetRevision) {
+    return [{
+      serviceId: "seerr",
+      operation: "retryRequest",
+      resourceId: String(item.requestId),
+      label: "Retry failed request",
+      copy: "Ask Seerr to retry this failed request."
+    }];
+  }
+  if (item.available || item.downloading || !item.monitored) return [];
+  const serviceId = item.mediaType === "movie" ? "radarr" : ["series", "episode"].includes(item.mediaType) ? "sonarr" : "";
+  const target = item.actionTargets.find((entry) => entry.service === serviceId);
+  if (!target || !configuredMediaConnection(serviceId)?.targetRevision) return [];
+  return [{
+    serviceId,
+    operation: serviceId === "radarr" ? "searchMovie" : "searchSeries",
+    resourceId: target.resourceId,
+    label: "Search again",
+    copy: `Run a targeted ${serviceId === "radarr" ? "Radarr movie" : "Sonarr series"} search.`
+  }];
+}
+
+function renderMediaControlSection(item) {
+  const actions = mediaControlActions(item);
+  if (!actions.length) return "";
+  return `<section class="drawer-section control-section"><header class="section-heading"><div><h3>Available actions</h3><p>Helmsman sends only the confirmed command shown below.</p></div></header><div class="control-action-list">${actions.map((action) => {
+    const key = `media:${action.serviceId}:${action.operation}:${action.resourceId}`;
+    const busy = state.actionMutation === key;
+    const awaitingRefresh = state.actionAwaitingRefresh === key;
+    return `<div class="control-action-row"><span><strong>${escapeHtml(action.label)}</strong><small>${escapeHtml(action.copy)}</small></span><button class="button button--primary" type="button" data-action="run-media-control" data-media-id="${escapeHtml(item.id)}" data-control-service="${escapeHtml(action.serviceId)}" data-control-operation="${escapeHtml(action.operation)}" data-control-resource-id="${escapeHtml(action.resourceId)}" data-control-key="${escapeHtml(key)}" ${state.actionMutation ? "disabled" : ""} ${busy && !awaitingRefresh ? "aria-busy=\"true\"" : ""}>${awaitingRefresh ? `${icon("refresh")} Refresh required` : busy ? `${icon("refresh")} Working…` : action.label}</button></div>`;
+  }).join("")}</div></section>`;
+}
+
 function renderMediaDetailDrawer(item) {
   const providerEntries = Object.entries(item.providerIds);
   const requestItem = isMediaCollection(item, "requests");
@@ -1680,6 +1826,7 @@ function renderMediaDetailDrawer(item) {
     <div class="drawer-visual">${renderArtworkImage(item, { className: "hero-art-image", eager: true })}<div class="hero-shade"></div><span class="drawer-poster poster-art">${renderArtworkImage(item, { eager: true, priority: "auto" })}<span class="poster-monogram" aria-hidden="true">${escapeHtml(item.title.slice(0, 1).toUpperCase())}</span></span></div>
     <div class="drawer-body"><div class="drawer-title-row"><div><span class="drawer-kicker">${escapeHtml(kicker)}</span><h2 id="media-drawer-title" tabindex="-1">${escapeHtml(item.title)}</h2><span class="status-pill status-${mediaStatusTone(item)}"><i></i>${escapeHtml(mediaStatusLabel(item))}</span></div></div><p class="drawer-summary">${escapeHtml(item.summary || item.error || "Helmsman matched this record across the connected media stack using provider identifiers.")}</p>${providerEntries.length ? `<div class="genre-row">${providerEntries.map(([provider, id]) => `<span>${escapeHtml(provider)} · ${escapeHtml(id)}</span>`).join("")}</div>` : ""}
       <section class="drawer-section"><header class="section-heading"><div><h3>Lifecycle</h3><p>Requested → monitored → downloading → imported → available</p></div></header><ol class="pipeline-steps">${MEDIA_LIFECYCLE_STEPS.map((step, index) => `<li class="${hasIssue && index === stageIndex ? "has-issue" : index < stageIndex ? "is-done" : index === stageIndex ? "is-current" : ""}"><span>${index < stageIndex ? icon("check") : index + 1}</span><div><strong>${escapeHtml(step.label)}</strong><small>${index === stageIndex ? escapeHtml(item.error || (requestItem ? mediaStatusLabel(item) : "Current")) : index < stageIndex ? "Complete" : "Waiting"}</small></div></li>`).join("")}</ol>${item.progress === null ? "" : `<div class="drawer-live-progress"><progress data-media-progress value="${item.progress}" max="100">${item.progress}%</progress><span data-media-progress-label>${item.progress}%</span><span data-media-speed>${escapeHtml(formatMediaSpeed(item.downloadSpeedBps))}</span><span data-media-eta>${escapeHtml(formatMediaEta(item.etaSeconds))}</span></div>`}</section>
+      ${renderMediaControlSection(item)}
       <section class="drawer-section"><header class="section-heading"><div><h3>Connected sources</h3><p>Credentials remain server-side.</p></div></header><div class="source-list">${item.sources.length ? item.sources.map((source) => { const configured = state.config?.services?.some((service) => service.id === source.service); return configured ? `<button class="source-row" type="button" data-action="open-service" data-service-id="${escapeHtml(source.service)}">${serviceIconMarkup(source.service, source.label.slice(0, 1))}<span><strong>${escapeHtml(source.label)}</strong><small>${escapeHtml(source.detail || source.state || "Matched source")}</small></span>${icon("chevron")}</button>` : `<article class="source-row">${serviceIconMarkup(source.service, source.label.slice(0, 1))}<span><strong>${escapeHtml(source.label)}</strong><small>${escapeHtml(source.detail || source.state || "Matched source")}</small></span></article>`; }).join("") : `<div class="empty-state"><p>No source details were returned for this record.</p></div>`}</div></section>
     </div>
   </aside>`;
@@ -1688,7 +1835,7 @@ function renderMediaDetailDrawer(item) {
 function openMediaDrawer(mediaId) {
   const item = mediaRecordById(mediaId);
   if (!item || !drawerLayer) return;
-  state.media.drawerReturnFocus = document.activeElement;
+  state.media.drawerReturnFocus = focusReference(document.activeElement);
   state.media.selectedId = item.id;
   setMarkup(drawerLayer, `<div class="drawer-backdrop" data-action="close-media-drawer"></div>${renderMediaDetailDrawer(item)}`);
   drawerLayer.classList.add("is-open");
@@ -1708,7 +1855,7 @@ function closeMediaDrawer({ restoreFocus = true } = {}) {
   const returnFocus = state.media.drawerReturnFocus;
   state.media.drawerReturnFocus = null;
   state.media.selectedId = "";
-  if (restoreFocus && returnFocus?.isConnected && typeof returnFocus.focus === "function") returnFocus.focus({ preventScroll: true });
+  if (restoreFocus) restoreFocusReference(returnFocus, main);
 }
 
 function renderIncidentsPage() {
@@ -1813,7 +1960,7 @@ function renderServicesPage() {
   }
   return `
     <section class="detail-page connections-page media-connections-page">
-      <header class="detail-hero"><div><span class="section-kicker">Media integrations</span><h2>Connections</h2><p>Browse integrations by role, then configure service endpoints and protected credentials. Media access remains read-only, and saved secrets are never returned to this browser.</p></div></header>
+      <header class="detail-hero"><div><span class="section-kicker">Media integrations</span><h2>Connections</h2><p>Browse integrations by role, then configure service endpoints and protected credentials. Routine monitoring remains read-only; only the explicit confirmed recovery actions shown in a title's details can make changes.</p></div></header>
       <div class="connection-category-list">${categories.map((category, index) => renderConnectionCategory({
         id: category.id,
         index,
@@ -2150,6 +2297,7 @@ function normalizePortainerService(raw, configured = null) {
     tlsMode: configured?.tlsMode || "system",
     certificateFingerprint: configured?.certificateFingerprint || "",
     credentialConfigured: configured?.credentialConfigured ?? false,
+    targetRevision: safeSessionText(source.targetRevision, configured?.targetRevision || "", 100),
     state: configuredState || (Object.keys(source).length ? suppliedState : "stale"),
     connectionState: ["connected", "auth_required", "unverified", "down"].includes(connection) ? connection : "unverified",
     version: safeSessionText(source.version, "", 80).replace(/^v/iu, ""),
@@ -2279,7 +2427,7 @@ function renderInfrastructureConnectorsPage() {
         role: "Virtualization and cluster inventory",
         detail: "No environments configured",
         action: "open-infrastructure-target",
-        actionLabel: "Connect with a read-only API token"
+        actionLabel: "Connect with a scoped API token"
       });
   const portainerContent = portainerServices.length
     ? portainerServices.map(renderPortainerConnectorCard).join("")
@@ -2296,7 +2444,7 @@ function renderInfrastructureConnectorsPage() {
       id: "virtualization",
       kicker: "Virtualization",
       title: "Proxmox VE",
-      description: "Discover standalone servers or clusters, then inventory nodes, guests, storage, tasks, and backups.",
+      description: "Discover standalone servers or clusters, inventory them, and use confirmed guest power controls.",
       summary: `${proxmoxTargets.length} configured`,
       action: proxmoxAction,
       content: `<div class="service-grid-v5 infrastructure-target-grid">${proxmoxContent}</div>`
@@ -2305,14 +2453,14 @@ function renderInfrastructureConnectorsPage() {
       id: "container-management",
       kicker: "Container management",
       title: "Portainer",
-      description: "Inventory permitted environments, containers, and stacks without exposing management controls.",
+      description: "Inventory permitted environments, containers, and stacks, with confirmed lifecycle controls.",
       summary: `${portainerServices.length} configured`,
       action: portainerAction,
       content: `<div class="service-grid-v5 infrastructure-target-grid">${portainerContent}</div>`
     }
   ];
   return `<section class="detail-page connections-page infrastructure-connections-page" id="infrastructure-connectors">
-    <header class="detail-hero"><div><span class="section-kicker">Infrastructure catalog</span><h2>Connectors</h2><p>See every infrastructure integration this Helmsman build supports. Configured connections show their current state; available connectors open a guarded, read-only setup flow.</p></div><span class="connector-total"><strong>${configuredCount}</strong><small>configured connection${configuredCount === 1 ? "" : "s"}</small></span></header>
+    <header class="detail-hero"><div><span class="section-kicker">Infrastructure catalog</span><h2>Connectors</h2><p>See every infrastructure integration this Helmsman build supports. Configured connections show their current state; available connectors open a guarded setup flow.</p></div><span class="connector-total"><strong>${configuredCount}</strong><small>configured connection${configuredCount === 1 ? "" : "s"}</small></span></header>
     <div class="connection-category-list">${categories.map((category, index) => renderConnectionCategory({ ...category, index })).join("")}</div>
   </section>`;
 }
@@ -2545,11 +2693,44 @@ function openInfrastructureNode(nodeId) {
   openModal(renderInfrastructureNodeDetail(node), "#node-detail-title");
 }
 
+function proxmoxActionContext(workload) {
+  const environment = infrastructureTargetById(workload.environmentId);
+  const evidence = infrastructureHealthForTarget(workload.environmentId);
+  if (!environment?.targetRevision
+    || environment.enabled === false
+    || environment.monitoringEnabled === false
+    || !actionEvidenceIsCurrent(evidence, environment.targetRevision, evidence?.lastCheckedAt)) return null;
+  return { environment, evidence };
+}
+
+function renderProxmoxWorkloadControls(workload) {
+  if (!proxmoxActionContext(workload)
+    || workload.node === "Unassigned"
+    || !Number.isSafeInteger(workload.vmid)
+    || workload.template
+    || workload.lock
+    || !["qemu", "lxc"].includes(workload.type)) return "";
+  const actions = workload.status === "stopped"
+    ? [{ operation: "start", label: "Start", className: "button--primary" }]
+    : workload.status === "running"
+      ? [
+          { operation: "reboot", label: "Reboot", className: "" },
+          { operation: "shutdown", label: "Shut down", className: "button--danger" }
+        ]
+      : [];
+  return actions.map(({ operation, label, className }) => {
+    const key = `proxmox:${workload.id}:${operation}`;
+    const busy = state.actionMutation === key;
+    const awaitingRefresh = state.actionAwaitingRefresh === key;
+    return `<button class="button ${className}" type="button" data-action="run-proxmox-control" data-infrastructure-workload-id="${escapeHtml(workload.id)}" data-control-operation="${escapeHtml(operation)}" data-control-key="${escapeHtml(key)}" ${state.actionMutation ? "disabled" : ""} ${busy && !awaitingRefresh ? "aria-busy=\"true\"" : ""}>${awaitingRefresh ? `${icon("refresh")} Refresh required` : busy ? `${icon("refresh")} Working…` : escapeHtml(label)}</button>`;
+  }).join("");
+}
+
 function renderInfrastructureWorkloadDetail(workload) {
   const backup = workload.backup
     ? `${workload.backup.status === "success" ? "Successful" : "Failed"}${workload.backup.endedAt ? ` · ${formatTime(workload.backup.endedAt)}` : ""}`
     : "No backup observed in the bounded task window";
-  return `<section class="modal-card modal-card--detail" role="dialog" aria-modal="true" aria-labelledby="workload-detail-title"><header class="modal-card__header"><span class="workload-type detail-modal-workload is-${escapeHtml(workload.type)}">${workloadIconMarkup(workload.type)}</span><div><span class="section-kicker">${escapeHtml(workload.environmentName)} · ${escapeHtml(workload.node)}</span><h2 id="workload-detail-title" tabindex="-1">${escapeHtml(workload.name)}</h2><p>${escapeHtml(workload.kind)} ${workload.vmid ?? "—"}${workload.template ? " · Template" : ""}</p></div><span class="workload-state workload-state--large is-${escapeHtml(workload.status)}"><i></i>${escapeHtml(workload.status)}</span><button class="icon-button" type="button" data-action="close-modal" aria-label="Close">${icon("x")}</button></header><div class="modal-card__body inventory-detail-body"><div class="workload-information-note ${workload.status === "stopped" ? "is-neutral" : ""}">${icon(workload.status === "stopped" ? "pause" : "check")}<div><strong>${workload.status === "stopped" ? "Stopped by Proxmox" : `Current state: ${escapeHtml(workload.status)}`}</strong><span>${workload.status === "stopped" ? "A deliberately stopped guest is informational and does not make the environment unhealthy." : "This is read-only inventory; Helmsman does not issue guest power operations in this release."}</span></div></div><dl class="inventory-summary-grid"><div><dt>CPU</dt><dd>${workload.cpuPercent === null ? "—" : `${workload.cpuPercent}%`}</dd><small>${workload.cpuCores === null ? "vCPU unavailable" : `${workload.cpuCores} vCPU`}</small></div><div><dt>Memory</dt><dd>${escapeHtml(formatMetricRatio(workload.memoryUsedBytes, workload.memoryTotalBytes))}</dd><small>${workload.memoryUsedBytes === null ? "Usage unavailable" : `${formatMetricBytes(workload.memoryUsedBytes)} of ${formatMetricBytes(workload.memoryTotalBytes)}`}</small></div><div><dt>Disk</dt><dd>${escapeHtml(formatMetricRatio(workload.diskUsedBytes, workload.diskTotalBytes))}</dd><small>${workload.diskUsedBytes === null ? "Usage unavailable" : `${formatMetricBytes(workload.diskUsedBytes)} of ${formatMetricBytes(workload.diskTotalBytes)}`}</small></div><div><dt>Uptime</dt><dd>${workload.uptimeSeconds === null ? "—" : escapeHtml(formatMetricDuration(workload.uptimeSeconds))}</dd><small>${workload.lock ? `Lock: ${escapeHtml(workload.lock)}` : "No lock reported"}</small></div></dl><section class="inventory-detail-section"><header><div><span class="section-kicker">Protection</span><h3>Latest observed backup</h3></div></header><div class="backup-detail ${workload.backup?.status === "failed" ? "is-failed" : ""}">${icon(workload.backup?.status === "failed" ? "x" : workload.backup ? "check" : "refresh")}<div><strong>${escapeHtml(backup)}</strong><small>Derived from Proxmox's bounded recent backup-task history.</small></div></div></section>${workload.tags.length ? `<div class="proxmox-node-chips">${workload.tags.map((tag) => `<span>${escapeHtml(tag)}</span>`).join("")}</div>` : ""}</div><footer class="modal-card__footer"><button class="button" type="button" data-action="open-infrastructure-node" data-infrastructure-node-id="${escapeHtml(`${workload.environmentId}:${workload.node}`)}">Open node</button><button class="button button--primary" type="button" data-action="close-modal">Done</button></footer></section>`;
+  return `<section class="modal-card modal-card--detail" role="dialog" aria-modal="true" aria-labelledby="workload-detail-title"><header class="modal-card__header"><span class="workload-type detail-modal-workload is-${escapeHtml(workload.type)}">${workloadIconMarkup(workload.type)}</span><div><span class="section-kicker">${escapeHtml(workload.environmentName)} · ${escapeHtml(workload.node)}</span><h2 id="workload-detail-title" tabindex="-1">${escapeHtml(workload.name)}</h2><p>${escapeHtml(workload.kind)} ${workload.vmid ?? "—"}${workload.template ? " · Template" : ""}</p></div><span class="workload-state workload-state--large is-${escapeHtml(workload.status)}"><i></i>${escapeHtml(workload.status)}</span><button class="icon-button" type="button" data-action="close-modal" aria-label="Close">${icon("x")}</button></header><div class="modal-card__body inventory-detail-body"><div class="workload-information-note ${workload.status === "stopped" ? "is-neutral" : ""}">${icon(workload.status === "stopped" ? "pause" : "check")}<div><strong>${workload.status === "stopped" ? "Stopped by Proxmox" : `Current state: ${escapeHtml(workload.status)}`}</strong><span>${workload.lock ? `Power controls are unavailable while Proxmox reports the ${escapeHtml(workload.lock)} lock.` : workload.status === "stopped" ? "A deliberately stopped guest is informational and can be started from this detail view." : "Start, reboot, and graceful shutdown use Proxmox's existing guest power API after confirmation."}</span></div></div><dl class="inventory-summary-grid"><div><dt>CPU</dt><dd>${workload.cpuPercent === null ? "—" : `${workload.cpuPercent}%`}</dd><small>${workload.cpuCores === null ? "vCPU unavailable" : `${workload.cpuCores} vCPU`}</small></div><div><dt>Memory</dt><dd>${escapeHtml(formatMetricRatio(workload.memoryUsedBytes, workload.memoryTotalBytes))}</dd><small>${workload.memoryUsedBytes === null ? "Usage unavailable" : `${formatMetricBytes(workload.memoryUsedBytes)} of ${formatMetricBytes(workload.memoryTotalBytes)}`}</small></div><div><dt>Disk</dt><dd>${escapeHtml(formatMetricRatio(workload.diskUsedBytes, workload.diskTotalBytes))}</dd><small>${workload.diskUsedBytes === null ? "Usage unavailable" : `${formatMetricBytes(workload.diskUsedBytes)} of ${formatMetricBytes(workload.diskTotalBytes)}`}</small></div><div><dt>Uptime</dt><dd>${workload.uptimeSeconds === null ? "—" : escapeHtml(formatMetricDuration(workload.uptimeSeconds))}</dd><small>${workload.lock ? `Lock: ${escapeHtml(workload.lock)}` : "No lock reported"}</small></div></dl><section class="inventory-detail-section"><header><div><span class="section-kicker">Protection</span><h3>Latest observed backup</h3></div></header><div class="backup-detail ${workload.backup?.status === "failed" ? "is-failed" : ""}">${icon(workload.backup?.status === "failed" ? "x" : workload.backup ? "check" : "refresh")}<div><strong>${escapeHtml(backup)}</strong><small>Derived from Proxmox's bounded recent backup-task history.</small></div></div></section>${workload.tags.length ? `<div class="proxmox-node-chips">${workload.tags.map((tag) => `<span>${escapeHtml(tag)}</span>`).join("")}</div>` : ""}</div><footer class="modal-card__footer"><button class="button" type="button" data-action="open-infrastructure-node" data-infrastructure-node-id="${escapeHtml(`${workload.environmentId}:${workload.node}`)}">Open node</button><div class="modal-card__actions">${renderProxmoxWorkloadControls(workload)}<button class="button" type="button" data-action="close-modal">Done</button></div></footer></section>`;
 }
 
 function openInfrastructureWorkload(workloadId) {
@@ -2560,7 +2741,7 @@ function openInfrastructureWorkload(workloadId) {
 
 function renderInfrastructureEnvironmentGrid(snapshot) {
   if (!snapshot.environments.length) {
-    return `<section class="glass-panel infrastructure-onboarding"><div class="infrastructure-onboarding__icon">${icon("server")}</div><span class="section-kicker">Start with virtualization</span><h3>Connect your first Proxmox environment</h3><p>Helmsman will discover whether the endpoint belongs to a standalone server or a cluster before it is saved.</p><ol><li><span>1</span>Enter one HTTPS endpoint and audit token.</li><li><span>2</span>Verify certificate trust and discover its nodes.</li><li><span>3</span>Confirm the environment, then optionally add failover endpoints.</li></ol><button class="button button--primary" type="button" data-action="open-infrastructure-target">${icon("plus")} Connect and discover</button></section>`;
+    return `<section class="glass-panel infrastructure-onboarding"><div class="infrastructure-onboarding__icon">${icon("server")}</div><span class="section-kicker">Start with virtualization</span><h3>Connect your first Proxmox environment</h3><p>Helmsman will discover whether the endpoint belongs to a standalone server or a cluster before it is saved.</p><ol><li><span>1</span>Enter one HTTPS endpoint and scoped token.</li><li><span>2</span>Verify certificate trust and discover its nodes.</li><li><span>3</span>Confirm the environment, then optionally add failover endpoints.</li></ol><button class="button button--primary" type="button" data-action="open-infrastructure-target">${icon("plus")} Connect and discover</button></section>`;
   }
   return `<div class="infrastructure-environment-grid">${snapshot.environments.map((environment) => {
     const endpointOnline = environment.endpoints.filter(({ state: endpointState }) => endpointState === "healthy").length;
@@ -2635,7 +2816,7 @@ function renderProxmoxPage() {
   const storage = snapshot.storage.filter((entry) => selectedEnvironment === "all" || entry.environmentId === selectedEnvironment);
   const loading = state.infrastructure.loading && !state.infrastructure.loaded;
   return `<section class="detail-page infrastructure-inventory-page infrastructure-proxmox-page" id="infrastructure-proxmox">
-    <header class="detail-hero"><div><span class="section-kicker">Virtualization topology</span><h2>Proxmox</h2><p>Environments, physical nodes, and node-scoped storage inventory in one read-only view.</p></div><div class="button-row"><button class="button" type="button" data-action="refresh-live">${icon("refresh")} Check now</button><button class="button button--primary" type="button" data-action="open-infrastructure-target">${icon("plus")} Connect and discover</button></div></header>
+    <header class="detail-hero"><div><span class="section-kicker">Virtualization topology</span><h2>Proxmox</h2><p>Environments, physical nodes, storage inventory, and confirmed guest power controls in one view.</p></div><div class="button-row"><button class="button" type="button" data-action="refresh-live">${icon("refresh")} Check now</button><button class="button button--primary" type="button" data-action="open-infrastructure-target">${icon("plus")} Connect and discover</button></div></header>
     ${state.infrastructure.error ? `<div class="infrastructure-load-error" role="alert"><div><strong>Proxmox inventory could not be refreshed</strong><span>${escapeHtml(state.infrastructure.error)}</span></div><button class="button" type="button" data-action="retry-infrastructure-targets">Try again</button></div>` : ""}
     ${loading
       ? `<div class="glass-panel infrastructure-loading" role="status"><span class="state-page__spinner">${icon("refresh")}</span><strong>Loading Proxmox inventory…</strong></div>`
@@ -2710,6 +2891,46 @@ function portainerContainerStateLabel(container) {
     dead: "Dead",
     unknown: "Unknown"
   }[container.state] || "Unknown";
+}
+
+function portainerContainerByKey(key) {
+  return portainerServicesForUi()
+    .flatMap((service) => service.inventory.containers)
+    .find((container) => container.key === key) || null;
+}
+
+function portainerActionContext(container) {
+  const configuration = normalizedPortainerConfigurations().find(({ id }) => id === container.serverId);
+  const evidence = portainerHealthById(container.serverId);
+  const environment = evidence?.inventory.environments.find(({ id }) => id === container.environmentId);
+  if (!configuration?.targetRevision
+    || configuration.enabled === false
+    || configuration.monitoringEnabled === false
+    || !actionEvidenceIsCurrent(evidence, configuration.targetRevision)
+    || environment?.state !== "up"
+    || environment.containerCapable !== true) return null;
+  return { configuration, evidence, environment };
+}
+
+function renderPortainerContainerControls(container) {
+  if (!portainerActionContext(container)
+    || !/^[a-f0-9]{64}$/u.test(container.id)) return "—";
+  const actions = container.state === "running"
+    ? [
+        { operation: "restart", label: "Restart", className: "" },
+        { operation: "stop", label: "Stop", className: "button--danger" }
+      ]
+    : ["created", "exited"].includes(container.state)
+      ? [{ operation: "start", label: "Start", className: "button--primary" }]
+      : [];
+  if (!actions.length) return "—";
+  return `<div class="container-control-buttons">${actions.map(({ operation, label, className }) => {
+    const key = `portainer:${container.key}:${operation}`;
+    const busy = state.actionMutation === key;
+    const awaitingRefresh = state.actionAwaitingRefresh === key;
+    const accessibleLabel = `${label} ${container.name} (${container.shortId})`;
+    return `<button class="button button--compact ${className}" type="button" data-action="run-portainer-control" data-portainer-container-key="${escapeHtml(container.key)}" data-control-operation="${escapeHtml(operation)}" data-control-key="${escapeHtml(key)}" aria-label="${escapeHtml(accessibleLabel)}" ${state.actionMutation ? "disabled" : ""} ${busy && !awaitingRefresh ? "aria-busy=\"true\"" : ""}>${awaitingRefresh ? "Refresh required" : busy ? "Working…" : escapeHtml(label)}</button>`;
+  }).join("")}</div>`;
 }
 
 function portainerConnectionLabel(service) {
@@ -2797,7 +3018,7 @@ function renderPortainerPage() {
     environmentContainerCounts.set(key, (environmentContainerCounts.get(key) || 0) + 1);
   });
   return `<section class="detail-page portainer-page" id="portainer-infrastructure">
-    <header class="detail-hero portainer-hero"><div class="portainer-hero__identity"><span class="portainer-mark portainer-mark--hero">${serviceIconMarkup("portainer", "P")}</span><div><span class="section-kicker">Container infrastructure · Read only</span><h2>Portainer operations</h2><p>One secure Portainer connection inventories every environment the access token is permitted to see. Helmsman reads status, containers, and stacks without exposing the token or sending management commands.</p></div></div><div class="portainer-hero__actions"><button class="button" type="button" data-action="refresh-live">${icon("refresh")} Check now</button><button class="button button--primary" type="button" data-action="open-portainer-service">${icon("plus")} Connect Portainer</button></div></header>
+    <header class="detail-hero portainer-hero"><div class="portainer-hero__identity"><span class="portainer-mark portainer-mark--hero">${serviceIconMarkup("portainer", "P")}</span><div><span class="section-kicker">Container infrastructure</span><h2>Portainer operations</h2><p>One secure Portainer connection inventories every permitted environment. Confirmed start, restart, and graceful stop controls use Portainer's existing API without exposing its token.</p></div></div><div class="portainer-hero__actions"><button class="button" type="button" data-action="refresh-live">${icon("refresh")} Check now</button><button class="button button--primary" type="button" data-action="open-portainer-service">${icon("plus")} Connect Portainer</button></div></header>
 
     ${services.length ? "" : `<section class="portainer-panel portainer-onboarding"><header><div><span class="section-kicker">Connect once</span><h3>Add your first Portainer server</h3><p>Use the Portainer HTTPS address and an access token from a dedicated user limited to the environments Helmsman should monitor.</p></div></header><div class="portainer-onboarding__steps"><span><b>01</b><strong>Enter HTTPS and certificate trust</strong></span><span><b>02</b><strong>Paste a scoped access token</strong></span><span><b>03</b><strong>Test every read-only capability</strong></span></div><footer><button class="button button--primary" type="button" data-action="open-portainer-service">${icon("plus")} Connect Portainer</button></footer></section>`}
 
@@ -2815,7 +3036,7 @@ function renderPortainerPage() {
     </section>
 
     <section class="portainer-panel"><header><div><span class="section-kicker">Container inventory</span><h3>Containers</h3><p>Stopped and exited containers are informational. Unhealthy, dead, and restarting containers are clearly flagged.</p></div><span class="count-pill">${filtered.containers.length}</span></header>
-      <div class="portainer-notice">${icon("shield")}<span><strong>No controls are sent to Portainer</strong><small>This release is inventory-only; container start, stop, restart, remove, and stack actions are intentionally unavailable.</small></span></div>
+      <div class="portainer-notice">${icon("shield")}<span><strong>Guarded container controls</strong><small>Every command requires confirmation. Remove, recreate, force-kill, and stack deployment actions remain unavailable.</small></span></div>
       <div class="portainer-filterbar">
         <label><span>Server</span><select id="portainer-server-filter" data-portainer-filter="server"><option value="all">All Portainer servers</option>${services.map((service) => `<option value="${escapeHtml(service.id)}" ${filters.server === service.id ? "selected" : ""}>${escapeHtml(service.displayName)}</option>`).join("")}</select></label>
         <label><span>Environment</span><select id="portainer-environment-filter" data-portainer-filter="environment"><option value="all">All environments</option>${environments.map((environment) => `<option value="${escapeHtml(environment.key)}" ${filters.environment === environment.key ? "selected" : ""}>${escapeHtml(environment.name)} · ${escapeHtml(environment.serverName)}</option>`).join("")}</select></label>
@@ -2823,7 +3044,7 @@ function renderPortainerPage() {
         <label class="filter-search"><span>Name, image, stack, or ID</span><input id="portainer-container-search" type="search" data-portainer-filter="search" value="${escapeHtml(filters.search)}" placeholder="Search containers" /></label>
         <span class="filter-result-count">${filtered.containers.length} result${filtered.containers.length === 1 ? "" : "s"}</span>
       </div>
-      <div class="portainer-table-wrap"><table class="portainer-table"><thead><tr><th>Container</th><th>Image</th><th>Portainer / environment</th><th>Stack</th><th>State</th><th>Published ports</th></tr></thead><tbody>${filtered.containers.length ? filtered.containers.map((container) => `<tr class="portainer-container-row is-${portainerContainerTone(container)}"><td><span class="portainer-container-mark">${icon("containers")}</span><span><strong>${escapeHtml(container.name)}</strong><small>${escapeHtml(container.shortId)}</small></span></td><td><code>${escapeHtml(container.image)}</code></td><td><strong>${escapeHtml(container.environmentName)}</strong><small>${escapeHtml(container.serverName)}</small></td><td>${escapeHtml(container.stack || "—")}</td><td><span class="portainer-status is-${portainerContainerTone(container)}"><i class="health-dot is-${portainerContainerTone(container)}"></i>${escapeHtml(portainerContainerStateLabel(container))}</span><small>${escapeHtml(container.status)}</small></td><td>${container.ports.length ? container.ports.map((port) => `<code>${port.publicPort ? `${port.publicPort}→` : ""}${port.privatePort}/${escapeHtml(port.protocol)}</code>`).join(" ") : "—"}</td></tr>`).join("") : `<tr><td colspan="6"><div class="empty-state"><strong>No matching containers</strong><span>Adjust the filters or wait for the next Portainer inventory cycle.</span></div></td></tr>`}</tbody></table></div>
+      <div class="portainer-table-wrap" data-preserve-scroll="portainer-table"><table class="portainer-table"><thead><tr><th>Container</th><th>Image</th><th>Portainer / environment</th><th>Stack</th><th>State</th><th>Published ports</th><th>Actions</th></tr></thead><tbody>${filtered.containers.length ? filtered.containers.map((container) => `<tr class="portainer-container-row is-${portainerContainerTone(container)}" data-portainer-container-key="${escapeHtml(container.key)}" tabindex="-1"><th scope="row"><span class="portainer-container-mark">${icon("containers")}</span><span><strong>${escapeHtml(container.name)}</strong><small>${escapeHtml(container.shortId)}</small></span></th><td><code>${escapeHtml(container.image)}</code></td><td><strong>${escapeHtml(container.environmentName)}</strong><small>${escapeHtml(container.serverName)}</small></td><td>${escapeHtml(container.stack || "—")}</td><td><span class="portainer-status is-${portainerContainerTone(container)}"><i class="health-dot is-${portainerContainerTone(container)}"></i>${escapeHtml(portainerContainerStateLabel(container))}</span><small>${escapeHtml(container.status)}</small></td><td>${container.ports.length ? container.ports.map((port) => `<code>${port.publicPort ? `${port.publicPort}→` : ""}${port.privatePort}/${escapeHtml(port.protocol)}</code>`).join(" ") : "—"}</td><td>${renderPortainerContainerControls(container)}</td></tr>`).join("") : `<tr><td colspan="7"><div class="empty-state"><strong>No matching containers</strong><span>Adjust the filters or wait for the next Portainer inventory cycle.</span></div></td></tr>`}</tbody></table></div>
     </section>
 
     <section class="portainer-panel"><header><div><span class="section-kicker">Application groups</span><h3>Stacks</h3><p>Stack records are correlated to their visible Portainer environment.</p></div><span class="count-pill">${filtered.stacks.length}</span></header>${filtered.stacks.length ? `<div class="portainer-stack-grid">${filtered.stacks.map((stack) => `<article class="portainer-stack-card"><header><span class="portainer-environment-mark">${icon("library")}</span><span><small>${escapeHtml(stack.serverName)} · ${escapeHtml(stack.environmentName)}</small><strong>${escapeHtml(stack.name)}</strong></span><span class="portainer-status is-${stack.state === "active" ? "healthy" : "stale"}"><i class="health-dot is-${stack.state === "active" ? "healthy" : "stale"}"></i>${escapeHtml(stack.state)}</span></header><footer><span>Stack ${stack.id}</span><time>${escapeHtml(formatTime(stack.updatedAt || stack.createdAt, "Timestamp unavailable"))}</time></footer></article>`).join("")}</div>` : `<div class="empty-state"><strong>No visible stacks</strong><span>The configured Portainer users have not returned any stack records for this filter.</span></div>`}</section>
@@ -2882,25 +3103,19 @@ function renderPage({ force = false, preserveFocus = false } = {}) {
   else markup = renderAuthenticatedRoute();
 
   if (!force && markup === state.lastMarkup) return;
-  const focusedElement = preserveFocus ? document.activeElement : null;
-  const focusedId = focusedElement?.id || "";
-  const focusedMediaKey = safeMediaFocusKey(focusedElement?.dataset?.mediaKey);
-  const focusedMediaAction = safeMediaFocusAction(focusedElement?.dataset?.action);
+  const focusedReference = preserveFocus ? focusReference(document.activeElement) : null;
+  const portainerScrollLeft = preserveFocus
+    ? Number(main.querySelector?.("[data-preserve-scroll='portainer-table']")?.scrollLeft)
+    : Number.NaN;
   const documentScrollTop = preserveFocus
     ? Number(globalThis.scrollY ?? document.documentElement?.scrollTop ?? document.body?.scrollTop ?? 0)
     : 0;
   state.lastMarkup = markup;
   setMarkup(main, markup);
-  let restoredFocus = false;
-  if (preserveFocus && focusedId) {
-    const replacement = document.getElementById(focusedId);
-    if (replacement) {
-      replacement.focus({ preventScroll: true });
-      restoredFocus = true;
-    }
-  }
-  if (preserveFocus && !restoredFocus && focusedMediaKey && focusedMediaAction) {
-    main.querySelector?.(`[data-media-key='${focusedMediaKey}'][data-action='${focusedMediaAction}']`)?.focus({ preventScroll: true });
+  if (preserveFocus) resolveFocusReference(focusedReference, main)?.focus({ preventScroll: true });
+  if (preserveFocus && Number.isFinite(portainerScrollLeft)) {
+    const portainerScroller = main.querySelector?.("[data-preserve-scroll='portainer-table']");
+    if (portainerScroller) portainerScroller.scrollLeft = portainerScrollLeft;
   }
   if (preserveFocus && Number.isFinite(documentScrollTop)) {
     if (typeof globalThis.scrollTo === "function") globalThis.scrollTo({ top: documentScrollTop, left: 0, behavior: "instant" });
@@ -3409,7 +3624,7 @@ function updateVolatileOperationsUi() {
 function openModal(markup, focusSelector) {
   const returnFocus = drawerLayer?.classList.contains("is-open")
     ? state.media.drawerReturnFocus
-    : document.activeElement;
+    : focusReference(document.activeElement);
   if (drawerLayer?.classList.contains("is-open")) closeMediaDrawer({ restoreFocus: false });
   state.modalReturnFocus = returnFocus;
   setMarkup(modalLayer, `<div class="modal-backdrop" data-action="close-modal"></div>${markup}`);
@@ -3428,9 +3643,7 @@ function closeModal({ restoreFocus = true } = {}) {
   setMarkup(modalLayer, "");
   const returnFocus = state.modalReturnFocus;
   state.modalReturnFocus = null;
-  if (restoreFocus && returnFocus?.isConnected && typeof returnFocus.focus === "function") {
-    returnFocus.focus({ preventScroll: true });
-  }
+  if (restoreFocus) restoreFocusReference(returnFocus, main);
 }
 
 function safeAuthMode(value) {
@@ -3906,7 +4119,7 @@ function renderProxmoxModal(target = null) {
             <label for="proxmox-token-id"><span>API token ID</span><input id="proxmox-token-id" name="proxmoxTokenId" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" data-1p-ignore="true" data-bwignore="true" data-lpignore="true" data-protonpass-ignore="true" data-form-type="other" placeholder="${target?.credentialConfigured ? "Blank keeps the saved token" : "helmsman@pve!monitoring"}" ${target?.credentialConfigured ? "" : "required"}/><small>Complete ID in <code>user@realm!token</code> format.</small></label>
             <label for="proxmox-token-secret"><span>API token secret</span><input id="proxmox-token-secret" name="proxmoxTokenSecret" type="password" autocomplete="new-password" autocapitalize="off" spellcheck="false" data-1p-ignore="true" data-bwignore="true" data-lpignore="true" data-protonpass-ignore="true" data-form-type="other" placeholder="${target?.credentialConfigured ? "Blank keeps the saved token" : "Paste the token secret"}" ${target?.credentialConfigured ? "" : "required"}/><small>Shown once when the token is created.</small></label>
           </div>
-          <p class="auth-retention-note" data-proxmox-credential-note>${target?.credentialConfigured ? "Leave both token fields blank to keep the protected credential." : "Enter both values from a dedicated Proxmox API token."}</p>
+          <p class="auth-retention-note" data-proxmox-credential-note>${target?.credentialConfigured ? "Leave both token fields blank to keep the protected credential." : "Use a dedicated least-privilege token with inventory access and VM.PowerMgmt only where guest controls are intended."}</p>
         </fieldset>
 
         <label class="check-row"><input name="monitoringEnabled" type="checkbox" ${target?.monitoringEnabled === false ? "" : "checked"}/><span><strong>Monitor this environment</strong><small>Collect one bounded cluster-wide inventory per cycle even when no browser is open.</small></span></label>
@@ -4039,20 +4252,20 @@ function renderPortainerModal(service = null) {
     ? `${renderOperationsReports(reports, health.displayName)}${renderConnectionCapabilities(portainerCapabilitiesResult(health))}`
     : "";
   return `<section class="modal-card modal-card--service modal-card--portainer" role="dialog" aria-modal="true" aria-labelledby="portainer-modal-title" aria-describedby="portainer-modal-description">
-    <header class="modal-card__header"><span class="service-card-v5__letter service-card-v5__brand">${serviceIconMarkup("portainer", "P")}</span><div><span class="section-kicker">Container infrastructure · Read only</span><h2 id="portainer-modal-title" tabindex="-1">${existing ? escapeHtml(service.displayName) : "Connect Portainer"}</h2><p id="portainer-modal-description">${existing ? "Edit this Portainer connection without exposing its saved access token." : "Connect one Portainer server to discover every environment the access token is permitted to view."}</p></div><button class="icon-button" type="button" data-action="close-modal" aria-label="Close">${icon("x")}</button></header>
+    <header class="modal-card__header"><span class="service-card-v5__letter service-card-v5__brand">${serviceIconMarkup("portainer", "P")}</span><div><span class="section-kicker">Container infrastructure</span><h2 id="portainer-modal-title" tabindex="-1">${existing ? escapeHtml(service.displayName) : "Connect Portainer"}</h2><p id="portainer-modal-description">${existing ? "Edit this Portainer connection without exposing its saved access token." : "Connect one Portainer server to discover permitted environments and use confirmed container controls."}</p></div><button class="icon-button" type="button" data-action="close-modal" aria-label="Close">${icon("x")}</button></header>
     <form id="portainer-form" data-portainer-service-id="${escapeHtml(service?.id || "")}" data-original-url="${escapeHtml(service?.url || "")}" data-original-tls-mode="${escapeHtml(tlsMode)}" data-original-fingerprint="${escapeHtml(service?.certificateFingerprint || "")}" data-credential-configured="${service?.credentialConfigured ? "true" : "false"}" autocomplete="off" data-form-type="other">
       <div class="modal-card__body">
         <div class="form-grid form-grid--two"><label for="portainer-display-name"><span>Display name</span><input id="portainer-display-name" name="displayName" type="text" maxlength="80" autocomplete="off" value="${escapeHtml(service?.displayName || "")}" required placeholder="Main Portainer" /></label><label for="portainer-url"><span>Full Portainer URL</span><input id="portainer-url" name="url" type="url" inputmode="url" autocomplete="url" autocapitalize="off" spellcheck="false" value="${escapeHtml(service?.url || "")}" required placeholder="https://portainer.example.internal:9443" /><small>HTTPS only. Use an address reachable from inside this container.</small></label></div>
         <fieldset class="auth-method-fieldset portainer-tls-fieldset"><legend>Certificate trust</legend><p class="network-policy-help">Helmsman verifies the server certificate and never offers an insecure skip-verification mode.</p><div class="auth-mode-grid"><label class="option-card-v5"><input name="tlsMode" type="radio" value="system" ${tlsMode === "system" ? "checked" : ""}/><span><strong>System trust</strong><small>Use a trusted CA and matching hostname.</small></span></label><label class="option-card-v5"><input name="tlsMode" type="radio" value="pinned" ${tlsMode === "pinned" ? "checked" : ""}/><span><strong>Pinned fingerprint</strong><small>Use the exact SHA-256 leaf certificate.</small></span></label></div></fieldset>
         <div class="service-auth-panel" data-tls-panel="pinned" ${tlsMode === "pinned" ? "" : "hidden"}><label for="portainer-certificate-fingerprint"><span>SHA-256 certificate fingerprint</span><input id="portainer-certificate-fingerprint" name="certificateFingerprint" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" data-1p-ignore="true" data-bwignore="true" data-lpignore="true" value="${escapeHtml(service?.certificateFingerprint || "")}" ${tlsMode === "pinned" ? "required" : "disabled"} placeholder="64 hexadecimal characters" /><small>Verify the fingerprint through a trusted local channel before saving it.</small></label></div>
-        <fieldset class="auth-method-fieldset portainer-token-fieldset"><legend>Portainer access token</legend><label for="portainer-access-token"><span>Access token</span><input id="portainer-access-token" name="accessToken" type="password" autocomplete="new-password" autocapitalize="off" spellcheck="false" data-1p-ignore="true" data-bwignore="true" data-lpignore="true" placeholder="${service?.credentialConfigured ? "Blank keeps the saved token" : "Paste the Portainer access token"}" ${service?.credentialConfigured ? "" : "required"}/><small>Create it in Portainer from the dedicated user's account settings. Its environment access becomes Helmsman's inventory boundary.</small></label><p class="auth-retention-note" data-portainer-credential-note>${service?.credentialConfigured ? "Leave this blank to keep the protected token." : "The token is write-only and never returned to this browser."}</p></fieldset>
+        <fieldset class="auth-method-fieldset portainer-token-fieldset"><legend>Portainer access token</legend><label for="portainer-access-token"><span>Access token</span><input id="portainer-access-token" name="accessToken" type="password" autocomplete="new-password" autocapitalize="off" spellcheck="false" data-1p-ignore="true" data-bwignore="true" data-lpignore="true" placeholder="${service?.credentialConfigured ? "Blank keeps the saved token" : "Paste the Portainer access token"}" ${service?.credentialConfigured ? "" : "required"}/><small>Create it for a dedicated user limited to the intended environments. Start, restart, and stop require container-management access in that scope.</small></label><p class="auth-retention-note" data-portainer-credential-note>${service?.credentialConfigured ? "Leave this blank to keep the protected token." : "The token is write-only and never returned to this browser."}</p></fieldset>
         <div class="form-grid form-grid--two"><label class="check-row"><input name="enabled" type="checkbox" ${service?.enabled === false ? "" : "checked"}/><span><strong>Enable this connection</strong><small>Disabled connections are kept but cannot be used by the monitor.</small></span></label><label class="check-row"><input name="monitoringEnabled" type="checkbox" ${service?.monitoringEnabled === false ? "" : "checked"}/><span><strong>Monitor Portainer</strong><small>Run bounded GET-only checks even when no browser is open.</small></span></label></div>
         <div class="credential-state ${service?.credentialConfigured ? "is-configured" : ""}">${icon(service?.credentialConfigured ? "check" : "lock")}<div><strong>${service?.credentialConfigured ? "Protected access token saved" : "No access token saved"}</strong><span>Saved token values are encrypted, destination-bound, and cannot be displayed by this interface.</span></div></div>
         ${health ? `<div class="service-health-inline" aria-label="Saved Portainer monitor status"><span class="health-dot is-${statusClass(health.state)}" data-portainer-monitor-dot aria-hidden="true"></span><div class="service-health-inline__copy"><small>Saved monitor</small><strong data-portainer-monitor-state>${escapeHtml(portainerConnectionLabel(health))}</strong></div><span data-portainer-monitor-facts>${escapeHtml([health.version ? `Portainer ${health.version}` : "", health.latencyMs === null ? "" : `${health.latencyMs} ms`].filter(Boolean).join(" · "))}</span><span data-portainer-monitor-checked>${escapeHtml(formatTime(health.checkedAt))}</span></div><div class="infrastructure-saved-capabilities" data-portainer-saved-capabilities data-capability-fingerprint="${escapeHtml(portainerEvidenceFingerprint(health))}" aria-label="Latest saved Portainer capability results"${savedEvidence ? "" : " hidden"}>${savedEvidence}</div>` : ""}
         <div class="connection-test-result" id="portainer-test-result" role="status" aria-live="polite" hidden><span class="health-dot is-checking" aria-hidden="true"></span><div><span class="connection-test-result__kicker">Current connection test</span><strong data-test-title></strong><small data-test-detail></small><div data-test-capabilities></div><small class="connection-test-result__note" data-test-note></small></div></div>
         <p class="form-error" id="portainer-error" role="alert"></p>
       </div>
-      <footer class="modal-card__footer">${existing ? `<button class="button button--danger" type="button" data-action="delete-portainer-service" data-portainer-service-id="${escapeHtml(service.id)}">Remove connection</button>` : "<span></span>"}<div class="modal-card__actions"><button class="button" type="button" data-action="test-portainer-service">Test read-only access</button><button class="button button--primary" type="submit">${existing ? "Save connection" : "Connect Portainer"}</button></div></footer>
+      <footer class="modal-card__footer">${existing ? `<button class="button button--danger" type="button" data-action="delete-portainer-service" data-portainer-service-id="${escapeHtml(service.id)}">Remove connection</button>` : "<span></span>"}<div class="modal-card__actions"><button class="button" type="button" data-action="test-portainer-service">Test connection</button><button class="button button--primary" type="submit">${existing ? "Save connection" : "Connect Portainer"}</button></div></footer>
     </form>
   </section>`;
 }
@@ -4092,7 +4305,7 @@ function renderProxmoxEndpointModal(environment, endpoint = null) {
         <div class="form-grid form-grid--two"><label><span>Endpoint label</span><input name="label" type="text" maxlength="80" required value="${escapeHtml(endpoint?.label || "")}" placeholder="pve-2 failover" /></label><label><span>Full Proxmox URL</span><input name="url" type="url" inputmode="url" autocomplete="url" autocapitalize="off" spellcheck="false" required value="${escapeHtml(endpoint?.url || "")}" placeholder="https://pve-2.example.internal:8006" /><small>Helmsman will not infer or trust an address discovered through the cluster API.</small></label></div>
         <fieldset class="auth-method-fieldset proxmox-tls-fieldset"><legend>Certificate trust</legend><p class="network-policy-help">Trust applies only to this exact endpoint.</p><div class="auth-mode-grid"><label class="option-card-v5"><input name="tlsMode" type="radio" value="system" ${tlsMode === "system" ? "checked" : ""}/><span><strong>System trust</strong><small>Trusted CA and matching hostname.</small></span></label><label class="option-card-v5"><input name="tlsMode" type="radio" value="pinned" ${tlsMode === "pinned" ? "checked" : ""}/><span><strong>Pinned fingerprint</strong><small>Exact SHA-256 leaf certificate.</small></span></label></div></fieldset>
         <div class="service-auth-panel" data-tls-panel="pinned" ${tlsMode === "pinned" ? "" : "hidden"}><label><span>SHA-256 certificate fingerprint</span><input name="certificateFingerprint" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" value="${escapeHtml(endpoint?.certificateFingerprint || "")}" ${tlsMode === "pinned" ? "required" : "disabled"} placeholder="64 hexadecimal characters" /><small>Verify this fingerprint locally on the named Proxmox node before saving it.</small></label></div>
-        <fieldset class="auth-method-fieldset proxmox-token-fieldset"><legend>Endpoint API token</legend><div class="form-grid form-grid--two"><label><span>API token ID</span><input name="proxmoxTokenId" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="${endpoint?.credentialConfigured ? "Blank keeps the saved token" : "helmsman@pve!monitoring"}" ${endpoint?.credentialConfigured ? "" : "required"}/></label><label><span>API token secret</span><input name="proxmoxTokenSecret" type="password" autocomplete="new-password" autocapitalize="off" spellcheck="false" placeholder="${endpoint?.credentialConfigured ? "Blank keeps the saved token" : "Paste the token secret"}" ${endpoint?.credentialConfigured ? "" : "required"}/></label></div><p class="auth-retention-note" data-proxmox-credential-note>${endpoint?.credentialConfigured ? "Leave both token fields blank to keep the protected credential." : "Enter both values from a dedicated Proxmox audit token."}</p></fieldset>
+        <fieldset class="auth-method-fieldset proxmox-token-fieldset"><legend>Endpoint API token</legend><div class="form-grid form-grid--two"><label><span>API token ID</span><input name="proxmoxTokenId" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="${endpoint?.credentialConfigured ? "Blank keeps the saved token" : "helmsman@pve!monitoring"}" ${endpoint?.credentialConfigured ? "" : "required"}/></label><label><span>API token secret</span><input name="proxmoxTokenSecret" type="password" autocomplete="new-password" autocapitalize="off" spellcheck="false" placeholder="${endpoint?.credentialConfigured ? "Blank keeps the saved token" : "Paste the token secret"}" ${endpoint?.credentialConfigured ? "" : "required"}/></label></div><p class="auth-retention-note" data-proxmox-credential-note>${endpoint?.credentialConfigured ? "Leave both token fields blank to keep the protected credential." : "Use the same least-privilege inventory and guest-control scope as the primary endpoint token."}</p></fieldset>
         <label class="check-row"><input name="enabled" type="checkbox" ${endpoint?.enabled === false ? "" : "checked"}/><span><strong>Use this endpoint for failover</strong><small>Disabled endpoints remain registered but are not queried by the monitor.</small></span></label>
         <div class="credential-state ${endpoint?.credentialConfigured ? "is-configured" : ""}">${icon(endpoint?.credentialConfigured ? "check" : "lock")}<div><strong>${endpoint?.credentialConfigured ? "Protected endpoint token saved" : "No endpoint token saved"}</strong><span>Credentials are independently bound to this endpoint and its approved network destination.</span></div></div>
         <div class="connection-test-result" id="proxmox-endpoint-test-result" role="status" aria-live="polite" hidden><span class="health-dot is-checking" aria-hidden="true"></span><div><span class="connection-test-result__kicker">Endpoint verification</span><strong data-test-title></strong><small data-test-detail></small><div data-test-capabilities></div><small class="connection-test-result__note" data-test-note></small></div></div>
@@ -4674,39 +4887,296 @@ async function submitNetwork(form) {
   }
 }
 
-async function refreshOperations({ announce = false } = {}) {
-  if (state.refreshing || !state.status?.authenticated) return;
+function confirmControl(message) {
+  return typeof globalThis.confirm === "function" && globalThis.confirm(message) === true;
+}
+
+function setControlBusy(button, key) {
+  state.actionMutation = key;
+  state.actionAwaitingRefresh = "";
+  for (const control of document.querySelectorAll("[data-control-key]")) control.disabled = true;
+  if (button) {
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+    setMarkup(button, `${icon("refresh")} Working…`);
+  }
+}
+
+function refreshControlSurface({ workloadId = "", mediaId = "", focusOperation = "", returnFocus = null } = {}) {
+  state.lastMarkup = "";
+  renderPage({ force: true, preserveFocus: true });
+  if (state.actionAwaitingRefresh) {
+    if (modalLayer?.classList.contains("is-open")) closeModal({ restoreFocus: false });
+    if (drawerLayer?.classList.contains("is-open")) closeMediaDrawer({ restoreFocus: false });
+    requestAnimationFrame(() => restoreFocusReference(returnFocus, main));
+    return;
+  }
+  if (workloadId && modalLayer?.classList.contains("is-open")) {
+    const workload = infrastructureWorkloadById(workloadId);
+    if (workload) {
+      setMarkup(modalLayer, `<div class="modal-backdrop" data-action="close-modal"></div>${renderInfrastructureWorkloadDetail(workload)}`);
+      requestAnimationFrame(() => {
+        const preferred = modalLayer.querySelector(`[data-control-operation='${focusOperation}']`)
+          || modalLayer.querySelector("#workload-detail-title");
+        preferred?.focus();
+      });
+    } else {
+      closeModal({ restoreFocus: false });
+      requestAnimationFrame(() => restoreFocusReference(returnFocus, main));
+    }
+    return;
+  }
+  if (mediaId && drawerLayer?.classList.contains("is-open")) {
+    const item = mediaRecordById(mediaId);
+    if (item) {
+      setMarkup(drawerLayer, `<div class="drawer-backdrop" data-action="close-media-drawer"></div>${renderMediaDetailDrawer(item)}`);
+      requestAnimationFrame(() => {
+        const preferred = drawerLayer.querySelector(`[data-control-operation='${focusOperation}']`)
+          || drawerLayer.querySelector("#media-drawer-title");
+        preferred?.focus();
+      });
+    } else {
+      closeMediaDrawer({ restoreFocus: false });
+      requestAnimationFrame(() => restoreFocusReference(returnFocus, main));
+    }
+    return;
+  }
+  requestAnimationFrame(() => restoreFocusReference(returnFocus, main));
+}
+
+function releaseActionRefreshLock() {
+  if (!state.actionAwaitingRefresh) return false;
+  state.actionAwaitingRefresh = "";
+  state.actionMutation = "";
+  return true;
+}
+
+async function performControl(button, { key, message, path, body, successMessage, workloadId = "", mediaId = "", operation = "" }) {
+  if (state.actionMutation || !confirmControl(message)) return;
+  const returnFocus = focusReference(button);
+  let accepted = false;
+  let outcomeUnknown = false;
+  setControlBusy(button, key);
+  try {
+    await api(path, { method: "POST", body });
+    accepted = true;
+    showToast(successMessage, "success");
+  } catch (error) {
+    outcomeUnknown = ["ACTION_OUTCOME_UNKNOWN", "NETWORK_ERROR", "INVALID_RESPONSE"].includes(error?.code)
+      || error?.status === 0
+      || !Number.isSafeInteger(error?.status);
+    showToast(error.message, "danger");
+  } finally {
+    const refreshed = await refreshOperations({ afterCurrent: true });
+    if (!refreshed && (accepted || outcomeUnknown)) {
+      state.actionAwaitingRefresh = key;
+      showToast("The action may have been accepted, but current state could not be refreshed. Wait before trying another action.", "danger");
+    } else {
+      state.actionAwaitingRefresh = "";
+      state.actionMutation = "";
+    }
+    refreshControlSurface({ workloadId, mediaId, focusOperation: operation, returnFocus });
+  }
+}
+
+async function runPortainerControl(button) {
+  const operation = String(button?.dataset.controlOperation || "");
+  const container = portainerContainerByKey(button?.dataset.portainerContainerKey);
+  const context = container ? portainerActionContext(container) : null;
+  const service = context?.configuration;
+  const validForState = operation === "start"
+    ? ["created", "exited"].includes(container?.state)
+    : ["restart", "stop"].includes(operation) && container?.state === "running";
+  if (!container
+    || !service?.targetRevision
+    || service.enabled === false
+    || service.monitoringEnabled === false
+    || !/^[a-f0-9]{64}$/u.test(container.id)
+    || !validForState) {
+    showToast("That container action is no longer available. Refresh the inventory and try again.", "danger");
+    return;
+  }
+  const copy = {
+    start: {
+      confirm: `Start ${container.name} (${container.shortId}) in ${container.environmentName} on ${container.serverName}?`,
+      success: `Start command accepted for ${container.name}.`
+    },
+    restart: {
+      confirm: `Restart ${container.name} (${container.shortId}) in ${container.environmentName} on ${container.serverName}? It will be briefly unavailable.`,
+      success: `Restart command accepted for ${container.name}.`
+    },
+    stop: {
+      confirm: `Gracefully stop ${container.name} (${container.shortId}) in ${container.environmentName} on ${container.serverName}? It will remain offline until it is started again.`,
+      success: `Stop command accepted for ${container.name}.`
+    }
+  }[operation];
+  await performControl(button, {
+    key: button.dataset.controlKey,
+    message: copy.confirm,
+    path: "/api/v2/actions/portainer/container",
+    body: {
+      serviceId: container.serverId,
+      environmentId: container.environmentId,
+      containerId: container.id,
+      operation,
+      targetRevision: service.targetRevision
+    },
+    successMessage: copy.success,
+    operation
+  });
+}
+
+async function runProxmoxControl(button) {
+  const operation = String(button?.dataset.controlOperation || "");
+  const workloadId = String(button?.dataset.infrastructureWorkloadId || "");
+  const workload = infrastructureWorkloadById(workloadId);
+  const context = workload ? proxmoxActionContext(workload) : null;
+  const environment = context?.environment;
+  const validForState = operation === "start"
+    ? workload?.status === "stopped"
+    : ["reboot", "shutdown"].includes(operation) && workload?.status === "running";
+  if (!workload
+    || !environment?.targetRevision
+    || environment.enabled === false
+    || environment.monitoringEnabled === false
+    || workload.node === "Unassigned"
+    || !Number.isSafeInteger(workload.vmid)
+    || workload.template
+    || workload.lock
+    || !validForState) {
+    showToast("That guest power action is no longer available. Refresh the inventory and try again.", "danger");
+    return;
+  }
+  const copy = {
+    start: {
+      confirm: `Start ${workload.name} (${workload.kind} ${workload.vmid}) on ${workload.node} in ${workload.environmentName}?`,
+      success: `Start command accepted for ${workload.name}.`
+    },
+    reboot: {
+      confirm: `Gracefully reboot ${workload.name} (${workload.kind} ${workload.vmid}) on ${workload.node} in ${workload.environmentName}? Its services will be briefly unavailable.`,
+      success: `Reboot command accepted for ${workload.name}.`
+    },
+    shutdown: {
+      confirm: `Gracefully shut down ${workload.name} (${workload.kind} ${workload.vmid}) on ${workload.node} in ${workload.environmentName}? It will remain offline until it is started again.`,
+      success: `Shutdown command accepted for ${workload.name}.`
+    }
+  }[operation];
+  await performControl(button, {
+    key: button.dataset.controlKey,
+    message: copy.confirm,
+    path: "/api/v2/actions/proxmox/workload",
+    body: {
+      environmentId: workload.environmentId,
+      node: workload.node,
+      type: workload.type,
+      vmid: workload.vmid,
+      operation,
+      targetRevision: environment.targetRevision
+    },
+    successMessage: copy.success,
+    workloadId,
+    operation
+  });
+}
+
+async function runMediaControl(button) {
+  const mediaId = String(button?.dataset.mediaId || "");
+  const serviceId = String(button?.dataset.controlService || "");
+  const operation = String(button?.dataset.controlOperation || "");
+  const resourceId = String(button?.dataset.controlResourceId || "");
+  const item = mediaRecordById(mediaId);
+  const connection = configuredMediaConnection(serviceId);
+  const allowed = mediaControlActions(item).some((action) => (
+    action.serviceId === serviceId && action.operation === operation && action.resourceId === resourceId
+  ));
+  if (!item || !connection?.targetRevision || !allowed) {
+    showToast("That media action is no longer available. Refresh the media view and try again.", "danger");
+    return;
+  }
+  const retry = operation === "retryRequest";
+  await performControl(button, {
+    key: button.dataset.controlKey,
+    message: retry
+      ? `Retry the failed Seerr request for ${item.title} (request ${resourceId})?`
+      : item.mediaType === "episode"
+        ? `Search the Sonarr series containing ${item.title}? Sonarr may send a matching release to the download client.`
+        : `Search again for ${item.title} in ${serviceId === "radarr" ? "Radarr" : "Sonarr"}? It may send a matching release to the download client.`,
+    path: "/api/v2/actions/media",
+    body: {
+      serviceId,
+      operation,
+      resourceId: Number(resourceId),
+      targetRevision: connection.targetRevision
+    },
+    successMessage: retry
+      ? `Seerr retry started for ${item.title}.`
+      : `${serviceId === "radarr" ? "Radarr" : "Sonarr"} search started for ${item.title}.`,
+    mediaId,
+    operation
+  });
+}
+
+async function refreshOperations({ announce = false, afterCurrent = false } = {}) {
+  if (!state.status?.authenticated) return false;
+  if (state.operationsRefreshPromise) {
+    const currentPromise = state.operationsRefreshPromise;
+    const currentResult = await currentPromise;
+    if (state.operationsRefreshPromise === currentPromise) state.operationsRefreshPromise = null;
+    if (!afterCurrent || !state.status?.authenticated) return currentResult;
+  }
+
   state.refreshing = true;
   updateChrome();
+  const refreshPromise = (async () => {
+    const requestGeneration = ++state.operationsRequestGeneration;
+    try {
+      const snapshot = await api("/api/v2/operations/refresh", { method: "POST", body: {} });
+      if (requestGeneration !== state.operationsRequestGeneration) return false;
+      const changed = operationalFingerprint(snapshot) !== operationalFingerprint(state.snapshot);
+      state.snapshot = snapshot;
+      const releasedActionLock = releaseActionRefreshLock();
+      if (changed || releasedActionLock) {
+        if (releasedActionLock) state.lastMarkup = "";
+        renderPage({ force: releasedActionLock, preserveFocus: true });
+        updateVolatileOperationsUi();
+      } else updateVolatileOperationsUi();
+      if (announce) showToast("Health checks completed.", "success");
+      return true;
+    } catch (error) {
+      if (error.status === 401) await initialize();
+      else if (announce) showToast(error.message, "danger");
+      return false;
+    } finally {
+      state.refreshing = false;
+      updateChrome();
+    }
+  })();
+  state.operationsRefreshPromise = refreshPromise;
   try {
-    const snapshot = await api("/api/v2/operations/refresh", { method: "POST", body: {} });
-    const changed = operationalFingerprint(snapshot) !== operationalFingerprint(state.snapshot);
-    state.snapshot = snapshot;
-    if (changed) {
-      renderPage({ preserveFocus: true });
-      updateVolatileOperationsUi();
-    } else updateVolatileOperationsUi();
-    if (announce) showToast("Health checks completed.", "success");
-  } catch (error) {
-    if (error.status === 401) return initialize();
-    if (announce) showToast(error.message, "danger");
+    return await refreshPromise;
   } finally {
-    state.refreshing = false;
-    updateChrome();
+    if (state.operationsRefreshPromise === refreshPromise) state.operationsRefreshPromise = null;
   }
 }
 
 async function loadOperations() {
+  if (state.operationsRefreshPromise) return state.operationsRefreshPromise;
+  const requestGeneration = ++state.operationsRequestGeneration;
   try {
     const snapshot = await api("/api/v2/operations/snapshot");
+    if (requestGeneration !== state.operationsRequestGeneration) return false;
     const changed = operationalFingerprint(snapshot) !== operationalFingerprint(state.snapshot);
     state.snapshot = snapshot;
-    if (changed) {
-      renderPage({ preserveFocus: true });
+    const releasedActionLock = releaseActionRefreshLock();
+    if (changed || releasedActionLock) {
+      if (releasedActionLock) state.lastMarkup = "";
+      renderPage({ force: releasedActionLock, preserveFocus: true });
       updateVolatileOperationsUi();
     } else updateVolatileOperationsUi();
+    return true;
   } catch (error) {
     if (error.code !== "MONITOR_STARTING") throw error;
+    return false;
   }
 }
 
@@ -4782,6 +5252,11 @@ function clearAuthenticatedState() {
   state.accessKeyMutation = false;
   state.sessions = { loaded: false, currentSessionId: "", items: [], error: "" };
   state.sessionMutation = "";
+  state.actionMutation = "";
+  state.actionAwaitingRefresh = "";
+  state.operationsRequestGeneration += 1;
+  state.operationsRefreshPromise = null;
+  state.refreshing = false;
   state.infrastructure = emptyInfrastructureState();
   state.lastMarkup = "";
 }
@@ -4938,6 +5413,9 @@ document.addEventListener("click", async (event) => {
       location.hash = "#/portainer";
     }
   }
+  if (action === "run-portainer-control") await runPortainerControl(target);
+  if (action === "run-proxmox-control") await runProxmoxControl(target);
+  if (action === "run-media-control") await runMediaControl(target);
   if (action === "open-infrastructure-endpoint" || action === "add-infrastructure-endpoint") {
     openInfrastructureEndpoint(target.dataset.infrastructureTargetId, target.dataset.infrastructureEndpointId || "");
   }
