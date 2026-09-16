@@ -229,6 +229,31 @@ test("Portainer models normalize only bounded display and inventory fields", () 
   assert.equal(JSON.stringify({ environments, containers, stacks, inventory }).includes(droppedSecret), false);
 });
 
+test("Portainer container ports retain first-seen order while removing exact duplicates", () => {
+  const boundedPorts = [
+    { PrivatePort: 8096, PublicPort: 8096, Type: "tcp" },
+    { PrivatePort: 8096, PublicPort: 8096, Type: "tcp" },
+    { PrivatePort: 8096, PublicPort: 8096, Type: "udp" },
+    ...Array.from({ length: 29 }, (_, index) => ({
+      PrivatePort: 10_000 + index,
+      PublicPort: null,
+      Type: "tcp"
+    })),
+    { PrivatePort: 65_535, PublicPort: 65_535, Type: "tcp" }
+  ];
+  const [normalized] = containersFromPortainer([
+    container("a", { Ports: boundedPorts })
+  ], { id: 1, name: "Main Docker" });
+
+  assert.deepEqual(normalized.ports.slice(0, 3), [
+    { privatePort: 8096, publicPort: 8096, protocol: "tcp" },
+    { privatePort: 8096, publicPort: 8096, protocol: "udp" },
+    { privatePort: 10_000, publicPort: null, protocol: "tcp" }
+  ]);
+  assert.equal(normalized.ports.length, 31);
+  assert.equal(normalized.ports.some(({ privatePort }) => privatePort === 65_535), false);
+});
+
 test("Portainer probe uses v3 status, bounded pagination, and Docker gateway inventory", async () => {
   const calls = [];
   const firstPage = Array.from({ length: 100 }, (_, index) => ({

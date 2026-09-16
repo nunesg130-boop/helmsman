@@ -124,7 +124,8 @@ time,
 .portainer-page :where(.eyebrow, .section-kicker, dt, code, time),
 .portainer-kicker,
 .portainer-status,
-.portainer-table thead,
+.portainer-container-group__header,
+.portainer-container-row,
 .portainer-filterbar label {
   font-family: var(--retro-mono);
   font-variant-numeric: tabular-nums;
@@ -453,7 +454,7 @@ kbd {
   .portainer-card,
   .portainer-summary,
   .portainer-filterbar,
-  .portainer-table,
+  .portainer-container-group,
   .portainer-environment-card,
   .portainer-stack-card,
   .portainer-connection-card,
@@ -1252,15 +1253,14 @@ progress {
 }
 
 .workload-row--header,
-.portainer-table thead,
+.portainer-container-group__header,
 .portainer-row--header {
   border-bottom: 3px double var(--retro-rule);
   background: var(--retro-screen);
   color: var(--accent);
 }
 
-.infrastructure-workload-table,
-.portainer-table-wrap {
+.infrastructure-workload-table {
   scrollbar-color: var(--accent) var(--retro-screen);
 }
 
@@ -1283,7 +1283,8 @@ progress {
 /* Overlays ---------------------------------------------------------------- */
 
 .drawer-layer,
-.modal-layer {
+.modal-layer,
+.control-confirm-layer {
   background: rgba(2, 6, 7, 0.86);
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
@@ -1486,34 +1487,29 @@ progress {
   font-weight: 780;
 }
 
-.portainer-table-wrap {
-  overflow-x: auto;
+.portainer-container-group {
   border: 1px solid var(--retro-frame);
+  border-radius: 1px;
   background: var(--retro-screen-raised);
   box-shadow: 4px 4px 0 rgba(0, 0, 0, 0.48);
 }
 
-.portainer-table {
-  width: 100%;
-  min-width: 1080px;
-  border-collapse: collapse;
-  box-shadow: none;
+.portainer-container-group__header {
+  border-bottom: 3px double var(--retro-rule);
+  background: var(--retro-screen);
 }
 
-.portainer-table :where(th, td) {
-  padding: 13px 15px;
-  border-bottom: 1px solid var(--retro-frame);
-  text-align: left;
+.portainer-container-row {
+  border-color: var(--retro-frame);
+  background: transparent;
 }
 
-.portainer-table th {
-  color: var(--accent);
-  font-size: 9px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
+.portainer-container-row :is(.portainer-container-ports code, .portainer-container-mark) {
+  border-radius: 1px;
+  background: var(--retro-screen);
 }
 
-.portainer-table tbody tr:hover {
+.portainer-container-row:hover {
   background: rgba(159, 197, 194, 0.09);
   color: var(--text);
 }
@@ -1892,7 +1888,7 @@ html[data-transparency="reduced"] body::before {
     .title-drawer,
     .portainer-panel,
     .portainer-card,
-    .portainer-table-wrap
+    .portainer-container-group
   ) {
     border: 1px solid CanvasText;
     background: Canvas;

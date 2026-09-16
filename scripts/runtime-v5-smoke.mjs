@@ -34,6 +34,7 @@ class FakeElement {
     this.dataset = {};
     this.attributes = new Map();
     this.hidden = false;
+    this.inert = false;
     this.isConnected = true;
     this.scrollTop = 0;
     this.textContent = "";
@@ -130,8 +131,10 @@ function installFakeBrowser(fetchHandler, suffix) {
     "#app",
     "#main-content",
     "#modal-layer",
+    "#control-confirm-layer",
     "#drawer-layer",
     "#toast-region",
+    "#filter-announcer",
     "#page-eyebrow",
     "#page-title",
     "#mode-badge",
@@ -140,6 +143,16 @@ function installFakeBrowser(fetchHandler, suffix) {
   ];
   const elements = new Map(selectors.map((selector) => [selector, new FakeElement({ id: selector.slice(1) })]));
   elements.set("#session-button", new FakeElement({ id: "session-button", childSpan: true }));
+  const confirmationLayer = elements.get("#control-confirm-layer");
+  const confirmationCancel = new FakeElement({ id: "control-confirm-cancel" });
+  confirmationCancel.dataset.action = "cancel-control-confirm";
+  confirmationCancel.closest = (selector) => selector === "[data-action]" ? confirmationCancel : null;
+  const confirmationApprove = new FakeElement({ id: "control-confirm-approve" });
+  confirmationApprove.dataset.action = "approve-control-confirm";
+  confirmationApprove.closest = (selector) => selector === "[data-action]" ? confirmationApprove : null;
+  const confirmationFocusableSelector = "button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex='-1'])";
+  confirmationLayer.registerSelector("#control-confirm-cancel", confirmationCancel);
+  confirmationLayer.registerSelector(confirmationFocusableSelector, confirmationCancel, confirmationApprove);
   const sidebarToggle = new FakeElement({ id: "sidebar-toggle" });
   sidebarToggle.dataset.action = "toggle-sidebar";
   elements.set("[data-action='toggle-sidebar']", sidebarToggle);
@@ -173,8 +186,7 @@ function installFakeBrowser(fetchHandler, suffix) {
   const intervalCallbacks = [];
   const requestLog = [];
   const scrollCalls = [];
-  const confirmCalls = [];
-  const confirmResponses = [];
+  const browserConfirmCalls = [];
   const body = new FakeElement();
   const location = {
     hash: "#/overview",
@@ -282,8 +294,8 @@ function installFakeBrowser(fetchHandler, suffix) {
   });
   Object.defineProperty(globalThis, "confirm", {
     value: (message) => {
-      confirmCalls.push(String(message));
-      return confirmResponses.length ? Boolean(confirmResponses.shift()) : true;
+      browserConfirmCalls.push(String(message));
+      return true;
     },
     configurable: true
   });
@@ -331,8 +343,10 @@ function installFakeBrowser(fetchHandler, suffix) {
     localStorageValues,
     sessionStorageValues,
     clipboardWrites,
-    confirmCalls,
-    confirmResponses,
+    browserConfirmCalls,
+    confirmationLayer,
+    confirmationCancel,
+    confirmationApprove,
     dispatchDocument,
     dispatchWindow,
     main: elements.get("#main-content")
@@ -580,7 +594,7 @@ async function firstAccessKeyCreationContract() {
   await environment.dispatchDocument("click", { target });
   await waitFor(() => environment.requestLog.some(({ path }) => path === "/api/v2/access/rotate"), "first access-key creation");
 
-  assert.deepEqual(environment.confirmCalls, [], "creating the first key must not show a destructive-rotation confirmation");
+  assert.deepEqual(environment.browserConfirmCalls, [], "creating the first key must not show a browser-native confirmation");
   const request = environment.requestLog.find(({ path }) => path === "/api/v2/access/rotate");
   assert.equal(request.options.headers.get("X-Jellofin-CSRF"), csrfToken);
   assert.match(environment.main.innerHTML, /hm-first-universal-access-key/u);
@@ -785,11 +799,12 @@ async function networkPolicyInteractionContract() {
 }
 
 async function emptyStateLayoutContract() {
-  const [styles, shellStyles, documentMarkup, application] = await Promise.all([
+  const [styles, shellStyles, documentMarkup, application, operationsStyles] = await Promise.all([
     readFile(new URL("../src/ui/control.css", import.meta.url), "utf8"),
     readFile(new URL("../styles.css", import.meta.url), "utf8"),
     readFile(new URL("../index.html", import.meta.url), "utf8"),
-    readFile(new URL("../src/app-v5.js", import.meta.url), "utf8")
+    readFile(new URL("../src/app-v5.js", import.meta.url), "utf8"),
+    readFile(new URL("../src/ui/operations.css", import.meta.url), "utf8")
   ]);
   const textSpanOverride = styles.match(
     /\.detail-page \.empty-state > span,\s*\.settings-page-v5 \.empty-state > span\s*\{([^}]*)\}/u
@@ -804,6 +819,8 @@ async function emptyStateLayoutContract() {
   assert.match(documentMarkup, /<a[^>]+id="monitor-summary"[^>]+href="#\/health"[^>]+aria-label="Open media health"/u, "the monitor summary must be a direct navigation link");
   assert.match(documentMarkup, /data-action="toggle-sidebar"[^>]+aria-controls="sidebar-navigation"[^>]+aria-expanded="true"/u, "the desktop sidebar needs an accessible collapse toggle");
   assert.match(documentMarkup, /<div class="sidebar-scroll-region">[\s\S]*?<nav class="nav-list" id="sidebar-navigation">[\s\S]*?<div class="sidebar-footer">/u, "navigation must scroll independently while Settings remains in the sidebar footer");
+  assert.match(documentMarkup, /<div class="control-confirm-layer" id="control-confirm-layer" aria-hidden="true"><\/div>/u, "consequential actions need a dedicated in-app confirmation layer");
+  assert.match(documentMarkup, /<div class="sr-only" id="filter-announcer" role="status" aria-live="polite" aria-atomic="true"><\/div>/u, "dynamic filter counts need a persistent live region outside replaceable page markup");
   assert.match(shellStyles, /\.world-option\s*\{[\s\S]*?min-height:\s*44px/u, "sidebar workspace controls need a 44px touch target");
   assert.match(shellStyles, /\.topbar-workspace-switch button\s*\{[\s\S]*?min-height:\s*44px/u, "mobile workspace controls need a 44px touch target");
   assert.match(shellStyles, /\.sidebar-scroll-region\s*\{[\s\S]*?min-height:\s*0;[\s\S]*?overflow-y:\s*auto;/u, "the sidebar navigation region must remain scrollable at browser zoom and short viewport heights");
@@ -844,7 +861,13 @@ async function emptyStateLayoutContract() {
   }
   assert.match(application, /function safeMediaFocusKey[\s\S]*?\^m-\[a-z0-9\]/u, "media focus restoration must validate its stable DOM key");
   assert.match(application, /function resolveFocusReference[\s\S]*?element\.dataset\?\.mediaKey === reference\.mediaKey[\s\S]*?element\.dataset\?\.action === reference\.mediaAction/u, "structural media refreshes must restore a focused card by safe key and action");
-  assert.match(application, /function confirmControl\(message\)\s*\{\s*return typeof globalThis\.confirm === "function" && globalThis\.confirm\(message\) === true;/u, "control actions must fail closed when confirmation is unavailable");
+  assert.match(application, /function confirmControl\(\{ title, message, confirmLabel = "Continue", tone = "default" \}\)[\s\S]*?state\.confirmationResolver[\s\S]*?role="alertdialog"[\s\S]*?aria-modal="true"/u, "control actions must use the dedicated accessible Helmsman confirmation boundary");
+  assert.doesNotMatch(application, /globalThis\.confirm/u, "Helmsman must not invoke browser-native confirmation dialogs");
+  assert.match(application, /const confirmed = await confirmControl\([\s\S]*?if \(!confirmed \|\| state\.actionMutation\) return;[\s\S]*?stillValid = validate\(\) === true/u, "actions must be approved and revalidated before dispatch");
+  assert.match(application, /async function deleteService\([\s\S]*?runConfirmedDeletion/u, "media connection removal must use the shared in-app confirmation and mutation lock");
+  assert.match(application, /async function runConfirmedDeletion[\s\S]*?state\.actionMutation = key;[\s\S]*?await api\(path, \{ method: "DELETE" \}\)/u, "confirmed removals must lock duplicate mutations before dispatch");
+  assert.match(application, /async function loadOperations[\s\S]*?error\.status === 401[\s\S]*?await initialize\(\)/u, "background session expiry must close stale authenticated UI through initialization");
+  assert.match(operationsStyles, /@media \(max-width: 1450px\) \{[\s\S]*?\.portainer-container-row \{[^}]*grid-template-areas:/u, "Portainer controls must switch to the compact row layout before a laptop-width sidebar can clip them");
   assert.match(application, /await refreshOperations\(\{ afterCurrent: true \}\)/u, "every dispatched control attempt must wait for a post-action inventory refresh");
   assert.match(application, /\["ACTION_OUTCOME_UNKNOWN", "NETWORK_ERROR", "INVALID_RESPONSE"\]\.includes\(error\?\.code\)[\s\S]*?error\?\.status === 0/u, "lost or malformed action responses must retain the refresh lock until fresh evidence arrives");
   assert.match(application, /if \(state\.operationsRefreshPromise\) return state\.operationsRefreshPromise;/u, "background snapshot polling must not race an action refresh");
@@ -1420,8 +1443,24 @@ async function mediaSemanticsContract() {
   retryRequest.dataset.controlKey = "media:seerr:retryRequest:106";
   retryRequest.closest = (selector) => selector === "[data-action]" ? retryRequest : null;
   const refreshesBeforeRetry = environment.requestLog.filter(({ path }) => path === "/api/v2/operations/refresh").length;
-  await environment.dispatchDocument("click", { target: retryRequest });
-  assert.match(environment.confirmCalls.at(-1), /Retry the failed Seerr request for Failed Signal/u);
+  environment.document.activeElement = retryRequest;
+  const cancelledRetry = environment.dispatchDocument("click", { target: retryRequest });
+  await waitFor(() => environment.confirmationLayer.classList.contains("is-open"), "media action confirmation");
+  assert.match(environment.confirmationLayer.innerHTML, /role="alertdialog"[^>]+aria-modal="true"/u);
+  assert.match(environment.confirmationLayer.innerHTML, /Retry the failed Seerr request for Failed Signal/u);
+  assert.equal(environment.elements.get("#drawer-layer").inert, true, "the underlying media drawer must be inert during confirmation");
+  assert.equal(environment.requestLog.some(({ path }) => path === "/api/v2/actions/media"), false, "an action must not dispatch before approval");
+  await environment.dispatchDocument("click", { target: environment.confirmationCancel });
+  await cancelledRetry;
+  assert.equal(environment.requestLog.some(({ path }) => path === "/api/v2/actions/media"), false, "cancelling an in-app confirmation must not dispatch the action");
+  assert.equal(environment.elements.get("#drawer-layer").classList.contains("is-open"), true, "cancelling must preserve the underlying media drawer");
+  assert.equal(environment.elements.get("#drawer-layer").inert, false);
+  assert.equal(environment.document.activeElement, retryRequest, "cancelling must restore focus to the originating control");
+
+  const approvedRetry = environment.dispatchDocument("click", { target: retryRequest });
+  await waitFor(() => environment.confirmationLayer.classList.contains("is-open"), "approved media action confirmation");
+  await environment.dispatchDocument("click", { target: environment.confirmationApprove });
+  await approvedRetry;
   const retryCall = environment.requestLog.find(({ path, options }) => (
     path === "/api/v2/actions/media" && JSON.parse(options.body).operation === "retryRequest"
   ));
@@ -1462,7 +1501,11 @@ async function mediaSemanticsContract() {
   searchTitle.dataset.controlResourceId = "400";
   searchTitle.dataset.controlKey = "media:radarr:searchMovie:400";
   searchTitle.closest = (selector) => selector === "[data-action]" ? searchTitle : null;
-  await environment.dispatchDocument("click", { target: searchTitle });
+  const pendingSearch = environment.dispatchDocument("click", { target: searchTitle });
+  await waitFor(() => environment.confirmationLayer.classList.contains("is-open"), "Radarr search confirmation");
+  assert.match(environment.confirmationLayer.innerHTML, /Search Radarr again/u);
+  await environment.dispatchDocument("click", { target: environment.confirmationApprove });
+  await pendingSearch;
   const searchCall = environment.requestLog.find(({ path, options }) => (
     path === "/api/v2/actions/media" && JSON.parse(options.body).operation === "searchMovie"
   ));
@@ -1563,6 +1606,9 @@ async function serviceDialogInteractionContract() {
     version: "10.11.8",
     checks: [{ id: "identity", label: "Token authorization", state: "healthy", status: 200, latencyMs: 13 }]
   };
+  let resolveServiceDelete = null;
+  let resolvePostDeleteConfig = null;
+  let serviceDeleteCommitted = false;
 
   const environment = installFakeBrowser(({ path, options }) => {
     if (path === "/api/v2/status") {
@@ -1574,7 +1620,14 @@ async function serviceDialogInteractionContract() {
         storage: { credentialsEncrypted: true, externalKey: false }
       });
     }
-    if (path === "/api/v2/config" && String(options.method || "GET") === "GET") return jsonResponse(clone(config));
+    if (path === "/api/v2/config" && String(options.method || "GET") === "GET") {
+      if (serviceDeleteCommitted) {
+        return new Promise((resolve) => {
+          resolvePostDeleteConfig = () => resolve(jsonResponse({ ...clone(config), services: [] }));
+        });
+      }
+      return jsonResponse(clone(config));
+    }
     if (path === "/api/v2/operations/snapshot") return jsonResponse(clone(snapshot));
     if (path === "/api/v2/operations/refresh") return jsonResponse(clone(snapshot));
     if (path === "/api/v2/services/jellyfin/test" && String(options.method || "GET") === "POST") {
@@ -1582,6 +1635,14 @@ async function serviceDialogInteractionContract() {
     }
     if (path === "/api/v2/services/jellyfin" && options.method === "PUT") {
       return jsonResponse(clone(config.services[0]));
+    }
+    if (path === "/api/v2/services/jellyfin" && options.method === "DELETE") {
+      return new Promise((resolve) => {
+        resolveServiceDelete = () => {
+          serviceDeleteCommitted = true;
+          resolve(new Response(null, { status: 204 }));
+        };
+      });
     }
     if (path === "/api/v2/sessions") return jsonResponse({ currentSessionId: "", sessions: [] });
     return jsonResponse({ code: "NOT_FOUND", message: "Unexpected test route." }, 404);
@@ -1997,6 +2058,45 @@ async function serviceDialogInteractionContract() {
   assert.equal(modal.attributes.get("aria-hidden"), "true");
   assert.equal(modal.classList.contains("is-open"), false);
   assert.doesNotMatch(`${environment.main.innerHTML}${modal.innerHTML}`, /name="credential"|type="password"/u);
+
+  await environment.dispatchDocument("click", { target: opener });
+  const removeService = new FakeElement({ id: "remove-jellyfin" });
+  removeService.dataset.action = "delete-service";
+  removeService.dataset.serviceId = "jellyfin";
+  removeService.closest = (selector) => selector === "[data-action]" ? removeService : null;
+  const deletesBeforeConfirmation = environment.requestLog.filter(({ path, options }) => path === "/api/v2/services/jellyfin" && options.method === "DELETE").length;
+  const cancelledDelete = environment.dispatchDocument("click", { target: removeService });
+  await waitFor(() => environment.confirmationLayer.classList.contains("is-open"), "media connection removal confirmation");
+  assert.match(environment.confirmationLayer.innerHTML, /Remove Jellyfin and its encrypted credential/iu);
+  await environment.dispatchDocument("click", { target: environment.confirmationCancel });
+  await cancelledDelete;
+  assert.equal(
+    environment.requestLog.filter(({ path, options }) => path === "/api/v2/services/jellyfin" && options.method === "DELETE").length,
+    deletesBeforeConfirmation,
+    "cancelling media connection removal must send no request"
+  );
+
+  const confirmedDelete = environment.dispatchDocument("click", { target: removeService });
+  await waitFor(() => environment.confirmationLayer.classList.contains("is-open"), "approved media connection removal confirmation");
+  await environment.dispatchDocument("click", { target: environment.confirmationApprove });
+  await waitFor(() => typeof resolveServiceDelete === "function", "locked media connection deletion");
+  await environment.dispatchDocument("click", { target: removeService });
+  assert.equal(
+    environment.requestLog.filter(({ path, options }) => path === "/api/v2/services/jellyfin" && options.method === "DELETE").length,
+    deletesBeforeConfirmation + 1,
+    "a slow confirmed deletion must reject duplicate dispatch"
+  );
+  resolveServiceDelete();
+  await waitFor(() => typeof resolvePostDeleteConfig === "function", "post-delete configuration reconciliation");
+  await environment.dispatchDocument("click", { target: removeService });
+  assert.equal(
+    environment.requestLog.filter(({ path, options }) => path === "/api/v2/services/jellyfin" && options.method === "DELETE").length,
+    deletesBeforeConfirmation + 1,
+    "the deletion guard must remain active until authoritative configuration is reloaded"
+  );
+  resolvePostDeleteConfig();
+  await confirmedDelete;
+  assert.equal(environment.confirmationLayer.classList.contains("is-open"), false);
 }
 
 async function mediaConnectionCategoriesContract() {
@@ -2642,8 +2742,14 @@ async function infrastructureWorkspaceContract() {
   startWorkload.dataset.controlKey = `proxmox:${targetId}:pve-main:lxc:104:start`;
   startWorkload.closest = (selector) => selector === "[data-action]" ? startWorkload : null;
   const refreshesBeforeWorkloadAction = environment.requestLog.filter(({ path }) => path === "/api/v2/operations/refresh").length;
-  await environment.dispatchDocument("click", { target: startWorkload });
-  assert.match(environment.confirmCalls.at(-1), /Start Lab/u, "a Proxmox guest mutation must require confirmation");
+  const workloadModalBeforeConfirmation = modal.innerHTML;
+  const pendingWorkloadAction = environment.dispatchDocument("click", { target: startWorkload });
+  await waitFor(() => environment.confirmationLayer.classList.contains("is-open"), "Proxmox action confirmation");
+  assert.match(environment.confirmationLayer.innerHTML, /Start Lab/u, "a Proxmox guest mutation must use the in-app confirmation");
+  assert.equal(modal.innerHTML, workloadModalBeforeConfirmation, "confirmation must not replace the underlying workload detail");
+  assert.equal(modal.inert, true, "the underlying workload detail must be inert during confirmation");
+  await environment.dispatchDocument("click", { target: environment.confirmationApprove });
+  await pendingWorkloadAction;
   const startCall = environment.requestLog.find(({ path }) => path === "/api/v2/actions/proxmox/workload");
   assert.ok(startCall, "the confirmed Proxmox action must use the bounded local action route");
   assert.deepEqual(JSON.parse(startCall.options.body), {
@@ -2816,6 +2922,7 @@ async function infrastructureWorkspaceContract() {
 async function portainerInfrastructureContract() {
   const checkedAt = new Date().toISOString();
   let failNextOperationsRefresh = false;
+  let sessionExpired = false;
   const serviceId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
   const containerId = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
   const hostileEnvironment = 'Docker host <img src=x onerror="portainer-environment-xss">';
@@ -2899,7 +3006,11 @@ async function portainerInfrastructureContract() {
             health: "unhealthy",
             stack: "edge",
             createdAt: "2026-09-12T23:00:00.000Z",
-            ports: [{ privatePort: 443, publicPort: 443, protocol: "tcp" }],
+            ports: [
+              { privatePort: 443, publicPort: 443, protocol: "tcp" },
+              { privatePort: 443, publicPort: 443, protocol: "tcp" },
+              { privatePort: 8080, publicPort: null, protocol: "tcp" }
+            ],
             accessToken: hiddenToken
           }],
           stacks: [{ id: 9, name: "edge", state: "active", type: 2, environmentId: 1, environmentName: hostileEnvironment, updatedAt: "2026-09-13T01:30:00.000Z" }]
@@ -2930,9 +3041,13 @@ async function portainerInfrastructureContract() {
   };
   const environment = installFakeBrowser(({ path, options }) => {
     const method = String(options.method || "GET").toUpperCase();
-    if (path === "/api/v2/status") return jsonResponse({ setupRequired: false, authenticated: true, csrfToken: "portainer-csrf", session: { name: "Portainer Browser" } });
+    if (path === "/api/v2/status") return sessionExpired
+      ? jsonResponse({ setupRequired: false, authenticated: false, accessKeyConfigured: true })
+      : jsonResponse({ setupRequired: false, authenticated: true, csrfToken: "portainer-csrf", session: { name: "Portainer Browser" } });
     if (path === "/api/v2/config") return jsonResponse(clone(config));
-    if (path === "/api/v2/operations/snapshot") return jsonResponse(clone(snapshot));
+    if (path === "/api/v2/operations/snapshot") return sessionExpired
+      ? jsonResponse({ code: "AUTHENTICATION_REQUIRED", message: "The browser session expired." }, 401)
+      : jsonResponse(clone(snapshot));
     if (path === "/api/v2/operations/refresh" && method === "POST") {
       if (failNextOperationsRefresh) {
         failNextOperationsRefresh = false;
@@ -2962,6 +3077,16 @@ async function portainerInfrastructureContract() {
   assert.match(markup, /Authenticated user lacks permission for this capability or environment · FORBIDDEN · HTTP 403/u, "a Portainer environment 403 must be identified as an authorization failure");
   assert.match(markup, /class="portainer-environment-card"/u);
   assert.match(markup, /class="portainer-container-row is-down"/u);
+  assert.match(markup, /class="portainer-container-group"[^>]+aria-labelledby="portainer-container-group-0"/u, "containers must be grouped by Portainer environment");
+  assert.match(markup, /id="portainer-container-group-0">Container Control · Docker host &lt;img/u, "a group heading must distinguish identical environment names across Portainer servers");
+  assert.match(markup, /class="portainer-container-identity"/u);
+  assert.match(markup, /class="portainer-container-placement"[\s\S]*?>Stack</u);
+  assert.match(markup, /class="portainer-container-runtime"[\s\S]*?>Runtime</u);
+  assert.match(markup, /class="portainer-container-ports"[\s\S]*?>Ports<[\s\S]*?443 → 443\/tcp/u);
+  assert.match(markup, /8080\/tcp · internal/u, "private-only container ports must be identified as internal");
+  assert.equal((markup.match(/443 → 443\/tcp/gu) || []).length, 1, "duplicate Portainer port mappings must render once");
+  assert.match(markup, /class="filter-result-count">1 result/u);
+  assert.doesNotMatch(markup, /<table class="portainer-table"/u, "Portainer containers must not use the oversized fixed-width table");
   assert.match(markup, /class="portainer-stack-card"/u);
   assert.match(markup, /Stopped and exited containers are informational/u);
   assert.match(markup, /Guarded container controls/u);
@@ -2972,6 +3097,15 @@ async function portainerInfrastructureContract() {
   assert.doesNotMatch(markup, /<script>portainer-container-xss<\/script>|<img src=x onerror="portainer-environment-xss">/u);
   assert.doesNotMatch(`${markup}${environment.elements.get("#modal-layer").innerHTML}`, new RegExp(hiddenToken, "u"));
 
+  const containerSearch = new FakeElement({ id: "portainer-container-search" });
+  containerSearch.dataset.portainerFilter = "search";
+  containerSearch.value = "no-container-matches-this";
+  await environment.dispatchDocument("input", { target: containerSearch });
+  await waitFor(() => environment.elements.get("#filter-announcer").textContent === "0 container results", "persistent Portainer filter announcement");
+  containerSearch.value = "";
+  await environment.dispatchDocument("input", { target: containerSearch });
+  await waitFor(() => environment.elements.get("#filter-announcer").textContent === "1 container result", "restored Portainer filter announcement");
+
   const restartContainer = new FakeElement({ id: "restart-portainer-container" });
   restartContainer.dataset.action = "run-portainer-control";
   restartContainer.dataset.portainerContainerKey = `${serviceId}:1:${containerId}`;
@@ -2980,8 +3114,25 @@ async function portainerInfrastructureContract() {
   restartContainer.closest = (selector) => selector === "[data-action]" ? restartContainer : null;
   const refreshesBeforeContainerAction = environment.requestLog.filter(({ path }) => path === "/api/v2/operations/refresh").length;
   failNextOperationsRefresh = true;
-  await environment.dispatchDocument("click", { target: restartContainer });
-  assert.match(environment.confirmCalls.at(-1), /Restart reverse-proxy/u, "a Portainer mutation must require confirmation");
+  const pendingContainerAction = environment.dispatchDocument("click", { target: restartContainer });
+  await waitFor(() => environment.confirmationLayer.classList.contains("is-open"), "Portainer action confirmation");
+  assert.match(environment.confirmationLayer.innerHTML, /Restart reverse-proxy/u, "a Portainer mutation must use the in-app confirmation");
+  assert.equal(environment.document.activeElement, environment.confirmationCancel, "the safe Cancel choice must receive initial focus");
+  assert.equal(environment.elements.get("#app").inert, true, "the app must be inert while a confirmation is open");
+  environment.confirmationApprove.focus();
+  let tabWrapped = false;
+  await environment.dispatchWindow("keydown", { key: "Tab", preventDefault() { tabWrapped = true; } });
+  assert.equal(tabWrapped, true, "Tab must wrap from the final confirmation control");
+  assert.equal(environment.document.activeElement, environment.confirmationCancel);
+  let reverseTabWrapped = false;
+  await environment.dispatchWindow("keydown", { key: "Tab", shiftKey: true, preventDefault() { reverseTabWrapped = true; } });
+  assert.equal(reverseTabWrapped, true, "Shift+Tab must wrap from the first confirmation control");
+  assert.equal(environment.document.activeElement, environment.confirmationApprove);
+  const duplicateContainerAction = environment.dispatchDocument("click", { target: restartContainer });
+  await duplicateContainerAction;
+  assert.equal(environment.requestLog.some(({ path }) => path === "/api/v2/actions/portainer/container"), false, "repeated clicks must not bypass the pending confirmation");
+  await environment.dispatchDocument("click", { target: environment.confirmationApprove });
+  await pendingContainerAction;
   const restartCall = environment.requestLog.find(({ path }) => path === "/api/v2/actions/portainer/container");
   assert.ok(restartCall, "the confirmed Portainer action must use the bounded local action route");
   assert.deepEqual(JSON.parse(restartCall.options.body), {
@@ -2998,6 +3149,7 @@ async function portainerInfrastructureContract() {
     "a Portainer control attempt must refresh current evidence before unlocking actions"
   );
   assert.match(environment.main.innerHTML, /data-action="run-portainer-control"[^>]+disabled[^>]*>Refresh required</u, "an accepted action must remain locked when its evidence refresh fails");
+  assert.match(environment.main.innerHTML, /aria-label="Refresh required: reverse-proxy/u, "assistive text must expose the refresh-required action state");
   const actionCallsBeforeLockedRetry = environment.requestLog.filter(({ path }) => path === "/api/v2/actions/portainer/container").length;
   await environment.dispatchDocument("click", { target: restartContainer });
   assert.equal(
@@ -3011,6 +3163,25 @@ async function portainerInfrastructureContract() {
   await environment.dispatchDocument("click", { target: manualRefresh });
   await waitFor(() => !environment.main.innerHTML.includes("Refresh required"), "post-action refresh lock release");
   assert.doesNotMatch(environment.main.innerHTML, /Refresh required/u, "a later successful refresh must release the local action lock");
+
+  const actionCallsBeforeStaleApproval = environment.requestLog.filter(({ path }) => path === "/api/v2/actions/portainer/container").length;
+  const staleContainerAction = environment.dispatchDocument("click", { target: restartContainer });
+  await waitFor(() => environment.confirmationLayer.classList.contains("is-open"), "stale Portainer action confirmation");
+  snapshot.infrastructure.services[0].inventory.containers[0].state = "exited";
+  snapshot.infrastructure.services[0].inventory.containers[0].status = "Exited (0) moments ago";
+  const snapshotsBeforeStaleApproval = environment.requestLog.filter(({ path }) => path === "/api/v2/operations/snapshot").length;
+  await environment.intervalCallbacks.at(-1)();
+  await waitFor(
+    () => environment.requestLog.filter(({ path }) => path === "/api/v2/operations/snapshot").length === snapshotsBeforeStaleApproval + 1,
+    "Portainer state change during confirmation"
+  );
+  await environment.dispatchDocument("click", { target: environment.confirmationApprove });
+  await staleContainerAction;
+  assert.equal(
+    environment.requestLog.filter(({ path }) => path === "/api/v2/actions/portainer/container").length,
+    actionCallsBeforeStaleApproval,
+    "an action that becomes invalid while the confirmation is open must not dispatch"
+  );
 
   environment.location.hash = "#/overview";
   await environment.dispatchWindow("hashchange", { type: "hashchange" });
@@ -3107,6 +3278,36 @@ async function portainerInfrastructureContract() {
   environment.location.hash = "#/portainer";
   await environment.dispatchWindow("hashchange", { type: "hashchange" });
   assert.equal(environment.location.hash, "#/home", "Media must canonicalize an Infrastructure-only Portainer route to Home");
+
+  snapshot.infrastructure.services[0].inventory.containers[0].state = "running";
+  snapshot.infrastructure.services[0].inventory.containers[0].status = "Up 3 hours (healthy)";
+  const snapshotsBeforeSessionExpiry = environment.requestLog.filter(({ path }) => path === "/api/v2/operations/snapshot").length;
+  await environment.intervalCallbacks.at(-1)();
+  await waitFor(
+    () => environment.requestLog.filter(({ path }) => path === "/api/v2/operations/snapshot").length === snapshotsBeforeSessionExpiry + 1,
+    "fresh Portainer state before session-expiry confirmation"
+  );
+  const infrastructureSwitch = environment.workspaceButtons.find((button) => button.dataset.workspace === "infrastructure");
+  infrastructureSwitch.closest = (selector) => selector === "[data-action]" ? infrastructureSwitch : null;
+  await environment.dispatchDocument("click", { target: infrastructureSwitch });
+  environment.location.hash = "#/portainer";
+  await environment.dispatchWindow("hashchange", { type: "hashchange" });
+  const actionCallsBeforeExpiry = environment.requestLog.filter(({ path }) => path === "/api/v2/actions/portainer/container").length;
+  const expiredAction = environment.dispatchDocument("click", { target: restartContainer });
+  await waitFor(() => environment.confirmationLayer.classList.contains("is-open"), "confirmation awaiting session expiry");
+  sessionExpired = true;
+  await environment.intervalCallbacks.at(-1)();
+  await expiredAction;
+  assert.equal(environment.confirmationLayer.classList.contains("is-open"), false, "session expiry must close a pending confirmation");
+  assert.equal(environment.elements.get("#app").inert, false, "session expiry must release the authenticated shell");
+  assert.equal(environment.elements.get("#modal-layer").classList.contains("is-open"), false);
+  assert.equal(environment.elements.get("#drawer-layer").classList.contains("is-open"), false);
+  assert.match(environment.main.innerHTML, /Unlock Helmsman/u, "an expired browser must return to the access-key gate");
+  assert.equal(
+    environment.requestLog.filter(({ path }) => path === "/api/v2/actions/portainer/container").length,
+    actionCallsBeforeExpiry,
+    "approval cannot dispatch after the browser session expires"
+  );
 }
 
 async function authenticatedRuntimeContract() {
@@ -3493,20 +3694,29 @@ async function authenticatedRuntimeContract() {
 
   const rotateTarget = actionTarget("rotate-access-key");
   const rotationsBeforeConfirmation = environment.requestLog.filter(({ path }) => path === "/api/v2/access/rotate").length;
-  environment.confirmResponses.push(false);
-  await environment.dispatchDocument("click", { target: rotateTarget });
+  const cancelledRotation = environment.dispatchDocument("click", { target: rotateTarget });
+  await waitFor(() => environment.confirmationLayer.classList.contains("is-open"), "access-key rotation confirmation");
+  assert.match(environment.confirmationLayer.innerHTML, /current key will stop working and every other browser will be signed out/iu);
+  let escapePrevented = false;
+  await environment.dispatchWindow("keydown", {
+    key: "Escape",
+    preventDefault() { escapePrevented = true; }
+  });
+  await cancelledRotation;
   assert.equal(
     environment.requestLog.filter(({ path }) => path === "/api/v2/access/rotate").length,
     rotationsBeforeConfirmation,
     "cancelling rotation must not send a request"
   );
-  assert.equal(environment.confirmCalls.length, 1, "an already-configured key must require confirmation");
-  assert.match(environment.confirmCalls[0], /current key will stop working[\s\S]*every other browser will be signed out/iu);
+  assert.equal(escapePrevented, true, "Escape must be consumed by the in-app confirmation");
+  assert.equal(environment.confirmationLayer.classList.contains("is-open"), false);
 
-  environment.confirmResponses.push(true);
-  await environment.dispatchDocument("click", { target: rotateTarget });
+  const approvedRotation = environment.dispatchDocument("click", { target: rotateTarget });
+  await waitFor(() => environment.confirmationLayer.classList.contains("is-open"), "approved access-key rotation confirmation");
+  await environment.dispatchDocument("click", { target: environment.confirmationApprove });
+  await approvedRotation;
   await waitFor(() => environment.requestLog.some(({ path }) => path === "/api/v2/access/rotate"), "access-key rotation mutation");
-  assert.equal(environment.confirmCalls.length, 2, "approving the confirmation must continue through the same rotation boundary");
+  assert.deepEqual(environment.browserConfirmCalls, [], "no Helmsman action may invoke the browser-native confirmation UI");
   await waitFor(() => environment.main.innerHTML.includes("hm-rotated-"), "rotated access-key reveal");
   assert.match(environment.main.innerHTML, /hm-rotated-&lt;script&gt;rotation-xss&lt;\/script&gt;/u);
   assert.doesNotMatch(environment.main.innerHTML, /<script>rotation-xss<\/script>/u, "a rotated access key must be escaped");

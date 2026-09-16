@@ -16,7 +16,9 @@ const main = document.querySelector("#main-content");
 const appShell = document.querySelector("#app");
 const drawerLayer = document.querySelector("#drawer-layer");
 const modalLayer = document.querySelector("#modal-layer");
+const controlConfirmLayer = document.querySelector("#control-confirm-layer");
 const toastRegion = document.querySelector("#toast-region");
+const filterAnnouncer = document.querySelector("#filter-announcer");
 const pageTitle = document.querySelector("#page-title");
 const pageEyebrow = document.querySelector("#page-eyebrow");
 const modeBadge = document.querySelector("#mode-badge");
@@ -25,6 +27,7 @@ const monitorSummary = document.querySelector("#monitor-summary");
 const sessionButton = document.querySelector("#session-button");
 let infrastructureFilterTimer = null;
 let mediaFilterTimer = null;
+let filterAnnouncementRevision = 0;
 
 function emptyInfrastructureState() {
   return {
@@ -256,7 +259,9 @@ const state = {
     selectedId: "",
     drawerReturnFocus: null
   },
-  modalReturnFocus: null
+  modalReturnFocus: null,
+  confirmationResolver: null,
+  confirmationReturnFocus: null
 };
 
 // Compare the bounded view model rather than the raw monitor payload. Raw
@@ -1847,6 +1852,7 @@ function openMediaDrawer(mediaId) {
 
 function closeMediaDrawer({ restoreFocus = true } = {}) {
   if (!drawerLayer) return;
+  closeControlConfirmation(false, { restoreFocus: false });
   drawerLayer.classList.remove("is-open");
   drawerLayer.setAttribute("aria-hidden", "true");
   if (appShell && !modalLayer?.classList.contains("is-open")) appShell.inert = false;
@@ -2914,7 +2920,7 @@ function portainerActionContext(container) {
 
 function renderPortainerContainerControls(container) {
   if (!portainerActionContext(container)
-    || !/^[a-f0-9]{64}$/u.test(container.id)) return "—";
+    || !/^[a-f0-9]{64}$/u.test(container.id)) return `<span class="portainer-container-empty-action">Controls unavailable</span>`;
   const actions = container.state === "running"
     ? [
         { operation: "restart", label: "Restart", className: "" },
@@ -2923,12 +2929,13 @@ function renderPortainerContainerControls(container) {
     : ["created", "exited"].includes(container.state)
       ? [{ operation: "start", label: "Start", className: "button--primary" }]
       : [];
-  if (!actions.length) return "—";
+  if (!actions.length) return `<span class="portainer-container-empty-action">No action available</span>`;
   return `<div class="container-control-buttons">${actions.map(({ operation, label, className }) => {
     const key = `portainer:${container.key}:${operation}`;
     const busy = state.actionMutation === key;
     const awaitingRefresh = state.actionAwaitingRefresh === key;
-    const accessibleLabel = `${label} ${container.name} (${container.shortId})`;
+    const currentLabel = awaitingRefresh ? "Refresh required" : busy ? "Working" : label;
+    const accessibleLabel = `${currentLabel}: ${container.name} (${container.shortId})`;
     return `<button class="button button--compact ${className}" type="button" data-action="run-portainer-control" data-portainer-container-key="${escapeHtml(container.key)}" data-control-operation="${escapeHtml(operation)}" data-control-key="${escapeHtml(key)}" aria-label="${escapeHtml(accessibleLabel)}" ${state.actionMutation ? "disabled" : ""} ${busy && !awaitingRefresh ? "aria-busy=\"true\"" : ""}>${awaitingRefresh ? "Refresh required" : busy ? "Working…" : escapeHtml(label)}</button>`;
   }).join("")}</div>`;
 }
@@ -3005,6 +3012,58 @@ function filteredPortainerInventory(services) {
   return { ...all, containers, stacks };
 }
 
+function groupedPortainerContainers(containers) {
+  const groups = new Map();
+  for (const container of containers) {
+    const key = `${container.serverId}:${container.environmentId}`;
+    if (!groups.has(key)) {
+      groups.set(key, {
+        key,
+        serverName: container.serverName,
+        environmentName: container.environmentName,
+        containers: []
+      });
+    }
+    groups.get(key).containers.push(container);
+  }
+  return [...groups.values()];
+}
+
+function portainerPortLabels(container) {
+  const labels = [];
+  const seen = new Set();
+  for (const port of container.ports) {
+    const label = port.publicPort
+      ? `${port.publicPort} → ${port.privatePort}/${port.protocol}`
+      : `${port.privatePort}/${port.protocol} · internal`;
+    if (seen.has(label)) continue;
+    seen.add(label);
+    labels.push(label);
+  }
+  return labels;
+}
+
+function renderPortainerContainer(container) {
+  const tone = portainerContainerTone(container);
+  const ports = portainerPortLabels(container);
+  return `<article class="portainer-container-row is-${tone}" data-portainer-container-key="${escapeHtml(container.key)}" tabindex="-1" aria-label="${escapeHtml(`${container.name}, ${portainerContainerStateLabel(container)}`)}">
+    <div class="portainer-container-identity"><span class="portainer-container-mark">${icon("containers")}</span><span><strong>${escapeHtml(container.name)}</strong><small>Container ${escapeHtml(container.shortId)}</small><code title="${escapeHtml(container.image)}">${escapeHtml(container.image)}</code></span></div>
+    <div class="portainer-container-placement"><span>Stack</span><strong>${escapeHtml(container.stack || "Standalone")}</strong><small>${container.stack ? "Compose-managed container" : "Not assigned to a visible stack"}</small></div>
+    <div class="portainer-container-runtime"><span>Runtime</span><span class="portainer-status is-${tone}"><i class="health-dot is-${tone}"></i>${escapeHtml(portainerContainerStateLabel(container))}</span><small>${escapeHtml(container.status)}</small></div>
+    <div class="portainer-container-ports"><span>Ports</span>${ports.length ? `<div>${ports.map((port) => `<code>${escapeHtml(port)}</code>`).join("")}</div>` : `<small>No ports reported</small>`}</div>
+    <div class="portainer-container-actions"><span>Actions</span>${renderPortainerContainerControls(container)}</div>
+  </article>`;
+}
+
+function renderPortainerContainerGroups(containers) {
+  const groups = groupedPortainerContainers(containers);
+  if (!groups.length) return `<div class="empty-state"><strong>No matching containers</strong><span>Adjust the filters or wait for the next Portainer inventory cycle.</span></div>`;
+  return `<div class="portainer-container-groups">${groups.map((group, index) => {
+    const titleId = `portainer-container-group-${index}`;
+    return `<section class="portainer-container-group" aria-labelledby="${titleId}"><header class="portainer-container-group__header"><span class="portainer-environment-mark">${icon("server")}</span><div><span>Portainer environment</span><h4 id="${titleId}">${escapeHtml(group.serverName)} · ${escapeHtml(group.environmentName)}</h4></div><span class="count-pill">${group.containers.length} container${group.containers.length === 1 ? "" : "s"}</span></header><div class="portainer-container-list">${group.containers.map(renderPortainerContainer).join("")}</div></section>`;
+  }).join("")}</div>`;
+}
+
 function renderPortainerPage() {
   const services = portainerServicesForUi();
   const totals = portainerMetricTotals(services);
@@ -3036,7 +3095,7 @@ function renderPortainerPage() {
     </section>
 
     <section class="portainer-panel"><header><div><span class="section-kicker">Container inventory</span><h3>Containers</h3><p>Stopped and exited containers are informational. Unhealthy, dead, and restarting containers are clearly flagged.</p></div><span class="count-pill">${filtered.containers.length}</span></header>
-      <div class="portainer-notice">${icon("shield")}<span><strong>Guarded container controls</strong><small>Every command requires confirmation. Remove, recreate, force-kill, and stack deployment actions remain unavailable.</small></span></div>
+      <div class="portainer-notice">${icon("shield")}<span><strong>Guarded container controls</strong><small>Every command opens a Helmsman confirmation. Remove, recreate, force-kill, and stack deployment actions remain unavailable.</small></span></div>
       <div class="portainer-filterbar">
         <label><span>Server</span><select id="portainer-server-filter" data-portainer-filter="server"><option value="all">All Portainer servers</option>${services.map((service) => `<option value="${escapeHtml(service.id)}" ${filters.server === service.id ? "selected" : ""}>${escapeHtml(service.displayName)}</option>`).join("")}</select></label>
         <label><span>Environment</span><select id="portainer-environment-filter" data-portainer-filter="environment"><option value="all">All environments</option>${environments.map((environment) => `<option value="${escapeHtml(environment.key)}" ${filters.environment === environment.key ? "selected" : ""}>${escapeHtml(environment.name)} · ${escapeHtml(environment.serverName)}</option>`).join("")}</select></label>
@@ -3044,11 +3103,23 @@ function renderPortainerPage() {
         <label class="filter-search"><span>Name, image, stack, or ID</span><input id="portainer-container-search" type="search" data-portainer-filter="search" value="${escapeHtml(filters.search)}" placeholder="Search containers" /></label>
         <span class="filter-result-count">${filtered.containers.length} result${filtered.containers.length === 1 ? "" : "s"}</span>
       </div>
-      <div class="portainer-table-wrap" data-preserve-scroll="portainer-table"><table class="portainer-table"><thead><tr><th>Container</th><th>Image</th><th>Portainer / environment</th><th>Stack</th><th>State</th><th>Published ports</th><th>Actions</th></tr></thead><tbody>${filtered.containers.length ? filtered.containers.map((container) => `<tr class="portainer-container-row is-${portainerContainerTone(container)}" data-portainer-container-key="${escapeHtml(container.key)}" tabindex="-1"><th scope="row"><span class="portainer-container-mark">${icon("containers")}</span><span><strong>${escapeHtml(container.name)}</strong><small>${escapeHtml(container.shortId)}</small></span></th><td><code>${escapeHtml(container.image)}</code></td><td><strong>${escapeHtml(container.environmentName)}</strong><small>${escapeHtml(container.serverName)}</small></td><td>${escapeHtml(container.stack || "—")}</td><td><span class="portainer-status is-${portainerContainerTone(container)}"><i class="health-dot is-${portainerContainerTone(container)}"></i>${escapeHtml(portainerContainerStateLabel(container))}</span><small>${escapeHtml(container.status)}</small></td><td>${container.ports.length ? container.ports.map((port) => `<code>${port.publicPort ? `${port.publicPort}→` : ""}${port.privatePort}/${escapeHtml(port.protocol)}</code>`).join(" ") : "—"}</td><td>${renderPortainerContainerControls(container)}</td></tr>`).join("") : `<tr><td colspan="7"><div class="empty-state"><strong>No matching containers</strong><span>Adjust the filters or wait for the next Portainer inventory cycle.</span></div></td></tr>`}</tbody></table></div>
+      ${renderPortainerContainerGroups(filtered.containers)}
     </section>
 
     <section class="portainer-panel"><header><div><span class="section-kicker">Application groups</span><h3>Stacks</h3><p>Stack records are correlated to their visible Portainer environment.</p></div><span class="count-pill">${filtered.stacks.length}</span></header>${filtered.stacks.length ? `<div class="portainer-stack-grid">${filtered.stacks.map((stack) => `<article class="portainer-stack-card"><header><span class="portainer-environment-mark">${icon("library")}</span><span><small>${escapeHtml(stack.serverName)} · ${escapeHtml(stack.environmentName)}</small><strong>${escapeHtml(stack.name)}</strong></span><span class="portainer-status is-${stack.state === "active" ? "healthy" : "stale"}"><i class="health-dot is-${stack.state === "active" ? "healthy" : "stale"}"></i>${escapeHtml(stack.state)}</span></header><footer><span>Stack ${stack.id}</span><time>${escapeHtml(formatTime(stack.updatedAt || stack.createdAt, "Timestamp unavailable"))}</time></footer></article>`).join("")}</div>` : `<div class="empty-state"><strong>No visible stacks</strong><span>The configured Portainer users have not returned any stack records for this filter.</span></div>`}</section>
   </section>`;
+}
+
+function announcePortainerFilterResults() {
+  if (!filterAnnouncer) return;
+  const count = filteredPortainerInventory(portainerServicesForUi()).containers.length;
+  const revision = ++filterAnnouncementRevision;
+  filterAnnouncer.textContent = "";
+  requestAnimationFrame(() => {
+    if (revision === filterAnnouncementRevision) {
+      filterAnnouncer.textContent = `${count} container result${count === 1 ? "" : "s"}`;
+    }
+  });
 }
 
 function renderAuthenticatedRoute() {
@@ -3104,19 +3175,12 @@ function renderPage({ force = false, preserveFocus = false } = {}) {
 
   if (!force && markup === state.lastMarkup) return;
   const focusedReference = preserveFocus ? focusReference(document.activeElement) : null;
-  const portainerScrollLeft = preserveFocus
-    ? Number(main.querySelector?.("[data-preserve-scroll='portainer-table']")?.scrollLeft)
-    : Number.NaN;
   const documentScrollTop = preserveFocus
     ? Number(globalThis.scrollY ?? document.documentElement?.scrollTop ?? document.body?.scrollTop ?? 0)
     : 0;
   state.lastMarkup = markup;
   setMarkup(main, markup);
   if (preserveFocus) resolveFocusReference(focusedReference, main)?.focus({ preventScroll: true });
-  if (preserveFocus && Number.isFinite(portainerScrollLeft)) {
-    const portainerScroller = main.querySelector?.("[data-preserve-scroll='portainer-table']");
-    if (portainerScroller) portainerScroller.scrollLeft = portainerScrollLeft;
-  }
   if (preserveFocus && Number.isFinite(documentScrollTop)) {
     if (typeof globalThis.scrollTo === "function") globalThis.scrollTo({ top: documentScrollTop, left: 0, behavior: "instant" });
     else if (document.documentElement) document.documentElement.scrollTop = documentScrollTop;
@@ -3621,6 +3685,71 @@ function updateVolatileOperationsUi() {
   updateChrome();
 }
 
+function controlConfirmationPresentation(operation) {
+  return {
+    start: { title: "Start this workload?", confirmLabel: "Start" },
+    restart: { title: "Restart this container?", confirmLabel: "Restart" },
+    stop: { title: "Stop this container?", confirmLabel: "Stop", tone: "danger" },
+    reboot: { title: "Reboot this workload?", confirmLabel: "Reboot" },
+    shutdown: { title: "Shut down this workload?", confirmLabel: "Shut down", tone: "danger" },
+    retryRequest: { title: "Retry this request?", confirmLabel: "Retry request" },
+    searchMovie: { title: "Search Radarr again?", confirmLabel: "Search Radarr" },
+    searchSeries: { title: "Search Sonarr again?", confirmLabel: "Search Sonarr" }
+  }[operation] || { title: "Confirm this action?", confirmLabel: "Continue" };
+}
+
+function closeControlConfirmation(confirmed = false, { restoreFocus = true } = {}) {
+  const resolver = state.confirmationResolver;
+  if (!resolver) return false;
+  const returnFocus = state.confirmationReturnFocus;
+  state.confirmationResolver = null;
+  state.confirmationReturnFocus = null;
+  controlConfirmLayer.classList.remove("is-open");
+  controlConfirmLayer.setAttribute("aria-hidden", "true");
+  setMarkup(controlConfirmLayer, "");
+  const modalOpen = modalLayer?.classList.contains("is-open");
+  const drawerOpen = drawerLayer?.classList.contains("is-open");
+  if (modalLayer) {
+    modalLayer.inert = false;
+    modalLayer.setAttribute("aria-hidden", modalOpen ? "false" : "true");
+  }
+  if (drawerLayer) {
+    drawerLayer.inert = false;
+    drawerLayer.setAttribute("aria-hidden", drawerOpen ? "false" : "true");
+  }
+  if (appShell) appShell.inert = Boolean(modalOpen || drawerOpen);
+  if (!modalOpen && !drawerOpen) document.body.classList.remove("has-overlay");
+  if (restoreFocus) {
+    const root = modalOpen ? modalLayer : drawerOpen ? drawerLayer : main;
+    restoreFocusReference(returnFocus, root);
+  }
+  resolver(Boolean(confirmed));
+  return true;
+}
+
+function confirmControl({ title, message, confirmLabel = "Continue", tone = "default" }) {
+  if (!controlConfirmLayer || state.confirmationResolver) return Promise.resolve(false);
+  const safeTone = tone === "danger" ? "danger" : "default";
+  state.confirmationReturnFocus = focusReference(document.activeElement);
+  setMarkup(controlConfirmLayer, `<div class="control-confirm-backdrop" data-action="cancel-control-confirm"></div><section class="standard-modal control-confirm-modal is-${safeTone}" role="alertdialog" aria-modal="true" aria-labelledby="control-confirm-title" aria-describedby="control-confirm-description"><div class="large-modal-icon ${safeTone === "danger" ? "is-danger" : ""}">${icon(safeTone === "danger" ? "shield" : "check")}</div><span class="section-kicker">Helmsman confirmation</span><h2 id="control-confirm-title">${escapeHtml(title)}</h2><p id="control-confirm-description">${escapeHtml(message)}</p><div class="modal-button-row"><button class="button" id="control-confirm-cancel" type="button" data-action="cancel-control-confirm">Cancel</button><button class="button ${safeTone === "danger" ? "button--danger" : "button--primary"}" type="button" data-action="approve-control-confirm">${escapeHtml(confirmLabel)}</button></div></section>`);
+  controlConfirmLayer.classList.add("is-open");
+  controlConfirmLayer.setAttribute("aria-hidden", "false");
+  if (modalLayer?.classList.contains("is-open")) {
+    modalLayer.inert = true;
+    modalLayer.setAttribute("aria-hidden", "true");
+  }
+  if (drawerLayer?.classList.contains("is-open")) {
+    drawerLayer.inert = true;
+    drawerLayer.setAttribute("aria-hidden", "true");
+  }
+  if (appShell) appShell.inert = true;
+  document.body.classList.add("has-overlay");
+  return new Promise((resolve) => {
+    state.confirmationResolver = resolve;
+    requestAnimationFrame(() => controlConfirmLayer.querySelector("#control-confirm-cancel")?.focus());
+  });
+}
+
 function openModal(markup, focusSelector) {
   const returnFocus = drawerLayer?.classList.contains("is-open")
     ? state.media.drawerReturnFocus
@@ -3636,6 +3765,7 @@ function openModal(markup, focusSelector) {
 }
 
 function closeModal({ restoreFocus = true } = {}) {
+  closeControlConfirmation(false, { restoreFocus: false });
   modalLayer.classList.remove("is-open");
   modalLayer.setAttribute("aria-hidden", "true");
   if (appShell) appShell.inert = false;
@@ -4548,16 +4678,87 @@ async function testService(form, button) {
   }
 }
 
-async function deleteService(serviceId) {
+async function runConfirmedDeletion(button, {
+  key,
+  title,
+  message,
+  confirmLabel,
+  path,
+  validate,
+  staleMessage,
+  successMessage,
+  applyLocalSuccess = null,
+  onSuccess
+}) {
+  if (state.actionMutation) return false;
+  if (!(await confirmControl({ title, message, confirmLabel, tone: "danger" })) || state.actionMutation) return false;
+  let stillValid = false;
   try {
-    await api(`/api/v2/services/${encodeURIComponent(serviceId)}`, { method: "DELETE" });
-    closeModal();
-    await loadAuthenticatedData({ refresh: true });
-    renderPage({ force: true });
-    showToast("Service target and its encrypted credential were removed.");
-  } catch (error) {
-    showToast(error.message, "danger");
+    stillValid = typeof validate === "function" && validate() === true;
+  } catch {
+    stillValid = false;
   }
+  if (!stillValid) {
+    showToast(staleMessage, "danger");
+    return false;
+  }
+  state.actionMutation = key;
+  if (button) {
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+  }
+  let deletionAccepted = false;
+  try {
+    await api(path, { method: "DELETE" });
+    deletionAccepted = true;
+    if (typeof applyLocalSuccess === "function") applyLocalSuccess();
+    await onSuccess();
+    showToast(successMessage, "success");
+    return true;
+  } catch (error) {
+    showToast(deletionAccepted
+      ? "The connection was removed, but current state could not be reloaded. Refresh Helmsman before making another change."
+      : error.message, "danger");
+    return false;
+  } finally {
+    if (state.actionMutation === key) state.actionMutation = "";
+    if (deletionAccepted) {
+      state.lastMarkup = "";
+      renderPage({ force: true, preserveFocus: true });
+    }
+    if (button?.isConnected) {
+      button.disabled = false;
+      button.removeAttribute("aria-busy");
+    }
+  }
+}
+
+async function deleteService(serviceId, button) {
+  const service = state.config?.services?.find((entry) => entry.id === serviceId && entry.configured !== false);
+  if (!service) return;
+  const targetRevision = String(service.targetRevision || "");
+  await runConfirmedDeletion(button, {
+    key: `delete:media:${serviceId}`,
+    title: "Remove media connection?",
+    message: `Remove ${service.name || serviceId} and its encrypted credential?`,
+    confirmLabel: "Remove connection",
+    path: `/api/v2/services/${encodeURIComponent(serviceId)}`,
+    validate: () => {
+      const current = state.config?.services?.find((entry) => entry.id === serviceId && entry.configured !== false);
+      return Boolean(current) && String(current.targetRevision || "") === targetRevision;
+    },
+    staleMessage: "That media connection changed while confirmation was open. Review it before removing it.",
+    successMessage: "Service target and its encrypted credential were removed.",
+    applyLocalSuccess: () => {
+      if (state.config && Array.isArray(state.config.services)) {
+        state.config.services = state.config.services.filter(({ id }) => id !== serviceId);
+      }
+    },
+    onSuccess: async () => {
+      closeModal();
+      await loadAuthenticatedData({ refresh: true });
+    }
+  });
 }
 
 async function testPortainerService(form, button) {
@@ -4634,21 +4835,30 @@ async function submitPortainerService(form) {
   }
 }
 
-async function deletePortainerService(serviceId) {
+async function deletePortainerService(serviceId, button) {
   if (!INFRASTRUCTURE_ID_PATTERN.test(String(serviceId || ""))) return;
   const service = portainerServiceById(serviceId);
   if (!service) return;
-  if (typeof globalThis.confirm === "function" && !globalThis.confirm(`Remove ${service.displayName} and its protected access token?`)) return;
-  try {
-    await api(`/api/v2/infrastructure/services/${encodeURIComponent(serviceId)}`, { method: "DELETE" });
-    closeModal();
-    await loadAuthenticatedData({ refresh: true });
-    state.lastMarkup = "";
-    renderPage({ force: true });
-    showToast("Portainer connection and its protected access token were removed.", "success");
-  } catch (caught) {
-    showToast(caught.message, "danger");
-  }
+  const targetRevision = service.targetRevision;
+  await runConfirmedDeletion(button, {
+    key: `delete:portainer:${serviceId}`,
+    title: "Remove Portainer connection?",
+    message: `Remove ${service.displayName} and its protected access token?`,
+    confirmLabel: "Remove connection",
+    path: `/api/v2/infrastructure/services/${encodeURIComponent(serviceId)}`,
+    validate: () => portainerServiceById(serviceId)?.targetRevision === targetRevision,
+    staleMessage: "That Portainer connection changed while confirmation was open. Review it before removing it.",
+    successMessage: "Portainer connection and its protected access token were removed.",
+    applyLocalSuccess: () => {
+      if (state.config && Array.isArray(state.config.infrastructureServices)) {
+        state.config.infrastructureServices = state.config.infrastructureServices.filter(({ id }) => id !== serviceId);
+      }
+    },
+    onSuccess: async () => {
+      closeModal();
+      await loadAuthenticatedData({ refresh: true });
+    }
+  });
 }
 
 async function testInfrastructureTarget(form, button) {
@@ -4745,21 +4955,33 @@ async function submitInfrastructureTarget(form) {
   }
 }
 
-async function deleteInfrastructureTarget(targetId) {
+async function deleteInfrastructureTarget(targetId, button) {
   if (!INFRASTRUCTURE_ID_PATTERN.test(String(targetId || ""))) return;
   const environment = infrastructureTargetById(targetId);
-  if (typeof globalThis.confirm === "function" && !globalThis.confirm(`Remove ${environment?.displayName || "this Proxmox environment"} and all of its protected endpoint credentials?`)) return;
-  try {
-    await api(`/api/v2/infrastructure/environments/${encodeURIComponent(targetId)}`, { method: "DELETE" });
-    closeModal();
-    await loadInfrastructureTargets({ render: false });
-    await refreshOperations();
-    state.lastMarkup = "";
-    renderPage({ force: true });
-    showToast("Proxmox environment and its protected endpoint tokens were removed.", "success");
-  } catch (error) {
-    showToast(error.message, "danger");
-  }
+  if (!environment) return;
+  const targetRevision = environment.targetRevision;
+  await runConfirmedDeletion(button, {
+    key: `delete:proxmox:${targetId}`,
+    title: "Remove Proxmox environment?",
+    message: `Remove ${environment.displayName} and all of its protected endpoint credentials?`,
+    confirmLabel: "Remove environment",
+    path: `/api/v2/infrastructure/environments/${encodeURIComponent(targetId)}`,
+    validate: () => infrastructureTargetById(targetId)?.targetRevision === targetRevision,
+    staleMessage: "That Proxmox environment changed while confirmation was open. Review it before removing it.",
+    successMessage: "Proxmox environment and its protected endpoint tokens were removed.",
+    applyLocalSuccess: () => {
+      state.infrastructure.targets = state.infrastructure.targets.filter(({ id }) => id !== targetId);
+      if (state.config) {
+        state.config.infrastructureEnvironments = state.infrastructure.targets;
+        state.config.infrastructureTargets = state.infrastructure.targets;
+      }
+    },
+    onSuccess: async () => {
+      closeModal();
+      await loadInfrastructureTargets({ render: false });
+      await refreshOperations();
+    }
+  });
 }
 
 async function testInfrastructureEndpoint(form, button) {
@@ -4850,23 +5072,43 @@ async function submitInfrastructureEndpoint(form) {
   }
 }
 
-async function deleteInfrastructureEndpoint(environmentId, endpointId) {
+async function deleteInfrastructureEndpoint(environmentId, endpointId, button) {
   if (!INFRASTRUCTURE_ID_PATTERN.test(String(environmentId || "")) || !INFRASTRUCTURE_ID_PATTERN.test(String(endpointId || ""))) return;
   const configured = infrastructureTargetById(environmentId);
   const endpoint = configured?.endpoints.find(({ id }) => id === endpointId);
   if (!endpoint || endpoint.primary) return;
-  if (typeof globalThis.confirm === "function" && !globalThis.confirm(`Remove the ${endpoint.label} failover endpoint and its protected token?`)) return;
-  try {
-    await api(`/api/v2/infrastructure/environments/${encodeURIComponent(environmentId)}/endpoints/${encodeURIComponent(endpointId)}`, { method: "DELETE" });
-    closeModal();
-    await loadInfrastructureTargets({ render: false });
-    await refreshOperations();
-    state.lastMarkup = "";
-    renderPage({ force: true });
-    showToast("Failover endpoint removed.", "success");
-  } catch (caught) {
-    showToast(caught.message, "danger");
-  }
+  const environmentRevision = configured.targetRevision;
+  const endpointRevision = endpoint.targetRevision;
+  await runConfirmedDeletion(button, {
+    key: `delete:proxmox-endpoint:${environmentId}:${endpointId}`,
+    title: "Remove failover endpoint?",
+    message: `Remove the ${endpoint.label} failover endpoint and its protected token?`,
+    confirmLabel: "Remove endpoint",
+    path: `/api/v2/infrastructure/environments/${encodeURIComponent(environmentId)}/endpoints/${encodeURIComponent(endpointId)}`,
+    validate: () => {
+      const current = infrastructureTargetById(environmentId);
+      const currentEndpoint = current?.endpoints.find(({ id }) => id === endpointId);
+      return current?.targetRevision === environmentRevision
+        && currentEndpoint?.targetRevision === endpointRevision
+        && currentEndpoint?.primary === false;
+    },
+    staleMessage: "That failover endpoint changed while confirmation was open. Review it before removing it.",
+    successMessage: "Failover endpoint removed.",
+    applyLocalSuccess: () => {
+      state.infrastructure.targets = state.infrastructure.targets.map((target) => target.id === environmentId
+        ? { ...target, endpoints: target.endpoints.filter(({ id }) => id !== endpointId) }
+        : target);
+      if (state.config) {
+        state.config.infrastructureEnvironments = state.infrastructure.targets;
+        state.config.infrastructureTargets = state.infrastructure.targets;
+      }
+    },
+    onSuccess: async () => {
+      closeModal();
+      await loadInfrastructureTargets({ render: false });
+      await refreshOperations();
+    }
+  });
 }
 
 async function submitNetwork(form) {
@@ -4885,10 +5127,6 @@ async function submitNetwork(form) {
   } catch (error) {
     showToast(error.message, "danger");
   }
-}
-
-function confirmControl(message) {
-  return typeof globalThis.confirm === "function" && globalThis.confirm(message) === true;
 }
 
 function setControlBusy(button, key) {
@@ -4951,9 +5189,36 @@ function releaseActionRefreshLock() {
   return true;
 }
 
-async function performControl(button, { key, message, path, body, successMessage, workloadId = "", mediaId = "", operation = "" }) {
-  if (state.actionMutation || !confirmControl(message)) return;
+async function performControl(button, {
+  key,
+  message,
+  path,
+  body,
+  successMessage,
+  workloadId = "",
+  mediaId = "",
+  operation = "",
+  validate = null,
+  staleMessage = "That action is no longer available. Refresh the current inventory and try again."
+}) {
+  if (state.actionMutation) return;
   const returnFocus = focusReference(button);
+  const presentation = controlConfirmationPresentation(operation);
+  const confirmed = await confirmControl({ ...presentation, message });
+  if (!confirmed || state.actionMutation) return;
+  let stillValid = true;
+  if (typeof validate === "function") {
+    try {
+      stillValid = validate() === true;
+    } catch {
+      stillValid = false;
+    }
+  }
+  if (!stillValid) {
+    showToast(staleMessage, "danger");
+    refreshControlSurface({ workloadId, mediaId, focusOperation: operation, returnFocus });
+    return;
+  }
   let accepted = false;
   let outcomeUnknown = false;
   setControlBusy(button, key);
@@ -5010,6 +5275,16 @@ async function runPortainerControl(button) {
       success: `Stop command accepted for ${container.name}.`
     }
   }[operation];
+  const validate = () => {
+    const current = portainerContainerByKey(container.key);
+    const currentContext = current ? portainerActionContext(current) : null;
+    const currentStateAllowed = operation === "start"
+      ? ["created", "exited"].includes(current?.state)
+      : ["restart", "stop"].includes(operation) && current?.state === "running";
+    return current?.id === container.id
+      && currentContext?.configuration?.targetRevision === service.targetRevision
+      && currentStateAllowed;
+  };
   await performControl(button, {
     key: button.dataset.controlKey,
     message: copy.confirm,
@@ -5022,7 +5297,9 @@ async function runPortainerControl(button) {
       targetRevision: service.targetRevision
     },
     successMessage: copy.success,
-    operation
+    operation,
+    validate,
+    staleMessage: "That container action is no longer available. Refresh the inventory and try again."
   });
 }
 
@@ -5061,6 +5338,18 @@ async function runProxmoxControl(button) {
       success: `Shutdown command accepted for ${workload.name}.`
     }
   }[operation];
+  const validate = () => {
+    const current = infrastructureWorkloadById(workloadId);
+    const currentContext = current ? proxmoxActionContext(current) : null;
+    const currentStateAllowed = operation === "start"
+      ? current?.status === "stopped"
+      : ["reboot", "shutdown"].includes(operation) && current?.status === "running";
+    return current?.id === workload.id
+      && currentContext?.environment?.targetRevision === environment.targetRevision
+      && !current?.template
+      && !current?.lock
+      && currentStateAllowed;
+  };
   await performControl(button, {
     key: button.dataset.controlKey,
     message: copy.confirm,
@@ -5075,7 +5364,9 @@ async function runProxmoxControl(button) {
     },
     successMessage: copy.success,
     workloadId,
-    operation
+    operation,
+    validate,
+    staleMessage: "That guest power action is no longer available. Refresh the inventory and try again."
   });
 }
 
@@ -5094,6 +5385,16 @@ async function runMediaControl(button) {
     return;
   }
   const retry = operation === "retryRequest";
+  const validate = () => {
+    const currentItem = mediaRecordById(mediaId);
+    const currentConnection = configuredMediaConnection(serviceId);
+    return currentConnection?.targetRevision === connection.targetRevision
+      && mediaControlActions(currentItem).some((action) => (
+        action.serviceId === serviceId
+        && action.operation === operation
+        && action.resourceId === resourceId
+      ));
+  };
   await performControl(button, {
     key: button.dataset.controlKey,
     message: retry
@@ -5112,7 +5413,9 @@ async function runMediaControl(button) {
       ? `Seerr retry started for ${item.title}.`
       : `${serviceId === "radarr" ? "Radarr" : "Sonarr"} search started for ${item.title}.`,
     mediaId,
-    operation
+    operation,
+    validate,
+    staleMessage: "That media action is no longer available. Refresh the media view and try again."
   });
 }
 
@@ -5175,6 +5478,11 @@ async function loadOperations() {
     } else updateVolatileOperationsUi();
     return true;
   } catch (error) {
+    if (error.status === 401) {
+      if (!state.starting) await initialize();
+      else throw error;
+      return false;
+    }
     if (error.code !== "MONITOR_STARTING") throw error;
     return false;
   }
@@ -5244,6 +5552,9 @@ async function loadSessions({ render = false } = {}) {
 }
 
 function clearAuthenticatedState() {
+  closeControlConfirmation(false, { restoreFocus: false });
+  if (modalLayer?.classList.contains("is-open")) closeModal({ restoreFocus: false });
+  if (drawerLayer?.classList.contains("is-open")) closeMediaDrawer({ restoreFocus: false });
   state.status = { ...state.status, authenticated: false, session: null };
   state.csrfToken = "";
   state.config = null;
@@ -5264,8 +5575,12 @@ function clearAuthenticatedState() {
 async function rotateAccessKey() {
   if (state.accessKeyMutation) return;
   if (state.status?.accessKeyConfigured
-    && typeof globalThis.confirm === "function"
-    && !globalThis.confirm("Rotate the universal access key? The current key will stop working and every other browser will be signed out.")) {
+    && !(await confirmControl({
+      title: "Rotate the universal access key?",
+      message: "The current key will stop working and every other browser will be signed out.",
+      confirmLabel: "Rotate access key",
+      tone: "danger"
+    }))) {
     return;
   }
   state.accessKeyMutation = true;
@@ -5340,6 +5655,9 @@ function schedulePolling() {
 }
 
 async function initialize() {
+  closeControlConfirmation(false, { restoreFocus: false });
+  if (modalLayer?.classList.contains("is-open")) closeModal({ restoreFocus: false });
+  if (drawerLayer?.classList.contains("is-open")) closeMediaDrawer({ restoreFocus: false });
   state.starting = true;
   state.fatalError = "";
   state.lastMarkup = "";
@@ -5375,6 +5693,14 @@ document.addEventListener("click", async (event) => {
   const target = event.target.closest("[data-action]");
   if (!target) return;
   const action = target.dataset.action;
+  if (action === "approve-control-confirm") {
+    closeControlConfirmation(true);
+    return;
+  }
+  if (action === "cancel-control-confirm") {
+    closeControlConfirmation(false);
+    return;
+  }
   if (action === "toggle-sidebar") toggleSidebar();
   if (action === "switch-workspace") await switchWorkspace(target.dataset.workspace);
   if (action === "open-service") openService(target.dataset.serviceId);
@@ -5423,15 +5749,16 @@ document.addEventListener("click", async (event) => {
   if (action === "retry-startup") initialize();
   if (action === "refresh-live") refreshOperations({ announce: true });
   if (action === "test-service") testService(target.closest("#service-form"), target);
-  if (action === "delete-service") deleteService(target.dataset.serviceId);
+  if (action === "delete-service") await deleteService(target.dataset.serviceId, target);
   if (action === "test-portainer-service") testPortainerService(target.closest("#portainer-form"), target);
-  if (action === "delete-portainer-service") deletePortainerService(target.dataset.portainerServiceId);
+  if (action === "delete-portainer-service") await deletePortainerService(target.dataset.portainerServiceId, target);
   if (action === "test-infrastructure-target") testInfrastructureTarget(target.closest("#proxmox-form"), target);
-  if (action === "delete-infrastructure-target") deleteInfrastructureTarget(target.dataset.infrastructureTargetId);
+  if (action === "delete-infrastructure-target") await deleteInfrastructureTarget(target.dataset.infrastructureTargetId, target);
   if (action === "test-infrastructure-endpoint") testInfrastructureEndpoint(target.closest("#proxmox-endpoint-form"), target);
-  if (action === "delete-infrastructure-endpoint") deleteInfrastructureEndpoint(
+  if (action === "delete-infrastructure-endpoint") await deleteInfrastructureEndpoint(
     target.dataset.infrastructureTargetId,
-    target.dataset.infrastructureEndpointId
+    target.dataset.infrastructureEndpointId,
+    target
   );
   if (action === "retry-infrastructure-targets") {
     target.disabled = true;
@@ -5482,6 +5809,7 @@ document.addEventListener("change", (event) => {
     if (portainerFilter === "server") state.infrastructure.portainerFilters.environment = "all";
     state.lastMarkup = "";
     renderPage({ force: true, preserveFocus: true });
+    announcePortainerFilterResults();
   }
   const infrastructureFilter = event.target?.dataset?.infrastructureFilter;
   if (infrastructureFilter && infrastructureFilter !== "search") {
@@ -5537,6 +5865,7 @@ document.addEventListener("input", (event) => {
     infrastructureFilterTimer = setTimeout(() => {
       state.lastMarkup = "";
       renderPage({ force: true, preserveFocus: true });
+      announcePortainerFilterResults();
     }, 120);
   }
   const serviceForm = event.target.closest?.("#service-form");
@@ -5583,6 +5912,7 @@ document.addEventListener("submit", (event) => {
 });
 
 window.addEventListener("hashchange", () => {
+  closeControlConfirmation(false, { restoreFocus: false });
   closeMediaDrawer({ restoreFocus: false });
   if (rawRoute() !== "settings") state.accessKeyReveal = "";
   state.lastMarkup = "";
@@ -5592,13 +5922,16 @@ window.addEventListener("hashchange", () => {
 });
 
 window.addEventListener("keydown", (event) => {
-  const activeLayer = modalLayer.classList.contains("is-open")
-    ? modalLayer
-    : drawerLayer?.classList.contains("is-open") ? drawerLayer : null;
+  const activeLayer = controlConfirmLayer?.classList.contains("is-open")
+    ? controlConfirmLayer
+    : modalLayer.classList.contains("is-open")
+      ? modalLayer
+      : drawerLayer?.classList.contains("is-open") ? drawerLayer : null;
   if (!activeLayer) return;
   if (event.key === "Escape") {
     event.preventDefault();
-    if (activeLayer === modalLayer) closeModal();
+    if (activeLayer === controlConfirmLayer) closeControlConfirmation(false);
+    else if (activeLayer === modalLayer) closeModal();
     else closeMediaDrawer();
     return;
   }
@@ -5611,7 +5944,10 @@ window.addEventListener("keydown", (event) => {
   }
   const first = focusable[0];
   const last = focusable.at(-1);
-  if (event.shiftKey && document.activeElement === first) {
+  if (!focusable.includes(document.activeElement)) {
+    event.preventDefault();
+    (event.shiftKey ? last : first).focus();
+  } else if (event.shiftKey && document.activeElement === first) {
     event.preventDefault();
     last.focus();
   } else if (!event.shiftKey && document.activeElement === last) {

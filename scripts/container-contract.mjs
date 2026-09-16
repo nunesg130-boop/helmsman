@@ -126,7 +126,7 @@ if (existsSync(join(root, "Dockerfile"))) {
   );
 
   record(
-    /^ARG HELMSMAN_VERSION=0\.10\.0-beta\.12$/mu.test(dockerfile)
+    /^ARG HELMSMAN_VERSION=0\.10\.0-beta\.13$/mu.test(dockerfile)
       && /^ARG HELMSMAN_REVISION=unknown$/mu.test(dockerfile)
       && /org\.opencontainers\.image\.title="Helmsman"/u.test(dockerfile)
       && !/org\.opencontainers\.image\.title="Jellofin Command"/u.test(dockerfile),
@@ -189,7 +189,7 @@ if (existsSync(join(root, "Dockerfile"))) {
 if (existsSync(join(root, "server/broker.mjs"))) {
   const broker = read("server/broker.mjs");
   record(
-    /const DEFAULT_VERSION = "0\.10\.0-beta\.12"/u.test(broker)
+    /const DEFAULT_VERSION = "0\.10\.0-beta\.13"/u.test(broker)
       && /process\.env\.HELMSMAN_VERSION/u.test(broker)
       && /\^\[0-9A-Za-z\]\[0-9A-Za-z\.\+-\]\{0,63\}\$/u.test(broker),
     "runtime version follows the validated immutable v0.10 image metadata"
@@ -265,7 +265,7 @@ if (existsSync(join(root, "compose.yaml"))) {
   record(
     /^name:\s*helmsman\s*$/mu.test(compose)
       && /^services:\s*\n\s{2}helmsman:\s*$/mu.test(compose)
-      && compose.includes('${HELMSMAN_IMAGE:-ghcr.io/OWNER/REPOSITORY:0.10.0-beta.12}')
+      && compose.includes('${HELMSMAN_IMAGE:-ghcr.io/OWNER/REPOSITORY:0.10.0-beta.13}')
       && !/^\s{4}build:/mu.test(compose),
     "production Compose has a stable project name and pulls the versioned GHCR image without a local build"
   );
@@ -324,9 +324,9 @@ if (existsSync(join(root, "compose.dev.yaml"))) {
       && /^\s{4}build:\s*$/mu.test(developmentCompose)
       && /^\s{6}context:\s*[.]\s*$/mu.test(developmentCompose)
       && /^\s{6}dockerfile:\s*Dockerfile\s*$/mu.test(developmentCompose)
-      && /HELMSMAN_VERSION:\s*["']0\.10\.0-beta\.12["']/u.test(developmentCompose)
+      && /HELMSMAN_VERSION:\s*["']0\.10\.0-beta\.13["']/u.test(developmentCompose)
       && /HELMSMAN_REVISION:\s*["']local["']/u.test(developmentCompose)
-      && /image:\s*["']helmsman:0\.10\.0-beta\.12["']/u.test(developmentCompose),
+      && /image:\s*["']helmsman:0\.10\.0-beta\.13["']/u.test(developmentCompose),
     "developer Compose override keeps source builds separate from the production pull contract"
   );
 }
@@ -454,7 +454,7 @@ if (existsSync(join(root, "container.env.example"))) {
   const allowed = new Set(["HELMSMAN_IMAGE", "HELMSMAN_BIND_IP", "HELMSMAN_PORT"]);
   const unexpected = keys.filter((key) => !allowed.has(key));
   record(
-    assignments.includes("HELMSMAN_IMAGE=ghcr.io/OWNER/REPOSITORY:0.10.0-beta.12")
+    assignments.includes("HELMSMAN_IMAGE=ghcr.io/OWNER/REPOSITORY:0.10.0-beta.13")
       && assignments.includes("HELMSMAN_BIND_IP=127.0.0.1")
       && assignments.includes("HELMSMAN_PORT=4180")
       && !assignments.some((line) => line.startsWith("HELMSMAN_DATA_VOLUME="))
@@ -739,7 +739,7 @@ if (existsSync(join(root, "package.json"))) {
     const packageJson = JSON.parse(read("package.json"));
     record(
       packageJson.name === "helmsman"
-        && packageJson.version === "0.10.0-beta.12"
+        && packageJson.version === "0.10.0-beta.13"
         && packageJson.scripts?.serve === "node server/index.mjs serve"
         && packageJson.scripts?.["check:broker"] === "node --test tests/control-plane.test.mjs"
         && /tests\/secrets[.]test[.]mjs/u.test(packageJson.scripts?.["check:security"] || "")
@@ -827,10 +827,12 @@ if (existsSync(join(root, "README.md")) && existsSync(join(root, "deploy/DOCKER.
     "operator guides define the multi-instance Proxmox monitoring boundary without environment secrets or direct host access"
   );
   record(
-    keyGuides.every((guide) => /only media writes[^.\n]*explicitly confirmed Seerr failed-request retry[^.\n]*targeted Radarr\/Sonarr search[^.\n]*one exact current record/iu.test(guide))
+    keyGuides.every((guide) => /only media writes[^.\n]*Seerr failed-request retry[^.\n]*targeted Radarr\/Sonarr search[^.\n]*one exact current record/iu.test(guide))
       && keyGuides.every((guide) => /(?:Portainer container start, restart, and graceful stop|start, restart, or gracefully stop one current Docker-compatible container)/iu.test(guide))
       && keyGuides.every((guide) => /(?:Proxmox QEMU\/LXC start, reboot, and graceful shutdown|start, reboot, or gracefully shut down one current QEMU VM or LXC)/iu.test(guide))
-      && keyGuides.every((guide) => /explicitly confirmed/iu.test(guide))
+      && keyGuides.every((guide) => /(?:accessible )?(?:Helmsman(?:'s)? )?in-app confirmation|Helmsman confirmation dialog/iu.test(guide))
+      && keyGuides.every((guide) => /browser-native (?:confirmation )?prompt/iu.test(guide))
+      && keyGuides.every((guide) => /(?:revalidates?|checked again)[^.\n]*(?:record|target|revision|workload|container)|(?:record|target|revision|workload|container)[^.\n]*(?:revalidates?|checked again)/iu.test(guide))
       && keyGuides.every((guide) => /fixed method, path, query, and body templates/iu.test(guide))
       && keyGuides.every((guide) => /browser[^.\n]*(?:cannot|never)[^.\n]*arbitrary upstream path or request body/iu.test(guide))
       && keyGuides.every((guide) => /no (?:general|generic)[^.\n]*(?:API|upstream|Docker)[^.\n]*proxy/iu.test(guide))

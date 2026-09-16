@@ -30,13 +30,14 @@ protects browser entry only; it does not replace the credentials Helmsman uses
 for upstream services.
 
 Monitoring and probes use fixed read-only GET routes. The only writes are
-explicitly confirmed Portainer container start/restart/graceful-stop, Proxmox
+Helmsman-confirmed Portainer container start/restart/graceful-stop, Proxmox
 QEMU/LXC start/reboot/graceful-shutdown, Seerr failed-request retry, and
-targeted Radarr/Sonarr search actions. Each action uses a fixed method, path,
-query, and request-body template; the browser cannot provide an arbitrary
-upstream path or body. Helmsman exposes no general upstream or Docker API
-proxy, SSH, shell, console, host mount, delete/remove, force-stop, reset, kill,
-or bulk action.
+targeted Radarr/Sonarr search actions. Each uses an accessible in-app
+confirmation rather than a browser-native prompt, revalidates the selected
+record after approval, and sends a fixed method, path, query, and request-body
+template. The browser cannot provide an arbitrary upstream path or body.
+Helmsman exposes no general upstream or Docker API proxy, SSH, shell, console,
+host mount, delete/remove, force-stop, reset, kill, or bulk action.
 
 The reusable 256-bit Helmsman access key is a bearer secret. Store it in a
 password manager and enter it only in Helmsman's unlock form. Never place it in

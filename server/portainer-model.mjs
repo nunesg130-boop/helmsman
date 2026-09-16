@@ -132,14 +132,20 @@ function containerState(source) {
 
 function containerPorts(value) {
   if (!Array.isArray(value)) return [];
-  return value.slice(0, MAX_PORTS_PER_CONTAINER).flatMap((candidate) => {
+  const output = [];
+  const seen = new Set();
+  for (const candidate of value.slice(0, MAX_PORTS_PER_CONTAINER)) {
     const source = record(candidate);
     const privatePort = integer(own(source, "PrivatePort"), null, 1, 65_535);
     const publicPort = integer(own(source, "PublicPort"), null, 1, 65_535);
     const protocol = text(own(source, "Type"), "tcp", 8).toLowerCase();
-    if (!source || privatePort === null || !["tcp", "udp", "sctp"].includes(protocol)) return [];
-    return [{ privatePort, publicPort, protocol }];
-  });
+    if (!source || privatePort === null || !["tcp", "udp", "sctp"].includes(protocol)) continue;
+    const identity = `${privatePort}:${publicPort ?? ""}:${protocol}`;
+    if (seen.has(identity)) continue;
+    seen.add(identity);
+    output.push({ privatePort, publicPort, protocol });
+  }
+  return output;
 }
 
 function composeStackName(source) {

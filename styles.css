@@ -2810,7 +2810,8 @@ progress::-moz-progress-bar {
 }
 
 .drawer-layer,
-.modal-layer {
+.modal-layer,
+.control-confirm-layer {
   position: fixed;
   z-index: 80;
   inset: 0;
@@ -2830,8 +2831,13 @@ body.has-overlay :is(.sidebar, .topbar, .hero-live, .library-toolbar, .segmented
 }
 
 .drawer-layer.is-open,
-.modal-layer.is-open {
+.modal-layer.is-open,
+.control-confirm-layer.is-open {
   display: block;
+}
+
+.control-confirm-layer {
+  z-index: 110;
 }
 
 .title-drawer {
@@ -3176,6 +3182,35 @@ body.has-overlay :is(.sidebar, .topbar, .hero-live, .library-toolbar, .segmented
     max(20px, env(safe-area-inset-right))
     max(40px, env(safe-area-inset-bottom))
     max(20px, env(safe-area-inset-left));
+}
+
+.control-confirm-layer.is-open {
+  display: grid;
+  overflow-y: auto;
+  place-items: center;
+  padding:
+    max(20px, env(safe-area-inset-top))
+    max(20px, env(safe-area-inset-right))
+    max(20px, env(safe-area-inset-bottom))
+    max(20px, env(safe-area-inset-left));
+}
+
+.control-confirm-backdrop {
+  position: absolute;
+  inset: 0;
+}
+
+.control-confirm-modal {
+  z-index: 1;
+}
+
+.control-confirm-modal .section-kicker {
+  display: block;
+  margin-bottom: 4px;
+}
+
+.control-confirm-modal .modal-button-row {
+  margin-top: 24px;
 }
 
 .modal-layer.is-open:has(.service-modal) {
@@ -4161,6 +4196,7 @@ body.has-overlay :is(.sidebar, .topbar, .hero-live, .library-toolbar, .segmented
 
   .drawer-layer,
   .modal-layer,
+  .control-confirm-layer,
   .modal-layer.is-open:has(.setup-wizard) {
     background-color: rgba(3, 6, 10, 0.88);
   }
@@ -4494,6 +4530,13 @@ body.has-overlay :is(.sidebar, .topbar, .hero-live, .library-toolbar, .segmented
       calc(env(safe-area-inset-bottom) + 10px)
       calc(env(safe-area-inset-left) + 10px);
   }
+  .control-confirm-layer.is-open {
+    padding:
+      calc(env(safe-area-inset-top) + 10px)
+      calc(env(safe-area-inset-right) + 10px)
+      calc(env(safe-area-inset-bottom) + 10px)
+      calc(env(safe-area-inset-left) + 10px);
+  }
   .topbar {
     position: sticky;
     top: calc(env(safe-area-inset-top) + 8px);
@@ -4806,6 +4849,7 @@ body.has-overlay :is(.sidebar, .topbar, .hero-live, .library-toolbar, .segmented
 
   .drawer-layer,
   .modal-layer,
+  .control-confirm-layer,
   .modal-layer.is-open:has(.setup-wizard) {
     background: rgba(3, 6, 10, 0.88);
     -webkit-backdrop-filter: none;
@@ -4832,7 +4876,7 @@ html[data-transparency="reduced"] :is(
   backdrop-filter: none;
 }
 
-html[data-transparency="reduced"] :is(.drawer-layer, .modal-layer),
+html[data-transparency="reduced"] :is(.drawer-layer, .modal-layer, .control-confirm-layer),
 html[data-transparency="reduced"] .modal-layer.is-open:has(.setup-wizard) {
   background: rgba(3, 6, 10, 0.88);
   -webkit-backdrop-filter: none;
@@ -4886,6 +4930,7 @@ html[data-transparency="reduced"] .modal-layer.is-open:has(.setup-wizard) {
 
   .drawer-layer,
   .modal-layer,
+  .control-confirm-layer,
   .modal-layer.is-open:has(.setup-wizard) {
     background: rgba(0, 0, 0, 0.8);
     -webkit-backdrop-filter: none;

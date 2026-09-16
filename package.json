@@ -1,6 +1,6 @@
 {
   "name": "helmsman",
-  "version": "0.10.0-beta.12",
+  "version": "0.10.0-beta.13",
   "private": true,
   "description": "Private, operations-first media and infrastructure monitor with a self-hosted control plane.",
   "type": "module",
