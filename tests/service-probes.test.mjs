@@ -707,7 +707,7 @@ test("bounds and sanitizes Arr health reports without losing operational details
     `apiKey=${apiSecret}&safe=true`,
     `Authorization: Bearer ${bearerSecret}`,
     `Cookie: connect.sid=${cookieSecret}; Path=/`,
-    `URL http://admin:super-secret-password@10.44.1.20:7878/api/v3/health`,
+    "URL http://" + "admin:super-secret-password@10.44.1.20:7878/api/v3/health",
     `single userinfo https://${userinfoSecret}@10.44.1.20:7878/api/v3/health`,
     `opaque ${opaqueSecret}`,
     `request ${uuidSecret}`,

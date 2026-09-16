@@ -4424,23 +4424,7 @@ body.has-overlay :is(.sidebar, .topbar, .hero-live, .library-toolbar, .segmented
   display: none;
 }
 
-/* Local abstract artwork. Real mode uses artwork returned by Jellyfin through the protected origin. */
-.cover-severance, .backdrop-severance { --cover-a: #d7e1de; --cover-b: #8b9c99; --cover-c: #18201d; --cover-light: #f8ffff; --art-a: #9eb3ad; --art-b: #344b44; --art-c: #090e0c; --art-glow: rgba(195, 225, 216, .16); }
-.cover-dune, .backdrop-dune { --cover-a: #e9a35e; --cover-b: #774130; --cover-c: #1b0c0a; --cover-light: #ffd19e; --art-a: #bf7141; --art-b: #5f2e22; --art-c: #130806; --art-glow: rgba(233, 136, 76, .2); }
-.cover-silo, .backdrop-silo { --cover-a: #6a8f86; --cover-b: #273e3a; --cover-c: #09100e; --cover-light: #a7d0c6; --art-a: #557d72; --art-b: #223934; --art-c: #07100d; }
-.cover-lastofus, .backdrop-lastofus { --cover-a: #a98959; --cover-b: #393723; --cover-c: #0c0e08; --cover-light: #d7bd86; --art-a: #806a45; --art-b: #33341f; --art-c: #080a06; --art-glow: rgba(191, 155, 87, .16); }
-.cover-mickey, .backdrop-mickey { --cover-a: #f08f70; --cover-b: #374168; --cover-c: #12101c; --cover-light: #ffc0aa; --art-a: #bb625b; --art-b: #343958; --art-c: #0b0911; --art-glow: rgba(222, 99, 104, .18); }
-.cover-andor, .backdrop-andor { --cover-a: #b89163; --cover-b: #344957; --cover-c: #0c1014; --cover-light: #e4c39c; --art-a: #866747; --art-b: #293b47; --art-c: #080c0f; }
-.cover-foundation, .backdrop-foundation { --cover-a: #d3b06a; --cover-b: #554634; --cover-c: #10100d; --cover-light: #f5da9b; --art-a: #9e7e43; --art-b: #443627; --art-c: #0c0a08; --art-glow: rgba(218, 172, 77, .16); }
-.cover-nosferatu, .backdrop-nosferatu { --cover-a: #9aa2a3; --cover-b: #343b3d; --cover-c: #090b0c; --cover-light: #d9e0e2; --art-a: #70797c; --art-b: #2a3033; --art-c: #07090a; }
-.cover-minecraft, .backdrop-minecraft { --cover-a: #84bd64; --cover-b: #477543; --cover-c: #152216; --cover-light: #b6e499; --art-a: #648f50; --art-b: #355b36; --art-c: #0f1d11; --art-glow: rgba(112, 209, 100, .18); }
-.cover-bear, .backdrop-bear { --cover-a: #557bc2; --cover-b: #293b69; --cover-c: #0b1021; --cover-light: #8cadf0; --art-a: #425f9d; --art-b: #233358; --art-c: #070b18; --art-glow: rgba(77, 122, 209, .18); }
-.cover-bladerunner, .backdrop-bladerunner { --cover-a: #df7d42; --cover-b: #554268; --cover-c: #15101c; --cover-light: #ffb080; --art-a: #a95132; --art-b: #493552; --art-c: #100a15; --art-glow: rgba(220, 99, 58, .18); }
-.cover-wildrobot, .backdrop-wildrobot { --cover-a: #78bd9a; --cover-b: #3b6956; --cover-c: #0e1d16; --cover-light: #a8e1bd; --art-a: #5f9b7c; --art-b: #305442; --art-c: #0a1710; --art-glow: rgba(102, 194, 144, .18); }
-.cover-shogun, .backdrop-shogun { --cover-a: #d25845; --cover-b: #65352d; --cover-c: #160909; --cover-light: #f18b77; --art-a: #9b3d34; --art-b: #532722; --art-c: #100606; --art-glow: rgba(210, 73, 62, .18); }
-.cover-companion, .backdrop-companion { --cover-a: #df6f9c; --cover-b: #593752; --cover-c: #160c14; --cover-light: #f5aac8; --art-a: #a84e78; --art-b: #4b2d46; --art-c: #0e0810; --art-glow: rgba(215, 84, 143, .18); }
-
-/* v0.9 desktop media workspace */
+/* Desktop media workspace */
 .media-desktop-page {
   min-width: 0;
 }

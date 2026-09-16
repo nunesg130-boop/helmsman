@@ -209,6 +209,22 @@ record(
 const prohibitedPaths = functionBlock("Test-ProhibitedReleasePath");
 const embeddedSecrets = functionBlock("Assert-NoEmbeddedSecrets");
 const sourceValidation = functionBlock("Get-ValidatedSourceRelease");
+const allowedBinaryPathsBlock = embeddedSecrets.match(/\$allowedBinaryPaths\s*=\s*@\(([\s\S]*?)\n\s*\)/u)?.[1] || "";
+const configuredAllowedBinaryPaths = [...allowedBinaryPathsBlock.matchAll(/'([^']+)'/gu)]
+  .map((match) => match[1])
+  .sort();
+const expectedAllowedBinaryPaths = [
+  "assets/helmsman-logo.png",
+  "assets/icon-192.png",
+  "assets/icon-512.png",
+  "assets/icon-maskable-512.png",
+  "assets/services/bazarr.png",
+  "assets/services/prowlarr.png",
+  "assets/services/proxmox.png",
+  "assets/services/radarr.png",
+  "assets/services/seerr.jpg",
+  "assets/services/sonarr.png"
+].sort();
 record(
   [".git", ".idea", ".nyc_output", ".vscode", "backup", "backups", "coverage", "data", "node_modules", ".helmsman-data"]
     .every((name) => prohibitedPaths.includes(`'${name}'`))
@@ -224,9 +240,10 @@ record(
     && /GitHub fine-grained token/u.test(embeddedSecrets)
     && /HELMSMAN_ACCESS_KEY\|CLOUDFLARE_API_TOKEN\|CF_API_TOKEN/u.test(embeddedSecrets)
     && /allowedBinaryPaths/u.test(embeddedSecrets)
-    && /assets\/helmsman-logo[.]png/u.test(embeddedSecrets)
+    && JSON.stringify(configuredAllowedBinaryPaths) === JSON.stringify(expectedAllowedBinaryPaths)
     && /unreviewed binary or unknown file type/u.test(embeddedSecrets),
-  "source and staged trees reject credentials, runtime state, dependencies, backups, archives, and unreviewed binary types"
+  "source and staged trees reject credentials, runtime state, dependencies, backups, archives, and binaries outside the exact reviewed raster allowlist",
+  configuredAllowedBinaryPaths.join(", ")
 );
 
 const scannerPatternSources = [
@@ -249,9 +266,9 @@ const detectedScannerFixtures = [
   "HELMSMAN_" + "ACCESS_KEY=not-a-release-value"
 ];
 const allowedSyntheticFixtures = [
-  "https://admin:secret@example.invalid/path",
-  "http://user:pass@media.test",
-  "https://${username}:${secret}@example.invalid"
+  "https://" + "admin:secret@example.invalid/path",
+  "http://" + "user:pass@media.test",
+  "https://" + "${username}:${secret}@example.invalid"
 ];
 record(
   (embeddedSecrets.match(/\[PSCustomObject\]@\{/gu) || []).length === scannerPatterns.length

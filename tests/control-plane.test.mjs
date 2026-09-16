@@ -232,6 +232,56 @@ async function assertFilesDoNotContain(directory, forbiddenValues) {
   }
 }
 
+test("local service images support cacheable GET, HEAD, and conditional requests", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "helmsman-service-assets-"));
+  const dataDir = path.join(root, "data");
+  let context;
+
+  try {
+    context = await startBroker(dataDir, []);
+    const assets = [
+      ["/assets/services/prowlarr.png", "image/png"],
+      ["/assets/services/jellyfin.svg", "image/svg+xml; charset=utf-8"],
+      ["/assets/services/seerr.jpg", "image/jpeg"]
+    ];
+
+    for (const [pathname, contentType] of assets) {
+      const fetched = await request(context.port, pathname);
+      assert.equal(fetched.status, 200, pathname);
+      assert.equal(fetched.headers["content-type"], contentType, pathname);
+      assert.equal(fetched.headers["x-content-type-options"], "nosniff", pathname);
+      assert.equal(fetched.headers["cache-control"], "private, max-age=86400", pathname);
+      assert.match(fetched.headers.etag, /^"[A-Za-z0-9_-]{43}"$/u, pathname);
+      assert.ok(fetched.bytes.length > 0, pathname);
+
+      const head = await request(context.port, pathname, { method: "HEAD" });
+      assert.equal(head.status, 200, pathname);
+      assert.equal(head.headers["content-type"], contentType, pathname);
+      assert.equal(head.headers["x-content-type-options"], "nosniff", pathname);
+      assert.equal(head.headers["cache-control"], "private, max-age=86400", pathname);
+      assert.equal(head.headers.etag, fetched.headers.etag, pathname);
+      assert.equal(Number(head.headers["content-length"]), fetched.bytes.length, pathname);
+      assert.equal(head.bytes.length, 0, pathname);
+
+      for (const method of ["GET", "HEAD"]) {
+        const notModified = await request(context.port, pathname, {
+          method,
+          headers: { "If-None-Match": fetched.headers.etag }
+        });
+        assert.equal(notModified.status, 304, `${method} ${pathname}`);
+        assert.equal(notModified.headers["content-type"], contentType, `${method} ${pathname}`);
+        assert.equal(notModified.headers["x-content-type-options"], "nosniff", `${method} ${pathname}`);
+        assert.equal(notModified.headers["cache-control"], "private, max-age=86400", `${method} ${pathname}`);
+        assert.equal(notModified.headers.etag, fetched.headers.etag, `${method} ${pathname}`);
+        assert.equal(notModified.bytes.length, 0, `${method} ${pathname}`);
+      }
+    }
+  } finally {
+    await stopBroker(context).catch(() => {});
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("v2 control plane keeps browser and service secrets out of public and persistent state", async (suite) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "jellofin-control-plane-"));
   const dataDir = path.join(root, "data");

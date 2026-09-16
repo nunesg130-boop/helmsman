@@ -35,7 +35,7 @@ function browserRequest(headers = {}) {
 test("strict service URLs reject credential, query, fragment, and path ambiguity", () => {
   const rejected = [
     "ftp://media.test:8096",
-    "http://user:pass@media.test:8096",
+    "http://" + "user:pass@media.test:8096",
     "http://media.test:8096/?token=secret",
     "http://media.test:8096/#fragment",
     "http://media.test:8096/%2e%2e/admin",

@@ -3123,7 +3123,8 @@ async function infrastructureWorkspaceContract() {
   assert.match(environment.main.innerHTML, /id="proxmox-storage-title">Storage/u, "the legacy Nodes alias must retain the merged storage section");
   assert.match(environment.main.innerHTML, /pve-a/u);
   assert.match(environment.main.innerHTML, /API 1\/1/u, "node cards must keep environment endpoint availability separate from node state");
-  assert.match(environment.main.innerHTML, /node-mark"><span class="service-brand-icon__fallback service-brand-icon__fallback--proxmox" aria-hidden="true">PX<\/span>/u, "node cards must use the project-owned Proxmox text badge");
+  assert.match(environment.main.innerHTML, /node-mark"><a class="service-brand-link service-brand-link--proxmox" href="https:\/\/www\.proxmox\.com\/"[^>]*><img class="service-brand-icon service-brand-icon--proxmox" src="\.\/assets\/services\/proxmox\.png"/u, "node cards must use the bundled Proxmox mark linked to the official site");
+  assert.match(environment.main.innerHTML, /<span class="node-mark"><a[\s\S]*?<\/a><\/span>\s*<button class="infrastructure-node-card__main"/u, "the Proxmox logo link must be a sibling of the node action, not nested in it");
   const nodeDetailButton = new FakeElement({ id: "node-detail" });
   nodeDetailButton.dataset.action = "open-infrastructure-node";
   nodeDetailButton.dataset.infrastructureNodeId = `${targetId}:pve-a`;
@@ -3131,7 +3132,7 @@ async function infrastructureWorkspaceContract() {
   await environment.dispatchDocument("click", { target: nodeDetailButton });
   assert.match(modal.innerHTML, /Environment API · 1 of 1 endpoints available/u);
   assert.match(modal.innerHTML, /does not override the node state/u);
-  assert.match(modal.innerHTML, /detail-modal-mark"><span class="service-brand-icon__fallback service-brand-icon__fallback--proxmox" aria-hidden="true">PX<\/span>/u, "node detail must use the project-owned Proxmox text badge");
+  assert.match(modal.innerHTML, /detail-modal-mark"><a class="service-brand-link service-brand-link--proxmox" href="https:\/\/www\.proxmox\.com\/"[^>]*><img class="service-brand-icon service-brand-icon--proxmox" src="\.\/assets\/services\/proxmox\.png"/u, "node detail must use the bundled Proxmox mark linked to the official site");
   await environment.dispatchDocument("click", { target: closeDetail });
   environment.location.hash = "#/workloads";
   await environment.dispatchWindow("hashchange", { type: "hashchange" });
@@ -3479,7 +3480,7 @@ async function portainerInfrastructureContract() {
   assert.equal(environment.elements.get("#monitor-summary").attributes.get("href"), "#/incidents");
   assert.equal(environment.elements.get("#monitor-summary").attributes.get("aria-label"), "Open infrastructure incidents");
   assert.equal(environment.elements.get("#page-title").textContent, "Portainer");
-  assert.match(markup, /service-brand-icon__fallback--portainer" aria-hidden="true">PT<\/span>/u, "Portainer views must use the project-owned text badge");
+  assert.match(markup, /<img class="service-brand-icon service-brand-icon--portainer service-brand-icon--light-plate" src="\.\/assets\/services\/portainer\.svg"/u, "Portainer views must use the bundled Portainer mark");
   assert.match(markup, /Container Control/u);
   assert.match(markup, /Portainer 2\.45\.0/u);
   assert.match(markup, /Connected · Degraded/u, "a container-environment 403 must not erase verified Portainer identity");
@@ -3993,6 +3994,19 @@ async function authenticatedRuntimeContract() {
   assert.match(environment.main.innerHTML, /Kitchen &lt;img src=x onerror=&quot;session-xss&quot;&gt;/u);
   assert.match(environment.main.innerHTML, /http:\/\/kitchen\.test\/&quot;&gt;&lt;svg\/onload=session-xss&gt;/u);
   assert.doesNotMatch(environment.main.innerHTML, /<svg\/onload=session-xss>/u, "session metadata must not create elements");
+  assert.match(environment.main.innerHTML, /<nav class="button-row app-version-v5__links" aria-label="Helmsman project resources">/u, "Settings About must label its project links");
+  for (const [label, href, accessibleName] of [
+    ["Source", "https://github.com/nunesg130-boop/helmsman", "Source code"],
+    ["AGPL-3.0 License", "https://github.com/nunesg130-boop/helmsman/blob/main/LICENSE", "AGPL-3.0 license"],
+    ["Third-party icon notices", "https://github.com/nunesg130-boop/helmsman/blob/main/assets/services/THIRD_PARTY_NOTICES.md", "Third-party icon notices"]
+  ]) {
+    const escapedHref = href.replaceAll(".", "[.]").replaceAll("/", "\\/");
+    assert.match(
+      environment.main.innerHTML,
+      new RegExp(`<a class="button button--compact" href="${escapedHref}" target="_blank" rel="noopener noreferrer" aria-label="${accessibleName} \\(opens in a new tab\\)">${label}<\\/a>`, "u"),
+      `${label} must render as the fixed accessible new-tab destination`
+    );
+  }
 
   // Restore the incident's current capability after the authentication-state
   // exercise so report content remains part of the structural fingerprint.

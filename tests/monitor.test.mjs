@@ -27,7 +27,7 @@ test("monitor creates a serializable, sanitized operations snapshot and feeds th
     loadServices: async () => [
       {
         id: "jellyfin",
-        url: `https://${username}:${secret}@media.example.test/?api_key=${secret}`,
+        url: "https://" + `${username}:${secret}@media.example.test/?api_key=${secret}`,
         authorization: `Bearer ${secret}`,
         password: secret
       },
@@ -211,7 +211,7 @@ test("publishes a bounded media model from sanitized per-service inventory", asy
           monitored: true,
           imported: true,
           artwork: { service: "radarr", kind: "poster", resource: "7", variant: "poster-250" },
-          ignored: "https://admin:secret@example.invalid"
+          ignored: "https://" + "admin:secret@example.invalid"
         }]
       } : {
         library: [{

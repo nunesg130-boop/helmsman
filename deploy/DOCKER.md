@@ -1,4 +1,4 @@
-# Helmsman Docker deployment — v1.0.0-beta.1
+# Helmsman Docker deployment — v1.0.0-beta.2
 
 > [!WARNING]
 > Helmsman v1.0 is still a beta. Breaking changes and data migrations are
@@ -11,7 +11,7 @@ The supported image contains one non-root Node.js process. It serves the Media a
 
 ## 1. Prepare
 
-The GitHub Release for `v1.0.0-beta.1` publishes three deployment assets:
+The GitHub Release for `v1.0.0-beta.2` publishes three deployment assets:
 
 - `compose.yaml` — the pull-only production service definition pinned to the released multi-architecture image digest;
 - `container.env.example` — the same digest-pinned image reference plus non-secret bind-address and port settings;
@@ -30,9 +30,9 @@ Download and verify the public release assets on Linux:
 ```sh
 sudo install -d -o "$(id -u)" -g "$(id -g)" -m 0755 /opt/helmsman
 cd /opt/helmsman
-curl -fLO https://github.com/nunesg130-boop/helmsman/releases/download/v1.0.0-beta.1/compose.yaml
-curl -fLO https://github.com/nunesg130-boop/helmsman/releases/download/v1.0.0-beta.1/container.env.example
-curl -fLO https://github.com/nunesg130-boop/helmsman/releases/download/v1.0.0-beta.1/SHA256SUMS
+curl -fLO https://github.com/nunesg130-boop/helmsman/releases/download/v1.0.0-beta.2/compose.yaml
+curl -fLO https://github.com/nunesg130-boop/helmsman/releases/download/v1.0.0-beta.2/container.env.example
+curl -fLO https://github.com/nunesg130-boop/helmsman/releases/download/v1.0.0-beta.2/SHA256SUMS
 sha256sum --strict --check SHA256SUMS
 ```
 
@@ -141,7 +141,7 @@ Media monitoring remains read-only by default in this beta. Home summarizes curr
 
 Media records are joined by TMDb, TVDb, IMDb, download, and service identifiers rather than titles. The lifecycle is **Requested → Monitored → Downloading → Imported → Available**. Normalized titles, identifiers, progress, dates, and status errors live only in the current in-memory operations snapshot; they are not written to `state.json` or another catalog.
 
-The browser receives only opaque same-origin artwork URLs. The authenticated broker tries Jellyfin first, fixed 250 px, 500 px, and original Radarr/Sonarr covers second, and Seerr last. If Sonarr supplies only a TVDB remote poster, Helmsman performs a typed Seerr TV lookup with Sonarr's validated TMDb ID and then requests only Seerr's fixed TMDb image-proxy route; it never follows the remote URL. It requests revisioned 342 px Jellyfin/Seerr thumbnails, accepts only bounded raster responses, and never returns upstream URLs or credentials. Duplicate misses are coalesced, and at most three upstream artwork requests run concurrently with 64 pending requests. Positive results are cached in memory for up to 24 hours. General failures are cached for 15 minutes, versioned Arr cover misses for 30 seconds, and unrevisioned Arr misses are not negative-cached. The cache remains bounded to 512 entries, 64 MiB total, and 4 MiB per image. Browser responses use ETags, a one-day private cache lifetime, and one-week stale revalidation/error windows. Artwork is not stored in the Docker volume. Project-owned service text badges and original generic workload SVGs are bundled locally, require no icon CDN, and do not reproduce third-party logo artwork.
+The browser receives only opaque same-origin artwork URLs. The authenticated broker tries Jellyfin first, fixed 250 px, 500 px, and original Radarr/Sonarr covers second, and Seerr last. If Sonarr supplies only a TVDB remote poster, Helmsman performs a typed Seerr TV lookup with Sonarr's validated TMDb ID and then requests only Seerr's fixed TMDb image-proxy route; it never follows the remote URL. It requests revisioned 342 px Jellyfin/Seerr thumbnails, accepts only bounded raster responses, and never returns upstream URLs or credentials. Duplicate misses are coalesced, and at most three upstream artwork requests run concurrently with 64 pending requests. Positive results are cached in memory for up to 24 hours. General failures are cached for 15 minutes, versioned Arr cover misses for 30 seconds, and unrevisioned Arr misses are not negative-cached. The cache remains bounded to 512 entries, 64 MiB total, and 4 MiB per image. Browser responses use ETags, a one-day private cache lifetime, and one-week stale revalidation/error windows. Artwork is not stored in the Docker volume. Reviewed, hash-pinned icons for all nine supported service integrations are bundled locally, require no icon CDN, and are governed by the included asset notices; original generic workload SVGs are also bundled locally.
 
 The encrypted credential is also bound to that canonical destination. Changing a service URL requires entering a fresh credential; editing or restoring state with a different URL makes the old credential unavailable rather than forwarding it to the new host.
 
@@ -400,9 +400,9 @@ not only the image line:
 ```sh
 set -euo pipefail
 cd /opt/helmsman
-cp -- compose.yaml.before-1.0.0-beta.1 compose.yaml
-if [ -f .env.before-1.0.0-beta.1 ]; then
-  cp -- .env.before-1.0.0-beta.1 .env
+cp -- compose.yaml.before-1.0.0-beta.2 compose.yaml
+if [ -f .env.before-1.0.0-beta.2 ]; then
+  cp -- .env.before-1.0.0-beta.2 .env
   helmsman_env_file=.env
 else
   rm -f -- .env

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 
 import {
@@ -6,6 +7,7 @@ import {
   incidentNextStep,
   normalizeInfrastructureSnapshot,
   normalizeOperationsSnapshot,
+  proxmoxBrandLinkMarkup,
   renderInfrastructureOverview,
   renderOperationsOverview,
   renderOperationsReports,
@@ -13,19 +15,46 @@ import {
   workloadIconMarkup
 } from "../src/ui/operations-views.js";
 
-const serviceBadgeGlyphs = Object.freeze({
-  jellyfin: "JF",
-  seerr: "SE",
-  radarr: "RA",
-  sonarr: "SO",
-  prowlarr: "PR",
-  qbittorrent: "qB",
-  bazarr: "BZ",
-  proxmox: "PX",
-  portainer: "PT"
+const serviceIconAssets = Object.freeze({
+  jellyfin: Object.freeze({ file: "jellyfin.svg", width: 512, height: 512, hash: "7f53cf083dbb3119ec8c5acbd8049c5033227617e461540f70591ac109124306", format: "svg", viewBox: "0 0 512 512" }),
+  seerr: Object.freeze({ file: "seerr.jpg", width: 554, height: 554, hash: "0e0aa1aa038915e519b6b23e00565406b04f4974a1d33ba86ae3088aba41989b", format: "jpeg" }),
+  radarr: Object.freeze({ file: "radarr.png", width: 256, height: 256, hash: "d06702d34fcc05888239e553fab68f01c5f3f9b4fd64f8a7c407f4f9bfb8cf1e", format: "png" }),
+  sonarr: Object.freeze({ file: "sonarr.png", width: 554, height: 554, hash: "3922f07d78c566446945bbca3bf6e5e012607d65e9f35ba63c297136da778418", format: "png" }),
+  prowlarr: Object.freeze({ file: "prowlarr.png", width: 460, height: 460, hash: "fe75eafc608e288c9736b740afe1c30c715eaf56dc284fec1926491d245fea52", format: "png" }),
+  qbittorrent: Object.freeze({ file: "qbittorrent.svg", width: 1024, height: 1024, hash: "f96f40f70830e245cc184291d1173aa705b68b0865970b44aa1ee63350bcb9c2", format: "svg", viewBox: "0 0 1024 1024" }),
+  bazarr: Object.freeze({ file: "bazarr.png", width: 200, height: 200, hash: "aefd3aac28d67fd4d48b24dd2ae33b3b0a9f26e7950c2e1d34bef98cecf18876", format: "png", lightPlate: true }),
+  proxmox: Object.freeze({ file: "proxmox.png", width: 595, height: 516, hash: "c8dca83af2f6519f025aad6325cc702ad491b19727bae42b9b87b6d20fa13440", format: "png" }),
+  portainer: Object.freeze({ file: "portainer.svg", width: 168, height: 219, hash: "5d1e07021683d15ea67225c60975729f4ee0ed380f3a0fb21ffb2ad00eb6e85b", format: "svg", viewBox: "0.72 0 168.18 218.62", lightPlate: true })
 });
 
+const pngSignature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+
+function jpegDimensions(contents) {
+  if (contents.byteLength < 4 || contents[0] !== 0xff || contents[1] !== 0xd8) return null;
+  const startOfFrameMarkers = new Set([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf]);
+  let offset = 2;
+  while (offset + 3 < contents.byteLength) {
+    if (contents[offset] !== 0xff) {
+      offset += 1;
+      continue;
+    }
+    while (offset < contents.byteLength && contents[offset] === 0xff) offset += 1;
+    const marker = contents[offset];
+    offset += 1;
+    if (marker === 0xd8 || marker === 0xd9 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue;
+    if (offset + 1 >= contents.byteLength) return null;
+    const length = contents.readUInt16BE(offset);
+    if (length < 2 || offset + length > contents.byteLength) return null;
+    if (startOfFrameMarkers.has(marker) && length >= 7) {
+      return { height: contents.readUInt16BE(offset + 3), width: contents.readUInt16BE(offset + 5) };
+    }
+    offset += length;
+  }
+  return null;
+}
+
 const retroCss = await readFile(new URL("../src/ui/retro.css", import.meta.url), "utf8");
+const operationsCss = await readFile(new URL("../src/ui/operations.css", import.meta.url), "utf8");
 const shellCss = await readFile(new URL("../styles.css", import.meta.url), "utf8");
 const application = await readFile(new URL("../src/app-v5.js", import.meta.url), "utf8");
 const shellHtml = await readFile(new URL("../index.html", import.meta.url), "utf8");
@@ -116,20 +145,73 @@ assert.match(shellHtml, /<meta name="theme-color" content="#0d1719"\s*\/>/u);
 assert.equal(manifest.background_color, "#081012");
 assert.equal(manifest.theme_color, "#0d1719");
 
-for (const [id, glyph] of Object.entries(serviceBadgeGlyphs)) {
+for (const [label, href, accessibleName] of [
+  ["Source", "https://github.com/nunesg130-boop/helmsman", "Source code"],
+  ["AGPL-3.0 License", "https://github.com/nunesg130-boop/helmsman/blob/main/LICENSE", "AGPL-3.0 license"],
+  ["Third-party icon notices", "https://github.com/nunesg130-boop/helmsman/blob/main/assets/services/THIRD_PARTY_NOTICES.md", "Third-party icon notices"]
+]) {
+  const escapedHref = href.replaceAll(".", "[.]").replaceAll("/", "\\/");
+  assert.match(
+    application,
+    new RegExp(`<a class="button button--compact" href="${escapedHref}" target="_blank" rel="noopener noreferrer" aria-label="${accessibleName} \\(opens in a new tab\\)">${label}<\\/a>`, "u"),
+    `${label} must be a fixed, accessible external link in Settings`
+  );
+}
+assert.match(application, /<nav class="button-row app-version-v5__links" aria-label="Helmsman project resources">/u, "About links need a labelled navigation landmark");
+
+for (const [id, asset] of Object.entries(serviceIconAssets)) {
   const markup = serviceIconMarkup(id, id.slice(0, 1));
-  assert.match(markup, new RegExp(`service-brand-icon__fallback--${id}`, "u"));
-  assert.match(markup, new RegExp(`>${glyph}<\\/span>`, "u"));
-  assert.doesNotMatch(markup, /<img|\bsrc=|https?:|data:|blob:/iu, `${id} must use project-owned badge markup`);
+  const expectedClasses = `service-brand-icon service-brand-icon--${id}${asset.lightPlate ? " service-brand-icon--light-plate" : ""}`;
+  assert.match(markup, new RegExp(`<img class="${expectedClasses}"`, "u"), `${id} must use its reviewed presentation classes`);
+  assert.match(markup, new RegExp(`src="[.]\\/assets\\/services\\/${asset.file.replaceAll(".", "[.]")}"`, "u"), `${id} must use its fixed local asset path`);
+  assert.match(markup, new RegExp(`width="${asset.width}" height="${asset.height}" alt="" aria-hidden="true" decoding="async"`, "u"), `${id} must expose pinned dimensions and decorative semantics`);
+  assert.doesNotMatch(markup, /https?:|data:|blob:|service-brand-icon__fallback/iu, `${id} must use only its reviewed local connector icon`);
+
+  const contents = await readFile(new URL(`../assets/services/${asset.file}`, import.meta.url));
+  const digest = createHash("sha256").update(contents).digest("hex");
+  assert.equal(digest, asset.hash, `${id} must remain the exact reviewed user-supplied asset`);
+  if (asset.format === "png") {
+    assert.ok(contents.subarray(0, 8).equals(pngSignature), `${asset.file} must remain a PNG`);
+    assert.equal(contents.readUInt32BE(16), asset.width, `${asset.file} width must remain pinned`);
+    assert.equal(contents.readUInt32BE(20), asset.height, `${asset.file} height must remain pinned`);
+  } else if (asset.format === "jpeg") {
+    assert.deepEqual(jpegDimensions(contents), { width: asset.width, height: asset.height }, `${asset.file} must remain the pinned JPEG`);
+  } else {
+    const svg = contents.toString("utf8");
+    assert.match(svg, /^<svg\b/u, `${asset.file} must remain an SVG document`);
+    assert.match(svg, new RegExp(`viewBox="${asset.viewBox.replaceAll(".", "[.]")}"`, "u"), `${asset.file} viewBox must remain pinned`);
+    assert.doesNotMatch(
+      svg,
+      /<!DOCTYPE|<!ENTITY|<(?:script|foreignObject|iframe|object|embed|image|audio|video)\b|\son[a-z][a-z0-9_-]*\s*=|(?:href|src)\s*=\s*["'](?!#)|@import\b|url\(\s*["']?(?!#)/iu,
+      `${asset.file} must remain inert and self-contained`
+    );
+    if (id === "jellyfin") {
+      assert.match(svg, /\sstyle\s*=/u, "only the hash-pinned Jellyfin artwork may retain its audited presentation-only inline styles");
+    } else {
+      assert.doesNotMatch(svg, /\sstyle\s*=/iu, `${asset.file} must not gain inline styles`);
+    }
+  }
 }
 
-assert.match(serviceIconMarkup("proxmox-environment-id", "P"), /service-brand-icon__fallback--proxmox/u);
-assert.match(serviceIconMarkup("portainer-bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "P"), /service-brand-icon__fallback--portainer/u);
-assert.match(serviceIconMarkup("portainer", "P"), />PT<\/span>/u);
-assert.doesNotMatch(serviceIconMarkup("portainer", "P"), /<img|assets\/services/u, "Portainer must use the generic project badge instead of bundled third-party artwork");
+assert.match(serviceIconMarkup("proxmox-environment-id", "P"), /assets\/services\/proxmox[.]png/u, "Proxmox instance ids use the fixed Proxmox icon");
+assert.match(serviceIconMarkup("portainer-bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "P"), /assets\/services\/portainer[.]svg/u, "Portainer instance ids use the fixed Portainer icon");
+assert.doesNotMatch(serviceIconMarkup("prowlarr-unreviewed", "P"), /<img|assets\/services/u, "unreviewed lookalike ids cannot select a bundled connector icon");
+const proxmoxBrandLink = proxmoxBrandLinkMarkup();
+assert.match(proxmoxBrandLink, /^<a class="service-brand-link service-brand-link--proxmox"/u);
+assert.match(proxmoxBrandLink, /href="https:\/\/www[.]proxmox[.]com\/"/u);
+assert.match(proxmoxBrandLink, /target="_blank" rel="noopener noreferrer"/u);
+assert.match(proxmoxBrandLink, /aria-label="Visit the Proxmox website \(opens in a new tab\)"/u);
+assert.match(proxmoxBrandLink, /<img[^>]+assets\/services\/proxmox[.]png[^>]*><\/a>$/u);
+assert.doesNotMatch(proxmoxBrandLink, /<button\b/u, "the Proxmox website link must never contain a Helmsman action button");
+assert.match(
+  operationsCss,
+  /[.]service-brand-icon--proxmox\s*\{[^}]*filter:\s*none;/su,
+  "the Proxmox mark must not receive a presentation effect"
+);
 const hostileIcon = serviceIconMarkup('unknown"><script>alert(1)</script>', '<img src=x onerror="alert(1)">');
 assert.doesNotMatch(hostileIcon, /<img|<script|onerror=/u, "unknown service ids cannot become image paths or active markup");
 assert.match(hostileIcon, /&lt;/u, "unknown service fallbacks are escaped");
+assert.match(hostileIcon, /^<span class="service-brand-icon__fallback" aria-hidden="true">/u, "only unknown ids use the escaped generic fallback");
 
 for (const [type, filename] of [["qemu", "vm.svg"], ["lxc", "container.svg"]]) {
   assert.match(workloadIconMarkup(type), new RegExp(`assets/workloads/${filename.replace(".", "\\.")}`, "u"));

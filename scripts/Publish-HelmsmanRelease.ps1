@@ -568,7 +568,13 @@ function Assert-NoEmbeddedSecrets {
         'assets/helmsman-logo.png',
         'assets/icon-192.png',
         'assets/icon-512.png',
-        'assets/icon-maskable-512.png'
+        'assets/icon-maskable-512.png',
+        'assets/services/bazarr.png',
+        'assets/services/prowlarr.png',
+        'assets/services/proxmox.png',
+        'assets/services/radarr.png',
+        'assets/services/seerr.jpg',
+        'assets/services/sonarr.png'
     )
     $patterns = @(
         [PSCustomObject]@{ Label = 'private key material'; Pattern = '-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?' + 'PRIVATE KEY-----' },

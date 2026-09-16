@@ -1,4 +1,4 @@
-# Optional Helmsman v0.10 HTTPS edge for directly connected private/Tailscale clients.
+# Optional Helmsman v1 HTTPS edge for directly connected private/Tailscale clients.
 # Replace helmsman.example.com and 192.0.2.10:4180. The latter is a reserved
 # documentation address and will not reach a real container.
 #

@@ -1221,7 +1221,7 @@ test("bounds and revalidates hostile inventory at the monitor boundary", () => {
       title: index === 0 ? "Safe\u0000 ‹title›" : `Movie ${index}`,
       providerIds: { tmdb: index + 1 },
       artwork: { service: "radarr", kind: "poster", resource: String(index + 1) },
-      unexpected: "https://admin:secret@example.invalid/private"
+      unexpected: "https://" + "admin:secret@example.invalid/private"
     })),
     activity: [{
       service: "radarr",

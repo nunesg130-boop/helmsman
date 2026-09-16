@@ -624,6 +624,24 @@ label > small {
 
 .service-card-v5:hover { border-color: var(--accent-border); background-color: rgba(255, 255, 255, 0.055); transform: translateY(-1px); }
 .service-card-v5 > svg { color: var(--muted); }
+.service-card-v5--split { cursor: default; }
+.service-card-v5__action {
+  display: grid;
+  width: 100%;
+  grid-column: 2 / -1;
+  grid-template-columns: minmax(0, 1fr) minmax(160px, auto) auto;
+  align-items: center;
+  gap: 20px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+.service-card-v5__action:focus-visible { outline: 2px solid var(--accent); outline-offset: 5px; }
+.service-card-v5__action > svg { color: var(--muted); }
 .service-card-v5__letter { display: grid; width: 50px; height: 50px; place-items: center; border: 1px solid var(--accent-border); border-radius: 17px; background: var(--accent-soft); color: var(--accent); font-weight: 800; }
 .service-card-v5__copy { display: grid; gap: 4px; min-width: 0; }
 .service-card-v5__copy strong { font-size: 15px; }
@@ -942,13 +960,21 @@ label > small {
   border-radius: 24px;
 }
 
-.environment-card__main {
+.environment-card__heading {
   display: grid;
-  width: 100%;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
   gap: 15px;
   padding: 21px;
+}
+
+.environment-card__main {
+  display: grid;
+  width: 100%;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 15px;
+  padding: 0;
   border: 0;
   background: transparent;
   color: var(--text);
@@ -958,8 +984,8 @@ label > small {
 
 .environment-card__main:hover,
 .environment-card__main:focus-visible,
-.infrastructure-node-card:hover,
-.infrastructure-node-card:focus-visible,
+.infrastructure-node-card__main:hover,
+.infrastructure-node-card__main:focus-visible,
 .workload-row:not(.workload-row--header):hover,
 .workload-row:not(.workload-row--header):focus-visible {
   background: rgba(255, 255, 255, 0.055);
@@ -1030,16 +1056,31 @@ label > small {
 
 .infrastructure-node-card {
   display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
   gap: 17px;
   padding: 20px;
   border-radius: 22px;
   color: var(--text);
+  cursor: default;
+  font: inherit;
+  text-align: left;
+}
+.infrastructure-node-card__main {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  gap: 17px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
   cursor: pointer;
   font: inherit;
   text-align: left;
 }
-.infrastructure-node-card > header { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 13px; }
-.infrastructure-node-card > header > span:nth-child(2) { display: grid; min-width: 0; gap: 3px; }
+.infrastructure-node-card__main > header { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 13px; }
+.infrastructure-node-card__main > header > span:first-child { display: grid; min-width: 0; gap: 3px; }
 .infrastructure-node-card header small,
 .infrastructure-node-card footer { color: var(--muted); font-size: 10px; }
 .infrastructure-node-card header strong { font-size: 17px; }
@@ -1049,6 +1090,26 @@ label > small {
 .infrastructure-node-card dd { margin: 6px 0 2px; font-size: 17px; font-weight: 760; }
 .infrastructure-node-card dl small { color: var(--muted); font-size: 9px; }
 .infrastructure-node-card footer { display: flex; justify-content: space-between; gap: 12px; padding-top: 2px; }
+
+.proxmox-hero__identity {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 20px;
+}
+
+.proxmox-hero__mark {
+  display: grid;
+  width: 72px;
+  height: 64px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid var(--accent-border);
+  border-radius: 18px;
+  background: var(--accent-soft);
+}
+
+.proxmox-hero__mark .service-brand-icon { width: 58px; height: 50px; }
 
 .infrastructure-workload-panel { overflow: hidden; border-radius: 22px; }
 .infrastructure-workload-table { min-width: 900px; overflow-x: auto; }
@@ -1214,6 +1275,7 @@ label > small {
 }
 
 .app-version-v5 dl { margin: 0; }
+.app-version-v5__links { margin-top: 16px; }
 .app-version-v5 dl > div {
   display: flex;
   align-items: center;
@@ -1475,6 +1537,9 @@ label > small {
   .service-card-v5 { grid-template-columns: auto minmax(0, 1fr) auto; gap: 13px; padding: 16px; }
   .service-card-v5__status { grid-column: 2; }
   .service-card-v5 > svg { grid-column: 3; grid-row: 1 / span 2; }
+  .service-card-v5__action { grid-template-columns: minmax(0, 1fr) auto; gap: 13px; }
+  .service-card-v5__action .service-card-v5__status { grid-column: 1; }
+  .service-card-v5__action > svg { grid-column: 2; grid-row: 1 / span 2; }
   .connection-category__body { padding: 8px; }
   .incident-row { grid-template-columns: auto minmax(0, 1fr); }
   .incident-row time { grid-column: 2; }
@@ -1489,9 +1554,9 @@ label > small {
   .infrastructure-load-error .button { width: 100%; }
   .infrastructure-environment-grid,
   .infrastructure-node-grid { grid-template-columns: 1fr; }
-  .environment-card__main { grid-template-columns: auto minmax(0, 1fr) auto; }
-  .environment-card__state { grid-column: 2; }
-  .environment-card__main > svg { grid-column: 3; grid-row: 1 / span 2; }
+  .environment-card__main { grid-template-columns: minmax(0, 1fr) auto; }
+  .environment-card__state { grid-column: 1; }
+  .environment-card__main > svg { grid-column: 2; grid-row: 1 / span 2; }
   .environment-card__metrics,
   .inventory-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .infrastructure-workload-panel { overflow-x: auto; }
@@ -1514,6 +1579,8 @@ label > small {
   .modal-card__actions { width: 100%; }
   .infrastructure-card { grid-template-columns: auto minmax(0, 1fr) auto; }
   .infrastructure-card .service-card-v5__status { grid-column: 2; }
+  .infrastructure-card.service-card-v5--split { grid-template-columns: auto minmax(0, 1fr); }
+  .infrastructure-card .service-card-v5__action .service-card-v5__status { grid-column: 1; }
   .connection-category > .connection-category__header { grid-template-columns: 1fr; }
   .connection-category__index { width: 40px; height: 40px; }
   .connection-category__actions { grid-column: 1; justify-content: stretch; }

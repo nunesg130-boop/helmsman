@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,6 +15,42 @@ function record(condition, label, detail = "") {
 
 function read(relativePath) {
   return readFileSync(join(root, relativePath), "utf8");
+}
+
+const serviceIconAssets = Object.freeze([
+  Object.freeze({ service: "Bazarr", path: "assets/services/bazarr.png", width: 200, height: 200, hash: "aefd3aac28d67fd4d48b24dd2ae33b3b0a9f26e7950c2e1d34bef98cecf18876", format: "png" }),
+  Object.freeze({ service: "Jellyfin", path: "assets/services/jellyfin.svg", width: 512, height: 512, hash: "7f53cf083dbb3119ec8c5acbd8049c5033227617e461540f70591ac109124306", format: "svg", viewBox: "0 0 512 512", auditedInlineStyle: true }),
+  Object.freeze({ service: "Portainer", path: "assets/services/portainer.svg", width: 168.18, height: 218.62, hash: "5d1e07021683d15ea67225c60975729f4ee0ed380f3a0fb21ffb2ad00eb6e85b", format: "svg", viewBox: "0.72 0 168.18 218.62" }),
+  Object.freeze({ service: "Prowlarr", path: "assets/services/prowlarr.png", width: 460, height: 460, hash: "fe75eafc608e288c9736b740afe1c30c715eaf56dc284fec1926491d245fea52", format: "png" }),
+  Object.freeze({ service: "Proxmox", path: "assets/services/proxmox.png", width: 595, height: 516, hash: "c8dca83af2f6519f025aad6325cc702ad491b19727bae42b9b87b6d20fa13440", format: "png" }),
+  Object.freeze({ service: "qBittorrent", path: "assets/services/qbittorrent.svg", width: 1024, height: 1024, hash: "f96f40f70830e245cc184291d1173aa705b68b0865970b44aa1ee63350bcb9c2", format: "svg", viewBox: "0 0 1024 1024" }),
+  Object.freeze({ service: "Radarr", path: "assets/services/radarr.png", width: 256, height: 256, hash: "d06702d34fcc05888239e553fab68f01c5f3f9b4fd64f8a7c407f4f9bfb8cf1e", format: "png" }),
+  Object.freeze({ service: "Seerr", path: "assets/services/seerr.jpg", width: 554, height: 554, hash: "0e0aa1aa038915e519b6b23e00565406b04f4974a1d33ba86ae3088aba41989b", format: "jpeg" }),
+  Object.freeze({ service: "Sonarr", path: "assets/services/sonarr.png", width: 554, height: 554, hash: "3922f07d78c566446945bbca3bf6e5e012607d65e9f35ba63c297136da778418", format: "png" })
+]);
+
+function jpegDimensions(contents) {
+  if (contents.byteLength < 4 || contents[0] !== 0xff || contents[1] !== 0xd8) return null;
+  const startOfFrameMarkers = new Set([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf]);
+  let offset = 2;
+  while (offset + 3 < contents.byteLength) {
+    if (contents[offset] !== 0xff) {
+      offset += 1;
+      continue;
+    }
+    while (offset < contents.byteLength && contents[offset] === 0xff) offset += 1;
+    const marker = contents[offset];
+    offset += 1;
+    if (marker === 0xd8 || marker === 0xd9 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue;
+    if (offset + 1 >= contents.byteLength) return null;
+    const length = contents.readUInt16BE(offset);
+    if (length < 2 || offset + length > contents.byteLength) return null;
+    if (startOfFrameMarkers.has(marker) && length >= 7) {
+      return { height: contents.readUInt16BE(offset + 3), width: contents.readUInt16BE(offset + 5) };
+    }
+    offset += length;
+  }
+  return null;
 }
 
 function yamlJobBlock(contents, name) {
@@ -89,6 +126,19 @@ const requiredFiles = [
   "assets/icon-512.png",
   "assets/icon-maskable-512.png",
   "assets/services/THIRD_PARTY_NOTICES.md",
+  "assets/services/bazarr.png",
+  "assets/services/jellyfin.svg",
+  "assets/services/portainer.svg",
+  "assets/services/prowlarr.png",
+  "assets/services/proxmox.png",
+  "assets/services/qbittorrent.svg",
+  "assets/services/radarr.png",
+  "assets/services/seerr.jpg",
+  "assets/services/sonarr.png",
+  "assets/services/licenses/GPL-2.0.txt",
+  "assets/services/licenses/GPL-3.0.txt",
+  "assets/services/licenses/MIT-Seerr.txt",
+  "assets/services/licenses/Zlib-Portainer.txt",
   "assets/workloads/vm.svg",
   "assets/workloads/container.svg",
   ".github/dependabot.yml",
@@ -124,7 +174,7 @@ if (existsSync(join(root, "Dockerfile"))) {
   );
 
   record(
-    /^ARG HELMSMAN_VERSION=1\.0\.0-beta\.1$/mu.test(dockerfile)
+    /^ARG HELMSMAN_VERSION=1\.0\.0-beta\.2$/mu.test(dockerfile)
       && /^ARG HELMSMAN_REVISION=unknown$/mu.test(dockerfile)
       && /org\.opencontainers\.image\.title="Helmsman"/u.test(dockerfile)
       && /org\.opencontainers\.image\.licenses="AGPL-3\.0-only"/u.test(dockerfile)
@@ -147,7 +197,8 @@ if (existsSync(join(root, "Dockerfile"))) {
   const expectedCopies = [
     "COPY --chown=0:0 index.html styles.css manifest.webmanifest sw.js ./",
     "COPY --chown=0:0 assets/helmsman-logo.png assets/icon-192.png assets/icon-512.png assets/icon-maskable-512.png ./assets/",
-    "COPY --chown=0:0 assets/services/THIRD_PARTY_NOTICES.md ./assets/services/",
+    "COPY --chown=0:0 assets/services/THIRD_PARTY_NOTICES.md assets/services/bazarr.png assets/services/jellyfin.svg assets/services/portainer.svg assets/services/prowlarr.png assets/services/proxmox.png assets/services/qbittorrent.svg assets/services/radarr.png assets/services/seerr.jpg assets/services/sonarr.png ./assets/services/",
+    "COPY --chown=0:0 assets/services/licenses/ ./assets/services/licenses/",
     "COPY --chown=0:0 assets/workloads/vm.svg assets/workloads/container.svg ./assets/workloads/",
     "COPY --chown=0:0 src/app-v5.js ./src/app-v5.js",
     "COPY --chown=0:0 src/ui/operations-views.js src/ui/operations.css src/ui/control.css src/ui/retro.css ./src/ui/",
@@ -189,7 +240,7 @@ if (existsSync(join(root, "Dockerfile"))) {
 if (existsSync(join(root, "server/broker.mjs"))) {
   const broker = read("server/broker.mjs");
   record(
-    /const DEFAULT_VERSION = "1\.0\.0-beta\.1"/u.test(broker)
+    /const DEFAULT_VERSION = "1\.0\.0-beta\.2"/u.test(broker)
       && /process\.env\.HELMSMAN_VERSION/u.test(broker)
       && /\^\[0-9A-Za-z\]\[0-9A-Za-z\.\+-\]\{0,63\}\$/u.test(broker),
     "runtime version follows the validated immutable v1 beta image metadata"
@@ -265,7 +316,7 @@ if (existsSync(join(root, "compose.yaml"))) {
   record(
     /^name:\s*helmsman\s*$/mu.test(compose)
       && /^services:\s*\n\s{2}helmsman:\s*$/mu.test(compose)
-      && compose.includes('${HELMSMAN_IMAGE:-ghcr.io/OWNER/REPOSITORY:1.0.0-beta.1}')
+      && compose.includes('${HELMSMAN_IMAGE:-ghcr.io/OWNER/REPOSITORY:1.0.0-beta.2}')
       && !/^\s{4}build:/mu.test(compose),
     "production Compose has a stable project name and pulls the versioned GHCR image without a local build"
   );
@@ -324,9 +375,9 @@ if (existsSync(join(root, "compose.dev.yaml"))) {
       && /^\s{4}build:\s*$/mu.test(developmentCompose)
       && /^\s{6}context:\s*[.]\s*$/mu.test(developmentCompose)
       && /^\s{6}dockerfile:\s*Dockerfile\s*$/mu.test(developmentCompose)
-      && /HELMSMAN_VERSION:\s*["']1\.0\.0-beta\.1["']/u.test(developmentCompose)
+      && /HELMSMAN_VERSION:\s*["']1\.0\.0-beta\.2["']/u.test(developmentCompose)
       && /HELMSMAN_REVISION:\s*["']local["']/u.test(developmentCompose)
-      && /image:\s*["']helmsman:1\.0\.0-beta\.1["']/u.test(developmentCompose),
+      && /image:\s*["']helmsman:1\.0\.0-beta\.2["']/u.test(developmentCompose),
     "developer Compose override keeps source builds separate from the production pull contract"
   );
 }
@@ -454,7 +505,7 @@ if (existsSync(join(root, "container.env.example"))) {
   const allowed = new Set(["HELMSMAN_IMAGE", "HELMSMAN_BIND_IP", "HELMSMAN_PORT"]);
   const unexpected = keys.filter((key) => !allowed.has(key));
   record(
-    assignments.includes("HELMSMAN_IMAGE=ghcr.io/OWNER/REPOSITORY:1.0.0-beta.1")
+    assignments.includes("HELMSMAN_IMAGE=ghcr.io/OWNER/REPOSITORY:1.0.0-beta.2")
       && assignments.includes("HELMSMAN_BIND_IP=127.0.0.1")
       && assignments.includes("HELMSMAN_PORT=4180")
       && !assignments.some((line) => line.startsWith("HELMSMAN_DATA_VOLUME="))
@@ -499,6 +550,20 @@ if (existsSync(join(root, ".dockerignore"))) {
     "!assets/icon-maskable-512.png",
     "!assets/services",
     "!assets/services/THIRD_PARTY_NOTICES.md",
+    "!assets/services/bazarr.png",
+    "!assets/services/jellyfin.svg",
+    "!assets/services/portainer.svg",
+    "!assets/services/prowlarr.png",
+    "!assets/services/proxmox.png",
+    "!assets/services/qbittorrent.svg",
+    "!assets/services/radarr.png",
+    "!assets/services/seerr.jpg",
+    "!assets/services/sonarr.png",
+    "!assets/services/licenses",
+    "!assets/services/licenses/GPL-2.0.txt",
+    "!assets/services/licenses/GPL-3.0.txt",
+    "!assets/services/licenses/MIT-Seerr.txt",
+    "!assets/services/licenses/Zlib-Portainer.txt",
     "!assets/workloads",
     "!assets/workloads/vm.svg",
     "!assets/workloads/container.svg",
@@ -573,43 +638,65 @@ if (existsSync(join(root, "sw.js"))) {
 }
 
 const localMarkPaths = [
+  ...serviceIconAssets.map(({ path }) => path),
   "assets/workloads/vm.svg",
   "assets/workloads/container.svg"
 ];
 if (localMarkPaths.every((iconPath) => existsSync(join(root, iconPath)))) {
-  const unsafeSvg = /<(?:script|foreignObject|iframe|object|embed|image)\b|\son[a-z]+\s*=|\sstyle\s*=|(?:href|src)\s*=\s*["'](?!#)/iu;
+  const unsafeSvg = /<!DOCTYPE|<!ENTITY|<(?:script|foreignObject|iframe|object|embed|image|audio|video)\b|\son[a-z][a-z0-9_-]*\s*=|(?:href|src)\s*=\s*["'](?!#)|@import\b|url\(\s*["']?(?!#)/iu;
   const pngSignature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
-  const invalidIcons = localMarkPaths.filter((iconPath) => {
-    const contents = readFileSync(join(root, iconPath));
-    if (iconPath.endsWith(".svg")) {
+  const invalidIcons = [];
+  for (const asset of serviceIconAssets) {
+    const contents = readFileSync(join(root, asset.path));
+    const digest = createHash("sha256").update(contents).digest("hex");
+    if (digest !== asset.hash) invalidIcons.push(`${asset.path}: hash`);
+    if (asset.format === "png") {
+      if (!contents.subarray(0, 8).equals(pngSignature)) invalidIcons.push(`${asset.path}: format`);
+      if (contents.byteLength < 24 || contents.readUInt32BE(16) !== asset.width || contents.readUInt32BE(20) !== asset.height) {
+        invalidIcons.push(`${asset.path}: dimensions`);
+      }
+    } else if (asset.format === "jpeg") {
+      const dimensions = jpegDimensions(contents);
+      if (!dimensions || dimensions.width !== asset.width || dimensions.height !== asset.height) invalidIcons.push(`${asset.path}: format/dimensions`);
+    } else {
       const svg = contents.toString("utf8");
-      return !/^<svg\s/iu.test(svg)
-        || !/viewBox=/u.test(svg)
-        || contents.byteLength > 64 * 1024
-        || unsafeSvg.test(svg);
+      const expectedViewBox = `viewBox="${asset.viewBox}"`;
+      if (!/^<svg\b/iu.test(svg) || !svg.includes(expectedViewBox)) invalidIcons.push(`${asset.path}: format/viewBox`);
+      if (unsafeSvg.test(svg)) invalidIcons.push(`${asset.path}: active or external content`);
+      const hasInlineStyle = /\sstyle\s*=/iu.test(svg);
+      if (hasInlineStyle && !(asset.auditedInlineStyle && digest === asset.hash)) invalidIcons.push(`${asset.path}: inline style`);
+      if (asset.auditedInlineStyle && !hasInlineStyle) invalidIcons.push(`${asset.path}: audited style unexpectedly removed`);
     }
-    const width = contents.byteLength >= 24 ? contents.readUInt32BE(16) : 0;
-    const height = contents.byteLength >= 24 ? contents.readUInt32BE(20) : 0;
-    return !contents.subarray(0, 8).equals(pngSignature)
-      || contents.byteLength > 512 * 1024
-      || width < 1
-      || height < 1
-      || width > 512
-      || height > 512;
-  });
+  }
+  for (const iconPath of ["assets/workloads/vm.svg", "assets/workloads/container.svg"]) {
+    const svg = read(iconPath);
+    if (!/^<svg\b/iu.test(svg) || !/viewBox=/u.test(svg) || unsafeSvg.test(svg) || /\sstyle\s*=/iu.test(svg)) {
+      invalidIcons.push(`${iconPath}: unsafe workload artwork`);
+    }
+  }
   const notices = existsSync(join(root, "assets/services/THIRD_PARTY_NOTICES.md"))
     ? read("assets/services/THIRD_PARTY_NOTICES.md")
     : "";
-  const serviceNames = ["Jellyfin", "Seerr", "Radarr", "Sonarr", "Prowlarr", "qBittorrent", "Bazarr", "Proxmox", "Portainer"];
   record(
     invalidIcons.length === 0
-      && !existsSync(join(root, "assets/services/portainer.svg"))
       && !existsSync(join(root, "assets/workloads/lxc.svg"))
-      && /does not bundle those services' logos/iu.test(notices)
-      && /does not\s+imply sponsorship, affiliation, or endorsement/iu.test(notices)
-      && /original, generic Helmsman drawings/iu.test(notices)
-      && serviceNames.every((name) => notices.includes(name)),
-    "public artwork is project-owned, bounded, inert, and documents the third-party trademark boundary",
+      && serviceIconAssets.every(({ service, path, hash }) => notices.includes(`| ${service} |`) && notices.includes(path) && notices.includes(hash))
+      && /Box vector created by Freepik - www[.]freepik[.]com/u.test(notices)
+      && /GNU General Public License\s+version 3/iu.test(notices)
+      && /4561859c2b3e8edf5ffab994f72ec8f97aca8c53/u.test(notices)
+      && /used only for referential identification\s+of the third-party\s+Prowlarr connector/iu.test(notices)
+      && /No service owner sponsors, endorses, or is affiliated\s+with Helmsman/iu.test(notices)
+      && /https:\/\/www[.]proxmox[.]com\//u.test(notices)
+      && /Creative Commons Attribution-ShareAlike 4[.]0/iu.test(notices)
+      && /Copyright \(C\)[\s\S]*2014-2017 Mark McDowall, Keivan Beigi, Taloth Saldono and contributors/u.test(notices)
+      && /copyright: Provided by HVS <hvs linuxmail org> \(raster first proposal\) and Atif Afzal\(@atfzl github\)/u.test(notices)
+      && /has not been established as\s+byte-for-byte identical[\s\S]*does\s+not claim that repository license/iu.test(notices)
+      && /GNU GENERAL PUBLIC LICENSE\s+Version 2, June 1991/u.test(read("assets/services/licenses/GPL-2.0.txt"))
+      && /GNU GENERAL PUBLIC LICENSE\s+Version 3, 29 June 2007/u.test(read("assets/services/licenses/GPL-3.0.txt"))
+      && /Copyright \(c\) 2020 sct[\s\S]*Permission is hereby granted/u.test(read("assets/services/licenses/MIT-Seerr.txt"))
+      && /Copyright \(c\) 2018 Portainer[.]io[\s\S]*This notice may not be removed or altered/u.test(read("assets/services/licenses/Zlib-Portainer.txt"))
+      && /original, generic Helmsman drawings/iu.test(notices),
+    "public artwork is an exact closed nine-icon set, remains inert, and carries its attribution and trademark boundary",
     invalidIcons.join(", ")
   );
 }
@@ -710,16 +797,27 @@ if (existsSync(join(root, "src/app-v5.js")) && existsSync(join(root, "src/ui/ope
       && /setAttribute\("href",\s*infrastructureWorkspace\s*\?\s*"#\/incidents"\s*:\s*"#\/health"\)/u.test(application),
     "legacy Infrastructure URLs, saved sidebar preference, connection-gated navigation, and workspace-specific monitor targets remain wired"
   );
+  const reviewedServiceIconPaths = serviceIconAssets.map(({ path }) => `./${path}`);
   record(
     /function renderPortainerPage/u.test(application)
       && /state\.route === "portainer"/u.test(application)
       && /\/api\/v2\/infrastructure\/services/u.test(application)
       && /open-portainer-service/u.test(application)
-      && /portainer:\s*"PT"/u.test(operationsViews)
-      && /service-brand-icon__fallback--\$\{key\}/u.test(operationsViews)
-      && !/assets\/services\/portainer\.svg/u.test(operationsViews)
-      && /startsWith\("portainer-"\)/u.test(operationsViews),
-    "the authenticated Infrastructure client renders Portainer servers and inventory without adding Portainer to Media"
+      && /const SERVICE_ICON_ASSETS\s*=\s*Object[.]freeze/u.test(operationsViews)
+      && reviewedServiceIconPaths.every((path) => operationsViews.includes(`path: "${path}"`))
+      && !/SERVICE_BADGE_GLYPHS/u.test(operationsViews)
+      && /class="service-brand-icon__fallback"/u.test(operationsViews)
+      && /startsWith\("proxmox-"\)/u.test(operationsViews)
+      && /startsWith\("portainer-"\)/u.test(operationsViews)
+      && /export function proxmoxBrandLinkMarkup/u.test(operationsViews)
+      && /href="https:\/\/www[.]proxmox[.]com\/"/u.test(operationsViews)
+      && /target="_blank" rel="noopener noreferrer"/u.test(operationsViews)
+      && /Visit the Proxmox website \(opens in a new tab\)/u.test(operationsViews)
+      && /function renderProxmoxConnectorCard[\s\S]*?return `<article[\s\S]*?proxmoxBrandLinkMarkup\(\)[\s\S]*?<button class="service-card-v5__action"/u.test(application)
+      && /function renderInfrastructureEnvironmentGrid[\s\S]*?<article[\s\S]*?proxmoxBrandLinkMarkup\(\)[\s\S]*?<button class="environment-card__main"/u.test(application)
+      && /function renderInfrastructureNodeGrid[\s\S]*?<article[\s\S]*?proxmoxBrandLinkMarkup\(\)[\s\S]*?<button class="infrastructure-node-card__main"/u.test(application)
+      && /function renderInfrastructureTarget[\s\S]*?<article[\s\S]*?proxmoxBrandLinkMarkup\(\)[\s\S]*?<button class="infrastructure-target__action"/u.test(operationsViews),
+    "known integrations render exact local images while Proxmox website links remain siblings of Helmsman action buttons"
   );
 }
 
@@ -728,7 +826,7 @@ if (existsSync(join(root, "package.json"))) {
     const packageJson = JSON.parse(read("package.json"));
     record(
       packageJson.name === "helmsman"
-        && packageJson.version === "1.0.0-beta.1"
+        && packageJson.version === "1.0.0-beta.2"
         && packageJson.scripts?.serve === "node server/index.mjs serve"
         && packageJson.scripts?.["check:broker"] === "node --test tests/control-plane.test.mjs"
         && /tests\/secrets[.]test[.]mjs/u.test(packageJson.scripts?.["check:security"] || "")
@@ -839,7 +937,7 @@ if (existsSync(join(root, "README.md")) && existsSync(join(root, "deploy/DOCKER.
       && keyGuides.every((guide) => /opaque[^.\n]*(?:artwork|Helmsman URL)|artwork[^.\n]*opaque/iu.test(guide))
       && keyGuides.every((guide) => /(?:artwork cache|cache)[^.\n]*in memory|in-memory[^.\n]*(?:artwork|cache)/iu.test(guide))
       && keyGuides.every((guide) => /cannot approve requests/iu.test(guide))
-      && keyGuides.every((guide) => /(?:service (?:marks|badges)|marks|badges)[^.\n]*(?:bundled locally|icon CDN|runtime icon CDN)/iu.test(guide))
+      && keyGuides.every((guide) => /(?:service (?:icons|marks|badges)|icons|marks|badges)[^.\n]*(?:bundled locally|icon CDN|runtime icon CDN)/iu.test(guide))
       && keyGuides.every((guide) => /state schema(?: to)? [34]/iu.test(guide))
       && /state schema(?: to)? 4/iu.test(keyGuides[0])
       && keyGuides.every((guide) => /(?:each visible node|node's fixed read-only task route)/iu.test(guide))
@@ -1024,7 +1122,7 @@ if (existsSync(join(root, "deploy/DOCKER.md"))) {
   );
   record(
     edgeFiles.length === edgePaths.length
-      && edgeFiles.every((contents) => /Optional Helmsman v0\.10 HTTPS edge/iu.test(contents))
+      && edgeFiles.every((contents) => /Optional Helmsman v1 HTTPS edge/iu.test(contents))
       && edgeFiles.every((contents) => /Proxy every path unchanged|Protect every application path/iu.test(contents))
       && edgeFiles.every((contents) => !forbiddenServiceEnvironment.test(contents)),
     "optional Helmsman edge examples proxy the whole control plane without defining media-service topology"

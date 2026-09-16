@@ -1,4 +1,4 @@
-# Helmsman v1.0.0-beta.1
+# Helmsman v1.0.0-beta.2
 
 Helmsman is a self-hosted operations center for a homelab's media services and infrastructure. It runs as one portable Linux container on Docker Desktop, Linux, macOS, compatible NAS platforms, AMD64, and ARM64.
 
@@ -27,9 +27,10 @@ the license text.
 The Helmsman name and helmet logo identify this project. The AGPL is a
 copyright license and does not grant trademark rights. Service names identify
 compatible products; their names and trademarks remain the property of their
-respective owners. Helmsman bundles project-owned service text badges and
-original generic VM/container workload drawings rather than third-party logo
-artwork. See [the asset notices](assets/services/THIRD_PARTY_NOTICES.md).
+respective owners. Helmsman bundles reviewed, hash-pinned local icons only to
+identify the nine supported service integrations, plus original generic
+VM/container workload drawings. See
+[the asset notices](assets/services/THIRD_PARTY_NOTICES.md).
 
 The v1.0 beta combines Portainer monitoring and a small, fixed set of confirmed recovery actions under Infrastructure with targeted media recovery actions and Helmsman's cluster-aware Proxmox model:
 
@@ -48,7 +49,7 @@ The v1.0 beta combines Portainer monitoring and a small, fixed set of confirmed 
 - artwork is served only through an authenticated opaque Helmsman URL, uses revisioned 342 px Jellyfin/Seerr thumbnails and fixed 250 px, 500 px, then original Radarr/Sonarr covers, safely resolves Sonarr's TV metadata through a typed Seerr lookup when its local cover is unavailable, coalesces duplicate misses, and bounds cold artwork to three concurrent upstream fetches with 64 queued requests;
 - unreleased Radarr movies remain **Upcoming** and are not counted as missing, Sonarr calendar episodes inherit their parent-series poster, and calendar-only episode rows are excluded from Library;
 - unchanged artwork keeps a stable browser URL with a one-day private cache, while image revisions produce a new opaque URL, cold proxy fetches receive an eight-second artwork-only budget, and temporary failures receive two bounded browser retries without cache-busting;
-- locally rendered, project-owned service text badges identify integrations without a runtime icon CDN, while original generic VM and container SVGs identify workloads;
+- reviewed, hash-pinned icons for all nine supported service integrations are bundled locally without a runtime icon CDN, while original generic VM and container SVGs identify workloads;
 - media monitoring remains read-only by default; the only media writes are a Seerr failed-request retry, a selected standard-season request for one exact current series through Seerr, and a targeted Radarr/Sonarr search when Helmsman can resolve one exact current record, and each opens Helmsman's own confirmation dialog before it runs;
 - each standalone Proxmox server or multi-node cluster is one environment, separate from its physical nodes and VM/LXC workloads;
 - **Connect and discover** verifies authentication, certificate trust, environment identity, cluster name, and visible nodes before an environment can be saved;
@@ -77,7 +78,7 @@ The v1.0 beta combines Portainer monitoring and a small, fixed set of confirmed 
 
 ## Deploy the published container
 
-Helmsman is distributed as the public Linux AMD64/ARM64 image `ghcr.io/nunesg130-boop/helmsman`. The `v1.0.0-beta.1` Git tag runs the contracts and architecture smoke tests, publishes the version, beta, and full-commit image tags, and creates a GitHub Release containing ready-to-use `compose.yaml`, `container.env.example`, and `SHA256SUMS` assets. The release deployment files pin `ghcr.io/nunesg130-boop/helmsman` to the exact multi-architecture manifest digest (`@sha256:...`).
+Helmsman is distributed as the public Linux AMD64/ARM64 image `ghcr.io/nunesg130-boop/helmsman`. The `v1.0.0-beta.2` Git tag runs the contracts and architecture smoke tests, publishes the version, beta, and full-commit image tags, and creates a GitHub Release containing ready-to-use `compose.yaml`, `container.env.example`, and `SHA256SUMS` assets. The release deployment files pin `ghcr.io/nunesg130-boop/helmsman` to the exact multi-architecture manifest digest (`@sha256:...`).
 
 Download those three files from the matching [GitHub Release](https://github.com/nunesg130-boop/helmsman/releases) into one directory, verify the two deployment files against `SHA256SUMS`, open a terminal there, and make sure Docker Desktop or Docker Engine is running. No source checkout, Dockerfile, Node.js installation, or server-side image build is required.
 

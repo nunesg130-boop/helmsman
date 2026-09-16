@@ -1,4 +1,4 @@
-# Optional Helmsman v0.10 HTTPS edge with Authentik forward authentication.
+# Optional Helmsman v1 HTTPS edge with Authentik forward authentication.
 # Replace helmsman.example.com, auth.example.com, and 192.0.2.10:4180. The IP is
 # reserved for documentation and will not reach a real container.
 #

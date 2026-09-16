@@ -1,6 +1,6 @@
 FROM node:24.19.0-alpine3.23@sha256:244cc2b53f46f9e876304391d17682b0ddae9ac33491f4857e25e35a36ba7995
 
-ARG HELMSMAN_VERSION=1.0.0-beta.1
+ARG HELMSMAN_VERSION=1.0.0-beta.2
 ARG HELMSMAN_REVISION=unknown
 
 LABEL org.opencontainers.image.title="Helmsman" \
@@ -26,7 +26,8 @@ WORKDIR /app
 # browser client/vault, deployment examples, tests, and metadata stay out.
 COPY --chown=0:0 index.html styles.css manifest.webmanifest sw.js ./
 COPY --chown=0:0 assets/helmsman-logo.png assets/icon-192.png assets/icon-512.png assets/icon-maskable-512.png ./assets/
-COPY --chown=0:0 assets/services/THIRD_PARTY_NOTICES.md ./assets/services/
+COPY --chown=0:0 assets/services/THIRD_PARTY_NOTICES.md assets/services/bazarr.png assets/services/jellyfin.svg assets/services/portainer.svg assets/services/prowlarr.png assets/services/proxmox.png assets/services/qbittorrent.svg assets/services/radarr.png assets/services/seerr.jpg assets/services/sonarr.png ./assets/services/
+COPY --chown=0:0 assets/services/licenses/ ./assets/services/licenses/
 COPY --chown=0:0 assets/workloads/vm.svg assets/workloads/container.svg ./assets/workloads/
 COPY --chown=0:0 src/app-v5.js ./src/app-v5.js
 COPY --chown=0:0 src/ui/operations-views.js src/ui/operations.css src/ui/control.css src/ui/retro.css ./src/ui/

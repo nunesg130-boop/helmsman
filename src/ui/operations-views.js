@@ -52,20 +52,57 @@ const SERVICE_COPY = Object.freeze({
   portainer: { name: "Portainer", role: "Container infrastructure" }
 });
 
-// Public builds use project-drawn text badges instead of redistributing
-// third-party service artwork without exact source and license provenance.
-// Keep this registry closed so upstream ids can never become CSS classes or
-// asset paths.
-const SERVICE_BADGE_GLYPHS = Object.freeze({
-  jellyfin: "JF",
-  seerr: "SE",
-  radarr: "RA",
-  sonarr: "SO",
-  prowlarr: "PR",
-  qbittorrent: "qB",
-  bazarr: "BZ",
-  proxmox: "PX",
-  portainer: "PT"
+// Public builds use a reviewed local icon only where its provenance and
+// attribution are recorded. Keep this registry closed so upstream ids can
+// never become asset paths.
+const SERVICE_ICON_ASSETS = Object.freeze({
+  jellyfin: Object.freeze({
+    path: "./assets/services/jellyfin.svg",
+    width: 512,
+    height: 512
+  }),
+  seerr: Object.freeze({
+    path: "./assets/services/seerr.jpg",
+    width: 554,
+    height: 554
+  }),
+  radarr: Object.freeze({
+    path: "./assets/services/radarr.png",
+    width: 256,
+    height: 256
+  }),
+  sonarr: Object.freeze({
+    path: "./assets/services/sonarr.png",
+    width: 554,
+    height: 554
+  }),
+  prowlarr: Object.freeze({
+    path: "./assets/services/prowlarr.png",
+    width: 460,
+    height: 460
+  }),
+  qbittorrent: Object.freeze({
+    path: "./assets/services/qbittorrent.svg",
+    width: 1024,
+    height: 1024
+  }),
+  bazarr: Object.freeze({
+    path: "./assets/services/bazarr.png",
+    width: 200,
+    height: 200,
+    lightPlate: true
+  }),
+  proxmox: Object.freeze({
+    path: "./assets/services/proxmox.png",
+    width: 595,
+    height: 516
+  }),
+  portainer: Object.freeze({
+    path: "./assets/services/portainer.svg",
+    width: 168,
+    height: 219,
+    lightPlate: true
+  })
 });
 
 const WORKLOAD_ICON_PATHS = Object.freeze({
@@ -190,8 +227,8 @@ export function escapeOperationsHtml(value) {
 }
 
 /**
- * Returns a decorative, project-owned badge for a known integration.
- * Unknown ids receive one escaped glyph and can never affect a class or URL.
+ * Returns a reviewed local icon for a known integration. Unknown ids receive
+ * one escaped fallback glyph and can never affect a class or URL.
  */
 export function serviceIconMarkup(serviceId, fallback = "?") {
   const candidate = boundedText(serviceId, "", 120).toLowerCase();
@@ -200,15 +237,24 @@ export function serviceIconMarkup(serviceId, fallback = "?") {
     : candidate.startsWith("portainer-")
       ? "portainer"
       : candidate;
-  const key = Object.prototype.hasOwnProperty.call(SERVICE_BADGE_GLYPHS, prefixedKey)
-    ? prefixedKey
-    : "";
+  const key = Object.prototype.hasOwnProperty.call(SERVICE_ICON_ASSETS, prefixedKey) ? prefixedKey : "";
   if (key) {
-    return `<span class="service-brand-icon__fallback service-brand-icon__fallback--${key}" aria-hidden="true">${SERVICE_BADGE_GLYPHS[key]}</span>`;
+    const asset = SERVICE_ICON_ASSETS[key];
+    const plateClass = asset.lightPlate ? " service-brand-icon--light-plate" : "";
+    return `<img class="service-brand-icon service-brand-icon--${key}${plateClass}" src="${asset.path}" width="${asset.width}" height="${asset.height}" alt="" aria-hidden="true" decoding="async">`;
   }
   const fallbackText = boundedText(fallback, "?", 24);
   const glyph = (Array.from(fallbackText)[0] || "?").toUpperCase();
   return `<span class="service-brand-icon__fallback" aria-hidden="true">${escapeOperationsHtml(glyph)}</span>`;
+}
+
+/**
+ * Proxmox requires its displayed logo to link to the project website. Keep
+ * this interaction separate from serviceIconMarkup so callers cannot
+ * accidentally place a link inside an existing button or anchor.
+ */
+export function proxmoxBrandLinkMarkup() {
+  return `<a class="service-brand-link service-brand-link--proxmox" href="https://www.proxmox.com/" target="_blank" rel="noopener noreferrer" aria-label="Visit the Proxmox website (opens in a new tab)">${serviceIconMarkup("proxmox", "P")}</a>`;
 }
 
 export function workloadIconMarkup(type) {
@@ -1449,18 +1495,20 @@ function renderInfrastructureTarget(target) {
   const kind = target.environmentKind === "cluster" ? "Multi-node cluster" : target.environmentKind === "standalone" ? "Standalone server" : "Discovery pending";
   const endpointCount = target.endpoints.length || 1;
   facts.push(`${endpointCount} API endpoint${endpointCount === 1 ? "" : "s"}`);
-  return `<li><button class="infrastructure-target" type="button" data-action="open-infrastructure-environment-detail" data-infrastructure-target-id="${escapeOperationsHtml(target.id)}" aria-label="Open ${escapeOperationsHtml(target.displayName)} environment details">
-    <span class="infrastructure-target__mark">${serviceIconMarkup("proxmox", "P")}</span>
-    <span class="infrastructure-target__copy">
-      <span class="operations-kicker">${escapeOperationsHtml(kind)}</span>
-      <strong>${escapeOperationsHtml(target.displayName)}</strong>
-      <small>${escapeOperationsHtml(infrastructureTargetSummary(target))}</small>
-      <code>${escapeOperationsHtml(target.clusterName || target.environmentName || target.url || "Environment details unavailable")}</code>
-      <em data-infrastructure-target-facts>${escapeOperationsHtml(facts.join(" · "))}</em>
-    </span>
-    <span class="infrastructure-target__state is-${target.state}" data-infrastructure-target-state><i class="is-${meta.tone}"></i>${escapeOperationsHtml(meta.label)}</span>
-    ${svgIcon("chevron")}
-  </button></li>`;
+  return `<li><article class="infrastructure-target">
+    <span class="infrastructure-target__mark">${proxmoxBrandLinkMarkup()}</span>
+    <button class="infrastructure-target__action" type="button" data-action="open-infrastructure-environment-detail" data-infrastructure-target-id="${escapeOperationsHtml(target.id)}" aria-label="Open ${escapeOperationsHtml(target.displayName)} environment details">
+      <span class="infrastructure-target__copy">
+        <span class="operations-kicker">${escapeOperationsHtml(kind)}</span>
+        <strong>${escapeOperationsHtml(target.displayName)}</strong>
+        <small>${escapeOperationsHtml(infrastructureTargetSummary(target))}</small>
+        <code>${escapeOperationsHtml(target.clusterName || target.environmentName || target.url || "Environment details unavailable")}</code>
+        <em data-infrastructure-target-facts>${escapeOperationsHtml(facts.join(" · "))}</em>
+      </span>
+      <span class="infrastructure-target__state is-${target.state}" data-infrastructure-target-state><i class="is-${meta.tone}"></i>${escapeOperationsHtml(meta.label)}</span>
+      ${svgIcon("chevron")}
+    </button>
+  </article></li>`;
 }
 
 function normalizeInfrastructureOverviewPortainer(value, index) {
