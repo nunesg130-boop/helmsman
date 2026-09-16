@@ -68,8 +68,8 @@ const SERVICE_ICON_PATHS = Object.freeze({
 });
 
 const WORKLOAD_ICON_PATHS = Object.freeze({
-  qemu: "./assets/workloads/vm.png",
-  lxc: "./assets/workloads/lxc.svg"
+  qemu: "./assets/workloads/vm.png?v=2",
+  lxc: "./assets/workloads/container.png"
 });
 
 const PIPELINE_COPY = Object.freeze({

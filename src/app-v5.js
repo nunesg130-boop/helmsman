@@ -82,6 +82,10 @@ const INFRASTRUCTURE_ROUTE_ALIASES = Object.freeze({
 });
 const SESSION_ID_PATTERN = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u;
 const INFRASTRUCTURE_ID_PATTERN = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u;
+const SEASON_DETAIL_REVISION_PATTERN = /^[a-f0-9]{64}$/u;
+const SEASON_DETAIL_CACHE_TTL_MS = 60_000;
+const MAX_SEASON_CATALOG_SIZE = 256;
+const MAX_REQUESTED_SEASONS = 100;
 const ACTION_INVENTORY_MAX_AGE_MS = 2 * 60 * 1_000;
 const CONNECTION_CAPABILITY_LABELS = Object.freeze({
   jellyfin: Object.freeze({ status: "Server status", identity: "Token authorization" }),
@@ -257,7 +261,10 @@ const state = {
       activity: "all"
     },
     selectedId: "",
-    drawerReturnFocus: null
+    drawerReturnFocus: null,
+    seasonDetails: new Map(),
+    seasonLoads: new Map(),
+    seasonGeneration: 0
   },
   modalReturnFocus: null,
   confirmationResolver: null,
@@ -1060,6 +1067,14 @@ function normalizedMediaActionTargets(value) {
   });
 }
 
+function normalizedSeasonRequestTarget(value) {
+  const raw = value && typeof value === "object" && !Array.isArray(value) ? value : null;
+  if (!raw || safeCapabilityId(raw.service) !== "seerr") return null;
+  const mediaId = mediaNumber(raw.mediaId ?? raw.resourceId, 1, 9_999_999_999);
+  if (!Number.isSafeInteger(mediaId) || mediaId < 1) return null;
+  return { service: "seerr", mediaId };
+}
+
 function normalizeMediaItem(value, fallbackSeed = "media") {
   const raw = value && typeof value === "object" && !Array.isArray(value) ? value : {};
   const requestCollection = /(?:^|-)requests?:/u.test(fallbackSeed);
@@ -1122,6 +1137,7 @@ function normalizeMediaItem(value, fallbackSeed = "media") {
     providerIds,
     sources: normalizedMediaSources(raw.sources),
     actionTargets: normalizedMediaActionTargets(raw.actionTargets),
+    seasonRequestTarget: normalizedSeasonRequestTarget(raw.seasonRequestTarget),
     lifecycle: { stage },
     requested: raw.requested === true || requestCollection,
     monitored: Boolean(raw.monitored),
@@ -1166,6 +1182,7 @@ function normalizedMediaCollection(value, registry, collectionName, maximum = 50
           providerIds: { ...(base.providerIds || {}), ...(entry.providerIds || {}) },
           sources: entry.sources || base.sources,
           actionTargets: entry.actionTargets || base.actionTargets,
+          seasonRequestTarget: entry.seasonRequestTarget || base.seasonRequestTarget,
           title,
           lifecycle: { ...(entry.lifecycle || {}) }
         };
@@ -1280,6 +1297,7 @@ function mediaStructuralFingerprint(value) {
     providerIds: item.providerIds,
     sources: item.sources,
     actionTargets: item.actionTargets,
+    seasonRequestTarget: item.seasonRequestTarget,
     lifecycle: item.lifecycle,
     requested: item.requested,
     monitored: item.monitored,
@@ -1817,6 +1835,271 @@ function renderMediaControlSection(item) {
   }).join("")}</div></section>`;
 }
 
+const SEASON_AVAILABILITY_STATES = new Set([
+  "not_requested", "pending", "processing", "partially_available", "available", "blocklisted", "deleted", "unknown"
+]);
+const SEASON_REQUEST_STATES = new Set(["pending", "approved", "declined", "failed", "completed", "unknown"]);
+
+function normalizedSeasonState(value, allowed) {
+  const token = normalizedMediaToken(value);
+  return allowed.has(token) ? token : "unknown";
+}
+
+function normalizedSeasonAirDate(value) {
+  const candidate = typeof value === "string" ? value.trim() : "";
+  if (!/^\d{4}-\d{2}-\d{2}$/u.test(candidate)) return "";
+  const date = new Date(`${candidate}T00:00:00.000Z`);
+  return Number.isFinite(date.getTime()) && date.toISOString().startsWith(candidate) ? candidate : "";
+}
+
+function normalizeSeasonDetail(value, expectedTarget, expectedRevision) {
+  const raw = value && typeof value === "object" && !Array.isArray(value) ? value : null;
+  const tmdbId = mediaNumber(raw?.tmdbId, 1, 9_999_999_999);
+  const targetRevision = mediaText(raw?.targetRevision, "", 80).toLowerCase();
+  const detailRevision = mediaText(raw?.detailRevision, "", 80).toLowerCase();
+  if (!raw
+    || !Number.isSafeInteger(tmdbId)
+    || tmdbId !== expectedTarget.mediaId
+    || targetRevision !== expectedRevision
+    || !SEASON_DETAIL_REVISION_PATTERN.test(detailRevision)) {
+    throw new ApiError(502, "INVALID_RESPONSE", "Helmsman received invalid season details from the container.");
+  }
+  const seasons = [];
+  const seen = new Set();
+  for (const entry of (Array.isArray(raw.seasons) ? raw.seasons : []).slice(0, MAX_SEASON_CATALOG_SIZE)) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const seasonNumber = mediaNumber(entry.seasonNumber, 0, 10_000);
+    if (!Number.isSafeInteger(seasonNumber) || seen.has(seasonNumber)) continue;
+    seen.add(seasonNumber);
+    const episodeCount = mediaNumber(entry.episodeCount, 0, 100_000);
+    seasons.push({
+      seasonNumber,
+      name: mediaText(entry.name, seasonNumber === 0 ? "Specials" : `Season ${seasonNumber}`, 100),
+      episodeCount: Number.isSafeInteger(episodeCount) ? episodeCount : null,
+      airDate: normalizedSeasonAirDate(entry.airDate),
+      status: normalizedSeasonState(entry.status, SEASON_AVAILABILITY_STATES),
+      requestState: normalizedSeasonState(entry.requestState, SEASON_REQUEST_STATES),
+      requestable: seasonNumber > 0 && entry.requestable === true
+    });
+  }
+  seasons.sort((left, right) => left.seasonNumber - right.seasonNumber);
+  return { tmdbId, targetRevision, detailRevision, seasons };
+}
+
+function seasonRequestContext(item) {
+  const target = item?.seasonRequestTarget;
+  if (!target || target.service !== "seerr" || !Number.isSafeInteger(target.mediaId)) return null;
+  const connection = configuredMediaConnection("seerr");
+  const targetRevision = mediaText(connection?.targetRevision, "", 80).toLowerCase();
+  return {
+    target,
+    connection,
+    targetRevision,
+    key: targetRevision ? `${target.mediaId}:${targetRevision}` : ""
+  };
+}
+
+function storeSeasonDetail(key, value) {
+  state.media.seasonDetails.delete(key);
+  state.media.seasonDetails.set(key, value);
+  while (state.media.seasonDetails.size > 128) {
+    state.media.seasonDetails.delete(state.media.seasonDetails.keys().next().value);
+  }
+}
+
+function formatSeasonAirDate(value) {
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return value && Number.isFinite(date.getTime())
+    ? date.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })
+    : "Air date pending";
+}
+
+function seasonStatusLabel(season) {
+  if (season.seasonNumber === 0) return "Specials · view only";
+  if (season.requestState === "pending") return "Awaiting approval";
+  if (season.requestState === "approved" && season.status !== "available") return "Requested";
+  if (season.requestState === "failed") return "Request failed";
+  if (season.requestState === "declined") return "Declined";
+  return {
+    available: "Available",
+    partially_available: season.requestable ? "Partial · request remaining" : "Partially available",
+    processing: "Acquiring",
+    pending: "Pending",
+    blocklisted: "Blocklisted",
+    deleted: "Removed",
+    not_requested: "Not requested",
+    unknown: season.requestable ? "Available to request" : "Status unavailable"
+  }[season.status] || "Status unavailable";
+}
+
+function seasonStatusTone(season) {
+  if (season.seasonNumber === 0) return "neutral";
+  if (season.requestState === "failed" || season.status === "blocklisted") return "danger";
+  if (season.requestState === "pending") return "pending";
+  if (season.status === "available") return "available";
+  if (["processing", "partially_available"].includes(season.status) || season.requestState === "approved") return "active";
+  return season.requestable ? "requestable" : "neutral";
+}
+
+function renderSeasonPanelState(title, copy, { retry = false, mediaId = "", busy = false } = {}) {
+  return `<div class="drawer-season-state" role="status"><span class="drawer-season-state__icon">${icon(busy ? "refresh" : "library")}</span><span><strong>${escapeHtml(title)}</strong><small>${escapeHtml(copy)}</small></span>${retry ? `<button class="button" type="button" data-action="retry-season-details" data-media-id="${escapeHtml(mediaId)}">Try again</button>` : ""}</div>`;
+}
+
+function renderMediaSeasonPanelContent(item) {
+  const context = seasonRequestContext(item);
+  if (!context?.connection || !context.targetRevision) {
+    return renderSeasonPanelState(
+      "Season requests unavailable",
+      "Helmsman needs a current Seerr connection before it can load or request seasons.",
+      { retry: true, mediaId: item.id }
+    );
+  }
+  const detail = state.media.seasonDetails.get(context.key);
+  if (!detail || detail.state === "loading") {
+    return renderSeasonPanelState("Loading seasons", "Checking the current Seerr season catalog…", { busy: true });
+  }
+  if (detail.state === "error") {
+    return renderSeasonPanelState(
+      "Seasons could not be loaded",
+      mediaText(detail.message, "The season catalog is temporarily unavailable.", 220),
+      { retry: true, mediaId: item.id }
+    );
+  }
+  if (!detail.seasons.length) {
+    return renderSeasonPanelState("No seasons reported", "Seerr did not return a season catalog for this series.");
+  }
+  const requestableCount = detail.seasons.filter(({ requestable }) => requestable).length;
+  const controlKey = `media:seerr:requestSeasons:${context.target.mediaId}`;
+  const busy = state.actionMutation === controlKey;
+  const awaitingRefresh = state.actionAwaitingRefresh === controlKey;
+  return `<fieldset class="drawer-season-picker" data-season-picker data-detail-revision="${detail.detailRevision}" aria-describedby="drawer-season-help-${item.key}">
+    <legend>Seasons</legend>
+    <p class="drawer-season-help" id="drawer-season-help-${item.key}">${requestableCount
+      ? `Choose up to ${MAX_REQUESTED_SEASONS} seasons. Helmsman sends one request to Seerr.`
+      : "Every reported season is already available, requested, or not requestable."}</p>
+    <div class="drawer-season-grid">${detail.seasons.map((season) => {
+      const label = season.seasonNumber === 0 ? "Specials" : season.name || `Season ${season.seasonNumber}`;
+      const numberedLabel = `Season ${season.seasonNumber}`;
+      const episodeCopy = season.episodeCount === null ? "Episode count pending" : `${season.episodeCount} ${season.episodeCount === 1 ? "episode" : "episodes"}`;
+      const detailCopy = label.toLocaleLowerCase() === numberedLabel.toLocaleLowerCase()
+        ? `${episodeCopy} · ${formatSeasonAirDate(season.airDate)}`
+        : `${numberedLabel} · ${episodeCopy} · ${formatSeasonAirDate(season.airDate)}`;
+      const disabled = !season.requestable || Boolean(state.actionMutation);
+      return `<label class="drawer-season-option is-${seasonStatusTone(season)} ${disabled ? "is-disabled" : ""}">
+        <input type="checkbox" name="seasonNumber" value="${season.seasonNumber}" data-season-select ${disabled ? "disabled" : ""}/>
+        <span class="drawer-season-option__copy"><strong>${escapeHtml(label)}</strong><small>${escapeHtml(detailCopy)}</small><em>${escapeHtml(seasonStatusLabel(season))}</em></span>
+      </label>`;
+    }).join("")}</div>
+    <div class="drawer-season-actions"><span data-season-selection-summary aria-live="polite">No seasons selected</span><button class="button button--primary" type="button" data-action="request-seasons" data-media-id="${escapeHtml(item.id)}" data-control-operation="requestSeasons" data-control-key="${escapeHtml(controlKey)}" disabled ${busy && !awaitingRefresh ? "aria-busy=\"true\"" : ""}>${awaitingRefresh ? `${icon("refresh")} Refresh required` : busy ? `${icon("refresh")} Working…` : "Request selected"}</button></div>
+  </fieldset>`;
+}
+
+function renderMediaSeasonPanel(item) {
+  if (!item?.seasonRequestTarget) return "";
+  return `<section class="drawer-season-panel" data-season-panel data-media-id="${escapeHtml(item.id)}" aria-labelledby="drawer-season-title-${item.key}"><header><span class="drawer-kicker">Series catalog</span><h3 id="drawer-season-title-${item.key}" data-season-panel-heading tabindex="-1">${item.mediaType === "episode" ? "Series seasons" : "Seasons"}</h3></header>${renderMediaSeasonPanelContent(item)}</section>`;
+}
+
+function selectedSeasonNumbers(panel) {
+  const values = [...(panel?.querySelectorAll?.("[data-season-select]") || [])]
+    .filter((input) => input.checked && !input.disabled)
+    .flatMap((input) => {
+      const seasonNumber = mediaNumber(input.value, 1, 10_000);
+      return Number.isSafeInteger(seasonNumber) ? [seasonNumber] : [];
+    });
+  return [...new Set(values)].sort((left, right) => left - right);
+}
+
+function syncSeasonSelection(panel, changedInput = null) {
+  if (!panel) return;
+  const checkedInputs = [...(panel.querySelectorAll?.("[data-season-select]") || [])]
+    .filter((input) => input.checked && !input.disabled);
+  let limitReached = false;
+  if (checkedInputs.length > MAX_REQUESTED_SEASONS) {
+    const overflow = changedInput?.checked && checkedInputs.includes(changedInput)
+      ? [changedInput]
+      : checkedInputs.slice(MAX_REQUESTED_SEASONS);
+    overflow.forEach((input) => { input.checked = false; });
+    limitReached = true;
+  }
+  const selected = selectedSeasonNumbers(panel);
+  const summary = panel.querySelector?.("[data-season-selection-summary]");
+  const button = panel.querySelector?.("[data-action='request-seasons']");
+  if (summary) summary.textContent = limitReached
+    ? `${MAX_REQUESTED_SEASONS} seasons selected · limit reached`
+    : selected.length
+      ? `${selected.length} ${selected.length === 1 ? "season" : "seasons"} selected`
+      : "No seasons selected";
+  if (button) {
+    button.disabled = !selected.length || Boolean(state.actionMutation);
+    if (!state.actionMutation) button.textContent = selected.length === 1 ? "Request season" : "Request selected";
+  }
+}
+
+function patchMediaSeasonPanel(mediaId) {
+  if (!drawerLayer?.classList.contains("is-open") || state.media.selectedId !== mediaId) return;
+  const item = mediaRecordById(mediaId);
+  const panel = drawerLayer.querySelector?.("[data-season-panel]");
+  if (!item || !panel) return;
+  const active = document.activeElement;
+  const restoreInside = typeof panel.contains === "function" && panel.contains(active);
+  setMarkup(panel, `<header><span class="drawer-kicker">Series catalog</span><h3 id="drawer-season-title-${item.key}" data-season-panel-heading tabindex="-1">${item.mediaType === "episode" ? "Series seasons" : "Seasons"}</h3></header>${renderMediaSeasonPanelContent(item)}`);
+  syncSeasonSelection(panel);
+  if (restoreInside) requestAnimationFrame(() => panel.querySelector?.("[data-season-panel-heading]")?.focus());
+}
+
+async function loadSeasonDetailsForMedia(mediaId, { force = false } = {}) {
+  const item = mediaRecordById(mediaId);
+  const context = seasonRequestContext(item);
+  if (!item?.seasonRequestTarget || !context?.key || !context.connection) {
+    patchMediaSeasonPanel(mediaId);
+    return false;
+  }
+  const cached = state.media.seasonDetails.get(context.key);
+  if (!force
+    && cached?.state === "ready"
+    && Number.isFinite(cached.loadedAt)
+    && Date.now() - cached.loadedAt >= 0
+    && Date.now() - cached.loadedAt <= SEASON_DETAIL_CACHE_TTL_MS) {
+    patchMediaSeasonPanel(mediaId);
+    return true;
+  }
+  const pending = state.media.seasonLoads.get(context.key);
+  if (pending) {
+    const result = await pending;
+    patchMediaSeasonPanel(mediaId);
+    return result;
+  }
+  const generation = state.media.seasonGeneration;
+  storeSeasonDetail(context.key, { state: "loading" });
+  patchMediaSeasonPanel(mediaId);
+  let operation;
+  operation = (async () => {
+    try {
+      const payload = await api(`/api/v2/media/series/${context.target.mediaId}/seasons?targetRevision=${encodeURIComponent(context.targetRevision)}`);
+      const detail = normalizeSeasonDetail(payload, context.target, context.targetRevision);
+      if (generation !== state.media.seasonGeneration) return false;
+      storeSeasonDetail(context.key, { state: "ready", loadedAt: Date.now(), ...detail });
+      return true;
+    } catch (error) {
+      if (generation !== state.media.seasonGeneration) return false;
+      if (error?.status === 401) {
+        await initialize();
+        return false;
+      }
+      storeSeasonDetail(context.key, {
+        state: "error",
+        message: mediaText(error?.message, "The season catalog is temporarily unavailable.", 220)
+      });
+      return false;
+    } finally {
+      if (state.media.seasonLoads.get(context.key) === operation) state.media.seasonLoads.delete(context.key);
+      if (generation === state.media.seasonGeneration) patchMediaSeasonPanel(mediaId);
+    }
+  })();
+  state.media.seasonLoads.set(context.key, operation);
+  return operation;
+}
+
 function renderMediaDetailDrawer(item) {
   const providerEntries = Object.entries(item.providerIds);
   const requestItem = isMediaCollection(item, "requests");
@@ -1826,10 +2109,10 @@ function renderMediaDetailDrawer(item) {
   const kicker = requestItem
     ? `${mediaRequestScopeLabel(item)} · ${mediaRequestStateLabel(item)}`
     : `${mediaTypeLabel(item.mediaType)}${item.year ? ` · ${item.year}` : ""}`;
-  return `<aside class="title-drawer" role="dialog" aria-modal="true" aria-labelledby="media-drawer-title">
+  return `<aside class="title-drawer ${item.seasonRequestTarget ? "title-drawer--seasons" : ""}" role="dialog" aria-modal="true" aria-labelledby="media-drawer-title">
     <button class="icon-button drawer-close" type="button" data-action="close-media-drawer" aria-label="Close media details">${icon("x")}</button>
     <div class="drawer-visual">${renderArtworkImage(item, { className: "hero-art-image", eager: true })}<div class="hero-shade"></div><span class="drawer-poster poster-art">${renderArtworkImage(item, { eager: true, priority: "auto" })}<span class="poster-monogram" aria-hidden="true">${escapeHtml(item.title.slice(0, 1).toUpperCase())}</span></span></div>
-    <div class="drawer-body"><div class="drawer-title-row"><div><span class="drawer-kicker">${escapeHtml(kicker)}</span><h2 id="media-drawer-title" tabindex="-1">${escapeHtml(item.title)}</h2><span class="status-pill status-${mediaStatusTone(item)}"><i></i>${escapeHtml(mediaStatusLabel(item))}</span></div></div><p class="drawer-summary">${escapeHtml(item.summary || item.error || "Helmsman matched this record across the connected media stack using provider identifiers.")}</p>${providerEntries.length ? `<div class="genre-row">${providerEntries.map(([provider, id]) => `<span>${escapeHtml(provider)} · ${escapeHtml(id)}</span>`).join("")}</div>` : ""}
+    <div class="drawer-body"><div class="drawer-heading-block"><div class="drawer-title-row"><div><span class="drawer-kicker">${escapeHtml(kicker)}</span><h2 id="media-drawer-title" tabindex="-1">${escapeHtml(item.title)}</h2><span class="status-pill status-${mediaStatusTone(item)}"><i></i>${escapeHtml(mediaStatusLabel(item))}</span></div></div>${renderMediaSeasonPanel(item)}<p class="drawer-summary">${escapeHtml(item.summary || item.error || "Helmsman matched this record across the connected media stack using provider identifiers.")}</p>${providerEntries.length ? `<div class="genre-row">${providerEntries.map(([provider, id]) => `<span>${escapeHtml(provider)} · ${escapeHtml(id)}</span>`).join("")}</div>` : ""}</div>
       <section class="drawer-section"><header class="section-heading"><div><h3>Lifecycle</h3><p>Requested → monitored → downloading → imported → available</p></div></header><ol class="pipeline-steps">${MEDIA_LIFECYCLE_STEPS.map((step, index) => `<li class="${hasIssue && index === stageIndex ? "has-issue" : index < stageIndex ? "is-done" : index === stageIndex ? "is-current" : ""}"><span>${index < stageIndex ? icon("check") : index + 1}</span><div><strong>${escapeHtml(step.label)}</strong><small>${index === stageIndex ? escapeHtml(item.error || (requestItem ? mediaStatusLabel(item) : "Current")) : index < stageIndex ? "Complete" : "Waiting"}</small></div></li>`).join("")}</ol>${item.progress === null ? "" : `<div class="drawer-live-progress"><progress data-media-progress value="${item.progress}" max="100">${item.progress}%</progress><span data-media-progress-label>${item.progress}%</span><span data-media-speed>${escapeHtml(formatMediaSpeed(item.downloadSpeedBps))}</span><span data-media-eta>${escapeHtml(formatMediaEta(item.etaSeconds))}</span></div>`}</section>
       ${renderMediaControlSection(item)}
       <section class="drawer-section"><header class="section-heading"><div><h3>Connected sources</h3><p>Credentials remain server-side.</p></div></header><div class="source-list">${item.sources.length ? item.sources.map((source) => { const configured = state.config?.services?.some((service) => service.id === source.service); return configured ? `<button class="source-row" type="button" data-action="open-service" data-service-id="${escapeHtml(source.service)}">${serviceIconMarkup(source.service, source.label.slice(0, 1))}<span><strong>${escapeHtml(source.label)}</strong><small>${escapeHtml(source.detail || source.state || "Matched source")}</small></span>${icon("chevron")}</button>` : `<article class="source-row">${serviceIconMarkup(source.service, source.label.slice(0, 1))}<span><strong>${escapeHtml(source.label)}</strong><small>${escapeHtml(source.detail || source.state || "Matched source")}</small></span></article>`; }).join("") : `<div class="empty-state"><p>No source details were returned for this record.</p></div>`}</div></section>
@@ -1848,6 +2131,7 @@ function openMediaDrawer(mediaId) {
   if (appShell) appShell.inert = true;
   document.body.classList.add("has-overlay");
   requestAnimationFrame(() => drawerLayer.querySelector(".drawer-close")?.focus());
+  if (item.seasonRequestTarget) void loadSeasonDetailsForMedia(item.id);
 }
 
 function closeMediaDrawer({ restoreFocus = true } = {}) {
@@ -3047,7 +3331,7 @@ function renderPortainerContainer(container) {
   const tone = portainerContainerTone(container);
   const ports = portainerPortLabels(container);
   return `<article class="portainer-container-row is-${tone}" data-portainer-container-key="${escapeHtml(container.key)}" tabindex="-1" aria-label="${escapeHtml(`${container.name}, ${portainerContainerStateLabel(container)}`)}">
-    <div class="portainer-container-identity"><span class="portainer-container-mark">${icon("containers")}</span><span><strong>${escapeHtml(container.name)}</strong><small>Container ${escapeHtml(container.shortId)}</small><code title="${escapeHtml(container.image)}">${escapeHtml(container.image)}</code></span></div>
+    <div class="portainer-container-identity"><span class="portainer-container-mark">${workloadIconMarkup("lxc")}</span><span><strong>${escapeHtml(container.name)}</strong><small>Container ${escapeHtml(container.shortId)}</small><code title="${escapeHtml(container.image)}">${escapeHtml(container.image)}</code></span></div>
     <div class="portainer-container-placement"><span>Stack</span><strong>${escapeHtml(container.stack || "Standalone")}</strong><small>${container.stack ? "Compose-managed container" : "Not assigned to a visible stack"}</small></div>
     <div class="portainer-container-runtime"><span>Runtime</span><span class="portainer-status is-${tone}"><i class="health-dot is-${tone}"></i>${escapeHtml(portainerContainerStateLabel(container))}</span><small>${escapeHtml(container.status)}</small></div>
     <div class="portainer-container-ports"><span>Ports</span>${ports.length ? `<div>${ports.map((port) => `<code>${escapeHtml(port)}</code>`).join("")}</div>` : `<small>No ports reported</small>`}</div>
@@ -3693,6 +3977,7 @@ function controlConfirmationPresentation(operation) {
     reboot: { title: "Reboot this workload?", confirmLabel: "Reboot" },
     shutdown: { title: "Shut down this workload?", confirmLabel: "Shut down", tone: "danger" },
     retryRequest: { title: "Retry this request?", confirmLabel: "Retry request" },
+    requestSeasons: { title: "Request these seasons?", confirmLabel: "Request seasons" },
     searchMovie: { title: "Search Radarr again?", confirmLabel: "Search Radarr" },
     searchSeries: { title: "Search Sonarr again?", confirmLabel: "Search Sonarr" }
   }[operation] || { title: "Confirm this action?", confirmLabel: "Continue" };
@@ -5168,9 +5453,12 @@ function refreshControlSurface({ workloadId = "", mediaId = "", focusOperation =
     const item = mediaRecordById(mediaId);
     if (item) {
       setMarkup(drawerLayer, `<div class="drawer-backdrop" data-action="close-media-drawer"></div>${renderMediaDetailDrawer(item)}`);
+      if (item.seasonRequestTarget) void loadSeasonDetailsForMedia(item.id);
       requestAnimationFrame(() => {
-        const preferred = drawerLayer.querySelector(`[data-control-operation='${focusOperation}']`)
-          || drawerLayer.querySelector("#media-drawer-title");
+        const actionControl = drawerLayer.querySelector(`[data-control-operation='${focusOperation}']`);
+        const preferred = actionControl && !actionControl.disabled
+          ? actionControl
+          : drawerLayer.querySelector("#media-drawer-title");
         preferred?.focus();
       });
     } else {
@@ -5201,11 +5489,11 @@ async function performControl(button, {
   validate = null,
   staleMessage = "That action is no longer available. Refresh the current inventory and try again."
 }) {
-  if (state.actionMutation) return;
+  if (state.actionMutation) return { confirmed: false, accepted: false, outcomeUnknown: false, refreshed: false };
   const returnFocus = focusReference(button);
   const presentation = controlConfirmationPresentation(operation);
   const confirmed = await confirmControl({ ...presentation, message });
-  if (!confirmed || state.actionMutation) return;
+  if (!confirmed || state.actionMutation) return { confirmed: false, accepted: false, outcomeUnknown: false, refreshed: false };
   let stillValid = true;
   if (typeof validate === "function") {
     try {
@@ -5217,10 +5505,11 @@ async function performControl(button, {
   if (!stillValid) {
     showToast(staleMessage, "danger");
     refreshControlSurface({ workloadId, mediaId, focusOperation: operation, returnFocus });
-    return;
+    return { confirmed: true, accepted: false, outcomeUnknown: false, refreshed: false, stale: true };
   }
   let accepted = false;
   let outcomeUnknown = false;
+  let refreshed = false;
   setControlBusy(button, key);
   try {
     await api(path, { method: "POST", body });
@@ -5232,7 +5521,7 @@ async function performControl(button, {
       || !Number.isSafeInteger(error?.status);
     showToast(error.message, "danger");
   } finally {
-    const refreshed = await refreshOperations({ afterCurrent: true });
+    refreshed = await refreshOperations({ afterCurrent: true });
     if (!refreshed && (accepted || outcomeUnknown)) {
       state.actionAwaitingRefresh = key;
       showToast("The action may have been accepted, but current state could not be refreshed. Wait before trying another action.", "danger");
@@ -5242,6 +5531,7 @@ async function performControl(button, {
     }
     refreshControlSurface({ workloadId, mediaId, focusOperation: operation, returnFocus });
   }
+  return { confirmed: true, accepted, outcomeUnknown, refreshed };
 }
 
 async function runPortainerControl(button) {
@@ -5419,6 +5709,86 @@ async function runMediaControl(button) {
   });
 }
 
+function seasonSelectionCopy(seasonNumbers) {
+  const labels = seasonNumbers.map((seasonNumber) => `Season ${seasonNumber}`);
+  if (labels.length < 2) return labels[0] || "the selected season";
+  if (labels.length === 2) return `${labels[0]} and ${labels[1]}`;
+  return `${labels.slice(0, -1).join(", ")}, and ${labels.at(-1)}`;
+}
+
+async function runSeasonRequest(button) {
+  if (state.actionMutation) return;
+  const panel = button?.closest?.("[data-season-panel]");
+  const mediaId = String(button?.dataset.mediaId || panel?.dataset?.mediaId || "");
+  const item = mediaRecordById(mediaId);
+  const context = seasonRequestContext(item);
+  const detail = context?.key ? state.media.seasonDetails.get(context.key) : null;
+  const seasonNumbers = selectedSeasonNumbers(panel);
+  const requestable = new Set((detail?.state === "ready" ? detail.seasons : [])
+    .filter((season) => season.requestable && season.seasonNumber > 0)
+    .map(({ seasonNumber }) => seasonNumber));
+  if (!item
+    || !context?.connection
+    || !context.targetRevision
+    || detail?.state !== "ready"
+    || !SEASON_DETAIL_REVISION_PATTERN.test(detail.detailRevision || "")
+    || !seasonNumbers.length
+    || seasonNumbers.length > MAX_REQUESTED_SEASONS
+    || seasonNumbers.some((seasonNumber) => !requestable.has(seasonNumber))) {
+    showToast("Those seasons are no longer available to request. Reload the season catalog and try again.", "danger");
+    if (item?.seasonRequestTarget) await loadSeasonDetailsForMedia(mediaId, { force: true });
+    return;
+  }
+  const captured = {
+    mediaId: context.target.mediaId,
+    targetRevision: context.targetRevision,
+    detailRevision: detail.detailRevision,
+    seasonNumbers
+  };
+  const requestSubject = item.mediaType === "episode"
+    ? `the parent series linked to ${item.title} (TMDb ${captured.mediaId})`
+    : `${item.title} (TMDb ${captured.mediaId})`;
+  const validate = () => {
+    const currentItem = mediaRecordById(mediaId);
+    const currentContext = seasonRequestContext(currentItem);
+    const currentDetail = currentContext?.key ? state.media.seasonDetails.get(currentContext.key) : null;
+    const currentRequestable = new Set((currentDetail?.state === "ready" ? currentDetail.seasons : [])
+      .filter((season) => season.requestable && season.seasonNumber > 0)
+      .map(({ seasonNumber }) => seasonNumber));
+    const currentSelection = selectedSeasonNumbers(panel);
+    return currentContext?.target.mediaId === captured.mediaId
+      && currentContext.targetRevision === captured.targetRevision
+      && currentDetail?.detailRevision === captured.detailRevision
+      && currentSelection.length === captured.seasonNumbers.length
+      && currentSelection.every((seasonNumber, index) => seasonNumber === captured.seasonNumbers[index])
+      && captured.seasonNumbers.every((seasonNumber) => currentRequestable.has(seasonNumber));
+  };
+  const result = await performControl(button, {
+    key: `media:seerr:requestSeasons:${captured.mediaId}`,
+    message: `Request ${seasonSelectionCopy(captured.seasonNumbers)} for ${requestSubject} through Seerr?`,
+    path: "/api/v2/actions/media",
+    body: {
+      serviceId: "seerr",
+      operation: "requestSeasons",
+      resourceId: captured.mediaId,
+      seasonNumbers: captured.seasonNumbers,
+      targetRevision: captured.targetRevision,
+      detailRevision: captured.detailRevision
+    },
+    successMessage: `${captured.seasonNumbers.length === 1 ? "Season request" : "Season requests"} submitted for ${item.title}.`,
+    mediaId,
+    operation: "requestSeasons",
+    validate,
+    staleMessage: "The series, Seerr connection, or season catalog changed. Review the current seasons and try again."
+  });
+  if (result?.confirmed && !result?.stale) {
+    state.media.seasonDetails.delete(`${captured.mediaId}:${captured.targetRevision}`);
+    if (drawerLayer?.classList.contains("is-open") && state.media.selectedId === mediaId) {
+      await loadSeasonDetailsForMedia(mediaId, { force: true });
+    }
+  }
+}
+
 async function refreshOperations({ announce = false, afterCurrent = false } = {}) {
   if (!state.status?.authenticated) return false;
   if (state.operationsRefreshPromise) {
@@ -5565,6 +5935,9 @@ function clearAuthenticatedState() {
   state.sessionMutation = "";
   state.actionMutation = "";
   state.actionAwaitingRefresh = "";
+  state.media.seasonGeneration += 1;
+  state.media.seasonDetails.clear();
+  state.media.seasonLoads.clear();
   state.operationsRequestGeneration += 1;
   state.operationsRefreshPromise = null;
   state.refreshing = false;
@@ -5674,6 +6047,9 @@ async function initialize() {
       state.sessions = { loaded: false, currentSessionId: "", items: [], error: "" };
       state.sessionMutation = "";
       state.infrastructure = emptyInfrastructureState();
+      state.media.seasonGeneration += 1;
+      state.media.seasonDetails.clear();
+      state.media.seasonLoads.clear();
     }
   } catch (error) {
     state.fatalError = error.message;
@@ -5706,6 +6082,8 @@ document.addEventListener("click", async (event) => {
   if (action === "open-service") openService(target.dataset.serviceId);
   if (action === "open-media-detail") openMediaDrawer(target.dataset.mediaId);
   if (action === "close-media-drawer") closeMediaDrawer();
+  if (action === "retry-season-details") await loadSeasonDetailsForMedia(String(target.dataset.mediaId || ""), { force: true });
+  if (action === "request-seasons") await runSeasonRequest(target);
   if (action === "open-request-filter") {
     state.media.filters.requests = String(target.dataset.mediaFilterValue || "pending");
   }
@@ -5802,6 +6180,9 @@ document.addEventListener("click", async (event) => {
 });
 
 document.addEventListener("change", (event) => {
+  if (event.target?.dataset?.seasonSelect !== undefined) {
+    syncSeasonSelection(event.target.closest?.("[data-season-panel]"), event.target);
+  }
   const fieldName = String(event.target?.name || "");
   const portainerFilter = event.target?.dataset?.portainerFilter;
   if (portainerFilter && portainerFilter !== "search") {

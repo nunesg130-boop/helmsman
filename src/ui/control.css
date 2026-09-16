@@ -1093,8 +1093,7 @@ label > small {
   font-style: normal;
   font-weight: 850;
 }
-.workload-type.is-lxc { border-color: rgba(221, 72, 20, .3); background: rgba(221, 72, 20, .08); color: #f3a184; }
-.workload-type.is-qemu { border-color: rgba(215, 225, 223, .45); background: #d7e1df; }
+.workload-type:is(.is-lxc, .is-qemu) { border-color: rgba(215, 225, 223, .45); background: #d7e1df; color: #17252c; }
 .workload-brand-icon {
   display: block;
   width: 24px;

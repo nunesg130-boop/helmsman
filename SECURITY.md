@@ -31,8 +31,9 @@ for upstream services.
 
 Monitoring and probes use fixed read-only GET routes. The only writes are
 Helmsman-confirmed Portainer container start/restart/graceful-stop, Proxmox
-QEMU/LXC start/reboot/graceful-shutdown, Seerr failed-request retry, and
-targeted Radarr/Sonarr search actions. Each uses an accessible in-app
+QEMU/LXC start/reboot/graceful-shutdown, Seerr failed-request retry, a selected
+standard-season request for one exact current series through Seerr, and targeted
+Radarr/Sonarr search actions for one exact current record. Each uses an accessible in-app
 confirmation rather than a browser-native prompt, revalidates the selected
 record after approval, and sends a fixed method, path, query, and request-body
 template. The browser cannot provide an arbitrary upstream path or body.

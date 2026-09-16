@@ -969,6 +969,29 @@ kbd {
   color: var(--text-soft);
 }
 
+.drawer-season-picker,
+.drawer-season-option,
+.drawer-season-state {
+  border-radius: 1px;
+  box-shadow: none;
+}
+
+.drawer-season-picker {
+  border: 3px double var(--retro-rule);
+  background: var(--retro-screen-raised);
+}
+
+.drawer-season-option,
+.drawer-season-state {
+  border-color: var(--retro-frame);
+  background: var(--retro-screen);
+}
+
+.drawer-season-option:has(input:checked) {
+  border-color: var(--accent);
+  background: rgba(159, 197, 194, 0.1);
+}
+
 .request-row,
 .download-row,
 .service-row,
@@ -1509,6 +1532,10 @@ progress {
   background: var(--retro-screen);
 }
 
+.portainer-container-row .portainer-container-mark {
+  background: #d7e1df;
+}
+
 .portainer-container-row:hover {
   background: rgba(159, 197, 194, 0.09);
   color: var(--text);
@@ -1816,6 +1843,9 @@ progress {
     .glass-form,
     .modal-card,
     .title-drawer,
+    .drawer-season-picker,
+    .drawer-season-option,
+    .drawer-season-state,
     .portainer-panel,
     .portainer-card
   ) {
@@ -1900,5 +1930,15 @@ html[data-transparency="reduced"] body::before {
     border-color: Highlight;
     background: Highlight;
     color: HighlightText;
+  }
+
+  .drawer-season-option:has(input:checked) {
+    border-color: Highlight;
+    background: Canvas;
+    color: Highlight;
+  }
+
+  .drawer-season-option:has(input:focus-visible) {
+    outline: 2px solid Highlight;
   }
 }

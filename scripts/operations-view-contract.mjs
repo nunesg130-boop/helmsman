@@ -27,6 +27,7 @@ const serviceIconAssets = Object.freeze({
 
 const retroCss = await readFile(new URL("../src/ui/retro.css", import.meta.url), "utf8");
 const shellCss = await readFile(new URL("../styles.css", import.meta.url), "utf8");
+const application = await readFile(new URL("../src/app-v5.js", import.meta.url), "utf8");
 const shellHtml = await readFile(new URL("../index.html", import.meta.url), "utf8");
 const manifest = JSON.parse(await readFile(new URL("../manifest.webmanifest", import.meta.url), "utf8"));
 
@@ -147,8 +148,18 @@ assert.doesNotMatch(hostileIcon, /<img|<script|onerror=/u, "unknown service ids 
 assert.match(hostileIcon, /&lt;/u, "unknown service fallbacks are escaped");
 
 assert.match(workloadIconMarkup("qemu"), /assets\/workloads\/vm\.png/u);
-assert.match(workloadIconMarkup("lxc"), /assets\/workloads\/lxc\.svg/u);
+assert.match(workloadIconMarkup("lxc"), /assets\/workloads\/container\.png/u);
 assert.match(workloadIconMarkup('lxc"><script>'), /assets\/workloads\/vm\.png/u, "untrusted workload types cannot become asset paths");
+assert.match(
+  application,
+  /portainer-container-mark[^\n]*workloadIconMarkup\("lxc"\)/u,
+  "Portainer container rows must use the operator-supplied local container artwork"
+);
+assert.match(
+  retroCss,
+  /\.portainer-container-row\s+\.portainer-container-mark\s*\{[^}]*background:\s*#d7e1df/u,
+  "the dark container artwork must retain a readable light plate in the retro theme"
+);
 
 const snapshot = {
   version: 1,

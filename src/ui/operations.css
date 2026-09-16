@@ -914,6 +914,8 @@ html[data-transparency="reduced"] :is(.operations-overall, .operations-panel) {
 .portainer-mark--hero .service-brand-icon { width: 42px; height: 48px; }
 .portainer-environment-mark,
 .portainer-container-mark { width: 38px; height: 38px; color: var(--accent); }
+.portainer-container-mark { background: #d7e1df; }
+.portainer-container-mark .workload-brand-icon { width: 30px; height: 30px; }
 .portainer-environment-mark svg,
 .portainer-container-mark svg { width: 19px; height: 19px; }
 

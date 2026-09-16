@@ -53,6 +53,8 @@ async function start() {
   const calls = [];
   let refreshes = 0;
   let snapshot = {};
+  let seasonDetail = null;
+  const seasonDetailCalls = [];
   const actionFailures = new Map();
   const actionBlocks = new Map();
   async function beforeAction(provider) {
@@ -124,6 +126,7 @@ async function start() {
         provider: input.serviceId,
         operation: input.operation,
         resourceId: input.resourceId,
+        ...(input.seasonNumbers ? { seasonNumbers: [...input.seasonNumbers] } : {}),
         credential: input.credential.toString("utf8")
       });
       return {
@@ -131,8 +134,16 @@ async function start() {
         provider: input.serviceId,
         operation: input.operation,
         resourceId: input.resourceId,
-        providerStatus: 200
+        ...(input.seasonNumbers ? { seasonNumbers: [...input.seasonNumbers] } : {}),
+        providerStatus: input.operation === "requestSeasons" ? 201 : 200
       };
+    },
+    fetchSeerrSeriesSeasons: async (input) => {
+      seasonDetailCalls.push({ ...input });
+      if (!seasonDetail) {
+        throw new ControlPlaneError(503, "MEDIA_SEASONS_UNAVAILABLE", "No test season detail is available.");
+      }
+      return structuredClone(seasonDetail);
     }
   });
   controlPlane.setMonitor({
@@ -168,6 +179,8 @@ async function start() {
     calls,
     setSnapshot(value) { snapshot = value; },
     getSnapshot: () => structuredClone(snapshot),
+    setSeasonDetail(value) { seasonDetail = value ? structuredClone(value) : null; },
+    seasonDetailCalls,
     setActionFailure(provider, error) {
       if (error) actionFailures.set(provider, error);
       else actionFailures.delete(provider);
@@ -563,6 +576,224 @@ test("minor controls require CSRF, current inventory, exact revisions, and saved
     assert.equal(ambiguousRetry.status, 409);
     assert.equal(ambiguousRetry.json.code, "ACTION_RECENTLY_ACCEPTED");
     assert.equal(context.calls.length, 6);
+  } finally {
+    await stop(context);
+  }
+});
+
+test("Seerr season details and requests require current identity, revisions, and revalidation", async () => {
+  const context = await start();
+  try {
+    const authentication = await claim(context);
+    const saved = await request(context.port, "/api/v2/services/seerr", {
+      method: "PUT",
+      ...authentication,
+      body: {
+        url: "http://media.test:5055",
+        authMode: "apiKey",
+        credential: "seerr-season-action-test-key",
+        clearCredential: false,
+        monitoringEnabled: true
+      }
+    });
+    assert.equal(saved.status, 200, JSON.stringify(saved.json));
+    const targetRevision = saved.json.targetRevision;
+    const checkedAt = new Date().toISOString();
+    const snapshot = {
+      media: {
+        requests: [],
+        records: [{
+          id: "series:tmdb:1396",
+          mediaType: "series",
+          providerIds: { tmdb: 1396 },
+          seasonRequestTarget: { service: "seerr", resourceId: 1396 }
+        }]
+      },
+      services: [{
+        id: "seerr",
+        targetRevision,
+        checkedAt,
+        connectionState: "connected",
+        inventory: {}
+      }]
+    };
+    context.setSnapshot(snapshot);
+    const detailRevision = "a".repeat(64);
+    context.setSeasonDetail({
+      tmdbId: 1396,
+      targetRevision,
+      detailRevision,
+      privateServer: { rootFolder: "/must/not/leak" },
+      seasons: [
+        {
+          seasonNumber: 0,
+          name: "Specials",
+          episodeCount: 4,
+          airDate: null,
+          status: "unknown",
+          requestState: null,
+          requestable: false,
+          requestedBy: "must-not-leak"
+        },
+        {
+          seasonNumber: 1,
+          name: "Season 1",
+          episodeCount: 10,
+          airDate: "2025-01-01",
+          status: "unknown",
+          requestState: null,
+          requestable: true
+        },
+        {
+          seasonNumber: 2,
+          name: "Season 2",
+          episodeCount: 10,
+          airDate: null,
+          status: "available",
+          requestState: "completed",
+          requestable: false
+        },
+        {
+          seasonNumber: 3,
+          name: "Season 3",
+          episodeCount: 8,
+          airDate: null,
+          status: "deleted",
+          requestState: "declined",
+          requestable: true
+        }
+      ]
+    });
+
+    const path = `/api/v2/media/series/1396/seasons?targetRevision=${targetRevision}`;
+    const unauthenticated = await request(context.port, path);
+    assert.equal(unauthenticated.status, 401);
+
+    const loaded = await request(context.port, path, {
+      origin: authentication.origin,
+      cookie: authentication.cookie
+    });
+    assert.equal(loaded.status, 200, JSON.stringify(loaded.json));
+    assert.equal(loaded.json.tmdbId, 1396);
+    assert.equal(loaded.json.detailRevision, detailRevision);
+    assert.equal(loaded.json.seasons[0].requestable, false);
+    assert.equal(Object.hasOwn(loaded.json, "privateServer"), false);
+    assert.equal(Object.hasOwn(loaded.json.seasons[0], "requestedBy"), false);
+    assert.equal(context.seasonDetailCalls.at(-1).cacheMode, "read");
+
+    const extraQuery = await request(context.port, `${path}&path=/api/v1/users`, {
+      origin: authentication.origin,
+      cookie: authentication.cookie
+    });
+    assert.equal(extraQuery.status, 400);
+    assert.equal(extraQuery.json.code, "INVALID_REQUEST");
+
+    const unknownSeries = await request(
+      context.port,
+      `/api/v2/media/series/1397/seasons?targetRevision=${targetRevision}`,
+      { origin: authentication.origin, cookie: authentication.cookie }
+    );
+    assert.equal(unknownSeries.status, 409);
+    assert.equal(unknownSeries.json.code, "ACTION_TARGET_NOT_CURRENT");
+
+    const staleSnapshot = structuredClone(snapshot);
+    staleSnapshot.services[0].checkedAt = new Date(Date.now() - 5 * 60_000).toISOString();
+    context.setSnapshot(staleSnapshot);
+    const staleInventory = await request(context.port, path, {
+      origin: authentication.origin,
+      cookie: authentication.cookie
+    });
+    assert.equal(staleInventory.status, 409);
+    assert.equal(staleInventory.json.code, "ACTION_INVENTORY_STALE");
+    context.setSnapshot(snapshot);
+
+    const payload = {
+      serviceId: "seerr",
+      operation: "requestSeasons",
+      resourceId: 1396,
+      seasonNumbers: [1],
+      targetRevision,
+      detailRevision
+    };
+    const missingCsrf = await request(context.port, "/api/v2/actions/media", {
+      method: "POST",
+      origin: authentication.origin,
+      cookie: authentication.cookie,
+      body: payload
+    });
+    assert.equal(missingCsrf.status, 403);
+    assert.equal(missingCsrf.json.code, "CSRF_TOKEN_REQUIRED");
+
+    for (const seasonNumbers of [[], [0], [2, 1], [1, 1], ["1"]]) {
+      const invalid = await request(context.port, "/api/v2/actions/media", {
+        method: "POST",
+        ...authentication,
+        body: { ...payload, seasonNumbers }
+      });
+      assert.equal(invalid.status, 400, JSON.stringify({ seasonNumbers, response: invalid.json }));
+      assert.equal(invalid.json.code, "INVALID_ACTION_TARGET");
+    }
+
+    const extraField = await request(context.port, "/api/v2/actions/media", {
+      method: "POST",
+      ...authentication,
+      body: { ...payload, userId: 1 }
+    });
+    assert.equal(extraField.status, 400);
+    assert.equal(extraField.json.code, "INVALID_REQUEST");
+
+    const staleDetail = await request(context.port, "/api/v2/actions/media", {
+      method: "POST",
+      ...authentication,
+      body: { ...payload, detailRevision: "b".repeat(64) }
+    });
+    assert.equal(staleDetail.status, 409);
+    assert.equal(staleDetail.json.code, "ACTION_TARGET_CHANGED");
+    assert.equal(context.seasonDetailCalls.at(-1).cacheMode, "bypass");
+
+    const unavailable = await request(context.port, "/api/v2/actions/media", {
+      method: "POST",
+      ...authentication,
+      body: { ...payload, seasonNumbers: [2] }
+    });
+    assert.equal(unavailable.status, 409);
+    assert.equal(unavailable.json.code, "ACTION_NOT_AVAILABLE");
+
+    const blocked = context.blockAction("seerr");
+    const first = request(context.port, "/api/v2/actions/media", {
+      method: "POST",
+      ...authentication,
+      body: payload
+    });
+    await blocked.entered;
+    const overlapping = await request(context.port, "/api/v2/actions/media", {
+      method: "POST",
+      ...authentication,
+      body: { ...payload, seasonNumbers: [3] }
+    });
+    assert.equal(overlapping.status, 409);
+    assert.equal(overlapping.json.code, "ACTION_IN_PROGRESS");
+    blocked.release();
+    const created = await first;
+    assert.equal(created.status, 200, JSON.stringify(created.json));
+    assert.deepEqual(created.json.seasonNumbers, [1]);
+    assert.equal(created.json.providerStatus, 201);
+    assert.deepEqual(context.calls[0], {
+      provider: "seerr",
+      operation: "requestSeasons",
+      resourceId: 1396,
+      seasonNumbers: [1],
+      credential: "seerr-season-action-test-key"
+    });
+
+    const recent = await request(context.port, "/api/v2/actions/media", {
+      method: "POST",
+      ...authentication,
+      body: { ...payload, seasonNumbers: [3] }
+    });
+    assert.equal(recent.status, 409);
+    assert.equal(recent.json.code, "ACTION_RECENTLY_ACCEPTED");
+    assert.equal(context.calls.length, 1);
   } finally {
     await stop(context);
   }

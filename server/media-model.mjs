@@ -101,6 +101,15 @@ function positiveInteger(value, maximum = 9_999_999_999) {
   return Number.isSafeInteger(number) && number > 0 && number <= maximum ? number : null;
 }
 
+function providerInteger(value, maximum = 9_999_999_999) {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) && value > 0 && value <= maximum ? value : null;
+  }
+  if (typeof value !== "string" || !/^[1-9][0-9]*$/u.test(value)) return null;
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number <= maximum ? number : null;
+}
+
 function nonNegativeInteger(value, maximum = 9_999_999_999) {
   const number = Number(value);
   return Number.isSafeInteger(number) && number >= 0 && number <= maximum ? number : null;
@@ -127,11 +136,11 @@ function mediaType(value, fallback = null) {
 function providerIds(sourceValue) {
   const source = record(sourceValue) || {};
   const nested = record(own(source, "ProviderIds")) || record(own(source, "providerIds")) || {};
-  const tmdb = positiveInteger(
+  const tmdb = providerInteger(
     own(source, "tmdbId") ?? own(source, "tmdb_id")
     ?? own(nested, "Tmdb") ?? own(nested, "TMDB") ?? own(nested, "tmdb") ?? own(nested, "TheMovieDb")
   );
-  const tvdb = positiveInteger(
+  const tvdb = providerInteger(
     own(source, "tvdbId") ?? own(source, "tvdb_id") ?? own(nested, "Tvdb") ?? own(nested, "TVDB") ?? own(nested, "tvdb")
   );
   const imdbCandidate = own(source, "imdbId") ?? own(source, "imdb_id")
@@ -389,6 +398,9 @@ function jellyfinSessions(body) {
     });
     if (!common || seen.has(common.sourceId)) continue;
     seen.add(common.sourceId);
+    const seriesSourceId = common.mediaType === "episode"
+      ? sourceIdFor("jellyfin", own(item, "SeriesId") ?? own(item, "seriesId"))
+      : null;
     const runtimeTicks = boundedNumber(own(item, "RunTimeTicks"), 0, Number.MAX_SAFE_INTEGER);
     const positionTicks = boundedNumber(own(playState, "PositionTicks"), 0, Number.MAX_SAFE_INTEGER);
     const progress = runtimeTicks > 0 && positionTicks !== null
@@ -401,7 +413,8 @@ function jellyfinSessions(body) {
       ...(progress !== null ? { progress: Math.round(progress * 10) / 10 } : {}),
       episodeTitle: common.mediaType === "episode" ? text(own(item, "Name")) : null,
       seasonNumber: boundedNumber(own(item, "ParentIndexNumber"), 0, 10_000),
-      episodeNumber: boundedNumber(own(item, "IndexNumber"), 0, 100_000)
+      episodeNumber: boundedNumber(own(item, "IndexNumber"), 0, 100_000),
+      ...(seriesSourceId ? { seriesSourceId } : {})
     });
   }
   return nowPlaying;
@@ -816,7 +829,7 @@ function revalidateInventoryItem(service, category, item) {
   const title = text(own(item, "title"));
   if (!title) return null;
   const artwork = record(own(item, "artwork"));
-  const jellyfinSeriesSourceId = service === "jellyfin" && type === "episode" && ["resume", "nextUp"].includes(category)
+  const jellyfinSeriesSourceId = service === "jellyfin" && type === "episode" && ["resume", "nextUp", "nowPlaying"].includes(category)
     ? sourceIdFor("jellyfin", own(item, "seriesSourceId"))
     : null;
   const sonarrSeriesSourceId = service === "sonarr" && type === "episode" && category === "calendar"
@@ -1225,11 +1238,12 @@ function findRecord(records, item) {
 
 function findParentSeriesRecord(records, item) {
   if (item.mediaType !== "episode") return null;
-  const seriesSourceId = sourceIdFor("sonarr", item.seriesSourceId);
-  if (seriesSourceId) {
+  const seriesService = ["jellyfin", "sonarr"].includes(item.service) ? item.service : null;
+  const seriesSourceId = seriesService ? sourceIdFor(seriesService, item.seriesSourceId) : null;
+  if (seriesService && seriesSourceId) {
     const bySource = records.find((candidate) => (
       candidate.mediaType === "series"
-      && candidate.sourceKeys.has(`sonarr:${seriesSourceId}`)
+      && candidate.sourceKeys.has(`${seriesService}:${seriesSourceId}`)
     ));
     if (bySource) return bySource;
   }
@@ -1270,6 +1284,27 @@ function mediaActionTargets(recordValue) {
     if (matches.length === 1) targets.push({ service, resourceId: matches[0] });
   }
   return targets;
+}
+
+function seasonRequestTargetFromProviderIds(value) {
+  const tmdbId = positiveInteger(record(value)?.tmdb);
+  return tmdbId ? { service: "seerr", resourceId: tmdbId } : null;
+}
+
+function seasonRequestTarget(recordValue) {
+  const source = record(recordValue);
+  return source?.mediaType === "series"
+    ? seasonRequestTargetFromProviderIds(source.providerIds)
+    : null;
+}
+
+function seasonRequestTargetForItem(item, linked, parentSeries) {
+  if (item?.mediaType === "series") {
+    return seasonRequestTarget(linked) || seasonRequestTargetFromProviderIds(item.providerIds);
+  }
+  if (item?.mediaType !== "episode") return null;
+  return seasonRequestTarget(parentSeries)
+    || seasonRequestTargetFromProviderIds(item.parentProviderIds);
 }
 
 function requestLifecycleSemantics(item, linked) {
@@ -1338,6 +1373,7 @@ function enrichCollection(items, records, options = {}) {
   return items.slice(0, MAX_COLLECTION_ITEMS).map((item) => {
     const linked = findRecord(records, item);
     const parentSeries = findParentSeriesRecord(records, item);
+    const requestTarget = seasonRequestTargetForItem(item, linked, parentSeries);
     const artworkUrl = typeof options.artworkUrlForItem === "function"
       ? options.artworkUrlForItem(item, linked)
       : parentSeries?.artworkUrl || linked?.artworkUrl || null;
@@ -1348,6 +1384,7 @@ function enrichCollection(items, records, options = {}) {
       year: linked?.year || item.year || null,
       mediaId: linked?.id || null,
       actionTargets: mediaActionTargets(parentSeries || linked),
+      ...(requestTarget ? { seasonRequestTarget: requestTarget } : {}),
       artworkUrl
     };
     delete enriched.titleFallback;
@@ -1390,6 +1427,7 @@ function continueWatchingArtworkUrl(item, linked, records, artwork, connectionRe
 }
 
 function publicRecord(record) {
+  const requestTarget = seasonRequestTarget(record);
   return {
     id: record.id,
     mediaType: record.mediaType,
@@ -1398,6 +1436,7 @@ function publicRecord(record) {
     providerIds: { ...record.providerIds },
     sources: [...record.sources],
     actionTargets: mediaActionTargets(record),
+    ...(requestTarget ? { seasonRequestTarget: requestTarget } : {}),
     lifecycle: record.lifecycle,
     requested: record.requested,
     monitored: record.monitored,

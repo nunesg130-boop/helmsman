@@ -161,6 +161,16 @@ const MEDIA_ACTIONS = Object.freeze({
     path: (id) => `/api/v1/request/${id}/retry`,
     body: ""
   }),
+  requestSeasons: Object.freeze({
+    service: "seerr",
+    path: () => "/api/v1/request",
+    body: (id, parameters) => JSON.stringify({
+      mediaType: "tv",
+      mediaId: id,
+      seasons: parameters.seasonNumbers,
+      is4k: false
+    })
+  }),
   searchMovie: Object.freeze({
     service: "radarr",
     path: () => "/api/v3/command",
@@ -182,7 +192,24 @@ export function authorizeMediaAction(operationValue, parameters = {}) {
   const definition = MEDIA_ACTIONS[operation];
   const service = canonicalServiceId(parameters?.service);
   const resourceId = normalizePositiveResourceId(parameters?.resourceId, 9_999_999_999);
-  if (!definition || service !== definition.service || resourceId === null) {
+  const suppliedSeasons = parameters?.seasonNumbers;
+  const seasonNumbers = operation === "requestSeasons"
+    && Array.isArray(suppliedSeasons)
+    && suppliedSeasons.length >= 1
+    && suppliedSeasons.length <= 100
+    && suppliedSeasons.every((value, index) => (
+      Number.isSafeInteger(value)
+      && value >= 1
+      && value <= 10_000
+      && (index === 0 || value > suppliedSeasons[index - 1])
+    ))
+      ? Object.freeze([...suppliedSeasons])
+      : null;
+  if (!definition
+    || service !== definition.service
+    || resourceId === null
+    || (operation === "requestSeasons" && !seasonNumbers)
+    || (operation !== "requestSeasons" && suppliedSeasons !== undefined)) {
     return {
       allowed: false,
       code: "ROUTE_NOT_ALLOWED",
@@ -191,13 +218,16 @@ export function authorizeMediaAction(operationValue, parameters = {}) {
     };
   }
   const upstreamPath = definition.path(resourceId);
-  const body = typeof definition.body === "function" ? definition.body(resourceId) : definition.body;
+  const body = typeof definition.body === "function"
+    ? definition.body(resourceId, { seasonNumbers })
+    : definition.body;
   return Object.freeze({
     allowed: true,
     service,
     actionId: "media",
     operation,
     resourceId,
+    ...(seasonNumbers ? { seasonNumbers } : {}),
     method: "POST",
     upstreamPath,
     upstreamPathAndQuery: upstreamPath,

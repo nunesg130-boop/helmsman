@@ -732,6 +732,138 @@ test("keeps Sonarr episodes distinct from each other and their parent series", (
   assert.doesNotMatch(JSON.stringify(media), /artworks\.thetvdb\.com/u, "Sonarr's remote TVDB URL must never cross the normalized boundary");
 });
 
+test("publishes bounded Seerr season request targets for series and episode-derived views", () => {
+  const jellyfinSeriesId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const media = buildMediaSnapshot([
+    service("jellyfin", {
+      library: {
+        Items: [{
+          Id: jellyfinSeriesId,
+          Type: "Series",
+          Name: "Jellyfin Series",
+          ProviderIds: { Tmdb: "700", Tvdb: "7_000" }
+        }]
+      },
+      resume: {
+        Items: [{
+          Id: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          Type: "Episode",
+          Name: "Resume Episode",
+          SeriesName: "Jellyfin Series",
+          SeriesId: jellyfinSeriesId,
+          ProviderIds: { Tmdb: "999" },
+          UserData: { PlayedPercentage: 25 }
+        }]
+      },
+      sessions: [{
+        NowPlayingItem: {
+          Id: "cccccccccccccccccccccccccccccccc",
+          Type: "Episode",
+          Name: "Playing Episode",
+          SeriesName: "Jellyfin Series",
+          SeriesId: jellyfinSeriesId,
+          ProviderIds: { Tmdb: "998" },
+          RunTimeTicks: 1_000
+        },
+        PlayState: { PositionTicks: 500, IsPaused: false }
+      }]
+    }),
+    service("sonarr", {
+      catalog: [{
+        id: 90,
+        title: "Sonarr Series",
+        tmdbId: 912,
+        tvdbId: 900,
+        monitored: true
+      }, {
+        id: 91,
+        title: "TVDB-only Series",
+        tvdbId: 901,
+        monitored: true
+      }, {
+        id: 92,
+        title: "Out-of-range Series",
+        tmdbId: 10_000_000_000,
+        monitored: true
+      }, {
+        id: 93,
+        title: "Malformed Provider Series",
+        tmdbId: true,
+        monitored: true
+      }],
+      calendar: [{
+        id: 101,
+        title: "Sonarr Episode",
+        tmdbId: 9_120,
+        airDateUtc: "2026-09-14T01:00:00Z",
+        seasonNumber: 2,
+        episodeNumber: 1,
+        series: { id: 90, title: "Sonarr Series", tmdbId: 912, tvdbId: 900 }
+      }, {
+        id: 102,
+        title: "Episode ID Is Not A Series ID",
+        tmdbId: 9_121,
+        airDateUtc: "2026-09-15T01:00:00Z",
+        seasonNumber: 1,
+        episodeNumber: 1,
+        series: { id: 91, title: "TVDB-only Series", tvdbId: 901 }
+      }]
+    }),
+    service("seerr", {
+      trending: {
+        results: [{ id: 313, mediaType: "tv", name: "Discover Series" }]
+      }
+    }),
+    service("radarr", {
+      catalog: [{ id: 1, title: "Movie", tmdbId: 314, monitored: true }]
+    })
+  ], GENERATED_AT, TARGETS);
+
+  const expected = (resourceId) => ({ service: "seerr", resourceId });
+  assert.deepEqual(
+    media.records.find(({ providerIds }) => providerIds.tmdb === 700)?.seasonRequestTarget,
+    expected(700),
+    "a canonical series publishes its validated TMDb request target"
+  );
+  assert.deepEqual(
+    media.records.find(({ providerIds }) => providerIds.tmdb === 912)?.seasonRequestTarget,
+    expected(912)
+  );
+  assert.deepEqual(
+    media.discover.find(({ providerIds }) => providerIds.tmdb === 313)?.seasonRequestTarget,
+    expected(313),
+    "a Seerr-only series uses the same bounded target contract"
+  );
+  assert.equal(
+    Object.hasOwn(media.records.find(({ title }) => title === "Out-of-range Series"), "seasonRequestTarget"),
+    false,
+    "out-of-range provider IDs must not cross the normalized boundary"
+  );
+  assert.equal(
+    Object.hasOwn(media.records.find(({ title }) => title === "Malformed Provider Series"), "seasonRequestTarget"),
+    false,
+    "coercible non-ID values must not become a request target"
+  );
+  assert.equal(
+    Object.hasOwn(media.records.find(({ title }) => title === "Movie"), "seasonRequestTarget"),
+    false,
+    "movies never expose a season request target"
+  );
+
+  const sonarrEpisode = media.calendar.find(({ id }) => id === "sonarr-calendar:101");
+  const tvdbOnlyEpisode = media.calendar.find(({ id }) => id === "sonarr-calendar:102");
+  assert.deepEqual(sonarrEpisode.seasonRequestTarget, expected(912));
+  assert.notEqual(sonarrEpisode.seasonRequestTarget.resourceId, 9_120, "an episode TMDb ID is never used as the series target");
+  assert.equal(Object.hasOwn(tvdbOnlyEpisode, "seasonRequestTarget"), false);
+
+  assert.deepEqual(media.home.continueWatching[0].seasonRequestTarget, expected(700));
+  assert.notEqual(media.home.continueWatching[0].seasonRequestTarget.resourceId, 999);
+  assert.deepEqual(media.home.nowPlaying[0].seasonRequestTarget, expected(700));
+  assert.notEqual(media.home.nowPlaying[0].seasonRequestTarget.resourceId, 998);
+  assert.equal(Object.hasOwn(media.home.continueWatching[0], "seriesSourceId"), false);
+  assert.equal(Object.hasOwn(media.home.nowPlaying[0], "seriesSourceId"), false);
+});
+
 test("uses fast Radarr poster metadata and Seerr's fixed image proxy for future movies", () => {
   const media = buildMediaSnapshot([
     service("radarr", {

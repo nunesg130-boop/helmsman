@@ -863,7 +863,10 @@ async function emptyStateLayoutContract() {
   assert.match(application, /function resolveFocusReference[\s\S]*?element\.dataset\?\.mediaKey === reference\.mediaKey[\s\S]*?element\.dataset\?\.action === reference\.mediaAction/u, "structural media refreshes must restore a focused card by safe key and action");
   assert.match(application, /function confirmControl\(\{ title, message, confirmLabel = "Continue", tone = "default" \}\)[\s\S]*?state\.confirmationResolver[\s\S]*?role="alertdialog"[\s\S]*?aria-modal="true"/u, "control actions must use the dedicated accessible Helmsman confirmation boundary");
   assert.doesNotMatch(application, /globalThis\.confirm/u, "Helmsman must not invoke browser-native confirmation dialogs");
-  assert.match(application, /const confirmed = await confirmControl\([\s\S]*?if \(!confirmed \|\| state\.actionMutation\) return;[\s\S]*?stillValid = validate\(\) === true/u, "actions must be approved and revalidated before dispatch");
+  assert.match(application, /const confirmed = await confirmControl\([\s\S]*?if \(!confirmed \|\| state\.actionMutation\) return [^;]+;[\s\S]*?stillValid = validate\(\) === true/u, "actions must be approved and revalidated before dispatch");
+  assert.match(application, /async function runSeasonRequest[\s\S]*?operation: "requestSeasons"[\s\S]*?seasonNumbers: captured\.seasonNumbers[\s\S]*?detailRevision: captured\.detailRevision/u, "season selections must use one fixed, revision-bound media action");
+  assert.match(application, /async function loadSeasonDetailsForMedia[\s\S]*?\/api\/v2\/media\/series\/\$\{context\.target\.mediaId\}\/seasons\?targetRevision=/u, "season catalogs must load through the typed same-origin detail endpoint");
+  assert.match(shellStyles, /\.drawer-season-option:has\(input:focus-visible\)[\s\S]*?outline:\s*2px solid var\(--accent\)/u, "season choices need an explicit keyboard focus indicator");
   assert.match(application, /async function deleteService\([\s\S]*?runConfirmedDeletion/u, "media connection removal must use the shared in-app confirmation and mutation lock");
   assert.match(application, /async function runConfirmedDeletion[\s\S]*?state\.actionMutation = key;[\s\S]*?await api\(path, \{ method: "DELETE" \}\)/u, "confirmed removals must lock duplicate mutations before dispatch");
   assert.match(application, /async function loadOperations[\s\S]*?error\.status === 401[\s\S]*?await initialize\(\)/u, "background session expiry must close stale authenticated UI through initialization");
@@ -1539,6 +1542,412 @@ async function mediaSemanticsContract() {
     /class="filter-chip is-active"[^>]+data-media-filter-name="requests" data-media-filter-value="pending"[^>]+aria-pressed="true">Awaiting approval/u,
     "the Home approval summary must open Requests with the exact pending filter selected"
   );
+}
+
+async function seriesSeasonControlsContract() {
+  const checkedAt = new Date().toISOString();
+  const seerrRevision = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+  const changedRevision = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+  const initialDetailRevision = "a".repeat(64);
+  const refreshedDetailRevision = "b".repeat(64);
+  const acceptedDetailRevision = "c".repeat(64);
+  const mediaId = "episode:tvdb:11893146";
+  let actionAccepted = false;
+  let rejectStaleDetailOnce = false;
+  let currentDetailRevision = initialDetailRevision;
+  const snapshot = {
+    ...minimalOperationsSnapshot(),
+    generatedAt: checkedAt,
+    services: [{ id: "seerr", targetRevision: seerrRevision, connectionState: "connected", checkedAt }],
+    media: {
+      schema: 1,
+      generatedAt: checkedAt,
+      records: [],
+      home: {
+        nowPlaying: [],
+        continueWatching: [{
+          id: mediaId,
+          title: "President Curtis",
+          mediaType: "episode",
+          year: "2026",
+          providerIds: { tvdb: "11893146", imdb: "tt43716930" },
+          sources: ["jellyfin"],
+          available: true,
+          progress: 18.3,
+          lifecycle: { stage: "available" },
+          seasonRequestTarget: { service: "seerr", resourceId: 500 }
+        }],
+        recentlyAdded: [], pendingRequests: [], activeDownloads: [], blockedImports: [],
+        upcoming: [], missing: [], subtitleBacklog: []
+      },
+      library: [], discover: [], requests: [], activity: [], calendar: [], subtitleBacklog: [],
+      metrics: { libraryTotal: 1 }
+    }
+  };
+  const seasonPayload = () => ({
+    tmdbId: 500,
+    targetRevision: seerrRevision,
+    detailRevision: currentDetailRevision,
+    seasons: [
+      { seasonNumber: 0, name: "<Specials>", episodeCount: 3, airDate: "2025-01-01", status: "unknown", requestState: null, requestable: false },
+      { seasonNumber: 1, name: "Season 1", episodeCount: 10, airDate: "2025-02-01", status: "available", requestState: "completed", requestable: false },
+      { seasonNumber: 2, name: "Season <Two>", episodeCount: 8, airDate: "2026-02-01", status: actionAccepted ? "processing" : "unknown", requestState: actionAccepted ? "approved" : null, requestable: !actionAccepted },
+      { seasonNumber: 3, name: "Season 3", episodeCount: 6, airDate: "2026-09-01", status: "partially_available", requestState: null, requestable: false },
+      { seasonNumber: 4, name: "Season 4", episodeCount: 12, airDate: null, status: actionAccepted ? "processing" : "deleted", requestState: actionAccepted ? "approved" : "completed", requestable: !actionAccepted }
+    ]
+  });
+  const environment = installFakeBrowser(({ path, options }) => {
+    const method = String(options.method || "GET").toUpperCase();
+    if (path === "/api/v2/status") return jsonResponse({
+      setupRequired: false,
+      authenticated: true,
+      csrfToken: "season-controls-csrf",
+      session: { name: "Season Controls Browser" }
+    });
+    if (path === "/api/v2/config") return jsonResponse({
+      policy: { allowedCidrs: [] },
+      services: [{ id: "seerr", configured: true, enabled: true, monitoringEnabled: true, targetRevision: seerrRevision }]
+    });
+    if (path === "/api/v2/operations/snapshot") return jsonResponse(clone(snapshot));
+    if (path === "/api/v2/operations/refresh" && method === "POST") return jsonResponse(clone(snapshot));
+    if (path === `/api/v2/media/series/500/seasons?targetRevision=${seerrRevision}`) return jsonResponse(seasonPayload());
+    if (path === "/api/v2/actions/media" && method === "POST") {
+      if (rejectStaleDetailOnce) {
+        rejectStaleDetailOnce = false;
+        currentDetailRevision = refreshedDetailRevision;
+        return jsonResponse({ code: "STALE_SEASON_DETAILS", message: "Season details changed." }, 409);
+      }
+      actionAccepted = true;
+      currentDetailRevision = acceptedDetailRevision;
+      return jsonResponse({ ok: true, provider: "seerr", operation: "requestSeasons", resourceId: 500 });
+    }
+    if (path === "/api/v2/sessions") return jsonResponse({ currentSessionId: "", sessions: [] });
+    return jsonResponse({ code: "NOT_FOUND", message: "Unexpected test route." }, 404);
+  }, "series-season-controls");
+
+  environment.location.hash = "#/home";
+  await importShell(environment);
+  await waitFor(() => environment.main.innerHTML.includes("President Curtis"), "season-control media home");
+
+  const drawer = environment.elements.get("#drawer-layer");
+  const panel = new FakeElement({ id: "season-panel" });
+  const drawerTitle = new FakeElement({ id: "media-drawer-title" });
+  panel.dataset.mediaId = mediaId;
+  drawer.registerSelector("[data-season-panel]", panel);
+  drawer.registerSelector("#media-drawer-title", drawerTitle);
+  const opener = new FakeElement({ id: "open-parent-series-seasons" });
+  opener.dataset.action = "open-media-detail";
+  opener.dataset.mediaId = mediaId;
+  opener.closest = (selector) => selector === "[data-action]" ? opener : null;
+  await environment.dispatchDocument("click", { target: opener });
+  await waitFor(
+    () => environment.requestLog.some(({ path }) => path === `/api/v2/media/series/500/seasons?targetRevision=${seerrRevision}`),
+    "typed series-season detail request"
+  );
+  await waitFor(() => panel.innerHTML.includes("Season &lt;Two&gt;"), "sanitized season panel");
+  assert.match(drawer.innerHTML, /title-drawer--seasons/u, "an episode with a parent request target must expose the season surface");
+  assert.match(panel.innerHTML, /Season &lt;Two&gt;/u, "season names must be escaped");
+  assert.match(panel.innerHTML, /<fieldset class="drawer-season-picker"[^>]+aria-describedby="drawer-season-help-/u, "season instructions must describe the checkbox group");
+  assert.doesNotMatch(panel.innerHTML, /<Specials>|Season <Two>/u);
+  assert.match(panel.innerHTML, /value="0" data-season-select disabled/u, "Specials must remain visible but disabled");
+  assert.match(panel.innerHTML, /Specials[\s\S]*?Season 0 · 3 episodes/u, "a named season must retain its explicit season number");
+  assert.match(panel.innerHTML, /Season 1[\s\S]*?Available/u);
+  assert.match(panel.innerHTML, /Season &lt;Two&gt;[\s\S]*?Season 2 · 8 episodes[\s\S]*?Available to request/u);
+  assert.match(panel.innerHTML, /Season 3[\s\S]*?Partially available/u);
+  assert.match(panel.innerHTML, /Season 4[\s\S]*?Removed/u);
+
+  const seasonFour = new FakeElement({ id: "season-four" });
+  Object.assign(seasonFour, { value: "4", checked: true, disabled: false });
+  seasonFour.dataset.seasonSelect = "";
+  const seasonTwo = new FakeElement({ id: "season-two" });
+  Object.assign(seasonTwo, { value: "2", checked: true, disabled: false });
+  seasonTwo.dataset.seasonSelect = "";
+  const duplicateSeasonTwo = new FakeElement({ id: "season-two-duplicate" });
+  Object.assign(duplicateSeasonTwo, { value: "2", checked: true, disabled: false });
+  duplicateSeasonTwo.dataset.seasonSelect = "";
+  const selectionSummary = new FakeElement({ id: "season-selection-summary" });
+  const requestButton = new FakeElement({ id: "request-selected-seasons" });
+  Object.assign(requestButton.dataset, {
+    action: "request-seasons",
+    mediaId,
+    controlOperation: "requestSeasons",
+    controlKey: "media:seerr:requestSeasons:500"
+  });
+  requestButton.disabled = true;
+  for (const checkbox of [seasonFour, seasonTwo, duplicateSeasonTwo]) {
+    checkbox.closest = (selector) => selector === "[data-season-panel]" ? panel : null;
+  }
+  requestButton.closest = (selector) => selector === "[data-action]"
+    ? requestButton
+    : selector === "[data-season-panel]" ? panel : null;
+  panel.registerSelector("[data-season-select]", seasonFour, seasonTwo, duplicateSeasonTwo);
+  panel.registerSelector("[data-season-selection-summary]", selectionSummary);
+  panel.registerSelector("[data-action='request-seasons']", requestButton);
+  await environment.dispatchDocument("change", { target: seasonTwo });
+  assert.equal(selectionSummary.textContent, "2 seasons selected", "duplicate selected values must collapse to two seasons");
+  assert.equal(requestButton.disabled, false);
+
+  const cappedSelection = Array.from({ length: 101 }, (_, index) => {
+    const input = new FakeElement({ id: `season-cap-${index + 1}` });
+    Object.assign(input, { value: String(index + 1), checked: true, disabled: false });
+    input.dataset.seasonSelect = "";
+    input.closest = (selector) => selector === "[data-season-panel]" ? panel : null;
+    return input;
+  });
+  panel.registerSelector("[data-season-select]", ...cappedSelection);
+  await environment.dispatchDocument("change", { target: cappedSelection.at(-1) });
+  assert.equal(cappedSelection.at(-1).checked, false, "the 101st selected season must be rejected in place");
+  assert.equal(selectionSummary.textContent, "100 seasons selected · limit reached");
+  panel.registerSelector("[data-season-select]", seasonFour, seasonTwo, duplicateSeasonTwo);
+  await environment.dispatchDocument("change", { target: seasonTwo });
+
+  environment.document.activeElement = requestButton;
+  const cancelled = environment.dispatchDocument("click", { target: requestButton });
+  await waitFor(() => environment.confirmationLayer.classList.contains("is-open"), "season request confirmation");
+  assert.match(
+    environment.confirmationLayer.innerHTML,
+    /Request Season 2 and Season 4 for the parent series linked to President Curtis \(TMDb 500\) through Seerr/u,
+    "an episode action must identify the parent series and exact TMDb target"
+  );
+  assert.equal(drawer.inert, true);
+  assert.equal(environment.requestLog.some(({ path }) => path === "/api/v2/actions/media"), false);
+  const duplicateClick = environment.dispatchDocument("click", { target: requestButton });
+  await duplicateClick;
+  await environment.dispatchDocument("click", { target: environment.confirmationCancel });
+  await cancelled;
+  assert.equal(environment.requestLog.some(({ path }) => path === "/api/v2/actions/media"), false, "cancel and repeated click must send no action");
+  assert.equal(drawer.classList.contains("is-open"), true);
+  assert.equal(drawer.inert, false);
+  assert.equal(environment.document.activeElement, requestButton);
+
+  const staleAttempt = environment.dispatchDocument("click", { target: requestButton });
+  await waitFor(() => environment.confirmationLayer.classList.contains("is-open"), "stale season confirmation");
+  snapshot.services[0].targetRevision = changedRevision;
+  await environment.intervalCallbacks.at(-1)();
+  await environment.dispatchDocument("click", { target: environment.confirmationApprove });
+  await staleAttempt;
+  assert.equal(environment.requestLog.some(({ path }) => path === "/api/v2/actions/media"), false, "post-confirmation target changes must block the request");
+
+  snapshot.services[0].targetRevision = seerrRevision;
+  await environment.intervalCallbacks.at(-1)();
+  rejectStaleDetailOnce = true;
+  const staleDetailAttempt = environment.dispatchDocument("click", { target: requestButton });
+  await waitFor(() => environment.confirmationLayer.classList.contains("is-open"), "backend-stale season confirmation");
+  await environment.dispatchDocument("click", { target: environment.confirmationApprove });
+  await staleDetailAttempt;
+  let actionCalls = environment.requestLog.filter(({ path }) => path === "/api/v2/actions/media");
+  assert.equal(actionCalls.length, 1, "one stale-detail rejection must still send only one bounded action");
+  assert.deepEqual(JSON.parse(actionCalls[0].options.body), {
+    serviceId: "seerr",
+    operation: "requestSeasons",
+    resourceId: 500,
+    seasonNumbers: [2, 4],
+    targetRevision: seerrRevision,
+    detailRevision: initialDetailRevision
+  });
+  assert.equal(
+    environment.requestLog.filter(({ path }) => path === `/api/v2/media/series/500/seasons?targetRevision=${seerrRevision}`).length,
+    2,
+    "a stale-detail rejection must invalidate and reload the season catalog"
+  );
+
+  await environment.dispatchDocument("change", { target: seasonFour });
+  const approved = environment.dispatchDocument("click", { target: requestButton });
+  await waitFor(() => environment.confirmationLayer.classList.contains("is-open"), "approved season confirmation");
+  await environment.dispatchDocument("click", { target: environment.confirmationApprove });
+  await approved;
+  actionCalls = environment.requestLog.filter(({ path }) => path === "/api/v2/actions/media");
+  assert.equal(actionCalls.length, 2, "each approved confirmation must produce exactly one action");
+  assert.deepEqual(JSON.parse(actionCalls[1].options.body), {
+    serviceId: "seerr",
+    operation: "requestSeasons",
+    resourceId: 500,
+    seasonNumbers: [2, 4],
+    targetRevision: seerrRevision,
+    detailRevision: refreshedDetailRevision
+  });
+  assert.equal(actionCalls[1].options.credentials, "same-origin");
+  assert.equal(actionCalls[1].options.headers.get("X-Jellofin-CSRF"), "season-controls-csrf");
+  assert.equal(environment.requestLog.filter(({ path }) => path === "/api/v2/operations/refresh").length, 2);
+  assert.equal(
+    environment.requestLog.filter(({ path }) => path === `/api/v2/media/series/500/seasons?targetRevision=${seerrRevision}`).length,
+    3,
+    "an accepted action must reload the authoritative season catalog"
+  );
+  assert.match(panel.innerHTML, /Season &lt;Two&gt;[\s\S]*?Requested/u);
+  assert.equal(environment.document.activeElement, drawerTitle, "post-action refresh must focus the drawer heading when the rebuilt season action is disabled");
+  assert.deepEqual(environment.browserConfirmCalls, []);
+
+  const directSeriesId = "series:tmdb:500";
+  const directSeriesSnapshot = clone(snapshot);
+  directSeriesSnapshot.media.home.continueWatching = [{
+    ...directSeriesSnapshot.media.home.continueWatching[0],
+    id: directSeriesId,
+    title: "Orbital House",
+    mediaType: "series",
+    providerIds: { tmdb: "500" },
+    seasonRequestTarget: { service: "seerr", resourceId: 500 }
+  }];
+  let failedCatalogCalls = 0;
+  const failedCatalog = installFakeBrowser(({ path }) => {
+    if (path === "/api/v2/status") return jsonResponse({
+      setupRequired: false,
+      authenticated: true,
+      csrfToken: "season-error-csrf",
+      session: { name: "Season Error Browser" }
+    });
+    if (path === "/api/v2/config") return jsonResponse({
+      policy: { allowedCidrs: [] },
+      services: [{ id: "seerr", configured: true, enabled: true, monitoringEnabled: true, targetRevision: seerrRevision }]
+    });
+    if (path === "/api/v2/operations/snapshot") return jsonResponse(clone(directSeriesSnapshot));
+    if (path === `/api/v2/media/series/500/seasons?targetRevision=${seerrRevision}`) {
+      failedCatalogCalls += 1;
+      return failedCatalogCalls === 1
+        ? jsonResponse({ code: "UPSTREAM_UNAVAILABLE", message: "Unsafe <img src=x onerror=season_error>" }, 502)
+        : jsonResponse({
+            tmdbId: 500,
+            targetRevision: seerrRevision,
+            detailRevision: "d".repeat(64),
+            seasons: [{
+              seasonNumber: 1,
+              name: "Season 1",
+              episodeCount: 7,
+              airDate: "2028-01-01",
+              status: "unknown",
+              requestState: null,
+              requestable: true
+            }]
+          });
+    }
+    if (path === "/api/v2/sessions") return jsonResponse({ currentSessionId: "", sessions: [] });
+    return jsonResponse({ code: "NOT_FOUND", message: "Unexpected test route." }, 404);
+  }, "series-season-error-retry");
+  failedCatalog.location.hash = "#/home";
+  await importShell(failedCatalog);
+  await waitFor(() => failedCatalog.main.innerHTML.includes("Orbital House"), "direct-series season media home");
+  const failedDrawer = failedCatalog.elements.get("#drawer-layer");
+  const failedPanel = new FakeElement({ id: "failed-season-panel" });
+  failedPanel.dataset.mediaId = directSeriesId;
+  failedDrawer.registerSelector("[data-season-panel]", failedPanel);
+  const failedOpener = new FakeElement({ id: "open-failed-season-catalog" });
+  Object.assign(failedOpener.dataset, { action: "open-media-detail", mediaId: directSeriesId });
+  failedOpener.closest = (selector) => selector === "[data-action]" ? failedOpener : null;
+  await failedCatalog.dispatchDocument("click", { target: failedOpener });
+  await waitFor(() => failedPanel.innerHTML.includes("Seasons could not be loaded"), "sanitized season load error");
+  assert.match(failedDrawer.innerHTML, /<h3[^>]*>Seasons<\/h3>/u, "direct series must use the series season heading");
+  assert.match(failedPanel.innerHTML, /Unsafe &lt;img src=x onerror=season_error&gt;/u);
+  assert.doesNotMatch(failedPanel.innerHTML, /<img src=x/u);
+  assert.match(failedPanel.innerHTML, /data-action="retry-season-details"/u);
+  const retryCatalog = new FakeElement({ id: "retry-failed-season-catalog" });
+  Object.assign(retryCatalog.dataset, { action: "retry-season-details", mediaId: directSeriesId });
+  retryCatalog.closest = (selector) => selector === "[data-action]" ? retryCatalog : null;
+  await failedCatalog.dispatchDocument("click", { target: retryCatalog });
+  await waitFor(() => failedCatalogCalls === 2 && failedPanel.innerHTML.includes("Season 1"), "retried direct-series season catalog");
+
+  let statusCalls = 0;
+  const expired = installFakeBrowser(({ path }) => {
+    if (path === "/api/v2/status") {
+      statusCalls += 1;
+      return jsonResponse(statusCalls === 1
+        ? { setupRequired: false, authenticated: true, csrfToken: "expired-season-csrf", session: { name: "Expiring Browser" } }
+        : { setupRequired: false, authenticated: false, accessKeyConfigured: true });
+    }
+    if (path === "/api/v2/config") return jsonResponse({
+      policy: { allowedCidrs: [] },
+      services: [{ id: "seerr", configured: true, enabled: true, monitoringEnabled: true, targetRevision: seerrRevision }]
+    });
+    if (path === "/api/v2/operations/snapshot") return jsonResponse(clone({ ...snapshot, services: [{ id: "seerr", targetRevision: seerrRevision, connectionState: "connected", checkedAt }] }));
+    if (path.startsWith("/api/v2/media/series/500/seasons?")) return jsonResponse({ code: "AUTH_REQUIRED", message: "Expired" }, 401);
+    if (path === "/api/v2/sessions") return jsonResponse({ currentSessionId: "", sessions: [] });
+    return jsonResponse({ code: "NOT_FOUND", message: "Unexpected test route." }, 404);
+  }, "season-detail-auth-expiry");
+  expired.location.hash = "#/home";
+  await importShell(expired);
+  await waitFor(() => expired.main.innerHTML.includes("President Curtis"), "expiring season media home");
+  const expiredDrawer = expired.elements.get("#drawer-layer");
+  const expiredPanel = new FakeElement({ id: "expired-season-panel" });
+  expiredPanel.dataset.mediaId = mediaId;
+  expiredDrawer.registerSelector("[data-season-panel]", expiredPanel);
+  const expiredOpener = new FakeElement({ id: "open-expired-seasons" });
+  Object.assign(expiredOpener.dataset, { action: "open-media-detail", mediaId });
+  expiredOpener.closest = (selector) => selector === "[data-action]" ? expiredOpener : null;
+  await expired.dispatchDocument("click", { target: expiredOpener });
+  await waitFor(() => expired.main.innerHTML.includes("Unlock Helmsman"), "season-detail authentication reset");
+  assert.equal(expiredDrawer.classList.contains("is-open"), false, "season-detail 401 must close the authenticated drawer");
+  assert.doesNotMatch(expiredPanel.innerHTML, /Expired/u, "authentication failures must not become an inline catalog error");
+
+  let releaseStaleSeasonDetail;
+  const staleSeasonDetail = new Promise((resolve) => {
+    releaseStaleSeasonDetail = resolve;
+  });
+  let seasonDetailCalls = 0;
+  const logoutRace = installFakeBrowser(({ path, options }) => {
+    const method = String(options.method || "GET").toUpperCase();
+    if (path === "/api/v2/status") return jsonResponse({
+      setupRequired: false,
+      authenticated: true,
+      accessKeyConfigured: true,
+      csrfToken: "season-race-csrf",
+      session: { name: "Season Race Browser" }
+    });
+    if (path === "/api/v2/config") return jsonResponse({
+      policy: { allowedCidrs: [] },
+      services: [{ id: "seerr", configured: true, enabled: true, monitoringEnabled: true, targetRevision: seerrRevision }]
+    });
+    if (path === "/api/v2/operations/snapshot") return jsonResponse(clone({
+      ...snapshot,
+      services: [{ id: "seerr", targetRevision: seerrRevision, connectionState: "connected", checkedAt }]
+    }));
+    if (path === "/api/v2/sessions") return jsonResponse({ currentSessionId: "", sessions: [] });
+    if (path === "/api/v2/session" && method === "DELETE") return jsonResponse({ ok: true });
+    if (path === `/api/v2/media/series/500/seasons?targetRevision=${seerrRevision}`) {
+      seasonDetailCalls += 1;
+      return seasonDetailCalls === 1 ? staleSeasonDetail : jsonResponse({
+        tmdbId: 500,
+        targetRevision: seerrRevision,
+        detailRevision: "b".repeat(64),
+        seasons: [{
+          seasonNumber: 6,
+          name: "Fresh season catalog",
+          episodeCount: 9,
+          airDate: "2027-03-01",
+          status: "not_requested",
+          requestState: "unknown",
+          requestable: true
+        }]
+      });
+    }
+    return jsonResponse({ code: "NOT_FOUND", message: "Unexpected test route." }, 404);
+  }, "season-detail-logout-race");
+  logoutRace.location.hash = "#/home";
+  await importShell(logoutRace);
+  await waitFor(() => logoutRace.main.innerHTML.includes("President Curtis"), "logout-race media home");
+  const raceDrawer = logoutRace.elements.get("#drawer-layer");
+  const racePanel = new FakeElement({ id: "race-season-panel" });
+  racePanel.dataset.mediaId = mediaId;
+  raceDrawer.registerSelector("[data-season-panel]", racePanel);
+  const raceOpener = new FakeElement({ id: "open-race-seasons" });
+  Object.assign(raceOpener.dataset, { action: "open-media-detail", mediaId });
+  raceOpener.closest = (selector) => selector === "[data-action]" ? raceOpener : null;
+  await logoutRace.dispatchDocument("click", { target: raceOpener });
+  await waitFor(() => seasonDetailCalls === 1, "pending season detail before logout");
+  const logout = new FakeElement({ id: "logout-with-season-pending" });
+  logout.dataset.action = "logout";
+  logout.closest = (selector) => selector === "[data-action]" ? logout : null;
+  await logoutRace.dispatchDocument("click", { target: logout });
+  assert.match(logoutRace.main.innerHTML, /Unlock Helmsman/u);
+  releaseStaleSeasonDetail(jsonResponse(seasonPayload()));
+  await new Promise((resolve) => nativeSetTimeout(resolve, 0));
+  const retryStartup = new FakeElement({ id: "retry-after-season-logout" });
+  retryStartup.dataset.action = "retry-startup";
+  retryStartup.closest = (selector) => selector === "[data-action]" ? retryStartup : null;
+  await logoutRace.dispatchDocument("click", { target: retryStartup });
+  await waitFor(() => logoutRace.main.innerHTML.includes("President Curtis"), "reauthenticated season media home");
+  await logoutRace.dispatchDocument("click", { target: raceOpener });
+  await waitFor(() => seasonDetailCalls === 2, "fresh season detail after logout race");
+  await waitFor(() => racePanel.innerHTML.includes("Fresh season catalog"), "fresh post-logout season catalog");
+  assert.doesNotMatch(racePanel.innerHTML, /Season &lt;Two&gt;/u, "a pre-logout response must not repopulate the authenticated cache");
 }
 
 async function serviceDialogInteractionContract() {
@@ -3769,6 +4178,7 @@ for (const [name, contract] of [
   ["persistent collapsible sidebar", sidebarPersistenceContract],
   ["prioritized and retry-bounded media artwork", mediaArtworkLoadingContract],
   ["truthful media request and calendar semantics", mediaSemanticsContract],
+  ["series season selection and requests", seriesSeasonControlsContract],
   ["stable service dialog interactions", serviceDialogInteractionContract],
   ["categorized Media connections", mediaConnectionCategoriesContract],
   ["Infrastructure workspace and Proxmox dialog", infrastructureWorkspaceContract],

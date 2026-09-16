@@ -19,6 +19,7 @@ import { createControlPlane, ControlPlaneError } from "./control-plane.mjs";
 import { createHealthIncidentEngine } from "./health-engine.mjs";
 import { createMediaArtworkCache, MEDIA_ARTWORK_LIMITS } from "./media-artwork.mjs";
 import { createSeerrRequestMetadataEnricher } from "./seerr-request-metadata.mjs";
+import { normalizeSeerrSeriesSeasons } from "./seerr-series-seasons.mjs";
 import { createOperationsMonitor } from "./monitor.mjs";
 import { probeProxmox, probeProxmoxEndpoint } from "./proxmox-probes.mjs";
 import { probePortainer } from "./portainer-probes.mjs";
@@ -33,7 +34,7 @@ import {
 } from "./network.mjs";
 import { generateSecretToken, hashToken, StateStore, tokenMatches } from "./state.mjs";
 
-const DEFAULT_VERSION = "0.10.0-beta.13";
+const DEFAULT_VERSION = "0.10.0-beta.14";
 const requestedVersion = String(process.env.HELMSMAN_VERSION || DEFAULT_VERSION);
 const VERSION = /^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/u.test(requestedVersion)
   ? requestedVersion
@@ -104,6 +105,96 @@ export function validProxmoxActionAcknowledgement(value) {
     ? parsed.data
     : null;
   return Boolean(data && /^UPID:[A-Za-z0-9.-]{1,63}:[A-Fa-f0-9]{8}:[A-Fa-f0-9]{8}:[A-Fa-f0-9]{8}:[A-Za-z0-9._-]{1,64}:[A-Za-z0-9._-]{0,128}:[^:\u0000-\u001f\u007f-\u009f]{1,256}:$/u.test(data));
+}
+
+export function validSeerrRequestAcknowledgement(value, expectedSeasonNumbers = null) {
+  let parsed;
+  try {
+    parsed = JSON.parse(Buffer.isBuffer(value) ? value.toString("utf8") : String(value ?? ""));
+  } catch {
+    return false;
+  }
+  const validId = Boolean(parsed
+    && typeof parsed === "object"
+    && !Array.isArray(parsed)
+    && Number.isSafeInteger(parsed.id)
+    && parsed.id > 0
+    && parsed.id <= 9_999_999_999);
+  if (!validId) return false;
+  if (expectedSeasonNumbers === null) return true;
+  if (!Array.isArray(expectedSeasonNumbers)
+    || !Array.isArray(parsed.seasons)
+    || parsed.is4k !== false) return false;
+  const accepted = [];
+  const seen = new Set();
+  for (const value of parsed.seasons) {
+    const seasonNumber = value && typeof value === "object" && !Array.isArray(value)
+      ? value.seasonNumber
+      : null;
+    if (!Number.isSafeInteger(seasonNumber)
+      || seasonNumber < 1
+      || seasonNumber > 10_000
+      || seen.has(seasonNumber)) return false;
+    seen.add(seasonNumber);
+    accepted.push(seasonNumber);
+  }
+  accepted.sort((left, right) => left - right);
+  return accepted.length === expectedSeasonNumbers.length
+    && accepted.every((seasonNumber, index) => seasonNumber === expectedSeasonNumbers[index]);
+}
+
+export function acceptedSeerrSeasonRequestStatus(upstream, expectedSeasonNumbers = null) {
+  const status = Number(upstream?.status);
+  if (status === 201) {
+    if (!validSeerrRequestAcknowledgement(upstream?.body, expectedSeasonNumbers)) {
+      throw new BrokerError(502, "UPSTREAM_RESPONSE_INVALID", "Seerr did not return a valid request acknowledgement.");
+    }
+    return { status, noOp: false };
+  }
+  if (status === 202) {
+    throw new BrokerError(
+      409,
+      "ACTION_NOT_AVAILABLE",
+      "Seerr reports that none of those seasons can currently be requested. Refresh the series before trying again."
+    );
+  }
+  if (status === 409) {
+    throw new BrokerError(409, "ACTION_TARGET_CHANGED", "The Seerr request changed; refresh it before trying again.");
+  }
+  if (status === 401) {
+    throw new BrokerError(502, "ACTION_AUTHENTICATION_FAILED", "Seerr rejected the saved credential for this action.");
+  }
+  if (status === 403) {
+    throw new BrokerError(
+      403,
+      "ACTION_PERMISSION_DENIED",
+      "Seerr denied this request because of account permission, request quota, blocklist, or credential policy."
+    );
+  }
+  throw new BrokerError(
+    502,
+    "ACTION_OUTCOME_UNKNOWN",
+    "Seerr returned an unexpected response after the season request began. Refresh its state before deciding whether to try again."
+  );
+}
+
+export function actionDispatchError(error, provider) {
+  if ([
+    "UPSTREAM_TIMEOUT",
+    "UPSTREAM_RESPONSE_FAILED",
+    "UPSTREAM_UNREACHABLE",
+    "UPSTREAM_RESPONSE_INVALID",
+    "UPSTREAM_RESPONSE_TOO_LARGE",
+    "UPSTREAM_CONTENT_REJECTED",
+    "UPSTREAM_REDIRECT_REJECTED"
+  ].includes(error?.code)) {
+    return new BrokerError(
+      502,
+      "ACTION_OUTCOME_UNKNOWN",
+      `${provider} did not return a trustworthy completion response after the action began. Refresh its state before deciding whether to try again.`
+    );
+  }
+  return error;
 }
 
 function setCommonSecurityHeaders(response) {
@@ -634,14 +725,22 @@ export async function performMediaActionUpstreamRequest({
 }) {
   const authorizedRoute = authorizeMediaAction(route?.operation, {
     service: route?.service,
-    resourceId: route?.resourceId
+    resourceId: route?.resourceId,
+    seasonNumbers: route?.seasonNumbers
   });
+  const sameSeasonNumbers = authorizedRoute.allowed
+    && (authorizedRoute.seasonNumbers === undefined
+      ? route?.seasonNumbers === undefined
+      : Array.isArray(route?.seasonNumbers)
+        && route.seasonNumbers.length === authorizedRoute.seasonNumbers.length
+        && route.seasonNumbers.every((value, index) => value === authorizedRoute.seasonNumbers[index]));
   if (!authorizedRoute.allowed
     || !route?.allowed
     || route.actionId !== "media"
     || route.service !== authorizedRoute.service
     || route.operation !== authorizedRoute.operation
     || route.resourceId !== authorizedRoute.resourceId
+    || !sameSeasonNumbers
     || route.method !== "POST"
     || route.upstreamPathAndQuery !== authorizedRoute.upstreamPathAndQuery
     || route.body !== authorizedRoute.body
@@ -662,7 +761,12 @@ export async function performMediaActionUpstreamRequest({
     route: authorizedRoute,
     deviceOrigin: "http://127.0.0.1",
     targetRevision,
-    limits,
+    limits: {
+      ...limits,
+      maxApiResponseBytes: Number.isSafeInteger(limits?.maxApiResponseBytes)
+        ? Math.min(limits.maxApiResponseBytes, 64 * 1024)
+        : 64 * 1024
+    },
     shutdownSignal
   });
 }
@@ -1371,6 +1475,113 @@ export async function createBroker(options = {}) {
     }
   }
 
+  const seerrSeriesSeasonCache = new Map();
+  const seerrSeriesSeasonInFlight = new Map();
+  const seerrSeriesSeasonEpochs = new Map();
+  const SEERR_SERIES_SEASON_CACHE_TTL_MS = 30_000;
+  const MAX_SEERR_SERIES_SEASON_CACHE_ENTRIES = 128;
+
+  function seerrSeriesSeasonCacheKey(tmdbId, targetRevision) {
+    return `${targetRevision}:${tmdbId}`;
+  }
+
+  function invalidateSeerrSeriesSeasonCache(tmdbId, targetRevision) {
+    const key = seerrSeriesSeasonCacheKey(tmdbId, targetRevision);
+    seerrSeriesSeasonCache.delete(key);
+    const nextEpoch = (seerrSeriesSeasonEpochs.get(key) || 0) + 1;
+    seerrSeriesSeasonEpochs.delete(key);
+    seerrSeriesSeasonEpochs.set(key, nextEpoch);
+    while (seerrSeriesSeasonEpochs.size > 2_048) {
+      const oldest = [...seerrSeriesSeasonEpochs.keys()]
+        .find((candidate) => !seerrSeriesSeasonInFlight.has(candidate));
+      if (!oldest) break;
+      seerrSeriesSeasonEpochs.delete(oldest);
+    }
+  }
+
+  function pruneSeerrSeriesSeasonEpochs() {
+    while (seerrSeriesSeasonEpochs.size > 2_048) {
+      const oldest = [...seerrSeriesSeasonEpochs.keys()]
+        .find((candidate) => !seerrSeriesSeasonInFlight.has(candidate));
+      if (!oldest) break;
+      seerrSeriesSeasonEpochs.delete(oldest);
+    }
+  }
+
+  async function fetchSeerrSeriesSeasons(input = {}) {
+    const tmdbId = input.tmdbId;
+    const targetRevision = input.targetRevision;
+    const useCache = input.cacheMode !== "bypass";
+    const key = seerrSeriesSeasonCacheKey(tmdbId, targetRevision);
+    if (!seerrSeriesSeasonEpochs.has(key)) {
+      seerrSeriesSeasonEpochs.set(key, 0);
+      pruneSeerrSeriesSeasonEpochs();
+    }
+    if (!useCache) invalidateSeerrSeriesSeasonCache(tmdbId, targetRevision);
+    const fetchEpoch = seerrSeriesSeasonEpochs.get(key);
+    if (useCache) {
+      const cached = seerrSeriesSeasonCache.get(key);
+      if (cached && cached.expiresAt > Date.now()) {
+        seerrSeriesSeasonCache.delete(key);
+        seerrSeriesSeasonCache.set(key, cached);
+        return cached.value;
+      }
+      if (cached) seerrSeriesSeasonCache.delete(key);
+      const waiting = seerrSeriesSeasonInFlight.get(key);
+      if (waiting) return waiting;
+      if (seerrSeriesSeasonInFlight.size >= MAX_SEERR_SERIES_SEASON_CACHE_ENTRIES) {
+        throw new BrokerError(503, "BROKER_BUSY", "Too many series season lookups are already in progress.");
+      }
+    }
+
+    const operation = (async () => {
+      const response = await monitorRequest("seerr", `/api/v1/tv/${tmdbId}`, {
+        method: "GET",
+        responseType: "json",
+        maxBytes: 512 * 1024,
+        timeoutMs: Math.min(8_000, limits.upstreamTimeoutMs),
+        targetRevision,
+        signal: input.signal,
+        credentialRequired: true,
+        purpose: "series-seasons"
+      });
+      const status = Number(response?.status);
+      if (status === 404) {
+        throw new BrokerError(404, "MEDIA_SERIES_NOT_FOUND", "Seerr could not find that current series.");
+      }
+      if ([401, 403].includes(status)) {
+        throw new BrokerError(502, "SERVICE_CREDENTIAL_REJECTED", "Seerr rejected the saved credential.");
+      }
+      if (!Number.isSafeInteger(status) || status < 200 || status >= 300) {
+        throw new BrokerError(502, "UPSTREAM_RESPONSE_FAILED", "Seerr could not load seasons for that series.");
+      }
+      const normalized = normalizeSeerrSeriesSeasons(response.body, { tmdbId, targetRevision });
+      if (!normalized) {
+        throw new BrokerError(502, "UPSTREAM_RESPONSE_INVALID", "Seerr returned an invalid series season response.");
+      }
+      if (useCache && seerrSeriesSeasonEpochs.get(key) === fetchEpoch) {
+        seerrSeriesSeasonCache.delete(key);
+        seerrSeriesSeasonCache.set(key, {
+          value: normalized,
+          expiresAt: Date.now() + SEERR_SERIES_SEASON_CACHE_TTL_MS
+        });
+        while (seerrSeriesSeasonCache.size > MAX_SEERR_SERIES_SEASON_CACHE_ENTRIES) {
+          const evictedKey = seerrSeriesSeasonCache.keys().next().value;
+          seerrSeriesSeasonCache.delete(evictedKey);
+          if (!seerrSeriesSeasonInFlight.has(evictedKey)) seerrSeriesSeasonEpochs.delete(evictedKey);
+        }
+      }
+      return normalized;
+    })();
+    if (!useCache) return operation;
+    seerrSeriesSeasonInFlight.set(key, operation);
+    try {
+      return await operation;
+    } finally {
+      if (seerrSeriesSeasonInFlight.get(key) === operation) seerrSeriesSeasonInFlight.delete(key);
+    }
+  }
+
   async function exchangeServiceLogin({ service: serviceValue, targetResolution, targetRevision, login }) {
     const service = canonicalServiceId(serviceValue);
     if (!["jellyfin", "seerr"].includes(service)
@@ -1729,25 +1940,6 @@ export async function createBroker(options = {}) {
     throw new BrokerError(502, "UPSTREAM_ACTION_FAILED", `${provider} did not accept the requested action.`);
   }
 
-  function actionDispatchError(error, provider) {
-    if ([
-      "UPSTREAM_TIMEOUT",
-      "UPSTREAM_RESPONSE_FAILED",
-      "UPSTREAM_UNREACHABLE",
-      "UPSTREAM_RESPONSE_INVALID",
-      "UPSTREAM_RESPONSE_TOO_LARGE",
-      "UPSTREAM_CONTENT_REJECTED",
-      "UPSTREAM_REDIRECT_REJECTED"
-    ].includes(error?.code)) {
-      return new BrokerError(
-        502,
-        "ACTION_OUTCOME_UNKNOWN",
-        `${provider} did not return a trustworthy completion response after the action began. Refresh its state before deciding whether to try again.`
-      );
-    }
-    return error;
-  }
-
   async function executePortainerContainerAction(input) {
     const route = authorizePortainerContainerAction(input?.operation, {
       endpointId: input?.environmentId,
@@ -1830,7 +2022,8 @@ export async function createBroker(options = {}) {
   async function executeMediaRecoveryAction(input) {
     const route = authorizeMediaAction(input?.operation, {
       service: input?.serviceId,
-      resourceId: input?.resourceId
+      resourceId: input?.resourceId,
+      seasonNumbers: input?.seasonNumbers
     });
     if (!route.allowed) throw new BrokerError(route.status || 404, route.code, route.message);
     const release = reserveServiceCapacity(route.service);
@@ -1843,17 +2036,23 @@ export async function createBroker(options = {}) {
         limits,
         shutdownSignal: shutdownController.signal
       });
-      const accepted = acceptedActionStatus(upstream, route.service);
+      const accepted = route.operation === "requestSeasons"
+        ? acceptedSeerrSeasonRequestStatus(upstream, route.seasonNumbers)
+        : acceptedActionStatus(upstream, route.service);
       return {
         ok: true,
         provider: route.service,
         operation: route.operation,
         resourceId: route.resourceId,
+        ...(route.seasonNumbers ? { seasonNumbers: route.seasonNumbers } : {}),
         providerStatus: accepted.status
       };
     } catch (error) {
       throw actionDispatchError(error, route.service);
     } finally {
+      if (route.operation === "requestSeasons") {
+        invalidateSeerrSeriesSeasonCache(route.resourceId, input.connection.targetRevision);
+      }
       release();
     }
   }
@@ -1911,6 +2110,7 @@ export async function createBroker(options = {}) {
     executePortainerContainerAction,
     executeProxmoxWorkloadAction,
     executeMediaRecoveryAction,
+    fetchSeerrSeriesSeasons,
     fetchMediaArtwork: (descriptor, context = {}) => mediaArtwork.get(descriptor, { signal: context.signal }),
     exchangeServiceLogin,
     stateGuard: options.stateGuard,
@@ -2453,6 +2653,9 @@ export async function createBroker(options = {}) {
     monitor.stop();
     seerrRequestMetadata.close();
     mediaArtwork.close();
+    seerrSeriesSeasonCache.clear();
+    seerrSeriesSeasonInFlight.clear();
+    seerrSeriesSeasonEpochs.clear();
     shutdownController.abort();
   };
   let closePromise = null;

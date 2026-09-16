@@ -4,6 +4,8 @@ import { once } from "node:events";
 import test from "node:test";
 
 import {
+  acceptedSeerrSeasonRequestStatus,
+  actionDispatchError,
   performMediaActionUpstreamRequest,
   performPortainerUpstreamRequest,
   performProxmoxUpstreamRequest,
@@ -49,6 +51,18 @@ test("fixed action authorizers construct only approved provider requests", () =>
   const retry = authorizeMediaAction("retryRequest", { service: "seerr", resourceId: 41 });
   assert.equal(retry.upstreamPathAndQuery, "/api/v1/request/41/retry");
   assert.equal(retry.body, "");
+  const seasons = authorizeMediaAction("requestSeasons", {
+    service: "seerr",
+    resourceId: 1396,
+    seasonNumbers: [1, 3]
+  });
+  assert.equal(seasons.upstreamPathAndQuery, "/api/v1/request");
+  assert.deepEqual(JSON.parse(seasons.body), {
+    mediaType: "tv",
+    mediaId: 1396,
+    seasons: [1, 3],
+    is4k: false
+  });
   const movie = authorizeMediaAction("searchMovie", { service: "radarr", resourceId: 22 });
   assert.equal(movie.upstreamPathAndQuery, "/api/v3/command");
   assert.deepEqual(JSON.parse(movie.body), { name: "MoviesSearch", movieIds: [22] });
@@ -81,7 +95,14 @@ test("action authorizers reject short IDs, invalid tuples, and path-like values"
     authorizeProxmoxWorkloadAction("reboot", { node: "../Main", type: "qemu", vmid: 101 }),
     authorizeProxmoxWorkloadAction("reboot", { node: "Main", type: "storage", vmid: 101 }),
     authorizeMediaAction("searchMovie", { service: "sonarr", resourceId: 22 }),
-    authorizeMediaAction("retryRequest", { service: "seerr", resourceId: "1/2" })
+    authorizeMediaAction("retryRequest", { service: "seerr", resourceId: "1/2" }),
+    authorizeMediaAction("requestSeasons", { service: "seerr", resourceId: 1396, seasonNumbers: [] }),
+    authorizeMediaAction("requestSeasons", { service: "seerr", resourceId: 1396, seasonNumbers: [0] }),
+    authorizeMediaAction("requestSeasons", { service: "seerr", resourceId: 1396, seasonNumbers: [2, 1] }),
+    authorizeMediaAction("requestSeasons", { service: "seerr", resourceId: 1396, seasonNumbers: [1, 1] }),
+    authorizeMediaAction("requestSeasons", { service: "seerr", resourceId: 1396, seasonNumbers: ["1"] }),
+    authorizeMediaAction("requestSeasons", { service: "radarr", resourceId: 1396, seasonNumbers: [1] }),
+    authorizeMediaAction("retryRequest", { service: "seerr", resourceId: 41, seasonNumbers: [1] })
   ]) {
     assert.equal(candidate.allowed, false);
   }
@@ -91,6 +112,7 @@ test("action authorizers reject short IDs, invalid tuples, and path-like values"
     "POST",
     "/bridge/seerr/api/v1/request/41/retry"
   ).allowed, false, "write actions must not widen the browser bridge");
+  assert.equal(authorizeBridgeRoute("seerr", "POST", "/bridge/seerr/api/v1/request").allowed, false);
   assert.equal(authorizePortainerRoute("containers", "POST", { endpointId: 1 }).allowed, false);
   assert.equal(authorizeProxmoxRoute("guests", "POST").allowed, false);
 });
@@ -128,6 +150,22 @@ test("action transports reconstruct their route and reject forged parity before 
     performMediaActionUpstreamRequest({
       targetResolution: null,
       route: { ...media, body: JSON.stringify({ name: "MoviesSearch", movieIds: [23] }) },
+      credentialHeaders: { "x-api-key": "must-not-be-sent" },
+      targetRevision: "11111111-1111-4111-8111-111111111111",
+      limits: {}
+    }),
+    (error) => error?.code === "ROUTE_NOT_ALLOWED"
+  );
+
+  const seasonRequest = authorizeMediaAction("requestSeasons", {
+    service: "seerr",
+    resourceId: 1396,
+    seasonNumbers: [1, 2]
+  });
+  await assert.rejects(
+    performMediaActionUpstreamRequest({
+      targetResolution: null,
+      route: { ...seasonRequest, seasonNumbers: [1, 3] },
       credentialHeaders: { "x-api-key": "must-not-be-sent" },
       targetRevision: "11111111-1111-4111-8111-111111111111",
       limits: {}
@@ -186,6 +224,17 @@ test("media action transport emits only its fixed path and command body", async 
     targetRevision: "22222222-2222-4222-8222-222222222222",
     limits
   });
+  await performMediaActionUpstreamRequest({
+    targetResolution,
+    route: authorizeMediaAction("requestSeasons", {
+      service: "seerr",
+      resourceId: 1396,
+      seasonNumbers: [1, 3]
+    }),
+    credentialHeaders: { "x-api-key": "seerr-test-key" },
+    targetRevision: "22222222-2222-4222-8222-222222222222",
+    limits
+  });
   assert.deepEqual(requests, [
     {
       method: "POST",
@@ -200,6 +249,70 @@ test("media action transport emits only its fixed path and command body", async 
       apiKey: "seerr-test-key",
       contentType: undefined,
       body: ""
+    },
+    {
+      method: "POST",
+      url: "/api/v1/request",
+      apiKey: "seerr-test-key",
+      contentType: "application/json",
+      body: JSON.stringify({ mediaType: "tv", mediaId: 1396, seasons: [1, 3], is4k: false })
     }
   ]);
+});
+
+test("Seerr season request responses distinguish creation, no-op, target change, and authorization", () => {
+  assert.deepEqual(
+    acceptedSeerrSeasonRequestStatus({ status: 201, body: Buffer.from('{"id":91}') }),
+    { status: 201, noOp: false }
+  );
+  assert.deepEqual(
+    acceptedSeerrSeasonRequestStatus({
+      status: 201,
+      body: Buffer.from('{"id":91,"is4k":false,"seasons":[{"seasonNumber":3},{"seasonNumber":1}]}')
+    }, [1, 3]),
+    { status: 201, noOp: false }
+  );
+  for (const [status, code] of [
+    [202, "ACTION_NOT_AVAILABLE"],
+    [409, "ACTION_TARGET_CHANGED"],
+    [401, "ACTION_AUTHENTICATION_FAILED"],
+    [403, "ACTION_PERMISSION_DENIED"]
+  ]) {
+    assert.throws(
+      () => acceptedSeerrSeasonRequestStatus({ status, body: Buffer.from("{}") }),
+      (error) => error?.code === code
+    );
+  }
+  assert.throws(
+    () => acceptedSeerrSeasonRequestStatus({ status: 201, body: Buffer.from("{}") }),
+    (error) => error?.code === "UPSTREAM_RESPONSE_INVALID"
+  );
+  let malformedAcknowledgement;
+  try {
+    acceptedSeerrSeasonRequestStatus({ status: 201, body: Buffer.from("{}") });
+  } catch (error) {
+    malformedAcknowledgement = error;
+  }
+  const unknown = actionDispatchError(malformedAcknowledgement, "Seerr");
+  assert.equal(unknown.code, "ACTION_OUTCOME_UNKNOWN");
+  assert.equal(unknown.status, 502);
+  let partialAcknowledgement;
+  try {
+    acceptedSeerrSeasonRequestStatus({
+      status: 201,
+      body: Buffer.from('{"id":91,"is4k":false,"seasons":[{"seasonNumber":1}]}')
+    }, [1, 3]);
+  } catch (error) {
+    partialAcknowledgement = error;
+  }
+  assert.equal(actionDispatchError(partialAcknowledgement, "Seerr").code, "ACTION_OUTCOME_UNKNOWN");
+  for (const status of [200, 500, 503]) {
+    assert.throws(
+      () => acceptedSeerrSeasonRequestStatus({
+        status,
+        body: Buffer.from('{"id":91,"is4k":false,"seasons":[{"seasonNumber":1},{"seasonNumber":3}]}')
+      }, [1, 3]),
+      (error) => error?.code === "ACTION_OUTCOME_UNKNOWN" && error?.status === 502
+    );
+  }
 });

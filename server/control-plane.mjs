@@ -38,6 +38,8 @@ const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{1
 const PROXMOX_TOKEN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}@[A-Za-z0-9][A-Za-z0-9._-]{0,63}![A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
 const MEDIA_ARTWORK_TOKEN = /^[a-f0-9]{16,64}$/u;
 const MEDIA_ARTWORK_TYPE = /^image\/(?:avif|gif|jpeg|png|webp)$/u;
+const MEDIA_DETAIL_REVISION = /^[a-f0-9]{64}$/u;
+const MAX_REQUESTED_SEASONS = 100;
 
 export const SERVICE_DEFINITIONS = Object.freeze({
   jellyfin: Object.freeze({
@@ -834,6 +836,9 @@ export async function createControlPlane(options) {
     : null;
   const executeMediaRecoveryAction = typeof options.executeMediaRecoveryAction === "function"
     ? options.executeMediaRecoveryAction
+    : null;
+  const fetchSeerrSeriesSeasons = typeof options.fetchSeerrSeriesSeasons === "function"
+    ? options.fetchSeerrSeriesSeasons
     : null;
   const credentialStore = options.credentialStore || new CredentialStore(dataDir, {
     instanceId: stateStore.snapshot().instanceId,
@@ -2724,6 +2729,122 @@ export async function createControlPlane(options) {
     return value;
   }
 
+  function requiredSeasonNumbers(value) {
+    if (!Array.isArray(value)
+      || value.length < 1
+      || value.length > MAX_REQUESTED_SEASONS
+      || value.some((season, index) => (
+        !Number.isSafeInteger(season)
+        || season < 1
+        || season > 10_000
+        || (index > 0 && season <= value[index - 1])
+      ))) {
+      fail(400, "INVALID_ACTION_TARGET", "Choose one or more current seasons in ascending order.");
+    }
+    return Object.freeze([...value]);
+  }
+
+  function requiredMediaDetailRevision(value) {
+    if (typeof value !== "string" || !MEDIA_DETAIL_REVISION.test(value)) {
+      fail(400, "INVALID_MEDIA_DETAIL_REVISION", "Refresh the series before requesting seasons.");
+    }
+    return value;
+  }
+
+  function requireCurrentSeriesTarget(snapshot, tmdbId) {
+    const matches = (snapshot?.media?.records || []).filter((candidate) => (
+      candidate?.mediaType === "series"
+      && ((candidate?.seasonRequestTarget?.service === "seerr"
+        && candidate.seasonRequestTarget.resourceId === tmdbId)
+        || candidate?.providerIds?.tmdb === tmdbId)
+    ));
+    if (matches.length !== 1) {
+      fail(
+        409,
+        "ACTION_TARGET_NOT_CURRENT",
+        "That series is not one current Seerr request target. Refresh and try again."
+      );
+    }
+    return matches[0];
+  }
+
+  function requireCurrentSeerrProvider(snapshot, targetRevision) {
+    const provider = requireCurrentActionEvidence(
+      snapshot?.services?.find((candidate) => candidate?.id === "seerr"),
+      targetRevision,
+      "seerr inventory"
+    );
+    if (provider?.connectionState !== "connected") {
+      fail(409, "ACTION_TARGET_NOT_CURRENT", "Current seerr inventory is not connected.");
+    }
+    return provider;
+  }
+
+  function publicSeriesSeasonDetail(value, tmdbId, targetRevision) {
+    const allowedStatuses = new Set([
+      "unknown",
+      "pending",
+      "processing",
+      "partially_available",
+      "available",
+      "blocklisted",
+      "deleted"
+    ]);
+    const allowedRequestStates = new Set(["pending", "approved", "declined", "failed", "completed"]);
+    const blockedStatuses = new Set(["pending", "processing", "partially_available", "available", "blocklisted"]);
+    const blockedRequestStates = new Set(["pending", "approved", "failed"]);
+    if (!value
+      || value.tmdbId !== tmdbId
+      || value.targetRevision !== targetRevision
+      || !MEDIA_DETAIL_REVISION.test(value.detailRevision)
+      || !Array.isArray(value.seasons)
+      || value.seasons.length > 256) {
+      fail(502, "UPSTREAM_RESPONSE_INVALID", "Seerr returned an invalid series season response.");
+    }
+    const seasons = [];
+    for (const season of value.seasons) {
+      const seasonNumber = season?.seasonNumber;
+      const episodeCount = season?.episodeCount;
+      const requestState = season?.requestState ?? null;
+      if (!Number.isSafeInteger(seasonNumber)
+        || seasonNumber < 0
+        || seasonNumber > 10_000
+        || (seasons.length && seasonNumber <= seasons.at(-1).seasonNumber)
+        || !Number.isSafeInteger(episodeCount)
+        || episodeCount < 0
+        || episodeCount > 100_000
+        || typeof season.name !== "string"
+        || Array.from(season.name).length < 1
+        || Array.from(season.name).length > 120
+        || /[\u0000-\u001f\u007f-\u009f]/u.test(season.name)
+        || (season.airDate !== null && (typeof season.airDate !== "string" || !/^\d{4}-\d{2}-\d{2}$/u.test(season.airDate)))
+        || !allowedStatuses.has(season.status)
+        || (requestState !== null && !allowedRequestStates.has(requestState))
+        || typeof season.requestable !== "boolean"
+        || (season.requestable && (seasonNumber === 0
+          || episodeCount === 0
+          || blockedStatuses.has(season.status)
+          || blockedRequestStates.has(requestState)))) {
+        fail(502, "UPSTREAM_RESPONSE_INVALID", "Seerr returned an invalid series season response.");
+      }
+      seasons.push({
+        seasonNumber,
+        name: season.name,
+        episodeCount,
+        airDate: season.airDate,
+        status: season.status,
+        requestState,
+        requestable: season.requestable
+      });
+    }
+    return {
+      tmdbId,
+      targetRevision,
+      detailRevision: value.detailRevision,
+      seasons
+    };
+  }
+
   function currentOperationsSnapshot() {
     if (!monitor) fail(503, "MONITOR_STARTING", "The operations monitor is still starting.");
     const snapshot = monitor.getSnapshot();
@@ -2944,16 +3065,27 @@ export async function createControlPlane(options) {
     await authenticate(request, true);
     if (!executeMediaRecoveryAction) fail(503, "ACTIONS_UNAVAILABLE", "Media recovery controls are temporarily unavailable.");
     const body = await readBoundedJson(request);
-    requireExactKeys(body, ["serviceId", "operation", "resourceId", "targetRevision"]);
+    const seasonRequest = body.operation === "requestSeasons";
+    requireExactKeys(body, seasonRequest
+      ? ["serviceId", "operation", "resourceId", "seasonNumbers", "targetRevision", "detailRevision"]
+      : ["serviceId", "operation", "resourceId", "targetRevision"]);
     const serviceId = ["seerr", "radarr", "sonarr"].includes(body.serviceId) ? body.serviceId : null;
-    const operation = ["retryRequest", "searchMovie", "searchSeries"].includes(body.operation)
+    const operation = ["retryRequest", "requestSeasons", "searchMovie", "searchSeries"].includes(body.operation)
       ? body.operation
       : null;
     const resourceId = requiredActionInteger(body.resourceId, "media resource", 9_999_999_999);
     const targetRevision = requiredActionRevision(body.targetRevision);
-    const expectedOperation = { seerr: "retryRequest", radarr: "searchMovie", sonarr: "searchSeries" }[serviceId];
-    if (!serviceId || operation !== expectedOperation) {
+    const seasonNumbers = seasonRequest ? requiredSeasonNumbers(body.seasonNumbers) : null;
+    const detailRevision = seasonRequest ? requiredMediaDetailRevision(body.detailRevision) : null;
+    const operationAllowed = serviceId === "seerr"
+      ? ["retryRequest", "requestSeasons"].includes(operation)
+      : (serviceId === "radarr" && operation === "searchMovie")
+        || (serviceId === "sonarr" && operation === "searchSeries");
+    if (!serviceId || !operationAllowed) {
       fail(400, "INVALID_ACTION_TARGET", "Choose a supported media recovery action.");
+    }
+    if (seasonRequest && !fetchSeerrSeriesSeasons) {
+      fail(503, "MEDIA_SEASONS_UNAVAILABLE", "Series seasons are temporarily unavailable.");
     }
     const state = stateStore.snapshot();
     const connection = state.connections[serviceId];
@@ -2961,15 +3093,19 @@ export async function createControlPlane(options) {
       fail(409, "TARGET_CHANGED", "The media service connection changed; refresh it before trying again.");
     }
     const snapshot = currentOperationsSnapshot();
-    const provider = requireCurrentActionEvidence(
-      snapshot.services?.find((candidate) => candidate?.id === serviceId),
-      targetRevision,
-      `${serviceId} inventory`
-    );
-    if (provider?.connectionState !== "connected") {
+    const provider = serviceId === "seerr"
+      ? requireCurrentSeerrProvider(snapshot, targetRevision)
+      : requireCurrentActionEvidence(
+        snapshot.services?.find((candidate) => candidate?.id === serviceId),
+        targetRevision,
+        `${serviceId} inventory`
+      );
+    if (serviceId !== "seerr" && provider?.connectionState !== "connected") {
       fail(409, "ACTION_TARGET_NOT_CURRENT", `Current ${serviceId} inventory is not connected.`);
     }
-    if (serviceId === "seerr") {
+    if (seasonRequest) {
+      requireCurrentSeriesTarget(snapshot, resourceId);
+    } else if (serviceId === "seerr") {
       const requestRecord = snapshot.media?.requests?.find((candidate) => candidate?.requestId === resourceId);
       if (!requestRecord || requestRecord.requestStatus !== "failed") {
         fail(409, "ACTION_NOT_AVAILABLE", "That request is not currently marked failed by Seerr.");
@@ -2994,6 +3130,62 @@ export async function createControlPlane(options) {
         || records[0].downloading === true) {
         fail(409, "ACTION_TARGET_NOT_CURRENT", `That ${expectedType} is not one current monitored ${serviceId} target.`);
       }
+    }
+
+    if (seasonRequest) {
+      const result = await runSingleFlightAction(
+        `media:seerr:request-seasons:${resourceId}`,
+        async () => {
+          try {
+            const currentState = stateStore.snapshot();
+            const currentConnection = currentState.connections.seerr;
+            if (!currentConnection
+              || currentConnection.monitoringEnabled === false
+              || currentConnection.targetRevision !== targetRevision) {
+              fail(409, "TARGET_CHANGED", "The Seerr connection changed; refresh it before trying again.");
+            }
+            const currentSnapshot = currentOperationsSnapshot();
+            requireCurrentSeerrProvider(currentSnapshot, targetRevision);
+            requireCurrentSeriesTarget(currentSnapshot, resourceId);
+            const currentDetail = publicSeriesSeasonDetail(
+              await fetchSeerrSeriesSeasons({
+                tmdbId: resourceId,
+                targetRevision,
+                cacheMode: "bypass"
+              }),
+              resourceId,
+              targetRevision
+            );
+            if (currentDetail.detailRevision !== detailRevision) {
+              fail(409, "ACTION_TARGET_CHANGED", "The series season state changed; refresh it before trying again.");
+            }
+            const seasonsByNumber = new Map(currentDetail.seasons.map((season) => [season.seasonNumber, season]));
+            if (seasonNumbers.some((seasonNumber) => seasonsByNumber.get(seasonNumber)?.requestable !== true)) {
+              fail(409, "ACTION_NOT_AVAILABLE", "One or more selected seasons can no longer be requested.");
+            }
+            const currentTarget = parseServiceUrl(currentConnection.url);
+            const targetResolution = await resolveAndAuthorizeTarget(currentTarget, currentState.policy, {
+              lookup,
+              approvedHostCidrs: currentConnection.approvedHostCidrs || []
+            });
+            return await useServiceCredential("seerr", currentConnection, (credential) => (
+              executeMediaRecoveryAction({
+                serviceId: "seerr",
+                operation,
+                resourceId,
+                seasonNumbers,
+                connection: currentConnection,
+                targetResolution,
+                credential
+              })
+            ));
+          } finally {
+            monitor?.requestRefresh?.();
+          }
+        }
+      );
+      sendJson(response, 200, result);
+      return;
     }
 
     const target = parseServiceUrl(connection.url);
@@ -3036,6 +3228,34 @@ export async function createControlPlane(options) {
       return;
     }
     fail(405, "METHOD_NOT_ALLOWED", "That method is not allowed.");
+  }
+
+  async function mediaSeriesSeasons(request, response, tmdbIdValue, url) {
+    if (request.method !== "GET") fail(405, "METHOD_NOT_ALLOWED", "That method is not allowed.");
+    await authenticate(request, false);
+    if (!fetchSeerrSeriesSeasons) {
+      fail(503, "MEDIA_SEASONS_UNAVAILABLE", "Series seasons are temporarily unavailable.");
+    }
+    const queryEntries = [...url.searchParams];
+    if (queryEntries.length !== 1 || queryEntries[0][0] !== "targetRevision") {
+      fail(400, "INVALID_REQUEST", "Provide the current Seerr target revision only.");
+    }
+    const tmdbId = requiredActionInteger(Number(tmdbIdValue), "TMDb series", 9_999_999_999);
+    const targetRevision = requiredActionRevision(queryEntries[0][1]);
+    const state = stateStore.snapshot();
+    const connection = state.connections.seerr;
+    if (!connection || connection.monitoringEnabled === false || connection.targetRevision !== targetRevision) {
+      fail(409, "TARGET_CHANGED", "The Seerr connection changed; refresh it before loading seasons.");
+    }
+    const snapshot = currentOperationsSnapshot();
+    requireCurrentSeerrProvider(snapshot, targetRevision);
+    requireCurrentSeriesTarget(snapshot, tmdbId);
+    const detail = await fetchSeerrSeriesSeasons({
+      tmdbId,
+      targetRevision,
+      cacheMode: "read"
+    });
+    sendJson(response, 200, publicSeriesSeasonDetail(detail, tmdbId, targetRevision));
   }
 
   async function mediaArtwork(request, response, token) {
@@ -3221,6 +3441,11 @@ export async function createControlPlane(options) {
       const operationMatch = url.pathname.match(/^\/api\/v2\/operations\/(snapshot|refresh)$/u);
       if (operationMatch) {
         await operations(request, response, operationMatch[1]);
+        return true;
+      }
+      const seriesSeasonsMatch = url.pathname.match(/^\/api\/v2\/media\/series\/([1-9][0-9]*)\/seasons$/u);
+      if (seriesSeasonsMatch) {
+        await mediaSeriesSeasons(request, response, seriesSeasonsMatch[1], url);
         return true;
       }
       const artworkMatch = url.pathname.match(/^\/api\/v2\/media\/artwork\/([a-f0-9]+)$/u);
