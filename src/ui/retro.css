@@ -1167,6 +1167,14 @@ progress {
   background: var(--retro-screen);
 }
 
+.operations-section-heading > div,
+.glass-panel > header > div,
+.portainer-panel > header > div {
+  min-width: 0;
+  flex: 1 1 auto;
+  margin-right: auto;
+}
+
 .operations-incident,
 .incident-row,
 .endpoint-detail-row,
@@ -1184,35 +1192,16 @@ progress {
 :is(
   .operations-service,
   .infrastructure-target,
-  .infrastructure-target__action,
-  .environment-card__main,
+  .environment-card,
   .infrastructure-node-card,
-  .infrastructure-node-card__main,
   .workload-row:not(.workload-row--header),
   .inventory-compact-list > button,
   .service-card-v5,
-  .service-card-v5__action,
   .portainer-row,
   .portainer-container-row,
   .portainer-stack-row,
   .portainer-environment-card
-):hover,
-:is(
-  .operations-service,
-  .infrastructure-target,
-  .infrastructure-target__action,
-  .environment-card__main,
-  .infrastructure-node-card,
-  .infrastructure-node-card__main,
-  .workload-row:not(.workload-row--header),
-  .inventory-compact-list > button,
-  .service-card-v5,
-  .service-card-v5__action,
-  .portainer-row,
-  .portainer-container-row,
-  .portainer-stack-row,
-  .portainer-environment-card
-):focus-visible {
+):is(:hover, :focus-visible, :focus-within) {
   border-color: var(--accent);
   background: linear-gradient(90deg, rgba(159, 197, 194, 0.11), rgba(159, 197, 194, 0.045));
   color: var(--text);
@@ -1223,57 +1212,48 @@ progress {
 :is(
   .operations-service,
   .infrastructure-target,
-  .infrastructure-target__action,
-  .environment-card__main,
+  .environment-card,
   .infrastructure-node-card,
-  .infrastructure-node-card__main,
   .workload-row:not(.workload-row--header),
   .inventory-compact-list > button,
   .service-card-v5,
-  .service-card-v5__action,
   .portainer-row,
   .portainer-container-row,
   .portainer-stack-row,
   .portainer-environment-card
-):is(:hover, :focus-visible) :is(strong, dd, code) {
+):is(:hover, :focus-visible, :focus-within) :is(strong, dd, code) {
   color: var(--text);
 }
 
 :is(
   .operations-service,
   .infrastructure-target,
-  .infrastructure-target__action,
-  .environment-card__main,
+  .environment-card,
   .infrastructure-node-card,
-  .infrastructure-node-card__main,
   .workload-row:not(.workload-row--header),
   .inventory-compact-list > button,
   .service-card-v5,
-  .service-card-v5__action,
   .portainer-row,
   .portainer-container-row,
   .portainer-stack-row,
   .portainer-environment-card
-):is(:hover, :focus-visible) :is(small, em, dt) {
+):is(:hover, :focus-visible, :focus-within) :is(small, em, dt) {
   color: var(--text-soft);
 }
 
 :is(
   .operations-service,
   .infrastructure-target,
-  .infrastructure-target__action,
-  .environment-card__main,
+  .environment-card,
   .infrastructure-node-card,
-  .infrastructure-node-card__main,
   .workload-row:not(.workload-row--header),
   .inventory-compact-list > button,
   .service-card-v5,
-  .service-card-v5__action,
   .portainer-row,
   .portainer-container-row,
   .portainer-stack-row,
   .portainer-environment-card
-):is(:hover, :focus-visible) svg {
+):is(:hover, :focus-visible, :focus-within) svg {
   color: var(--accent);
 }
 
@@ -1947,6 +1927,13 @@ html[data-transparency="reduced"] body::before {
     border-color: Highlight;
     background: Highlight;
     color: HighlightText;
+  }
+
+  :is(.infrastructure-target, .environment-card, .infrastructure-node-card, .service-card-v5):is(:hover, :focus-within) {
+    border-color: Highlight;
+    outline: 1px solid Highlight;
+    background: Canvas;
+    color: CanvasText;
   }
 
   .drawer-season-option:has(input:checked) {

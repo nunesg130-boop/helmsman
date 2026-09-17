@@ -879,14 +879,14 @@ function renderSetup() {
 function renderJellyfinLogin() {
   const ownerCopy = "Sign in with the enrolled Jellyfin administrator account.";
   return `
-    <section class="setup-v5" aria-labelledby="jellyfin-login-title">
+    <section class="setup-v5 setup-v5--login" aria-labelledby="jellyfin-login-title">
       ${renderGateHeader("Browser access", "Sign in with Jellyfin", ownerCopy, "jellyfin-login-title")}
-      <form class="glass-form glass-form--compact" id="jellyfin-login-form" autocomplete="on" data-form-type="login">
+      <form class="glass-form glass-form--compact glass-form--login" id="jellyfin-login-form" autocomplete="on" data-form-type="login">
         <div class="form-section">
           <div class="form-section__number">01</div>
           <div class="form-section__body">
             <h3>Jellyfin credentials</h3>
-            <div class="form-grid form-grid--two">
+            <div class="form-grid form-grid--stacked">
               <label><span>Username</span><input name="username" type="text" autocomplete="username" autocapitalize="off" spellcheck="false" maxlength="320" required /></label>
               <label><span>Password</span><input name="password" type="password" autocomplete="current-password" required /></label>
             </div>
@@ -3664,6 +3664,78 @@ function latestInfrastructureCheck(targets, portainers) {
   ].filter(Boolean).sort((left, right) => Date.parse(right) - Date.parse(left))[0] || null;
 }
 
+const MEDIA_CONNECTION_PRIORITY = Object.freeze({
+  down: 0,
+  auth_required: 1,
+  unverified: 2,
+  connected: 3
+});
+
+function mediaConnectionSummary(services) {
+  const states = services
+    .filter(({ state: serviceState }) => statusClass(serviceState) !== "disabled")
+    .map(({ connectionState }) => {
+      const candidate = String(connectionState || "unverified").toLowerCase().replaceAll("-", "_");
+      return Object.prototype.hasOwnProperty.call(MEDIA_CONNECTION_PRIORITY, candidate) ? candidate : "unverified";
+    });
+  const state = states.sort((left, right) => MEDIA_CONNECTION_PRIORITY[left] - MEDIA_CONNECTION_PRIORITY[right])[0] || "unverified";
+  return {
+    connected: { state: "healthy", label: "Connected" },
+    auth_required: { state: "auth-required", label: "Authentication required" },
+    down: { state: "down", label: "Unavailable" },
+    unverified: { state: "stale", label: "Unverified" }
+  }[state];
+}
+
+function monitorSummaryMarkup({ infrastructureWorkspace, overall, connection, summaryText }) {
+  const mobileDot = `<i class="monitor-summary__mobile-dot health-dot is-${escapeHtml(statusClass(overall))}" data-monitor-mobile-dot aria-hidden="true"></i>`;
+  const mediaHidden = infrastructureWorkspace ? " hidden" : "";
+  const infrastructureHidden = infrastructureWorkspace ? "" : " hidden";
+  return `<span class="monitor-summary__metrics" data-monitor-media-summary${mediaHidden}><span class="monitor-summary__metric"><small>Connection health</small><span class="monitor-summary__value"><i class="health-dot is-${escapeHtml(connection.state)}" data-monitor-connection-dot aria-hidden="true"></i><strong data-monitor-connection-state>${escapeHtml(connection.label)}</strong></span></span><span class="monitor-summary__metric"><small>Service health</small><span class="monitor-summary__value"><i class="health-dot is-${escapeHtml(statusClass(overall))}" data-monitor-service-dot aria-hidden="true"></i><strong data-monitor-service-state>${escapeHtml(statusLabel(overall))}</strong></span></span></span><span class="monitor-summary__single" data-monitor-infrastructure-summary${infrastructureHidden}><i class="health-dot is-${escapeHtml(statusClass(overall))}" data-monitor-infrastructure-dot aria-hidden="true"></i><span data-monitor-infrastructure-text>${escapeHtml(summaryText)}</span></span><span class="monitor-summary__checked" data-monitor-checked${mediaHidden}>${escapeHtml(summaryText)}</span>${mobileDot}`;
+}
+
+function updateMonitorSummary({ infrastructureWorkspace, overall, services, summaryText }) {
+  const connection = mediaConnectionSummary(services);
+  const serviceLabel = statusLabel(overall);
+  monitorSummary.setAttribute("href", infrastructureWorkspace ? "#/incidents" : "#/health");
+  monitorSummary.setAttribute(
+    "aria-label",
+    infrastructureWorkspace
+      ? "Open infrastructure incidents"
+      : `Open media health. Connection health: ${connection.label}. Service health: ${serviceLabel}.`
+  );
+
+  const mediaSummary = monitorSummary.querySelector("[data-monitor-media-summary]");
+  const infrastructureSummary = monitorSummary.querySelector("[data-monitor-infrastructure-summary]");
+  const connectionDot = monitorSummary.querySelector("[data-monitor-connection-dot]");
+  const connectionState = monitorSummary.querySelector("[data-monitor-connection-state]");
+  const serviceDot = monitorSummary.querySelector("[data-monitor-service-dot]");
+  const serviceState = monitorSummary.querySelector("[data-monitor-service-state]");
+  const infrastructureDot = monitorSummary.querySelector("[data-monitor-infrastructure-dot]");
+  const infrastructureText = monitorSummary.querySelector("[data-monitor-infrastructure-text]");
+  const checkedText = monitorSummary.querySelector("[data-monitor-checked]");
+  const mobileDot = monitorSummary.querySelector("[data-monitor-mobile-dot]");
+  const canPatch = mediaSummary && infrastructureSummary && connectionDot && connectionState
+    && serviceDot && serviceState && infrastructureDot && infrastructureText && checkedText && mobileDot;
+
+  if (!canPatch) {
+    setMarkup(monitorSummary, monitorSummaryMarkup({ infrastructureWorkspace, overall, connection, summaryText }));
+    return;
+  }
+
+  mediaSummary.hidden = infrastructureWorkspace;
+  checkedText.hidden = infrastructureWorkspace;
+  infrastructureSummary.hidden = !infrastructureWorkspace;
+  connectionDot.className = `health-dot is-${connection.state}`;
+  connectionState.textContent = connection.label;
+  serviceDot.className = `health-dot is-${statusClass(overall)}`;
+  serviceState.textContent = serviceLabel;
+  infrastructureDot.className = `health-dot is-${statusClass(overall)}`;
+  infrastructureText.textContent = summaryText;
+  checkedText.textContent = summaryText;
+  mobileDot.className = `monitor-summary__mobile-dot health-dot is-${statusClass(overall)}`;
+}
+
 function updateChrome() {
   const normalized = normalizeOperationsSnapshot(snapshotForUi(), state.infrastructure.targets);
   const infrastructure = configuredInfrastructureSnapshotForUi();
@@ -3707,20 +3779,11 @@ function updateChrome() {
   const authenticated = Boolean(state.status?.authenticated);
   modeBadge.textContent = authenticated ? statusLabel(overall) : "Helmsman server";
   modeBadge.dataset.state = statusClass(overall);
-  monitorSummary.setAttribute("href", infrastructureWorkspace ? "#/incidents" : "#/health");
-  monitorSummary.setAttribute("aria-label", infrastructureWorkspace ? "Open infrastructure incidents" : "Open media health");
   const time = infrastructureWorkspace ? latestInfrastructureCheck(infrastructure.targets, portainers) : state.snapshot?.generatedAt;
   const summaryText = state.refreshing
     ? infrastructureWorkspace ? "Checking infrastructure…" : "Checking services…"
     : `Last ${infrastructureWorkspace ? "infrastructure" : "container"} check ${formatTime(time, "pending")}`;
-  const monitorDot = monitorSummary.querySelector(".health-dot, .pulse-dot");
-  const monitorText = monitorSummary.querySelector("span:last-child");
-  if (monitorDot && monitorText) {
-    monitorDot.className = `health-dot is-${statusClass(overall)}`;
-    monitorText.textContent = summaryText;
-  } else {
-    setMarkup(monitorSummary, `<span class="health-dot is-${statusClass(overall)}" aria-hidden="true"></span><span>${escapeHtml(summaryText)}</span>`);
-  }
+  updateMonitorSummary({ infrastructureWorkspace, overall, services: normalized.services, summaryText });
   const initials = String(state.status?.session?.name || "HM").split(/\s+/u).map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "HM";
   sessionButton.querySelector("span").textContent = initials;
   sessionButton.disabled = !authenticated;

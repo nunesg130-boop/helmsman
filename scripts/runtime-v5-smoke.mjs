@@ -30,6 +30,7 @@ class FakeClassList {
 class FakeElement {
   constructor({ id = "", childSpan = false } = {}) {
     this.id = id;
+    this.className = "";
     this.classList = new FakeClassList();
     this.dataset = {};
     this.attributes = new Map();
@@ -143,6 +144,30 @@ function installFakeBrowser(fetchHandler, suffix) {
   ];
   const elements = new Map(selectors.map((selector) => [selector, new FakeElement({ id: selector.slice(1) })]));
   elements.set("#session-button", new FakeElement({ id: "session-button", childSpan: true }));
+  const monitorSummary = elements.get("#monitor-summary");
+  const monitorNodes = {
+    mediaSummary: new FakeElement(),
+    infrastructureSummary: new FakeElement(),
+    connectionDot: new FakeElement(),
+    connectionState: new FakeElement(),
+    serviceDot: new FakeElement(),
+    serviceState: new FakeElement(),
+    infrastructureDot: new FakeElement(),
+    infrastructureText: new FakeElement(),
+    checkedText: new FakeElement(),
+    mobileDot: new FakeElement()
+  };
+  monitorNodes.infrastructureSummary.hidden = true;
+  monitorSummary.registerSelector("[data-monitor-media-summary]", monitorNodes.mediaSummary);
+  monitorSummary.registerSelector("[data-monitor-infrastructure-summary]", monitorNodes.infrastructureSummary);
+  monitorSummary.registerSelector("[data-monitor-connection-dot]", monitorNodes.connectionDot);
+  monitorSummary.registerSelector("[data-monitor-connection-state]", monitorNodes.connectionState);
+  monitorSummary.registerSelector("[data-monitor-service-dot]", monitorNodes.serviceDot);
+  monitorSummary.registerSelector("[data-monitor-service-state]", monitorNodes.serviceState);
+  monitorSummary.registerSelector("[data-monitor-infrastructure-dot]", monitorNodes.infrastructureDot);
+  monitorSummary.registerSelector("[data-monitor-infrastructure-text]", monitorNodes.infrastructureText);
+  monitorSummary.registerSelector("[data-monitor-checked]", monitorNodes.checkedText);
+  monitorSummary.registerSelector("[data-monitor-mobile-dot]", monitorNodes.mobileDot);
   const confirmationLayer = elements.get("#control-confirm-layer");
   const confirmationCancel = new FakeElement({ id: "control-confirm-cancel" });
   confirmationCancel.dataset.action = "cancel-control-confirm";
@@ -328,6 +353,7 @@ function installFakeBrowser(fetchHandler, suffix) {
     suffix,
     document,
     elements,
+    monitorNodes,
     intervalCallbacks,
     location,
     requestLog,
@@ -439,6 +465,10 @@ async function jellyfinGateContract() {
     "the Jellyfin login heading reference must resolve"
   );
   assert.match(environment.main.innerHTML, /id="jellyfin-login-form"/u);
+  assert.match(environment.main.innerHTML, /class="setup-v5 setup-v5--login"/u, "the Jellyfin gate must use the centered login layout");
+  assert.match(environment.main.innerHTML, /class="glass-form glass-form--compact glass-form--login"/u);
+  assert.match(environment.main.innerHTML, /class="form-grid form-grid--stacked"/u, "username and password must be stacked");
+  assert.doesNotMatch(environment.main.innerHTML, /jellyfin-login-form[\s\S]*?form-grid--two/u, "the login must not place credentials side by side");
   assert.match(environment.main.innerHTML, /name="username" type="text" autocomplete="username"/u);
   assert.match(environment.main.innerHTML, /name="password" type="password" autocomplete="current-password"/u);
   assert.match(environment.main.innerHTML, /HTTP does not encrypt this password between Helmsman and Jellyfin/u);
@@ -3072,8 +3102,8 @@ async function mediaConnectionCategoriesContract() {
   const snapshot = {
     version: 1,
     generatedAt: "2026-09-15T12:00:00.000Z",
-    overall: { state: "healthy", serviceCount: 1, affectedServiceCount: 0, openIncidentCount: 0 },
-    services: [{ id: "jellyfin", label: "Jellyfin", state: "healthy", connectionState: "connected", checks: [] }],
+    overall: { state: "limited", serviceCount: 1, affectedServiceCount: 1, openIncidentCount: 1 },
+    services: [{ id: "jellyfin", label: "Jellyfin", state: "limited", connectionState: "connected", checks: [] }],
     pipeline: { state: "healthy", stages: [] },
     incidents: { open: [], recent: [] },
     workload: {},
@@ -3091,6 +3121,15 @@ async function mediaConnectionCategoriesContract() {
   await importShell(environment);
   await waitFor(() => environment.main.innerHTML.includes("media-connections-page"), "categorized Media Connections");
   const markup = environment.main.innerHTML;
+  assert.equal(
+    environment.elements.get("#monitor-summary").attributes.get("aria-label"),
+    "Open media health. Connection health: Connected. Service health: Limited."
+  );
+  assert.equal(environment.monitorNodes.connectionState.textContent, "Connected");
+  assert.equal(environment.monitorNodes.serviceState.textContent, "Limited");
+  assert.equal(environment.monitorNodes.mediaSummary.hidden, false);
+  assert.equal(environment.monitorNodes.infrastructureSummary.hidden, true);
+  assert.equal(environment.elements.get("#monitor-summary").markupWrites, 0, "monitor polling must patch its stable DOM instead of rebuilding it");
   const expectedCategories = [
     ["media-server", ["jellyfin"]],
     ["requests", ["seerr"]],
@@ -3110,6 +3149,22 @@ async function mediaConnectionCategoriesContract() {
   }
   assert.match(markup, /Jellyfin[\s\S]*Connected[\s\S]*Credential saved/u);
   assert.match(markup, /qBittorrent[\s\S]*Set up[\s\S]*No credential/u);
+
+  const snapshotsBeforeMixedConnections = environment.requestLog.filter(({ path }) => path === "/api/v2/operations/snapshot").length;
+  snapshot.services = [
+    ...snapshot.services,
+    { id: "seerr", label: "Seerr", state: "healthy", connectionState: "auth_required", checks: [] },
+    { id: "radarr", label: "Radarr", state: "healthy", connectionState: "down", checks: [] }
+  ];
+  await environment.intervalCallbacks.at(-1)();
+  await waitFor(
+    () => environment.requestLog.filter(({ path }) => path === "/api/v2/operations/snapshot").length === snapshotsBeforeMixedConnections + 1,
+    "mixed Media connection summary"
+  );
+  assert.equal(environment.monitorNodes.connectionState.textContent, "Unavailable", "an outage must outrank an authentication warning in aggregate connection health");
+  assert.equal(environment.monitorNodes.connectionDot.className, "health-dot is-down");
+  assert.match(environment.elements.get("#monitor-summary").attributes.get("aria-label"), /Connection health: Unavailable/u);
+  assert.equal(environment.elements.get("#monitor-summary").markupWrites, 0);
 }
 
 async function infrastructureWorkspaceContract() {
@@ -3286,7 +3341,12 @@ async function infrastructureWorkspaceContract() {
   await waitFor(() => environment.main.innerHTML.includes("operations-page"), "media workspace startup");
   assert.equal(environment.elements.get("#page-eyebrow").textContent, "Media operations");
   assert.equal(environment.elements.get("#monitor-summary").attributes.get("href"), "#/health", "Media monitor summary must link to Health");
-  assert.equal(environment.elements.get("#monitor-summary").attributes.get("aria-label"), "Open media health");
+  assert.equal(
+    environment.elements.get("#monitor-summary").attributes.get("aria-label"),
+    "Open media health. Connection health: Unverified. Service health: Healthy."
+  );
+  assert.equal(environment.monitorNodes.connectionState.textContent, "Unverified");
+  assert.equal(environment.monitorNodes.serviceState.textContent, "Healthy");
 
   environment.sidebarToggle.closest = (selector) => selector === "[data-action]" ? environment.sidebarToggle : null;
   assert.equal(environment.elements.get("#app").classList.contains("is-sidebar-collapsed"), false);
@@ -3315,11 +3375,15 @@ async function infrastructureWorkspaceContract() {
   assert.ok(environment.portainerNav.every((element) => element.hidden), "Portainer navigation must stay hidden until Portainer is connected");
   assert.equal(environment.elements.get("#monitor-summary").attributes.get("href"), "#/incidents", "Infrastructure monitor summary must link to Incidents");
   assert.equal(environment.elements.get("#monitor-summary").attributes.get("aria-label"), "Open infrastructure incidents");
+  assert.equal(environment.monitorNodes.mediaSummary.hidden, true);
+  assert.equal(environment.monitorNodes.checkedText.hidden, true);
+  assert.equal(environment.monitorNodes.infrastructureSummary.hidden, false);
   assert.ok(environment.requestLog.some(({ path }) => path === "/api/v2/infrastructure/environments"), "workspace switch must load environment metadata");
   assert.match(environment.main.innerHTML, /No infrastructure connections yet/u, "Overview must describe only currently configured infrastructure");
   assert.doesNotMatch(environment.main.innerHTML, /Connect and discover|Connect Portainer|data-action="open-infrastructure-target"|data-action="open-portainer-service"/u, "Overview must not act as the connector catalog");
   assert.equal(environment.elements.get("#mode-badge").textContent, "Disabled", "an unmatched removed target must not affect current Infrastructure health");
-  assert.match(environment.elements.get("#monitor-summary").innerHTML, /pending/u, "an empty current Overview must not borrow the global monitor timestamp");
+  assert.match(environment.monitorNodes.infrastructureText.textContent, /pending/u, "an empty current Overview must not borrow the global monitor timestamp");
+  assert.equal(environment.elements.get("#monitor-summary").markupWrites, 0, "workspace switching must preserve the monitor summary DOM");
   snapshot.infrastructure.targets = [];
 
   environment.location.hash = "#/services";
@@ -4425,6 +4489,13 @@ async function authenticatedRuntimeContract() {
   assert.match(environment.main.innerHTML, /aria-label="Jellyfin service health: Limited"/u);
   assert.match(environment.main.innerHTML, /Connection health[\s\S]*Connected/u, "the Overview must show verified connection health separately");
   assert.match(environment.main.innerHTML, /Service health[\s\S]*Limited/u, "the Overview must show upstream service health separately");
+  assert.equal(
+    environment.elements.get("#monitor-summary").attributes.get("aria-label"),
+    "Open media health. Connection health: Unverified. Service health: Limited."
+  );
+  assert.equal(environment.monitorNodes.connectionState.textContent, "Unverified");
+  assert.equal(environment.monitorNodes.serviceState.textContent, "Limited");
+  assert.equal(environment.elements.get("#monitor-summary").markupWrites, 0, "the advisory must update without replacing its DOM");
   assert.doesNotMatch(environment.main.innerHTML, /<img src=x/u, "hostile API headings must not create elements");
   assert.doesNotMatch(environment.main.innerHTML, /<script>alert\(1\)<\/script>/u, "hostile incident text must not create scripts");
   assert.match(environment.main.innerHTML, /&lt;img src=x onerror=&quot;alert\(1\)&quot;&gt;/u);

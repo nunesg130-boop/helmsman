@@ -34,6 +34,7 @@
 }
 
 .monitor-summary {
+  min-width: 0;
   cursor: pointer;
 }
 
@@ -50,6 +51,71 @@
   min-width: 8px;
   flex: 0 0 8px;
   margin-left: 0;
+}
+
+.monitor-summary__metrics {
+  display: grid;
+  min-width: 0;
+  flex: 1 1 auto;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: center;
+  gap: 14px;
+}
+
+.monitor-summary__metric {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.monitor-summary__metric > small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 760;
+  letter-spacing: 0.08em;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.monitor-summary__value,
+.monitor-summary__single {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+}
+
+.monitor-summary__value strong,
+.monitor-summary__single > span {
+  overflow: hidden;
+  color: var(--text-soft);
+  font-size: 10px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.monitor-summary__single {
+  flex: 1 1 auto;
+}
+
+.monitor-summary > .monitor-summary__checked {
+  overflow: hidden;
+  max-width: 164px;
+  flex: 0 1 auto;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.25;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.monitor-summary__mobile-dot {
+  display: none !important;
 }
 
 .preview-badge[data-state="healthy"] {
@@ -187,6 +253,60 @@
 }
 
 .glass-form--compact { max-width: 1120px; }
+
+.setup-v5--login {
+  justify-items: center;
+}
+
+.setup-v5--login > :is(.setup-v5__header, .glass-form--login) {
+  width: min(820px, 100%);
+}
+
+.setup-v5--login > .setup-v5__header {
+  flex-direction: column;
+  justify-content: center;
+  text-align: center;
+}
+
+.setup-v5--login > .setup-v5__header p {
+  margin-inline: auto;
+}
+
+.glass-form--login .form-section {
+  grid-template-columns: 1fr;
+  justify-items: center;
+  text-align: center;
+}
+
+.glass-form--login .form-section__body {
+  width: min(100%, 560px);
+}
+
+.form-grid--stacked {
+  grid-template-columns: 1fr;
+}
+
+.glass-form--login .form-grid--stacked label {
+  text-align: left;
+}
+
+.glass-form--login .security-note,
+.glass-form--login .form-error {
+  width: min(560px, calc(100% - 48px));
+  margin-inline: auto;
+}
+
+.glass-form--login .form-error {
+  text-align: center;
+}
+
+.glass-form--login .form-actions {
+  justify-content: center;
+}
+
+.glass-form--login .form-actions .button {
+  min-width: 150px;
+}
 
 .form-section {
   display: grid;
@@ -533,6 +653,9 @@ label > small {
   color: var(--text-soft);
   font-size: 12px;
   font-weight: 760;
+  line-height: 1;
+  text-align: center;
+  white-space: nowrap;
 }
 
 .incident-table,
@@ -982,14 +1105,18 @@ label > small {
   text-align: left;
 }
 
-.environment-card__main:hover,
-.environment-card__main:focus-visible,
-.infrastructure-node-card__main:hover,
-.infrastructure-node-card__main:focus-visible,
+.environment-card:is(:hover, :focus-within),
+.infrastructure-node-card:is(:hover, :focus-within),
 .workload-row:not(.workload-row--header):hover,
 .workload-row:not(.workload-row--header):focus-visible {
   background: rgba(255, 255, 255, 0.055);
   outline: none;
+}
+
+.environment-card__main:focus-visible,
+.infrastructure-node-card__main:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
 }
 
 .environment-card__main > svg { width: 17px; height: 17px; color: var(--muted); }
@@ -1499,6 +1626,7 @@ label > small {
   .settings-grid-v5 { grid-template-columns: 1fr; }
   .infrastructure-node-card dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .inventory-detail-columns { grid-template-columns: 1fr; }
+  .monitor-summary__checked { display: none; }
 }
 
 @media (max-width: 1320px) {
@@ -1519,9 +1647,11 @@ label > small {
 @media (max-width: 760px) {
   .main-content > :where(.operations-page, .detail-page, .setup-v5, .state-page) { padding: 18px 16px calc(96px + env(safe-area-inset-bottom)); }
   .monitor-summary { width: 42px; }
-  .monitor-summary span:last-child { display: none; }
+  .monitor-summary > :not(.monitor-summary__mobile-dot) { display: none !important; }
+  .monitor-summary > .monitor-summary__mobile-dot { display: inline-block !important; }
   .detail-hero,
   .setup-v5__header { min-height: 130px; align-items: flex-start; padding: 24px; }
+  .setup-v5--login > .setup-v5__header { align-items: center; text-align: center; }
   .proxmox-section__heading { align-items: flex-start; }
   .proxmox-filterbar { position: static; }
   .setup-v5__mark { display: none; }

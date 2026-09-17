@@ -611,7 +611,7 @@ svg {
   height: 17px;
 }
 
-.global-search span {
+.global-search > span {
   flex: 1;
   font-size: 12px;
 }

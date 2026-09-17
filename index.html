@@ -128,8 +128,19 @@
           <button type="button" data-action="switch-workspace" data-workspace="infrastructure" aria-pressed="false">Infrastructure</button>
         </div>
         <a class="global-search monitor-summary" id="monitor-summary" href="#/health" aria-label="Open media health">
-          <span class="pulse-dot" aria-hidden="true"></span>
-          <span>Container monitor starting…</span>
+          <span class="monitor-summary__metrics" data-monitor-media-summary>
+            <span class="monitor-summary__metric">
+              <small>Connection health</small>
+              <span class="monitor-summary__value"><i class="health-dot is-checking" data-monitor-connection-dot aria-hidden="true"></i><strong data-monitor-connection-state>Checking</strong></span>
+            </span>
+            <span class="monitor-summary__metric">
+              <small>Service health</small>
+              <span class="monitor-summary__value"><i class="health-dot is-checking" data-monitor-service-dot aria-hidden="true"></i><strong data-monitor-service-state>Checking</strong></span>
+            </span>
+          </span>
+          <span class="monitor-summary__single" data-monitor-infrastructure-summary hidden><i class="health-dot is-checking" data-monitor-infrastructure-dot aria-hidden="true"></i><span data-monitor-infrastructure-text>Infrastructure monitor starting…</span></span>
+          <span class="monitor-summary__checked" data-monitor-checked>Container monitor starting…</span>
+          <i class="monitor-summary__mobile-dot health-dot is-checking" data-monitor-mobile-dot aria-hidden="true"></i>
         </a>
         <div class="topbar-actions">
           <span class="preview-badge" id="mode-badge">Local container</span>

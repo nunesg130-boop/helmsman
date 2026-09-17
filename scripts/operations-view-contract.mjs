@@ -55,6 +55,7 @@ function jpegDimensions(contents) {
 
 const retroCss = await readFile(new URL("../src/ui/retro.css", import.meta.url), "utf8");
 const operationsCss = await readFile(new URL("../src/ui/operations.css", import.meta.url), "utf8");
+const controlCss = await readFile(new URL("../src/ui/control.css", import.meta.url), "utf8");
 const shellCss = await readFile(new URL("../styles.css", import.meta.url), "utf8");
 const application = await readFile(new URL("../src/app-v5.js", import.meta.url), "utf8");
 const shellHtml = await readFile(new URL("../index.html", import.meta.url), "utf8");
@@ -132,9 +133,50 @@ assert.match(
 );
 assert.match(
   retroCss,
-  /\.infrastructure-node-card[\s\S]*?:is\(:hover,\s*:focus-visible\)[^{]*\{[^}]*color:\s*var\(--text\)/u,
-  "node and service hover/focus states must retain readable light text"
+  /\.infrastructure-node-card[\s\S]*?:is\(:hover,\s*:focus-visible,\s*:focus-within\)[^{]*\{[^}]*color:\s*var\(--text\)/u,
+  "whole-card node and service hover/focus states must retain readable light text"
 );
+const loginLayoutCss = ruleBody(controlCss, "\\.setup-v5--login", "login layout");
+const loginPanelWidthCss = ruleBody(
+  controlCss,
+  "\\.setup-v5--login\\s*>\\s*:is\\(\\.setup-v5__header,\\s*\\.glass-form--login\\)",
+  "login layout"
+);
+const loginHeaderCss = ruleBody(controlCss, "\\.setup-v5--login\\s*>\\s*\\.setup-v5__header", "login layout");
+const stackedFormCss = ruleBody(controlCss, "\\.form-grid--stacked", "login layout");
+assert.match(loginLayoutCss, /justify-items:\s*center/u, "the Jellyfin login panels must be centered");
+assert.match(loginPanelWidthCss, /width:\s*min\(820px,\s*100%\)/u, "the centered login must remain bounded");
+assert.match(loginHeaderCss, /flex-direction:\s*column/u, "the login heading must center as one vertical group");
+assert.match(loginHeaderCss, /text-align:\s*center/u);
+assert.match(stackedFormCss, /grid-template-columns:\s*1fr/u, "username and password must remain stacked");
+
+const actionLinkCss = ruleBody(operationsCss, "\\.operations-text-link", "operations action links");
+assert.match(actionLinkCss, /justify-content:\s*center/u, "boxed operations links must center their labels");
+assert.match(actionLinkCss, /padding-inline:\s*14px/u, "boxed operations links need horizontal breathing room");
+assert.match(actionLinkCss, /white-space:\s*nowrap/u, "short operations actions must stay on one line");
+
+const portainerCountCss = ruleBody(
+  operationsCss,
+  "\\.portainer-container-group__header\\s*>\\s*\\.count-pill",
+  "Portainer container count"
+);
+assert.match(portainerCountCss, /justify-self:\s*end/u, "container counts must align to the header edge");
+assert.match(portainerCountCss, /padding-inline:\s*12px/u, "labeled container counts must not touch their border");
+assert.match(portainerCountCss, /white-space:\s*nowrap/u);
+assert.match(
+  operationsCss,
+  /@media\s*\(max-width:\s*680px\)[\s\S]*?\.portainer-container-group__header \.count-pill\s*\{[^}]*justify-self:\s*end/u,
+  "container counts must remain end-aligned in the narrow card layout"
+);
+
+const wholeNodeHoverCss = ruleBody(
+  controlCss,
+  "\\.environment-card:is\\(:hover,\\s*:focus-within\\),\\s*\\.infrastructure-node-card:is\\(:hover,\\s*:focus-within\\),\\s*\\.workload-row:not\\(\\.workload-row--header\\):hover,\\s*\\.workload-row:not\\(\\.workload-row--header\\):focus-visible",
+  "whole infrastructure card hover"
+);
+assert.match(wholeNodeHoverCss, /background:\s*rgba\(255,\s*255,\s*255,\s*0\.055\)/u);
+assert.doesNotMatch(controlCss, /\.infrastructure-node-card__main:hover/u, "the control layer must not paint an inset node hover surface");
+assert.doesNotMatch(retroCss, /\.infrastructure-node-card__main\s*,/u, "the retro layer must not paint an inset node hover surface");
 assert.doesNotMatch(retroCss, /color:\s*var\(--bg\)/u, "hover styles must not invert copy to near-black on dark cards");
 assert.match(
   retroCss,
