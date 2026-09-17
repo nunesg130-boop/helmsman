@@ -866,6 +866,232 @@ test("publishes bounded Seerr season request targets for series and episode-deri
   assert.equal(Object.hasOwn(media.home.nowPlaying[0], "seriesSourceId"), false);
 });
 
+test("publishes canonical Continue Watching episode targets only from a resolved Jellyfin parent series", () => {
+  const firstSeriesId = "11111111111111111111111111111111";
+  const inheritedSeriesId = "22222222222222222222222222222222";
+  const unknownSeriesId = "33333333333333333333333333333333";
+  const media = buildMediaSnapshot([
+    service("jellyfin", {
+      library: {
+        Items: [{
+          Id: firstSeriesId,
+          Type: "Series",
+          Name: "SeriesId Parent",
+          ProviderIds: { Tmdb: "700" }
+        }, {
+          Id: inheritedSeriesId,
+          Type: "Series",
+          Name: "Inherited Artwork Parent",
+          ProviderIds: { Tmdb: "701" }
+        }]
+      },
+      resume: {
+        Items: [{
+          Id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          Type: "Episode",
+          Name: "SeriesId Episode",
+          SeriesName: "SeriesId Parent",
+          SeriesId: firstSeriesId,
+          ProviderIds: { Tmdb: "9001", Tvdb: "8001" },
+          UserData: { PlayedPercentage: 10 }
+        }, {
+          Id: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          Type: "Episode",
+          Name: "Inherited Artwork Episode",
+          SeriesName: "Inherited Artwork Parent",
+          ParentPrimaryImageItemId: inheritedSeriesId,
+          ParentPrimaryImageTag: "inherited_parent_tag",
+          ProviderIds: { Tmdb: "9002", Tvdb: "8002" },
+          UserData: { PlayedPercentage: 20 }
+        }, {
+          Id: "cccccccccccccccccccccccccccccccc",
+          Type: "Episode",
+          Name: "Unresolved Parent Episode",
+          SeriesName: "Unknown Parent",
+          ParentPrimaryImageItemId: unknownSeriesId,
+          ParentPrimaryImageTag: "unknown_parent_tag",
+          ProviderIds: { Tmdb: "9003", Tvdb: "8003" },
+          UserData: { PlayedPercentage: 30 }
+        }]
+      }
+    })
+  ], GENERATED_AT, TARGETS);
+
+  const expected = (resourceId) => ({ service: "seerr", resourceId });
+  const canonicalEpisode = (tmdbId) => media.records.find((item) => (
+    item.mediaType === "episode" && item.providerIds.tmdb === tmdbId
+  ));
+  const continueEpisode = (tmdbId) => media.home.continueWatching.find((item) => item.providerIds.tmdb === tmdbId);
+
+  assert.deepEqual(canonicalEpisode(9_001)?.seasonRequestTarget, expected(700));
+  assert.deepEqual(continueEpisode(9_001)?.seasonRequestTarget, expected(700));
+  assert.deepEqual(
+    canonicalEpisode(9_002)?.seasonRequestTarget,
+    expected(701),
+    "a validated inherited primary-image resource may identify an existing Jellyfin series"
+  );
+  assert.deepEqual(continueEpisode(9_002)?.seasonRequestTarget, expected(701));
+  assert.equal(Object.hasOwn(canonicalEpisode(9_003), "seasonRequestTarget"), false);
+  assert.equal(Object.hasOwn(continueEpisode(9_003), "seasonRequestTarget"), false);
+  assert.notEqual(canonicalEpisode(9_003)?.seasonRequestTarget?.resourceId, 9_003, "an episode TMDb ID is never promoted");
+  assert.doesNotMatch(JSON.stringify(media), /parentSeriesEvidence|seriesSourceId|homeArtwork/u);
+});
+
+test("fails closed when merged episode evidence identifies conflicting parent series", () => {
+  const jellyfinSeriesId = "dddddddddddddddddddddddddddddddd";
+  const media = buildMediaSnapshot([
+    service("jellyfin", {
+      library: {
+        Items: [{
+          Id: jellyfinSeriesId,
+          Type: "Series",
+          Name: "Jellyfin Parent",
+          ProviderIds: { Tmdb: "710", Tvdb: "7100" }
+        }]
+      },
+      resume: {
+        Items: [{
+          Id: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          Type: "Episode",
+          Name: "Conflicted Episode",
+          SeriesName: "Jellyfin Parent",
+          SeriesId: jellyfinSeriesId,
+          ProviderIds: { Tmdb: "9100", Tvdb: "8100" },
+          UserData: { PlayedPercentage: 40 }
+        }]
+      }
+    }),
+    service("sonarr", {
+      catalog: [{
+        id: 90,
+        title: "Different Sonarr Parent",
+        tmdbId: 711,
+        tvdbId: 7_110,
+        monitored: true
+      }],
+      calendar: [{
+        id: 901,
+        title: "Conflicted Episode",
+        tvdbId: 8_100,
+        airDateUtc: "2026-09-20T01:00:00Z",
+        seasonNumber: 1,
+        episodeNumber: 1,
+        series: {
+          id: 90,
+          title: "Different Sonarr Parent",
+          tmdbId: 711,
+          tvdbId: 7_110
+        }
+      }]
+    })
+  ], GENERATED_AT, TARGETS);
+
+  const canonical = media.records.find((item) => item.mediaType === "episode" && item.providerIds.tvdb === 8_100);
+  const resume = media.home.continueWatching.find((item) => item.providerIds.tvdb === 8_100);
+  assert.equal(Object.hasOwn(canonical, "seasonRequestTarget"), false);
+  assert.equal(Object.hasOwn(resume, "seasonRequestTarget"), false);
+});
+
+test("does not publish an episode season target without one current canonical parent", () => {
+  const media = buildMediaSnapshot([
+    service("sonarr", {
+      calendar: [{
+        id: 902,
+        title: "Orphaned Episode",
+        tvdbId: 8_200,
+        airDateUtc: "2026-09-21T01:00:00Z",
+        seasonNumber: 1,
+        episodeNumber: 2,
+        series: {
+          id: 91,
+          title: "Missing Catalog Parent",
+          tmdbId: 712,
+          tvdbId: 7_120
+        }
+      }]
+    })
+  ], GENERATED_AT, TARGETS);
+
+  const episode = media.calendar.find(({ id }) => id === "sonarr-calendar:902");
+  assert.ok(episode);
+  assert.equal(
+    Object.hasOwn(episode, "seasonRequestTarget"),
+    false,
+    "the UI must not receive a capability that requireCurrentSeriesTarget will reject"
+  );
+});
+
+test("does not let one resolved parent authorize a merged episode with unresolved parent evidence", () => {
+  const resolvedSeriesId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1";
+  const unresolvedSeriesId = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb2";
+  const media = buildMediaSnapshot([
+    service("jellyfin", {
+      library: {
+        Items: [{
+          Id: resolvedSeriesId,
+          Type: "Series",
+          Name: "Resolved Parent",
+          ProviderIds: { Tmdb: "720" }
+        }]
+      },
+      resume: {
+        Items: [{
+          Id: "ccccccccccccccccccccccccccccccc3",
+          Type: "Episode",
+          Name: "Unresolved Parent Episode",
+          SeriesName: "Unresolved Parent",
+          SeriesId: unresolvedSeriesId,
+          ProviderIds: { Tvdb: "8300" },
+          UserData: { PlayedPercentage: 10 }
+        }, {
+          Id: "ddddddddddddddddddddddddddddddd4",
+          Type: "Episode",
+          Name: "Resolved Parent Episode",
+          SeriesName: "Resolved Parent",
+          SeriesId: resolvedSeriesId,
+          ProviderIds: { Tvdb: "8300" },
+          UserData: { PlayedPercentage: 20 }
+        }]
+      }
+    })
+  ], GENERATED_AT, TARGETS);
+
+  const canonical = media.records.find((item) => item.mediaType === "episode" && item.providerIds.tvdb === 8_300);
+  assert.ok(canonical);
+  assert.equal(Object.hasOwn(canonical, "seasonRequestTarget"), false);
+  assert.equal(media.home.continueWatching.length, 2);
+  assert.ok(media.home.continueWatching.every((item) => !Object.hasOwn(item, "seasonRequestTarget")));
+});
+
+test("keeps providerless Arr records and queue activity in separate public ID namespaces", () => {
+  const media = buildMediaSnapshot([
+    service("sonarr", {
+      catalog: [{
+        id: 501,
+        title: "Catalog Series",
+        monitored: true
+      }],
+      queue: {
+        records: [{
+          id: 501,
+          series: { id: 90, title: "Blocked Other Series" },
+          trackedDownloadState: "failed",
+          statusMessage: "Import failed"
+        }]
+      }
+    })
+  ], GENERATED_AT, TARGETS);
+
+  const record = media.records.find(({ title }) => title === "Catalog Series");
+  const activity = media.activity.find(({ title }) => title === "Blocked Other Series");
+  assert.ok(record);
+  assert.ok(activity);
+  assert.equal(record.id, "sonarr:501");
+  assert.equal(activity.id, "activity:sonarr:501");
+  assert.notEqual(activity.id, record.id);
+  assert.deepEqual(activity.queueActionTarget, { service: "sonarr", queueId: 501 });
+});
+
 test("uses fast Radarr poster metadata and Seerr's fixed image proxy for future movies", () => {
   const media = buildMediaSnapshot([
     service("radarr", {

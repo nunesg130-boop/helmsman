@@ -1,4 +1,4 @@
-# Helmsman v1.0.2
+# Helmsman v1.0.3
 
 Helmsman is a self-hosted operations center for a homelab's media services and infrastructure. It runs as one portable Linux container on Docker Desktop, Linux, macOS, compatible NAS platforms, AMD64, and ARM64.
 
@@ -15,11 +15,10 @@ This Helmsman is the media and infrastructure dashboard in this repository. It
 is not affiliated with or derived from the existing Kubernetes project also
 named [Helmsman](https://github.com/mkubaczyk/helmsman).
 
-## v1.0.2
+## v1.0.3
 
-This release adds guided recovery controls for Sonarr and Radarr activity that
-needs intervention, reports connection health separately from upstream service
-health, and aligns the **All Activity** control with its activity section.
+This maintenance release makes Continue Watching episode drawers resolve their
+parent series and offer the same season-request controls available elsewhere.
 
 ## License and project identity
 
@@ -37,7 +36,7 @@ identify the nine supported service integrations, plus original generic
 VM/container workload drawings. See
 [the asset notices](assets/services/THIRD_PARTY_NOTICES.md).
 
-Helmsman v1.0.2 combines Portainer monitoring and a small, fixed set of confirmed recovery actions under Infrastructure with targeted media recovery actions and Helmsman's cluster-aware Proxmox model:
+Helmsman v1.0.3 combines Portainer monitoring and a small, fixed set of confirmed recovery actions under Infrastructure with targeted media recovery actions and Helmsman's cluster-aware Proxmox model:
 
 - Media and Infrastructure are separate workspaces inside the same authenticated application, and only the selected workspace's navigation is shown;
 - the desktop sidebar collapses to an icon rail, remembers that preference, keeps its navigation scrollable at high browser zoom, and places its 44 px collapse control on the content-side edge below the shared header rule;
@@ -83,7 +82,7 @@ Helmsman v1.0.2 combines Portainer monitoring and a small, fixed set of confirme
 
 ## Deploy the published container
 
-Helmsman is distributed as the public Linux AMD64/ARM64 image `ghcr.io/nunesg130-boop/helmsman`. The `v1.0.2` Git tag runs the contracts and architecture smoke tests, publishes the version, `latest`, and full-commit image tags, and creates a GitHub Release containing ready-to-use `compose.yaml`, `container.env.example`, and `SHA256SUMS` assets. The release deployment files pin `ghcr.io/nunesg130-boop/helmsman` to the exact multi-architecture manifest digest (`@sha256:...`).
+Helmsman is distributed as the public Linux AMD64/ARM64 image `ghcr.io/nunesg130-boop/helmsman`. The `v1.0.3` Git tag runs the contracts and architecture smoke tests, publishes the version, `latest`, and full-commit image tags, and creates a GitHub Release containing ready-to-use `compose.yaml`, `container.env.example`, and `SHA256SUMS` assets. The release deployment files pin `ghcr.io/nunesg130-boop/helmsman` to the exact multi-architecture manifest digest (`@sha256:...`).
 
 Download those three files from the matching [GitHub Release](https://github.com/nunesg130-boop/helmsman/releases) into one directory, verify the two deployment files against `SHA256SUMS`, open a terminal there, and make sure Docker Desktop or Docker Engine is running. No source checkout, Dockerfile, Node.js installation, or server-side image build is required.
 
@@ -379,7 +378,7 @@ docker compose up -d
 
 This is the sole break-glass path. It removes the owner binding, revokes every Helmsman browser session, and destroys Helmsman's encrypted copies of the browser-authentication tokens while preserving service URLs, the instance and network policy, registered targets, and encrypted monitoring credentials. Because this recovery command runs with the broker stopped, it cannot send Jellyfin logout requests; if a token may have been copied outside Helmsman's encrypted store, use Jellyfin's administration controls to invalidate that upstream session too. The next start emits a new one-time setup token so the operator can claim the instance and enroll an enabled Jellyfin administrator again. It does not create, print, or restore a reusable access key. The main service must stay stopped while the one-off container writes the shared `/data` volume.
 
-When upgrading from v1.0.0-beta.2, its reusable access key is accepted only as a temporary migration credential. Use an existing browser session or that legacy key to open Settings, make sure the Jellyfin connection is configured, and enroll the owner. Successful enrollment atomically removes the access-key verifier and revokes every legacy browser session; v1.0.2 cannot create, reveal, or rotate another key. If no beta.2 session or key remains usable, use `reset-access --confirm` as described above.
+When upgrading from v1.0.0-beta.2, its reusable access key is accepted only as a temporary migration credential. Use an existing browser session or that legacy key to open Settings, make sure the Jellyfin connection is configured, and enroll the owner. Successful enrollment atomically removes the access-key verifier and revokes every legacy browser session; v1.0.3 cannot create, reveal, or rotate another key. If no beta.2 session or key remains usable, use `reset-access --confirm` as described above.
 
 If the credential encryption key is lost or the configured key no longer matches, the ciphertext cannot be recovered. Stop the service and reset the credential store and browser-access seal, using the same command prefix selected above:
 

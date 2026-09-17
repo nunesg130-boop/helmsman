@@ -14,7 +14,7 @@ body:
     attributes:
       label: Helmsman version
       description: Use the exact release tag or commit SHA.
-      placeholder: v1.0.2
+      placeholder: v1.0.3
     validations:
       required: true
   - type: dropdown

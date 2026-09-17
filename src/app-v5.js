@@ -993,17 +993,16 @@ function normalizedRequestedSeasons(value) {
 
 function mediaDomKey(value) {
   const input = String(value || "media");
-  let hash = 2_166_136_261;
+  let encoded = "";
   for (let index = 0; index < input.length; index += 1) {
-    hash ^= input.charCodeAt(index);
-    hash = Math.imul(hash, 16_777_619);
+    encoded += input.charCodeAt(index).toString(16).padStart(4, "0");
   }
-  return `m-${(hash >>> 0).toString(36)}`;
+  return `m-${encoded}`;
 }
 
 function safeMediaFocusKey(value) {
   const candidate = String(value || "");
-  return /^m-[a-z0-9]{1,16}$/u.test(candidate) ? candidate : "";
+  return /^m-[a-z0-9]{4,720}$/u.test(candidate) ? candidate : "";
 }
 
 function safeMediaFocusAction(value) {
@@ -1124,8 +1123,8 @@ function normalizedMediaActionTargets(value) {
 function normalizedSeasonRequestTarget(value) {
   const raw = value && typeof value === "object" && !Array.isArray(value) ? value : null;
   if (!raw || safeCapabilityId(raw.service) !== "seerr") return null;
-  const mediaId = mediaNumber(raw.mediaId ?? raw.resourceId, 1, 9_999_999_999);
-  if (!Number.isSafeInteger(mediaId) || mediaId < 1) return null;
+  const mediaId = raw.mediaId ?? raw.resourceId;
+  if (!Number.isSafeInteger(mediaId) || mediaId < 1 || mediaId > 9_999_999_999) return null;
   return { service: "seerr", mediaId };
 }
 
@@ -1259,8 +1258,8 @@ function normalizedMediaCollection(value, registry, collectionName, maximum = 50
     }
     if (!candidate || typeof candidate !== "object") return [];
     const item = normalizeMediaItem(candidate, `${collectionName}:${index}`);
-    if (seen.has(item.key)) return [];
-    seen.add(item.key);
+    if (seen.has(item.id)) return [];
+    seen.add(item.id);
     return [{ ...item, collection: collectionName }];
   });
 }
@@ -1297,10 +1296,22 @@ function normalizeMediaSnapshot(value) {
   const metricsRaw = raw?.metrics && typeof raw.metrics === "object" && !Array.isArray(raw.metrics) ? raw.metrics : {};
   const all = [];
   const allSeen = new Set();
+  const allIndex = new Map();
   [records, library, discover, requests, activity, calendar, subtitleBacklog, ...Object.values(home)].forEach((entries) => {
     entries.forEach((item) => {
-      if (allSeen.has(item.key)) return;
-      allSeen.add(item.key);
+      if (allSeen.has(item.id)) {
+        const index = allIndex.get(item.id);
+        const retained = all[index];
+        // Continue Watching episodes resolve to the same canonical ID as their
+        // record. Keep the canonical drawer data, but do not discard the
+        // parent-series request capability carried by the narrower home row.
+        if (retained && !retained.seasonRequestTarget && item.seasonRequestTarget) {
+          all[index] = { ...retained, seasonRequestTarget: item.seasonRequestTarget };
+        }
+        return;
+      }
+      allSeen.add(item.id);
+      allIndex.set(item.id, all.length);
       all.push(item);
     });
   });

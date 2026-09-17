@@ -991,6 +991,53 @@ function identityTokens(item) {
   return Object.entries(item.providerIds || {}).map(([provider, value]) => `${type}:${provider}:${value}`);
 }
 
+function parsedParentSeriesEvidence(value) {
+  if (typeof value !== "string") return null;
+  const [kind, namespace, rawId, ...extra] = value.split(":");
+  if (extra.length || !rawId) return null;
+  if (kind === "source" && ["jellyfin", "sonarr"].includes(namespace)) {
+    const sourceId = sourceIdFor(namespace, rawId);
+    return sourceId ? { kind, service: namespace, sourceId } : null;
+  }
+  if (kind !== "provider" || !["tmdb", "tvdb", "imdb"].includes(namespace)) return null;
+  const ids = providerIds({ providerIds: { [namespace]: rawId } });
+  return ids[namespace] ? { kind, provider: namespace, providerId: ids[namespace] } : null;
+}
+
+function parentSeriesEvidenceTokens(itemValue) {
+  const item = record(itemValue);
+  if (!item || item.mediaType !== "episode") return new Set();
+  const evidence = new Set();
+  if (item.parentSeriesEvidence instanceof Set) {
+    for (const token of item.parentSeriesEvidence) {
+      const parsed = parsedParentSeriesEvidence(token);
+      if (parsed) evidence.add(token);
+    }
+  }
+  const seriesService = ["jellyfin", "sonarr"].includes(item.service) ? item.service : null;
+  const seriesSourceId = seriesService ? sourceIdFor(seriesService, item.seriesSourceId) : null;
+  if (seriesService && seriesSourceId) evidence.add(`source:${seriesService}:${seriesSourceId}`);
+
+  // Jellyfin Resume/Next Up can omit SeriesId while still returning a bounded
+  // inherited primary-image descriptor. Its resource is safe parent evidence
+  // only when it later resolves to an actual Jellyfin series record; it is
+  // never used directly as a Seerr resource ID.
+  const inheritedArtwork = record(item.homeArtwork);
+  const inheritedSeriesId = item.service === "jellyfin"
+    && !seriesSourceId
+    && inheritedArtwork?.service === "jellyfin"
+    && inheritedArtwork?.kind === "primary"
+    ? sourceIdFor("jellyfin", inheritedArtwork.resource)
+    : null;
+  if (inheritedSeriesId) evidence.add(`source:jellyfin:${inheritedSeriesId}`);
+
+  const parentIds = providerIds({ providerIds: item.parentProviderIds });
+  for (const [provider, providerId] of Object.entries(parentIds)) {
+    evidence.add(`provider:${provider}:${providerId}`);
+  }
+  return evidence;
+}
+
 function recordKey(item) {
   return identityTokens(item)[0] || `${item.service}:${item.sourceId}`;
 }
@@ -1057,6 +1104,7 @@ function mergeRecordTarget(target, other) {
   Object.assign(target.providerIds, other.providerIds);
   for (const service of other.sources) if (!target.sources.includes(service)) target.sources.push(service);
   for (const sourceKey of other.sourceKeys) target.sourceKeys.add(sourceKey);
+  for (const evidence of other.parentSeriesEvidence) target.parentSeriesEvidence.add(evidence);
   for (const artwork of other.artworkCandidates) mergeArtworkCandidate(target.artworkCandidates, artwork);
   target.requested ||= other.requested;
   target.monitored ||= other.monitored;
@@ -1096,6 +1144,7 @@ function mediaRecords(inventories) {
             providerIds: {},
             sources: [],
             sourceKeys: new Set(),
+            parentSeriesEvidence: new Set(),
             artworkCandidates: [],
             requested: false,
             monitored: false,
@@ -1123,6 +1172,7 @@ function mediaRecords(inventories) {
         Object.assign(target.providerIds, item.providerIds);
         if (!target.sources.includes(item.service)) target.sources.push(item.service);
         target.sourceKeys.add(`${item.service}:${item.sourceId}`);
+        for (const evidence of parentSeriesEvidenceTokens(item)) target.parentSeriesEvidence.add(evidence);
         if (item.artwork) mergeArtworkCandidate(target.artworkCandidates, item.artwork);
         if (item.artworkFallback) mergeArtworkCandidate(target.artworkCandidates, item.artworkFallback);
         target.requested ||= item.requested === true || category === "requests";
@@ -1162,7 +1212,7 @@ function correlateActivity(inventories, records) {
       const linked = identityTokens(item).map((token) => byIdentity.get(token)).find(Boolean);
       const state = item.error ? "blocked" : torrent?.state || item.state || "unknown";
       activity.push({
-        id: `${service}:${item.id || item.sourceId || item.downloadId}`,
+        id: `activity:${service}:${item.id || item.sourceId || item.downloadId}`,
         service,
         mediaId: linked?.id || null,
         mediaType: item.mediaType,
@@ -1185,7 +1235,7 @@ function correlateActivity(inventories, records) {
   for (const torrent of qbit.values()) {
     if (claimed.has(torrent.downloadId)) continue;
     activity.push({
-      id: `qbittorrent:${torrent.downloadId}`,
+      id: `activity:qbittorrent:${torrent.downloadId}`,
       service: "qbittorrent",
       mediaId: null,
       mediaType: null,
@@ -1243,25 +1293,24 @@ function findRecord(records, item) {
   return records.find((record) => record.sourceKeys.has(`${item.service}:${item.sourceId}`)) || null;
 }
 
-function findParentSeriesRecord(records, item) {
-  if (item.mediaType !== "episode") return null;
-  const seriesService = ["jellyfin", "sonarr"].includes(item.service) ? item.service : null;
-  const seriesSourceId = seriesService ? sourceIdFor(seriesService, item.seriesSourceId) : null;
-  if (seriesService && seriesSourceId) {
-    const bySource = records.find((candidate) => (
-      candidate.mediaType === "series"
-      && candidate.sourceKeys.has(`${seriesService}:${seriesSourceId}`)
-    ));
-    if (bySource) return bySource;
-  }
-  const parentIds = record(item.parentProviderIds) || {};
-  const parentTokens = new Set(Object.entries(parentIds).map(([provider, value]) => `series:${provider}:${value}`));
-  return parentTokens.size
-    ? records.find((candidate) => (
-        candidate.mediaType === "series"
-        && identityTokens(candidate).some((token) => parentTokens.has(token))
-      )) || null
-    : null;
+function matchingParentSeriesRecords(records, ...items) {
+  const evidence = new Set(items.flatMap((item) => [...parentSeriesEvidenceTokens(item)]));
+  if (!evidence.size) return [];
+  return records.filter((candidate) => {
+    if (candidate.mediaType !== "series") return false;
+    return [...evidence].some((token) => {
+      const parsed = parsedParentSeriesEvidence(token);
+      if (!parsed) return false;
+      return parsed.kind === "source"
+        ? candidate.sourceKeys.has(`${parsed.service}:${parsed.sourceId}`)
+        : candidate.providerIds?.[parsed.provider] === parsed.providerId;
+    });
+  });
+}
+
+function findParentSeriesRecord(records, ...items) {
+  const matches = matchingParentSeriesRecords(records, ...items);
+  return matches.length === 1 ? matches[0] : null;
 }
 
 function linkedLifecycleSemantics(linked) {
@@ -1305,13 +1354,48 @@ function seasonRequestTarget(recordValue) {
     : null;
 }
 
-function seasonRequestTargetForItem(item, linked, parentSeries) {
+function seasonRequestTargetForItem(item, linked, records) {
   if (item?.mediaType === "series") {
     return seasonRequestTarget(linked) || seasonRequestTargetFromProviderIds(item.providerIds);
   }
   if (item?.mediaType !== "episode") return null;
-  return seasonRequestTarget(parentSeries)
-    || seasonRequestTargetFromProviderIds(item.parentProviderIds);
+  const evidence = new Set([
+    ...parentSeriesEvidenceTokens(item),
+    ...parentSeriesEvidenceTokens(linked)
+  ]);
+  if (!evidence.size) return null;
+  const parents = matchingParentSeriesRecords(records, item, linked);
+  // The control plane authorizes season reads and writes only against one
+  // current canonical series record. Do not publish an episode capability
+  // that its authoritative gate cannot revalidate, and fail closed when
+  // conflicting parent records are present.
+  if (parents.length !== 1) return null;
+  const parent = parents[0];
+  // A provider/source collision can merge two episode rows even when one of
+  // their parent series is absent from the current catalog. Requiring every
+  // retained parent token to identify the same canonical parent prevents the
+  // resolved half of that collision from authorizing the unresolved half.
+  for (const token of evidence) {
+    const parsed = parsedParentSeriesEvidence(token);
+    const matchesParent = parsed?.kind === "source"
+      ? parent.sourceKeys.has(`${parsed.service}:${parsed.sourceId}`)
+      : parsed?.kind === "provider"
+        && parent.providerIds?.[parsed.provider] === parsed.providerId;
+    if (!matchesParent) return null;
+  }
+  const targetIds = new Set();
+  for (const token of evidence) {
+    const parsed = parsedParentSeriesEvidence(token);
+    if (parsed?.kind === "provider" && parsed.provider === "tmdb") {
+      targetIds.add(parsed.providerId);
+    }
+  }
+  const resolved = seasonRequestTarget(parent);
+  if (!resolved) return null;
+  targetIds.add(resolved.resourceId);
+  return targetIds.size === 1
+    ? { service: "seerr", resourceId: [...targetIds][0] }
+    : null;
 }
 
 function requestLifecycleSemantics(item, linked) {
@@ -1380,7 +1464,7 @@ function enrichCollection(items, records, options = {}) {
   return items.slice(0, MAX_COLLECTION_ITEMS).map((item) => {
     const linked = findRecord(records, item);
     const parentSeries = findParentSeriesRecord(records, item);
-    const requestTarget = seasonRequestTargetForItem(item, linked, parentSeries);
+    const requestTarget = seasonRequestTargetForItem(item, linked, records);
     const artworkUrl = typeof options.artworkUrlForItem === "function"
       ? options.artworkUrlForItem(item, linked)
       : parentSeries?.artworkUrl || linked?.artworkUrl || null;
@@ -1433,8 +1517,8 @@ function continueWatchingArtworkUrl(item, linked, records, artwork, connectionRe
   return registerArtwork(artwork, item.homeArtwork ? [item.homeArtwork] : [], connectionRevisions);
 }
 
-function publicRecord(record) {
-  const requestTarget = seasonRequestTarget(record);
+function publicRecord(record, records) {
+  const requestTarget = seasonRequestTargetForItem(record, record, records);
   return {
     id: record.id,
     mediaType: record.mediaType,
@@ -1470,7 +1554,7 @@ export function buildMediaSnapshot(services, generatedAt, connectionRevisions = 
   }
   const records = mediaRecords(inventories);
   const artwork = attachArtwork(records, connectionRevisions);
-  const publicRecords = records.map(publicRecord);
+  const publicRecords = records.map((item) => publicRecord(item, records));
   const titleRecords = publicRecords.filter((item) => item.mediaType === "movie" || item.mediaType === "series");
   const library = titleRecords.filter((item) => item.monitored || item.imported || item.available).slice(0, MAX_LIBRARY_ITEMS);
   const requests = enrichCollection(inventories.get("seerr")?.requests || [], records, { requestScoped: true });

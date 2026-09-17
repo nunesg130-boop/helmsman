@@ -1901,11 +1901,20 @@ async function seriesSeasonControlsContract() {
     media: {
       schema: 1,
       generatedAt: checkedAt,
-      records: [],
+      records: [{
+        id: mediaId,
+        title: "Example Episode",
+        mediaType: "episode",
+        year: "2026",
+        providerIds: { tvdb: "99000001", imdb: "tt99000001" },
+        sources: ["jellyfin"],
+        available: true,
+        lifecycle: { stage: "available" }
+      }],
       home: {
         nowPlaying: [],
         continueWatching: [{
-          id: mediaId,
+          mediaId,
           title: "Example Episode",
           mediaType: "episode",
           year: "2026",
@@ -2122,6 +2131,7 @@ async function seriesSeasonControlsContract() {
   directSeriesSnapshot.media.home.continueWatching = [{
     ...directSeriesSnapshot.media.home.continueWatching[0],
     id: directSeriesId,
+    mediaId: directSeriesId,
     title: "Orbital House",
     mediaType: "series",
     providerIds: { tmdb: "990001" },
@@ -2287,6 +2297,138 @@ async function seriesSeasonControlsContract() {
   await waitFor(() => seasonDetailCalls === 2, "fresh season detail after logout race");
   await waitFor(() => racePanel.innerHTML.includes("Fresh season catalog"), "fresh post-logout season catalog");
   assert.doesNotMatch(racePanel.innerHTML, /Season &lt;Two&gt;/u, "a pre-logout response must not repopulate the authenticated cache");
+}
+
+async function seasonTargetBoundaryContract() {
+  const checkedAt = new Date().toISOString();
+  const seerrRevision = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+  const collisionRecordId = "id-1dkdp2e-vfe0d1";
+  const collisionTargetId = "id-1h53k5v-7t119p";
+  const legacyDomKey = (value) => {
+    let hash = 2_166_136_261;
+    for (let index = 0; index < value.length; index += 1) {
+      hash ^= value.charCodeAt(index);
+      hash = Math.imul(hash, 16_777_619);
+    }
+    return `m-${(hash >>> 0).toString(36)}`;
+  };
+  assert.equal(
+    legacyDomKey(collisionRecordId),
+    legacyDomKey(collisionTargetId),
+    "the fixture must retain its collision under the retired 32-bit DOM hash"
+  );
+
+  const invalidTargets = [
+    { service: "seerr", resourceId: 0 },
+    { service: "seerr", resourceId: -1 },
+    { service: "seerr", resourceId: 10_000_000_000 },
+    { service: "seerr", resourceId: "990001" },
+    { service: "seerr", resourceId: 1.5 },
+    { service: "seerr", resourceId: "../990001" }
+  ];
+  const snapshot = {
+    ...minimalOperationsSnapshot(),
+    generatedAt: checkedAt,
+    services: [{ id: "seerr", targetRevision: seerrRevision, connectionState: "connected", checkedAt }],
+    media: {
+      schema: 1,
+      generatedAt: checkedAt,
+      records: [{
+        id: collisionRecordId,
+        title: "Unrelated colliding episode",
+        mediaType: "episode",
+        providerIds: { tvdb: "881001" },
+        sources: ["jellyfin"],
+        available: true,
+        lifecycle: { stage: "available" }
+      }, ...invalidTargets.map((seasonRequestTarget, index) => ({
+        id: `invalid-season-target-${index}`,
+        title: `Invalid season target ${index}`,
+        mediaType: "series",
+        providerIds: { tmdb: String(991_000 + index) },
+        sources: ["seerr"],
+        seasonRequestTarget,
+        lifecycle: { stage: "unknown" }
+      }))],
+      home: {
+        nowPlaying: [],
+        continueWatching: [{
+          id: collisionRecordId,
+          title: "Unrelated colliding episode",
+          mediaType: "episode",
+          providerIds: { tvdb: "881001" },
+          sources: ["jellyfin"],
+          available: true,
+          progress: 25,
+          lifecycle: { stage: "available" }
+        }, {
+          id: collisionTargetId,
+          title: "Targeted colliding episode",
+          mediaType: "episode",
+          providerIds: { tvdb: "881002" },
+          sources: ["jellyfin"],
+          available: true,
+          progress: 50,
+          lifecycle: { stage: "available" },
+          seasonRequestTarget: { service: "seerr", resourceId: 990001 }
+        }],
+        recentlyAdded: [], pendingRequests: [], activeDownloads: [], blockedImports: [],
+        upcoming: [], missing: [], subtitleBacklog: []
+      },
+      library: [], discover: [], requests: [], activity: [], calendar: [], subtitleBacklog: [],
+      metrics: { libraryTotal: 0 }
+    }
+  };
+  const environment = installFakeBrowser(({ path }) => {
+    if (path === "/api/v2/status") return jsonResponse({
+      setupRequired: false,
+      authenticated: true,
+      csrfToken: "season-boundary-csrf",
+      session: { name: "Season Boundary Browser" }
+    });
+    if (path === "/api/v2/config") return jsonResponse({
+      policy: { allowedCidrs: [] },
+      services: [{ id: "seerr", configured: true, enabled: true, monitoringEnabled: true, targetRevision: seerrRevision }]
+    });
+    if (path === "/api/v2/operations/snapshot") return jsonResponse(clone(snapshot));
+    if (path === `/api/v2/media/series/990001/seasons?targetRevision=${seerrRevision}`) return jsonResponse({
+      tmdbId: 990001,
+      targetRevision: seerrRevision,
+      detailRevision: "a".repeat(64),
+      seasons: []
+    });
+    if (path === "/api/v2/sessions") return jsonResponse({ currentSessionId: "", sessions: [] });
+    return jsonResponse({ code: "NOT_FOUND", message: "Unexpected test route." }, 404);
+  }, "season-target-boundary");
+  environment.location.hash = "#/home";
+  await importShell(environment);
+  await waitFor(() => environment.main.innerHTML.includes("Targeted colliding episode"), "season target boundary home");
+  assert.match(environment.main.innerHTML, /Unrelated colliding episode/u, "distinct IDs must survive same-collection normalization");
+
+  const open = async (mediaId) => {
+    const opener = new FakeElement({ id: `open-${mediaId}` });
+    Object.assign(opener.dataset, { action: "open-media-detail", mediaId });
+    opener.closest = (selector) => selector === "[data-action]" ? opener : null;
+    await environment.dispatchDocument("click", { target: opener });
+  };
+  const drawer = environment.elements.get("#drawer-layer");
+  await open(collisionRecordId);
+  assert.doesNotMatch(drawer.innerHTML, /data-season-panel/u, "a DOM-key collision must not transfer another episode's season capability");
+  assert.equal(
+    environment.requestLog.some(({ path }) => path.startsWith("/api/v2/media/series/")),
+    false,
+    "a colliding unrelated item must not trigger a season lookup"
+  );
+  for (let index = 0; index < invalidTargets.length; index += 1) {
+    await open(`invalid-season-target-${index}`);
+    assert.doesNotMatch(drawer.innerHTML, /data-season-panel/u, "malformed numeric targets must be rejected instead of clamped or coerced");
+  }
+  await open(collisionTargetId);
+  await waitFor(
+    () => environment.requestLog.some(({ path }) => path === `/api/v2/media/series/990001/seasons?targetRevision=${seerrRevision}`),
+    "valid isolated colliding season target"
+  );
+  assert.match(drawer.innerHTML, /data-season-panel/u, "the valid colliding item must retain its own season capability");
 }
 
 async function serviceDialogInteractionContract() {
@@ -4472,6 +4614,7 @@ for (const [name, contract] of [
   ["prioritized and retry-bounded media artwork", mediaArtworkLoadingContract],
   ["truthful media request and calendar semantics", mediaSemanticsContract],
   ["series season selection and requests", seriesSeasonControlsContract],
+  ["strict and collision-safe season targets", seasonTargetBoundaryContract],
   ["stable service dialog interactions", serviceDialogInteractionContract],
   ["categorized Media connections", mediaConnectionCategoriesContract],
   ["Infrastructure workspace and Proxmox dialog", infrastructureWorkspaceContract],
