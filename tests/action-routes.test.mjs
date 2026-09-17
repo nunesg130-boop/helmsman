@@ -68,6 +68,15 @@ test("fixed action authorizers construct only approved provider requests", () =>
   assert.deepEqual(JSON.parse(movie.body), { name: "MoviesSearch", movieIds: [22] });
   const series = authorizeMediaAction("searchSeries", { service: "sonarr", resourceId: 33 });
   assert.deepEqual(JSON.parse(series.body), { name: "SeriesSearch", seriesId: 33 });
+  for (const service of ["radarr", "sonarr"]) {
+    const replacement = authorizeMediaAction("blocklistAndSearch", { service, queueId: 501 });
+    assert.equal(replacement.method, "DELETE");
+    assert.equal(
+      replacement.upstreamPathAndQuery,
+      "/api/v3/queue/501?removeFromClient=true&blocklist=true&skipRedownload=false&changeCategory=false"
+    );
+    assert.equal(replacement.body, "");
+  }
 });
 
 test("Proxmox action acknowledgements require one bounded UPID and never need exposure", () => {
@@ -95,6 +104,11 @@ test("action authorizers reject short IDs, invalid tuples, and path-like values"
     authorizeProxmoxWorkloadAction("reboot", { node: "../pve-a", type: "qemu", vmid: 2101 }),
     authorizeProxmoxWorkloadAction("reboot", { node: "pve-a", type: "storage", vmid: 2101 }),
     authorizeMediaAction("searchMovie", { service: "sonarr", resourceId: 22 }),
+    authorizeMediaAction("blocklistAndSearch", { service: "seerr", queueId: 501 }),
+    authorizeMediaAction("blocklistAndSearch", { service: "radarr", queueId: "501?blocklist=false" }),
+    authorizeMediaAction("blocklistAndSearch", { service: "radarr", queueId: 2_147_483_648 }),
+    authorizeMediaAction("blocklistAndSearch", { service: "radarr", resourceId: 501 }),
+    authorizeMediaAction("searchMovie", { service: "radarr", queueId: 501 }),
     authorizeMediaAction("retryRequest", { service: "seerr", resourceId: "1/2" }),
     authorizeMediaAction("requestSeasons", { service: "seerr", resourceId: 1396, seasonNumbers: [] }),
     authorizeMediaAction("requestSeasons", { service: "seerr", resourceId: 1396, seasonNumbers: [0] }),
@@ -172,6 +186,24 @@ test("action transports reconstruct their route and reject forged parity before 
     }),
     (error) => error?.code === "ROUTE_NOT_ALLOWED"
   );
+
+  const queueReplacement = authorizeMediaAction("blocklistAndSearch", {
+    service: "radarr",
+    queueId: 501
+  });
+  await assert.rejects(
+    performMediaActionUpstreamRequest({
+      targetResolution: null,
+      route: {
+        ...queueReplacement,
+        upstreamPathAndQuery: "/api/v3/queue/501?removeFromClient=false&blocklist=false"
+      },
+      credentialHeaders: { "x-api-key": "must-not-be-sent" },
+      targetRevision: "11111111-1111-4111-8111-111111111111",
+      limits: {}
+    }),
+    (error) => error?.code === "ROUTE_NOT_ALLOWED"
+  );
 });
 
 test("media action transport emits only its fixed path and command body", async (t) => {
@@ -187,6 +219,11 @@ test("media action transport emits only its fixed path and command body", async 
         contentType: request.headers["content-type"],
         body: Buffer.concat(chunks).toString("utf8")
       });
+      if (request.method === "DELETE") {
+        response.writeHead(204);
+        response.end();
+        return;
+      }
       response.writeHead(request.url === "/api/v3/command" ? 201 : 200, { "content-type": "application/json" });
       response.end("{}");
     });
@@ -235,6 +272,13 @@ test("media action transport emits only its fixed path and command body", async 
     targetRevision: "22222222-2222-4222-8222-222222222222",
     limits
   });
+  await performMediaActionUpstreamRequest({
+    targetResolution,
+    route: authorizeMediaAction("blocklistAndSearch", { service: "sonarr", queueId: 501 }),
+    credentialHeaders: { "x-api-key": "sonarr-test-key" },
+    targetRevision: "33333333-3333-4333-8333-333333333333",
+    limits
+  });
   assert.deepEqual(requests, [
     {
       method: "POST",
@@ -256,6 +300,13 @@ test("media action transport emits only its fixed path and command body", async 
       apiKey: "seerr-test-key",
       contentType: "application/json",
       body: JSON.stringify({ mediaType: "tv", mediaId: 1396, seasons: [1, 3], is4k: false })
+    },
+    {
+      method: "DELETE",
+      url: "/api/v3/queue/501?removeFromClient=true&blocklist=true&skipRedownload=false&changeCategory=false",
+      apiKey: "sonarr-test-key",
+      contentType: undefined,
+      body: ""
     }
   ]);
 });

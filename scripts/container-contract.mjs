@@ -153,7 +153,7 @@ const requiredFiles = [
 const missing = requiredFiles.filter((path) => !existsSync(join(root, path)));
 record(
   missing.length === 0,
-  "Helmsman v1.0.1 includes its unified media model, bounded fixed actions, Proxmox and Portainer infrastructure monitors, encrypted store, retro operations UI, and deployment contracts",
+  "Helmsman v1.0.2 includes its unified media model, bounded fixed actions, Proxmox and Portainer infrastructure monitors, encrypted store, retro operations UI, and deployment contracts",
   missing.join(", ")
 );
 
@@ -174,12 +174,12 @@ if (existsSync(join(root, "Dockerfile"))) {
   );
 
   record(
-    /^ARG HELMSMAN_VERSION=1\.0\.1$/mu.test(dockerfile)
+    /^ARG HELMSMAN_VERSION=1\.0\.2$/mu.test(dockerfile)
       && /^ARG HELMSMAN_REVISION=unknown$/mu.test(dockerfile)
       && /org\.opencontainers\.image\.title="Helmsman"/u.test(dockerfile)
       && /org\.opencontainers\.image\.licenses="AGPL-3\.0-only"/u.test(dockerfile)
       && !/org\.opencontainers\.image\.title="Jellofin Command"/u.test(dockerfile),
-    "image metadata carries the Helmsman v1.0.1 identity and license"
+    "image metadata carries the Helmsman v1.0.2 identity and license"
   );
 
   record(
@@ -240,10 +240,10 @@ if (existsSync(join(root, "Dockerfile"))) {
 if (existsSync(join(root, "server/broker.mjs"))) {
   const broker = read("server/broker.mjs");
   record(
-    /const DEFAULT_VERSION = "1\.0\.1"/u.test(broker)
+    /const DEFAULT_VERSION = "1\.0\.2"/u.test(broker)
       && /process\.env\.HELMSMAN_VERSION/u.test(broker)
       && /\^\[0-9A-Za-z\]\[0-9A-Za-z\.\+-\]\{0,63\}\$/u.test(broker),
-    "runtime version follows the validated immutable v1.0.1 image metadata"
+    "runtime version follows the validated immutable v1.0.2 image metadata"
   );
 }
 
@@ -314,7 +314,7 @@ if (existsSync(join(root, "server/index.mjs"))
       && !/url[.]pathname === "\/api\/v2\/access\/rotate"/u.test(controlPlane)
       && !/command === "rotate-access-key"/u.test(index)
       && !/rotate-access-key --confirm/u.test(index),
-    "the beta.2 access-key route is migration-only and v1.0.1 exposes no access-key rotation route or CLI"
+    "the beta.2 access-key route is migration-only and v1.0.2 exposes no access-key rotation route or CLI"
   );
   record(
     /command === "reset-access"/u.test(index)
@@ -361,7 +361,7 @@ if (existsSync(join(root, "compose.yaml"))) {
   record(
     /^name:\s*helmsman\s*$/mu.test(compose)
       && /^services:\s*\n\s{2}helmsman:\s*$/mu.test(compose)
-      && compose.includes('${HELMSMAN_IMAGE:-ghcr.io/OWNER/REPOSITORY:1.0.1}')
+      && compose.includes('${HELMSMAN_IMAGE:-ghcr.io/OWNER/REPOSITORY:1.0.2}')
       && !/^\s{4}build:/mu.test(compose),
     "production Compose has a stable project name and pulls the versioned GHCR image without a local build"
   );
@@ -420,9 +420,9 @@ if (existsSync(join(root, "compose.dev.yaml"))) {
       && /^\s{4}build:\s*$/mu.test(developmentCompose)
       && /^\s{6}context:\s*[.]\s*$/mu.test(developmentCompose)
       && /^\s{6}dockerfile:\s*Dockerfile\s*$/mu.test(developmentCompose)
-      && /HELMSMAN_VERSION:\s*["']1\.0\.1["']/u.test(developmentCompose)
+      && /HELMSMAN_VERSION:\s*["']1\.0\.2["']/u.test(developmentCompose)
       && /HELMSMAN_REVISION:\s*["']local["']/u.test(developmentCompose)
-      && /image:\s*["']helmsman:1\.0\.1["']/u.test(developmentCompose),
+      && /image:\s*["']helmsman:1\.0\.2["']/u.test(developmentCompose),
     "developer Compose override keeps source builds separate from the production pull contract"
   );
 }
@@ -550,7 +550,7 @@ if (existsSync(join(root, "container.env.example"))) {
   const allowed = new Set(["HELMSMAN_IMAGE", "HELMSMAN_BIND_IP", "HELMSMAN_PORT"]);
   const unexpected = keys.filter((key) => !allowed.has(key));
   record(
-    assignments.includes("HELMSMAN_IMAGE=ghcr.io/OWNER/REPOSITORY:1.0.1")
+    assignments.includes("HELMSMAN_IMAGE=ghcr.io/OWNER/REPOSITORY:1.0.2")
       && assignments.includes("HELMSMAN_BIND_IP=127.0.0.1")
       && assignments.includes("HELMSMAN_PORT=4180")
       && !assignments.some((line) => line.startsWith("HELMSMAN_DATA_VOLUME="))
@@ -659,10 +659,10 @@ if (existsSync(join(root, "manifest.webmanifest"))) {
         && manifest.icons.some(({ src, sizes }) => src === "./assets/icon-192.png" && sizes === "192x192")
         && manifest.icons.some(({ src, sizes, purpose }) => src === "./assets/icon-512.png" && sizes === "512x512" && purpose === "any")
         && manifest.icons.some(({ src, sizes, purpose }) => src === "./assets/icon-maskable-512.png" && sizes === "512x512" && purpose === "maskable"),
-      "the v1.0.1 installed-app manifest opens Media Home and retains dedicated local application icons"
+      "the v1.0.2 installed-app manifest opens Media Home and retains dedicated local application icons"
     );
   } catch (error) {
-    record(false, "the v1.0.1 installed-app manifest opens Media Home and retains dedicated local application icons", error.message);
+    record(false, "the v1.0.2 installed-app manifest opens Media Home and retains dedicated local application icons", error.message);
   }
 }
 
@@ -871,7 +871,7 @@ if (existsSync(join(root, "package.json"))) {
     const packageJson = JSON.parse(read("package.json"));
     record(
       packageJson.name === "helmsman"
-        && packageJson.version === "1.0.1"
+        && packageJson.version === "1.0.2"
         && packageJson.scripts?.serve === "node server/index.mjs serve"
         && packageJson.scripts?.["check:broker"] === "node --test tests/control-plane.test.mjs"
         && /tests\/secrets[.]test[.]mjs/u.test(packageJson.scripts?.["check:security"] || "")
@@ -963,6 +963,8 @@ if (existsSync(join(root, "README.md")) && existsSync(join(root, "deploy/DOCKER.
   );
   record(
     keyGuides.every((guide) => /only media writes[^.\n]*Seerr failed-request retry[^.\n]*selected standard-season request[^.\n]*exact current series[^.\n]*targeted Radarr\/Sonarr search[^.\n]*one exact current record/iu.test(guide))
+      && keyGuides.every((guide) => /Block release & search again[^.\n]*one exact current errored Sonarr\/Radarr queue item/iu.test(guide))
+      && keyGuides.every((guide) => /removes? the download[^.\n]*data[^.\n]*blocklists? (?:that|the) release[^.\n]*(?:replacement|seek a replacement)/iu.test(guide))
       && keyGuides.every((guide) => /(?:Portainer container start, restart, and graceful stop|start, restart, or gracefully stop one current Docker-compatible container)/iu.test(guide))
       && keyGuides.every((guide) => /(?:Proxmox QEMU\/LXC start, reboot, and graceful shutdown|start, reboot, or gracefully shut down one current QEMU VM or LXC)/iu.test(guide))
       && keyGuides.every((guide) => /(?:accessible )?(?:Helmsman(?:'s)? )?in-app confirmation|Helmsman confirmation dialog/iu.test(guide))

@@ -40,7 +40,7 @@ function homeFixture() {
     <form class="media-home-search"><label><svg></svg><span><strong>Search</strong><small>Fixture</small></span><input></label><button type="button">Search</button></form>
     <section class="media-home-metrics">${["Library", "Requests", "Downloads", "Missing", "Subtitles"].map(metric).join("")}</section>
     <section class="media-section"><header class="section-heading"><div><h2>Continue watching</h2><p>Fixture</p></div></header><div class="poster-rail">${cards}</div></section>
-    <div class="focus-layout"><section class="pipeline-panel">Activity</section><section class="activity-panel">Attention</section></div>
+    <div class="focus-layout"><section class="pipeline-panel"><header class="panel-heading"><div><span class="eyebrow">Activity</span><h2>Downloads and imports</h2><p>Fixture activity summary.</p></div><a class="text-link" href="#/activity">All activity <svg></svg></a></header></section><section class="activity-panel">Attention</section></div>
     <section class="media-section"><header class="section-heading"><div><h2>Recently added</h2></div></header><div class="poster-rail">${cards}</div></section>
   </div>`;
 }
@@ -134,6 +134,8 @@ function near(actual, expected, message, tolerance = 1) {
         const rail = document.querySelector(".poster-rail");
         const sidebarToggle = document.querySelector(".sidebar-toggle");
         const toggleRect = sidebarToggle.getBoundingClientRect();
+        const activityLink = document.querySelector(".pipeline-panel .text-link");
+        const activityLinkStyle = getComputedStyle(activityLink);
         const posterWidths = [...rail.querySelectorAll(".poster-card")]
           .map((card) => card.getBoundingClientRect().width);
         return {
@@ -156,6 +158,15 @@ function near(actual, expected, message, tolerance = 1) {
             scrollWidth: rail.scrollWidth,
             overflowX: getComputedStyle(rail).overflowX,
             posterWidths
+          },
+          activityHeader: rect(".pipeline-panel .panel-heading"),
+          activityLink: {
+            ...rect(".pipeline-panel .text-link"),
+            alignItems: activityLinkStyle.alignItems,
+            justifyContent: activityLinkStyle.justifyContent,
+            paddingLeft: parseFloat(activityLinkStyle.paddingLeft),
+            paddingRight: parseFloat(activityLinkStyle.paddingRight),
+            whiteSpace: activityLinkStyle.whiteSpace
           }
         };
       });
@@ -203,6 +214,18 @@ function near(actual, expected, message, tolerance = 1) {
         geometry.rail.posterWidths.every((width) => width <= 176.5),
         `${viewport.width}px poster cards must not grow into oversized fluid columns`
       );
+      assert.ok(
+        geometry.activityLink.left >= geometry.activityHeader.left - 1
+          && geometry.activityLink.right <= geometry.activityHeader.right + 1,
+        `${viewport.width}px All activity link must stay inside its panel heading`
+      );
+      assert.ok(
+        geometry.activityLink.paddingLeft >= 13.5 && geometry.activityLink.paddingRight >= 13.5,
+        `${viewport.width}px All activity text must have balanced horizontal inset`
+      );
+      assert.equal(geometry.activityLink.alignItems, "center", `${viewport.width}px All activity content must be vertically centered`);
+      assert.equal(geometry.activityLink.justifyContent, "center", `${viewport.width}px All activity content must be horizontally centered`);
+      assert.equal(geometry.activityLink.whiteSpace, "nowrap", `${viewport.width}px All activity label must remain on one line`);
 
       await page.evaluate(() => {
         document.querySelector("#app").classList.add("is-sidebar-collapsed");

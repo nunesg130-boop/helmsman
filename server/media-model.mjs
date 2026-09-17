@@ -664,6 +664,7 @@ function arrQueue(service, body) {
         providerIds: {}
       }),
       id: identifier(own(item, "id")) || hash,
+      ...(positiveInteger(own(item, "id"), 2_147_483_647) ? { queueId: positiveInteger(own(item, "id"), 2_147_483_647) } : {}),
       downloadId: hash,
       state: text(own(item, "trackedDownloadState") ?? own(item, "trackedDownloadStatus") ?? own(item, "status"), 64)?.toLowerCase() || "unknown",
       ...(progress !== null ? { progress: Math.round(progress * 10) / 10 } : {}),
@@ -936,6 +937,10 @@ function revalidateInventoryItem(service, category, item) {
         : text(own(item, key), maximum);
     if (normalized) output[key] = normalized;
   }
+  if (["radarr", "sonarr"].includes(service) && category === "activity") {
+    const queueId = positiveInteger(own(item, "queueId"), 2_147_483_647);
+    if (queueId) output.queueId = queueId;
+  }
   if (service === "seerr") {
     if (category === "requests") {
       const requestId = positiveInteger(own(item, "requestId") ?? own(item, "sourceId"));
@@ -1164,6 +1169,8 @@ function correlateActivity(inventories, records) {
         title: linked?.title || item.title,
         year: linked?.year || item.year || null,
         providerIds: item.providerIds,
+        ...(item.queueId ? { queueId: item.queueId } : {}),
+        ...(item.queueId ? { queueActionTarget: { service, queueId: item.queueId } } : {}),
         downloadId: item.downloadId || null,
         state,
         progress: torrent?.progress ?? item.progress ?? null,

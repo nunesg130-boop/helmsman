@@ -1342,7 +1342,16 @@ async function mediaSemanticsContract() {
         recentlyAdded: [],
         pendingRequests: [],
         activeDownloads: [],
-        blockedImports: [],
+        blockedImports: [{
+          id: "radarr:501",
+          service: "radarr",
+          title: "Blocked Import",
+          mediaType: "movie",
+          state: "blocked",
+          error: "Invalid video file, unsupported extension.",
+          queueActionTarget: { service: "radarr", queueId: 501 },
+          lifecycle: { stage: "downloading" }
+        }],
         upcoming: [{
           id: "radarr:movie:future",
           title: "Future Signal",
@@ -1529,7 +1538,32 @@ async function mediaSemanticsContract() {
           requestedAt: today
         }
       ],
-      activity: [],
+      activity: [{
+        id: "radarr:501",
+        service: "radarr",
+        title: "Blocked Import",
+        mediaType: "movie",
+        state: "blocked",
+        error: "Invalid video file, unsupported extension.",
+        queueActionTarget: { service: "radarr", queueId: 501 },
+        lifecycle: { stage: "downloading" }
+      }, ...[
+        ["zero", 0],
+        ["negative", -1],
+        ["oversized", 2_147_483_648],
+        ["fractional", 501.5],
+        ["numeric-string", "501"],
+        ["path-like", "501?blocklist=false"]
+      ].map(([suffix, queueId]) => ({
+        id: `radarr:malformed-${suffix}`,
+        service: "radarr",
+        title: `Malformed queue target ${suffix}`,
+        mediaType: "movie",
+        state: "blocked",
+        error: "This malformed browser-boundary fixture must not expose an action.",
+        queueActionTarget: { service: "radarr", queueId },
+        lifecycle: { stage: "downloading" }
+      }))],
       calendar: [
         {
           id: "sonarr:episode:1",
@@ -1727,6 +1761,67 @@ async function mediaSemanticsContract() {
   drawerCloser.dataset.action = "close-media-drawer";
   drawerCloser.closest = (selector) => selector === "[data-action]" ? drawerCloser : null;
   await environment.dispatchDocument("click", { target: drawerCloser });
+
+  environment.location.hash = "#/activity";
+  await environment.dispatchWindow("hashchange", { type: "hashchange" });
+  const openBlockedImport = new FakeElement({ id: "open-blocked-import" });
+  openBlockedImport.dataset.action = "open-media-detail";
+  openBlockedImport.dataset.mediaId = "radarr:501";
+  openBlockedImport.closest = (selector) => selector === "[data-action]" ? openBlockedImport : null;
+  await environment.dispatchDocument("click", { target: openBlockedImport });
+  assert.match(drawer.innerHTML, /data-action="run-media-control"[^>]+data-control-operation="blocklistAndSearch"[^>]+data-control-queue-id="501"/u, "a current blocked Arr queue row must expose its bounded recovery control");
+  assert.match(drawer.innerHTML, /button--danger[^>]*>[\s\S]*?Block release &amp; search again/u, "blocked queue recovery must be styled as destructive");
+  const blockAndSearch = new FakeElement({ id: "block-and-search" });
+  blockAndSearch.dataset.action = "run-media-control";
+  blockAndSearch.dataset.mediaId = "radarr:501";
+  blockAndSearch.dataset.controlService = "radarr";
+  blockAndSearch.dataset.controlOperation = "blocklistAndSearch";
+  blockAndSearch.dataset.controlQueueId = "501";
+  blockAndSearch.dataset.controlKey = "media:radarr:blocklistAndSearch:501";
+  blockAndSearch.closest = (selector) => selector === "[data-action]" ? blockAndSearch : null;
+  const queueCallsBefore = environment.requestLog.filter(({ path, options }) => (
+    path === "/api/v2/actions/media" && JSON.parse(options.body).operation === "blocklistAndSearch"
+  )).length;
+  environment.document.activeElement = blockAndSearch;
+  const cancelledQueueRecovery = environment.dispatchDocument("click", { target: blockAndSearch });
+  await waitFor(() => environment.confirmationLayer.classList.contains("is-open"), "blocked queue recovery confirmation");
+  assert.match(environment.confirmationLayer.innerHTML, /control-confirm-modal is-danger/u, "blocked queue recovery needs a danger confirmation");
+  assert.match(environment.confirmationLayer.innerHTML, /Remove Blocked Import and its downloaded data from the download client/u);
+  await environment.dispatchDocument("click", { target: environment.confirmationCancel });
+  await cancelledQueueRecovery;
+  assert.equal(environment.requestLog.filter(({ path, options }) => (
+    path === "/api/v2/actions/media" && JSON.parse(options.body).operation === "blocklistAndSearch"
+  )).length, queueCallsBefore, "cancelling must not mutate an Arr queue");
+  assert.equal(environment.document.activeElement, blockAndSearch, "cancelling blocked queue recovery must restore focus");
+
+  const approvedQueueRecovery = environment.dispatchDocument("click", { target: blockAndSearch });
+  await waitFor(() => environment.confirmationLayer.classList.contains("is-open"), "approved blocked queue recovery confirmation");
+  await environment.dispatchDocument("click", { target: environment.confirmationApprove });
+  await approvedQueueRecovery;
+  const queueCall = environment.requestLog.find(({ path, options }) => (
+    path === "/api/v2/actions/media" && JSON.parse(options.body).operation === "blocklistAndSearch"
+  ));
+  assert.deepEqual(JSON.parse(queueCall.options.body), {
+    serviceId: "radarr",
+    operation: "blocklistAndSearch",
+    queueId: 501,
+    targetRevision: radarrRevision
+  }, "blocked queue recovery must send only its typed queue target and current revision");
+  await environment.dispatchDocument("click", { target: drawerCloser });
+
+  for (const suffix of ["zero", "negative", "oversized", "fractional", "numeric-string", "path-like"]) {
+    const malformedQueueItem = new FakeElement({ id: `open-malformed-queue-${suffix}` });
+    malformedQueueItem.dataset.action = "open-media-detail";
+    malformedQueueItem.dataset.mediaId = `radarr:malformed-${suffix}`;
+    malformedQueueItem.closest = (selector) => selector === "[data-action]" ? malformedQueueItem : null;
+    await environment.dispatchDocument("click", { target: malformedQueueItem });
+    assert.doesNotMatch(
+      drawer.innerHTML,
+      /data-control-operation="blocklistAndSearch"/u,
+      `a malformed ${suffix} queue ID must fail closed at the browser boundary`
+    );
+    await environment.dispatchDocument("click", { target: drawerCloser });
+  }
 
   environment.location.hash = "#/calendar";
   await environment.dispatchWindow("hashchange", { type: "hashchange" });
@@ -4127,6 +4222,10 @@ async function authenticatedRuntimeContract() {
   assert.ok(environment.requestLog.some(({ path }) => path === "/api/v2/operations/snapshot"), "authenticated startup must request the operations snapshot");
   assert.ok(environment.requestLog.some(({ path }) => path === "/api/v2/sessions"), "authenticated startup must request authorized browser sessions");
   assert.match(environment.main.innerHTML, /operations-overall/u);
+  assert.match(environment.main.innerHTML, /aria-label="Jellyfin connection health: Connected"/u);
+  assert.match(environment.main.innerHTML, /aria-label="Jellyfin service health: Limited"/u);
+  assert.match(environment.main.innerHTML, /Connection health[\s\S]*Connected/u, "the Overview must show verified connection health separately");
+  assert.match(environment.main.innerHTML, /Service health[\s\S]*Limited/u, "the Overview must show upstream service health separately");
   assert.doesNotMatch(environment.main.innerHTML, /<img src=x/u, "hostile API headings must not create elements");
   assert.doesNotMatch(environment.main.innerHTML, /<script>alert\(1\)<\/script>/u, "hostile incident text must not create scripts");
   assert.match(environment.main.innerHTML, /&lt;img src=x onerror=&quot;alert\(1\)&quot;&gt;/u);

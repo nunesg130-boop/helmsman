@@ -133,6 +133,8 @@ test("unifies media by provider identifiers and derives the full lifecycle", () 
     { service: "seerr", kind: "poster", resource: "signal.jpg", variant: "w342", targetRevision: TARGETS.seerr }
   ]);
   assert.equal(media.activity.length, 1);
+  assert.equal(media.activity[0].queueId, 501);
+  assert.deepEqual(media.activity[0].queueActionTarget, { service: "radarr", queueId: 501 });
   assert.equal(media.activity[0].downloadId, HASH);
   assert.equal(media.activity[0].progress, 40);
   assert.equal(media.activity[0].downloadSpeedBps, 2048);
@@ -1229,6 +1231,7 @@ test("bounds and revalidates hostile inventory at the monitor boundary", () => {
       mediaType: "movie",
       title: "Safe",
       providerIds: { tmdb: 1 },
+      queueId: "1/delete?blocklist=false",
       error: `apiKey=private-media-key-123 ${"x".repeat(600)}<script>`,
       progress: 500
     }],
@@ -1237,6 +1240,7 @@ test("bounds and revalidates hostile inventory at the monitor boundary", () => {
   const normalized = normalizeServiceMediaInventory("radarr", hostile);
   assert.equal(normalized.library.length, 500);
   assert.equal(normalized.activity[0].progress, 100);
+  assert.equal(Object.hasOwn(normalized.activity[0], "queueId"), false);
   assert.ok(Array.from(normalized.activity[0].error).length <= 420);
   const serialized = JSON.stringify(normalized);
   assert.doesNotMatch(serialized, /admin:secret|private-media-key-123|must not survive|<script>/u);

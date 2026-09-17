@@ -180,6 +180,12 @@ const MEDIA_ACTIONS = Object.freeze({
     service: "sonarr",
     path: () => "/api/v3/command",
     body: (id) => JSON.stringify({ name: "SeriesSearch", seriesId: id })
+  }),
+  blocklistAndSearch: Object.freeze({
+    services: Object.freeze(["radarr", "sonarr"]),
+    method: "DELETE",
+    path: (id) => `/api/v3/queue/${id}?removeFromClient=true&blocklist=true&skipRedownload=false&changeCategory=false`,
+    body: ""
   })
 });
 
@@ -191,7 +197,9 @@ export function authorizeMediaAction(operationValue, parameters = {}) {
   const operation = typeof operationValue === "string" ? operationValue : "";
   const definition = MEDIA_ACTIONS[operation];
   const service = canonicalServiceId(parameters?.service);
-  const resourceId = normalizePositiveResourceId(parameters?.resourceId, 9_999_999_999);
+  const queueAction = operation === "blocklistAndSearch";
+  const resourceId = queueAction ? null : normalizePositiveResourceId(parameters?.resourceId, 9_999_999_999);
+  const queueId = queueAction ? normalizePositiveResourceId(parameters?.queueId, 2_147_483_647) : null;
   const suppliedSeasons = parameters?.seasonNumbers;
   const seasonNumbers = operation === "requestSeasons"
     && Array.isArray(suppliedSeasons)
@@ -205,9 +213,11 @@ export function authorizeMediaAction(operationValue, parameters = {}) {
     ))
       ? Object.freeze([...suppliedSeasons])
       : null;
+  const serviceAllowed = definition
+    && (service === definition.service || definition.services?.includes(service));
   if (!definition
-    || service !== definition.service
-    || resourceId === null
+    || !serviceAllowed
+    || (queueAction ? queueId === null || parameters?.resourceId !== undefined : resourceId === null || parameters?.queueId !== undefined)
     || (operation === "requestSeasons" && !seasonNumbers)
     || (operation !== "requestSeasons" && suppliedSeasons !== undefined)) {
     return {
@@ -217,18 +227,19 @@ export function authorizeMediaAction(operationValue, parameters = {}) {
       status: 404
     };
   }
-  const upstreamPath = definition.path(resourceId);
+  const targetId = queueAction ? queueId : resourceId;
+  const upstreamPath = definition.path(targetId);
   const body = typeof definition.body === "function"
-    ? definition.body(resourceId, { seasonNumbers })
+    ? definition.body(targetId, { seasonNumbers })
     : definition.body;
   return Object.freeze({
     allowed: true,
     service,
     actionId: "media",
     operation,
-    resourceId,
+    ...(queueAction ? { queueId } : { resourceId }),
     ...(seasonNumbers ? { seasonNumbers } : {}),
-    method: "POST",
+    method: definition.method || "POST",
     upstreamPath,
     upstreamPathAndQuery: upstreamPath,
     body,

@@ -3971,21 +3971,25 @@ export async function createControlPlane(options) {
     if (!executeMediaRecoveryAction) fail(503, "ACTIONS_UNAVAILABLE", "Media recovery controls are temporarily unavailable.");
     const body = await readBoundedJson(request);
     const seasonRequest = body.operation === "requestSeasons";
+    const queueAction = body.operation === "blocklistAndSearch";
     requireExactKeys(body, seasonRequest
       ? ["serviceId", "operation", "resourceId", "seasonNumbers", "targetRevision", "detailRevision"]
-      : ["serviceId", "operation", "resourceId", "targetRevision"]);
+      : queueAction
+        ? ["serviceId", "operation", "queueId", "targetRevision"]
+        : ["serviceId", "operation", "resourceId", "targetRevision"]);
     const serviceId = ["seerr", "radarr", "sonarr"].includes(body.serviceId) ? body.serviceId : null;
-    const operation = ["retryRequest", "requestSeasons", "searchMovie", "searchSeries"].includes(body.operation)
+    const operation = ["retryRequest", "requestSeasons", "searchMovie", "searchSeries", "blocklistAndSearch"].includes(body.operation)
       ? body.operation
       : null;
-    const resourceId = requiredActionInteger(body.resourceId, "media resource", 9_999_999_999);
+    const resourceId = queueAction ? null : requiredActionInteger(body.resourceId, "media resource", 9_999_999_999);
+    const queueId = queueAction ? requiredActionInteger(body.queueId, "queue item") : null;
     const targetRevision = requiredActionRevision(body.targetRevision);
     const seasonNumbers = seasonRequest ? requiredSeasonNumbers(body.seasonNumbers) : null;
     const detailRevision = seasonRequest ? requiredMediaDetailRevision(body.detailRevision) : null;
     const operationAllowed = serviceId === "seerr"
       ? ["retryRequest", "requestSeasons"].includes(operation)
-      : (serviceId === "radarr" && operation === "searchMovie")
-        || (serviceId === "sonarr" && operation === "searchSeries");
+      : (serviceId === "radarr" && ["searchMovie", "blocklistAndSearch"].includes(operation))
+        || (serviceId === "sonarr" && ["searchSeries", "blocklistAndSearch"].includes(operation));
     if (!serviceId || !operationAllowed) {
       fail(400, "INVALID_ACTION_TARGET", "Choose a supported media recovery action.");
     }
@@ -4014,6 +4018,23 @@ export async function createControlPlane(options) {
       const requestRecord = snapshot.media?.requests?.find((candidate) => candidate?.requestId === resourceId);
       if (!requestRecord || requestRecord.requestStatus !== "failed") {
         fail(409, "ACTION_NOT_AVAILABLE", "That request is not currently marked failed by Seerr.");
+      }
+    } else if (queueAction) {
+      const queueMatches = (provider?.inventory?.activity || []).filter((candidate) => (
+        candidate?.service === serviceId && candidate?.queueId === queueId
+      ));
+      const activityMatches = (snapshot.media?.activity || []).filter((candidate) => (
+        candidate?.service === serviceId
+        && candidate?.queueActionTarget?.service === serviceId
+        && candidate.queueActionTarget.queueId === queueId
+      ));
+      const queueState = String(queueMatches[0]?.state || "").toLowerCase();
+      const blocked = typeof queueMatches[0]?.error === "string" && queueMatches[0].error.length > 0
+        || /(?:blocked|failed|error)/u.test(queueState);
+      if (queueMatches.length !== 1
+        || activityMatches.length !== 1
+        || !blocked) {
+        fail(409, "ACTION_NOT_AVAILABLE", `That ${serviceId} queue item is not one current blocked import.`);
       }
     } else {
       const expectedType = serviceId === "radarr" ? "movie" : "series";
@@ -4099,14 +4120,14 @@ export async function createControlPlane(options) {
       approvedHostCidrs: connection.approvedHostCidrs || []
     });
     const result = await runSingleFlightAction(
-      `media:${serviceId}:${resourceId}`,
+      `media:${serviceId}:${operation}:${queueAction ? queueId : resourceId}`,
       async () => {
         try {
           return await useServiceCredential(serviceId, connection, (credential) => (
             executeMediaRecoveryAction({
               serviceId,
               operation,
-              resourceId,
+              ...(queueAction ? { queueId } : { resourceId }),
               connection,
               targetResolution,
               credential

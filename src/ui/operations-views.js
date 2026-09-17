@@ -30,6 +30,13 @@ const HEALTH_STATES = new Set([
 ]);
 const CONNECTION_STATES = new Set(["connected", "auth_required", "unverified", "down"]);
 
+const CONNECTION_COPY = Object.freeze({
+  connected: { label: "Connected", tone: "success" },
+  auth_required: { label: "Authentication required", tone: "danger" },
+  down: { label: "Unavailable", tone: "danger" },
+  unverified: { label: "Unverified", tone: "neutral" }
+});
+
 const HEALTH_COPY = Object.freeze({
   healthy: { label: "Healthy", tone: "success", icon: "check" },
   limited: { label: "Limited", tone: "warning", icon: "more" },
@@ -1315,16 +1322,28 @@ function serviceSummary(service) {
   return `${first.name}${service.failedCapabilities.length > 1 ? ` and ${service.failedCapabilities.length - 1} more` : ""} ${first.state === "stale" ? "is stale" : "needs attention"}`;
 }
 
+function connectionMeta(value) {
+  return CONNECTION_COPY[normalizeConnectionState(value)] || CONNECTION_COPY.unverified;
+}
+
+function serviceHealthIndicator(service, heading, meta) {
+  const accessibleHeading = heading.toLowerCase();
+  return `<span class="operations-service__health" aria-label="${escapeOperationsHtml(service.name)} ${escapeOperationsHtml(accessibleHeading)}: ${escapeOperationsHtml(meta.label)}"><small>${escapeOperationsHtml(heading)}</small><span class="operations-service__state"><i class="is-${meta.tone}" aria-hidden="true"></i>${escapeOperationsHtml(meta.label)}</span></span>`;
+}
+
 function renderService(service) {
   const isKnown = Object.prototype.hasOwnProperty.call(SERVICE_COPY, service.id);
-  const meta = healthMeta(service.state);
+  const serviceMeta = healthMeta(service.state);
+  const connection = connectionMeta(service.connectionState);
   const facts = [];
   if (service.latencyMs !== null) facts.push(`${service.latencyMs} ms`);
   if (service.version) facts.push(`v${service.version}`);
   if (!facts.length && service.lastCheckedAt) facts.push("Checked");
-  const content = `<span class="operations-service__mark">${serviceIconMarkup(service.id, service.name.slice(0, 1))}</span><span class="operations-service__copy"><span class="operations-kicker">${escapeOperationsHtml(service.role)}</span><strong>${escapeOperationsHtml(service.name)}</strong><small>${escapeOperationsHtml(serviceSummary(service))}</small>${facts.length ? `<em>${escapeOperationsHtml(facts.join(" · "))}</em>` : ""}</span><span class="operations-service__state"><i class="is-${meta.tone}"></i>${escapeOperationsHtml(meta.label)}</span>${isKnown ? svgIcon("chevron") : ""}`;
+  const health = `<span class="operations-service__states">${serviceHealthIndicator(service, "Connection health", connection)}${serviceHealthIndicator(service, "Service health", serviceMeta)}</span>`;
+  const content = `<span class="operations-service__mark">${serviceIconMarkup(service.id, service.name.slice(0, 1))}</span><span class="operations-service__copy"><span class="operations-kicker">${escapeOperationsHtml(service.role)}</span><strong>${escapeOperationsHtml(service.name)}</strong><small>${escapeOperationsHtml(serviceSummary(service))}</small>${facts.length ? `<em>${escapeOperationsHtml(facts.join(" · "))}</em>` : ""}</span>${health}${isKnown ? svgIcon("chevron") : ""}`;
+  const actionLabel = `Open ${service.name} connection details. Connection health: ${connection.label}. Service health: ${serviceMeta.label}.`;
   return isKnown
-    ? `<li><button class="operations-service" type="button" data-action="open-service" data-service-id="${escapeOperationsHtml(service.id)}" aria-label="Open ${escapeOperationsHtml(service.name)} connection details">${content}</button></li>`
+    ? `<li><button class="operations-service" type="button" data-action="open-service" data-service-id="${escapeOperationsHtml(service.id)}" aria-label="${escapeOperationsHtml(actionLabel)}">${content}</button></li>`
     : `<li><article class="operations-service">${content}</article></li>`;
 }
 

@@ -12,6 +12,8 @@ const CONTAINER_ID = "c".repeat(64);
 const PORTAINER_TOKEN = "portainer-action-test-token";
 const PROXMOX_TOKEN_ID = "helmsman@pve!controls";
 const PROXMOX_TOKEN_SECRET = "proxmox-action-test-secret";
+const RADARR_DOWNLOAD_ID = "a".repeat(40);
+const SONARR_DOWNLOAD_ID = "b".repeat(40);
 
 function request(port, pathname, options = {}) {
   const body = options.body === undefined ? null : Buffer.from(JSON.stringify(options.body), "utf8");
@@ -125,7 +127,7 @@ async function start() {
       calls.push({
         provider: input.serviceId,
         operation: input.operation,
-        resourceId: input.resourceId,
+        ...(input.queueId ? { queueId: input.queueId } : { resourceId: input.resourceId }),
         ...(input.seasonNumbers ? { seasonNumbers: [...input.seasonNumbers] } : {}),
         credential: input.credential.toString("utf8")
       });
@@ -133,7 +135,7 @@ async function start() {
         ok: true,
         provider: input.serviceId,
         operation: input.operation,
-        resourceId: input.resourceId,
+        ...(input.queueId ? { queueId: input.queueId } : { resourceId: input.resourceId }),
         ...(input.seasonNumbers ? { seasonNumbers: [...input.seasonNumbers] } : {}),
         providerStatus: input.operation === "requestSeasons" ? 201 : 200
       };
@@ -301,6 +303,32 @@ test("minor controls require CSRF, current inventory, exact revisions, and saved
       },
       media: {
         requests: [{ requestId: 41, requestStatus: "failed" }],
+        activity: [
+          {
+            service: "radarr",
+            queueId: 501,
+            queueActionTarget: { service: "radarr", queueId: 501 },
+            downloadId: RADARR_DOWNLOAD_ID,
+            state: "blocked",
+            error: "Radarr could not import this release."
+          },
+          {
+            service: "sonarr",
+            queueId: 601,
+            queueActionTarget: { service: "sonarr", queueId: 601 },
+            downloadId: SONARR_DOWNLOAD_ID,
+            state: "importpending",
+            error: "Sonarr could not import this release."
+          },
+          {
+            service: "radarr",
+            queueId: 502,
+            queueActionTarget: { service: "radarr", queueId: 502 },
+            downloadId: "c".repeat(40),
+            state: "downloading",
+            error: null
+          }
+        ],
         records: [
           {
             mediaType: "movie",
@@ -331,14 +359,25 @@ test("minor controls require CSRF, current inventory, exact revisions, and saved
           targetRevision: media.radarr.targetRevision,
           checkedAt,
           connectionState: "connected",
-          inventory: { library: [{ sourceId: "22", mediaType: "movie", monitored: true }] }
+          inventory: {
+            library: [{ sourceId: "22", mediaType: "movie", monitored: true }],
+            activity: [
+              { service: "radarr", queueId: 501, downloadId: RADARR_DOWNLOAD_ID, state: "blocked", error: "Import failed." },
+              { service: "radarr", queueId: 502, downloadId: "c".repeat(40), state: "downloading" }
+            ]
+          }
         },
         {
           id: "sonarr",
           targetRevision: media.sonarr.targetRevision,
           checkedAt,
           connectionState: "connected",
-          inventory: { library: [{ sourceId: "33", mediaType: "series", monitored: true }] }
+          inventory: {
+            library: [{ sourceId: "33", mediaType: "series", monitored: true }],
+            activity: [
+              { service: "sonarr", queueId: 601, downloadId: SONARR_DOWNLOAD_ID, state: "importpending", error: "Import failed." }
+            ]
+          }
         }
       ]
     });
@@ -403,7 +442,9 @@ test("minor controls require CSRF, current inventory, exact revisions, and saved
     for (const payload of [
       { serviceId: "seerr", operation: "retryRequest", resourceId: 41, targetRevision: media.seerr.targetRevision },
       { serviceId: "radarr", operation: "searchMovie", resourceId: 22, targetRevision: media.radarr.targetRevision },
-      { serviceId: "sonarr", operation: "searchSeries", resourceId: 33, targetRevision: media.sonarr.targetRevision }
+      { serviceId: "sonarr", operation: "searchSeries", resourceId: 33, targetRevision: media.sonarr.targetRevision },
+      { serviceId: "radarr", operation: "blocklistAndSearch", queueId: 501, targetRevision: media.radarr.targetRevision },
+      { serviceId: "sonarr", operation: "blocklistAndSearch", queueId: 601, targetRevision: media.sonarr.targetRevision }
     ]) {
       const acted = await request(context.port, "/api/v2/actions/media", {
         method: "POST",
@@ -411,10 +452,37 @@ test("minor controls require CSRF, current inventory, exact revisions, and saved
         body: payload
       });
       assert.equal(acted.status, 200, JSON.stringify(acted.json));
-      assert.equal(acted.json.resourceId, payload.resourceId);
+      if (payload.queueId) assert.equal(acted.json.queueId, payload.queueId);
+      else assert.equal(acted.json.resourceId, payload.resourceId);
     }
-    assert.equal(context.calls.length, 5);
-    assert.equal(context.refreshCount() - refreshBaseline, 5);
+    assert.equal(context.calls.length, 7);
+    assert.equal(context.refreshCount() - refreshBaseline, 7);
+
+    const healthyQueueItem = await request(context.port, "/api/v2/actions/media", {
+      method: "POST",
+      ...authentication,
+      body: { serviceId: "radarr", operation: "blocklistAndSearch", queueId: 502, targetRevision: media.radarr.targetRevision }
+    });
+    assert.equal(healthyQueueItem.status, 409);
+    assert.equal(healthyQueueItem.json.code, "ACTION_NOT_AVAILABLE");
+    assert.equal(context.calls.length, 7);
+
+    const wrongQueueField = await request(context.port, "/api/v2/actions/media", {
+      method: "POST",
+      ...authentication,
+      body: { serviceId: "radarr", operation: "blocklistAndSearch", resourceId: 501, targetRevision: media.radarr.targetRevision }
+    });
+    assert.equal(wrongQueueField.status, 400);
+    assert.equal(wrongQueueField.json.code, "INVALID_REQUEST");
+
+    const unobservedQueueItem = await request(context.port, "/api/v2/actions/media", {
+      method: "POST",
+      ...authentication,
+      body: { serviceId: "radarr", operation: "blocklistAndSearch", queueId: 999, targetRevision: media.radarr.targetRevision }
+    });
+    assert.equal(unobservedQueueItem.status, 409);
+    assert.equal(unobservedQueueItem.json.code, "ACTION_NOT_AVAILABLE");
+    assert.equal(context.calls.length, 7);
 
     const shortId = await request(context.port, "/api/v2/actions/portainer/container", {
       method: "POST",
@@ -422,7 +490,7 @@ test("minor controls require CSRF, current inventory, exact revisions, and saved
       body: { ...portainerPayload, containerId: CONTAINER_ID.slice(0, 12) }
     });
     assert.equal(shortId.status, 400);
-    assert.equal(context.calls.length, 5);
+    assert.equal(context.calls.length, 7);
 
     const invalidState = await request(context.port, "/api/v2/actions/portainer/container", {
       method: "POST",
@@ -431,7 +499,7 @@ test("minor controls require CSRF, current inventory, exact revisions, and saved
     });
     assert.equal(invalidState.status, 409);
     assert.equal(invalidState.json.code, "ACTION_NOT_AVAILABLE");
-    assert.equal(context.calls.length, 5);
+    assert.equal(context.calls.length, 7);
 
     const staleRevision = await request(context.port, "/api/v2/actions/proxmox/workload", {
       method: "POST",
@@ -447,7 +515,7 @@ test("minor controls require CSRF, current inventory, exact revisions, and saved
     });
     assert.equal(staleRevision.status, 409);
     assert.equal(staleRevision.json.code, "TARGET_CHANGED");
-    assert.equal(context.calls.length, 5);
+    assert.equal(context.calls.length, 7);
 
     const unobservedMovie = await request(context.port, "/api/v2/actions/media", {
       method: "POST",
@@ -456,7 +524,7 @@ test("minor controls require CSRF, current inventory, exact revisions, and saved
     });
     assert.equal(unobservedMovie.status, 409);
     assert.equal(unobservedMovie.json.code, "ACTION_TARGET_NOT_CURRENT");
-    assert.equal(context.calls.length, 5);
+    assert.equal(context.calls.length, 7);
 
     const nonFailedRequest = await request(context.port, "/api/v2/actions/media", {
       method: "POST",
@@ -465,9 +533,36 @@ test("minor controls require CSRF, current inventory, exact revisions, and saved
     });
     assert.equal(nonFailedRequest.status, 409);
     assert.equal(nonFailedRequest.json.code, "ACTION_NOT_AVAILABLE");
-    assert.equal(context.calls.length, 5);
+    assert.equal(context.calls.length, 7);
 
     const currentSnapshot = context.getSnapshot();
+    const duplicateQueueEvidence = structuredClone(currentSnapshot);
+    duplicateQueueEvidence.services.find(({ id }) => id === "radarr").inventory.activity.push({
+      service: "radarr",
+      queueId: 501,
+      state: "blocked",
+      error: "Duplicate evidence must fail closed."
+    });
+    context.setSnapshot(duplicateQueueEvidence);
+    const ambiguousQueueTarget = await request(context.port, "/api/v2/actions/media", {
+      method: "POST",
+      ...authentication,
+      body: { serviceId: "radarr", operation: "blocklistAndSearch", queueId: 501, targetRevision: media.radarr.targetRevision }
+    });
+    assert.equal(ambiguousQueueTarget.status, 409);
+    assert.equal(ambiguousQueueTarget.json.code, "ACTION_NOT_AVAILABLE");
+
+    const staleQueueEvidence = structuredClone(currentSnapshot);
+    staleQueueEvidence.services.find(({ id }) => id === "radarr").checkedAt = new Date(Date.now() - 5 * 60_000).toISOString();
+    context.setSnapshot(staleQueueEvidence);
+    const staleQueueTarget = await request(context.port, "/api/v2/actions/media", {
+      method: "POST",
+      ...authentication,
+      body: { serviceId: "radarr", operation: "blocklistAndSearch", queueId: 501, targetRevision: media.radarr.targetRevision }
+    });
+    assert.equal(staleQueueTarget.status, 409);
+    assert.equal(staleQueueTarget.json.code, "ACTION_INVENTORY_STALE");
+
     const mismatchedEvidence = structuredClone(currentSnapshot);
     mismatchedEvidence.infrastructure.portainer[0].targetRevision = "11111111-1111-4111-8111-111111111111";
     context.setSnapshot(mismatchedEvidence);
@@ -518,7 +613,7 @@ test("minor controls require CSRF, current inventory, exact revisions, and saved
     });
     assert.equal(alreadyDownloading.status, 409);
     assert.equal(alreadyDownloading.json.code, "ACTION_TARGET_NOT_CURRENT");
-    assert.equal(context.calls.length, 5);
+    assert.equal(context.calls.length, 7);
 
     const concurrentContainerId = "e".repeat(64);
     const concurrentSnapshot = structuredClone(currentSnapshot);
@@ -546,7 +641,7 @@ test("minor controls require CSRF, current inventory, exact revisions, and saved
     blocked.release();
     const acceptedRestart = await firstRestart;
     assert.equal(acceptedRestart.status, 200, JSON.stringify(acceptedRestart.json));
-    assert.equal(context.calls.length, 6);
+    assert.equal(context.calls.length, 8);
 
     const ambiguousSnapshot = structuredClone(currentSnapshot);
     ambiguousSnapshot.media.requests.push({ requestId: 43, requestStatus: "failed" });
@@ -575,7 +670,7 @@ test("minor controls require CSRF, current inventory, exact revisions, and saved
     });
     assert.equal(ambiguousRetry.status, 409);
     assert.equal(ambiguousRetry.json.code, "ACTION_RECENTLY_ACCEPTED");
-    assert.equal(context.calls.length, 6);
+    assert.equal(context.calls.length, 8);
   } finally {
     await stop(context);
   }

@@ -48,12 +48,15 @@ Monitoring and probes use fixed read-only GET routes. The only writes are
 Helmsman-confirmed Portainer container start/restart/graceful-stop, Proxmox
 QEMU/LXC start/reboot/graceful-shutdown, Seerr failed-request retry, a selected
 standard-season request for one exact current series through Seerr, and targeted
-Radarr/Sonarr search actions for one exact current record. Each uses an accessible in-app
-confirmation rather than a browser-native prompt, revalidates the selected
-record after approval, and sends a fixed method, path, query, and request-body
+Radarr/Sonarr search actions for one exact current record, plus one fixed
+blocked-queue recovery for an exact current errored Sonarr/Radarr queue item.
+That recovery's danger confirmation states that it removes the download and
+its data from the client, blocklists the release, and permits normal replacement
+handling under the Arr service's settings. Each action revalidates its selected
+record after approval and sends a fixed method, path, query, and request-body
 template. The browser cannot provide an arbitrary upstream path or body.
 Helmsman exposes no general upstream or Docker API proxy, SSH, shell, console,
-host mount, delete/remove, force-stop, reset, kill, or bulk action.
+host mount, or generic delete/remove, force-stop, reset, kill, or bulk action.
 
 Browser access belongs to one exact enabled Jellyfin administrator. Enrollment
 and login ask only for that account's username and password; Helmsman obtains

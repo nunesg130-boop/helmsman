@@ -1365,6 +1365,13 @@ progress::-moz-progress-bar {
   align-items: flex-start;
 }
 
+.pipeline-panel > .panel-heading > .text-link {
+  flex: 0 0 auto;
+  align-self: flex-start;
+  padding-inline: 14px;
+  white-space: nowrap;
+}
+
 .panel-heading .eyebrow {
   margin-bottom: 6px;
   font-size: 12px;
@@ -4928,6 +4935,12 @@ body.has-overlay :is(.sidebar, .topbar, .hero-live, .library-toolbar, .segmented
 }
 
 @media (max-width: 520px) {
+  .pipeline-panel > .panel-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 12px;
+  }
+
   .monitor-summary { display: none; }
   .topbar-workspace-switch button { padding-inline: 7px; }
   .topbar-title { min-width: 50px; overflow: hidden; }

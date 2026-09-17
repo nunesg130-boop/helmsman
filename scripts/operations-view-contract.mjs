@@ -243,6 +243,7 @@ const snapshot = {
     {
       id: "seerr",
       state: "limited",
+      connectionState: "connected",
       lastCheckedAt: "2026-09-12T21:09:14.000Z",
       activeIncidentCount: 1,
       capabilities: [
@@ -322,6 +323,11 @@ assert.match(rendered, /HTTP 500/u);
 assert.match(rendered, /Observed 47 times/u);
 assert.match(rendered, /Media pipeline/u);
 assert.match(rendered, /Service health/u);
+assert.match(rendered, /aria-label="Seerr connection health: Connected"/u);
+assert.match(rendered, /aria-label="Seerr service health: Limited"/u);
+assert.match(rendered, /aria-label="Open Seerr connection details\. Connection health: Connected\. Service health: Limited\."/u);
+assert.match(rendered, /Connection health[\s\S]*is-success[\s\S]*Connected/u);
+assert.match(rendered, /Service health[\s\S]*is-warning[\s\S]*Limited/u);
 assert.match(rendered, /Current workload/u);
 assert.match(rendered, /Recent recoveries/u);
 assert.match(rendered, /data-action="refresh-live"/u);

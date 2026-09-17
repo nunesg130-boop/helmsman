@@ -35,7 +35,7 @@ import {
 } from "./network.mjs";
 import { generateSecretToken, hashToken, StateStore, tokenMatches } from "./state.mjs";
 
-const DEFAULT_VERSION = "1.0.1";
+const DEFAULT_VERSION = "1.0.2";
 const requestedVersion = String(process.env.HELMSMAN_VERSION || DEFAULT_VERSION);
 const VERSION = /^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/u.test(requestedVersion)
   ? requestedVersion
@@ -835,6 +835,7 @@ export async function performMediaActionUpstreamRequest({
   const authorizedRoute = authorizeMediaAction(route?.operation, {
     service: route?.service,
     resourceId: route?.resourceId,
+    queueId: route?.queueId,
     seasonNumbers: route?.seasonNumbers
   });
   const sameSeasonNumbers = authorizedRoute.allowed
@@ -849,8 +850,9 @@ export async function performMediaActionUpstreamRequest({
     || route.service !== authorizedRoute.service
     || route.operation !== authorizedRoute.operation
     || route.resourceId !== authorizedRoute.resourceId
+    || route.queueId !== authorizedRoute.queueId
     || !sameSeasonNumbers
-    || route.method !== "POST"
+    || route.method !== authorizedRoute.method
     || route.upstreamPathAndQuery !== authorizedRoute.upstreamPathAndQuery
     || route.body !== authorizedRoute.body
     || route.internalOnly !== true) {
@@ -859,7 +861,7 @@ export async function performMediaActionUpstreamRequest({
   const body = Buffer.from(authorizedRoute.body, "utf8");
   return performUpstreamRequest({
     request: {
-      method: "POST",
+      method: authorizedRoute.method,
       headers: {
         ...(credentialHeaders || {}),
         ...(body.length ? { "content-type": "application/json" } : {})
@@ -2436,6 +2438,7 @@ export async function createBroker(options = {}) {
     const route = authorizeMediaAction(input?.operation, {
       service: input?.serviceId,
       resourceId: input?.resourceId,
+      queueId: input?.queueId,
       seasonNumbers: input?.seasonNumbers
     });
     if (!route.allowed) throw new BrokerError(route.status || 404, route.code, route.message);
@@ -2456,7 +2459,7 @@ export async function createBroker(options = {}) {
         ok: true,
         provider: route.service,
         operation: route.operation,
-        resourceId: route.resourceId,
+        ...(route.queueId ? { queueId: route.queueId } : { resourceId: route.resourceId }),
         ...(route.seasonNumbers ? { seasonNumbers: route.seasonNumbers } : {}),
         providerStatus: accepted.status
       };

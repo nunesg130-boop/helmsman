@@ -1129,6 +1129,18 @@ function normalizedSeasonRequestTarget(value) {
   return { service: "seerr", mediaId };
 }
 
+function normalizedQueueActionTarget(value) {
+  const raw = value && typeof value === "object" && !Array.isArray(value) ? value : null;
+  const service = safeCapabilityId(raw?.service);
+  const queueId = raw?.queueId;
+  if (!raw
+    || !["radarr", "sonarr"].includes(service)
+    || !Number.isSafeInteger(queueId)
+    || queueId < 1
+    || queueId > 2_147_483_647) return null;
+  return { service, queueId };
+}
+
 function normalizeMediaItem(value, fallbackSeed = "media") {
   const raw = value && typeof value === "object" && !Array.isArray(value) ? value : {};
   const requestCollection = /(?:^|-)requests?:/u.test(fallbackSeed);
@@ -1192,6 +1204,7 @@ function normalizeMediaItem(value, fallbackSeed = "media") {
     sources: normalizedMediaSources(raw.sources),
     actionTargets: normalizedMediaActionTargets(raw.actionTargets),
     seasonRequestTarget: normalizedSeasonRequestTarget(raw.seasonRequestTarget),
+    queueActionTarget: normalizedQueueActionTarget(raw.queueActionTarget),
     lifecycle: { stage },
     requested: raw.requested === true || requestCollection,
     monitored: Boolean(raw.monitored),
@@ -1352,6 +1365,7 @@ function mediaStructuralFingerprint(value) {
     sources: item.sources,
     actionTargets: item.actionTargets,
     seasonRequestTarget: item.seasonRequestTarget,
+    queueActionTarget: item.queueActionTarget,
     lifecycle: item.lifecycle,
     requested: item.requested,
     monitored: item.monitored,
@@ -1865,6 +1879,20 @@ function mediaControlActions(item) {
       copy: "Ask Seerr to retry this failed request."
     }];
   }
+  const queueTarget = item.queueActionTarget;
+  const queueState = String(item.state || "").toLowerCase();
+  if (queueTarget
+    && (item.error || /(?:blocked|failed|error)/u.test(queueState))
+    && configuredMediaConnection(queueTarget.service)?.targetRevision) {
+    return [{
+      serviceId: queueTarget.service,
+      operation: "blocklistAndSearch",
+      queueId: String(queueTarget.queueId),
+      label: "Block release & search again",
+      copy: `Remove this failed download, blocklist the release, and let ${queueTarget.service === "radarr" ? "Radarr" : "Sonarr"} seek a replacement.`,
+      tone: "danger"
+    }];
+  }
   if (item.available || item.downloading || !item.monitored) return [];
   const serviceId = item.mediaType === "movie" ? "radarr" : ["series", "episode"].includes(item.mediaType) ? "sonarr" : "";
   const target = item.actionTargets.find((entry) => entry.service === serviceId);
@@ -1882,10 +1910,14 @@ function renderMediaControlSection(item) {
   const actions = mediaControlActions(item);
   if (!actions.length) return "";
   return `<section class="drawer-section control-section"><header class="section-heading"><div><h3>Available actions</h3><p>Helmsman sends only the confirmed command shown below.</p></div></header><div class="control-action-list">${actions.map((action) => {
-    const key = `media:${action.serviceId}:${action.operation}:${action.resourceId}`;
+    const targetId = action.queueId || action.resourceId;
+    const key = `media:${action.serviceId}:${action.operation}:${targetId}`;
     const busy = state.actionMutation === key;
     const awaitingRefresh = state.actionAwaitingRefresh === key;
-    return `<div class="control-action-row"><span><strong>${escapeHtml(action.label)}</strong><small>${escapeHtml(action.copy)}</small></span><button class="button button--primary" type="button" data-action="run-media-control" data-media-id="${escapeHtml(item.id)}" data-control-service="${escapeHtml(action.serviceId)}" data-control-operation="${escapeHtml(action.operation)}" data-control-resource-id="${escapeHtml(action.resourceId)}" data-control-key="${escapeHtml(key)}" ${state.actionMutation ? "disabled" : ""} ${busy && !awaitingRefresh ? "aria-busy=\"true\"" : ""}>${awaitingRefresh ? `${icon("refresh")} Refresh required` : busy ? `${icon("refresh")} Working…` : action.label}</button></div>`;
+    const targetAttribute = action.queueId
+      ? `data-control-queue-id="${escapeHtml(action.queueId)}"`
+      : `data-control-resource-id="${escapeHtml(action.resourceId)}"`;
+    return `<div class="control-action-row"><span><strong>${escapeHtml(action.label)}</strong><small>${escapeHtml(action.copy)}</small></span><button class="button ${action.tone === "danger" ? "button--danger" : "button--primary"}" type="button" data-action="run-media-control" data-media-id="${escapeHtml(item.id)}" data-control-service="${escapeHtml(action.serviceId)}" data-control-operation="${escapeHtml(action.operation)}" ${targetAttribute} data-control-key="${escapeHtml(key)}" ${state.actionMutation ? "disabled" : ""} ${busy && !awaitingRefresh ? "aria-busy=\"true\"" : ""}>${awaitingRefresh ? `${icon("refresh")} Refresh required` : busy ? `${icon("refresh")} Working…` : escapeHtml(action.label)}</button></div>`;
   }).join("")}</div></section>`;
 }
 
@@ -4089,7 +4121,8 @@ function controlConfirmationPresentation(operation) {
     retryRequest: { title: "Retry this request?", confirmLabel: "Retry request" },
     requestSeasons: { title: "Request these seasons?", confirmLabel: "Request seasons" },
     searchMovie: { title: "Search Radarr again?", confirmLabel: "Search Radarr" },
-    searchSeries: { title: "Search Sonarr again?", confirmLabel: "Search Sonarr" }
+    searchSeries: { title: "Search Sonarr again?", confirmLabel: "Search Sonarr" },
+    blocklistAndSearch: { title: "Block this release and search again?", confirmLabel: "Block & search", tone: "danger" }
   }[operation] || { title: "Confirm this action?", confirmLabel: "Continue" };
 }
 
@@ -5929,16 +5962,21 @@ async function runMediaControl(button) {
   const serviceId = String(button?.dataset.controlService || "");
   const operation = String(button?.dataset.controlOperation || "");
   const resourceId = String(button?.dataset.controlResourceId || "");
+  const queueId = String(button?.dataset.controlQueueId || "");
   const item = mediaRecordById(mediaId);
   const connection = configuredMediaConnection(serviceId);
   const allowed = mediaControlActions(item).some((action) => (
-    action.serviceId === serviceId && action.operation === operation && action.resourceId === resourceId
+    action.serviceId === serviceId
+    && action.operation === operation
+    && String(action.resourceId || "") === resourceId
+    && String(action.queueId || "") === queueId
   ));
   if (!item || !connection?.targetRevision || !allowed) {
     showToast("That media action is no longer available. Refresh the media view and try again.", "danger");
     return;
   }
   const retry = operation === "retryRequest";
+  const queueRecovery = operation === "blocklistAndSearch";
   const validate = () => {
     const currentItem = mediaRecordById(mediaId);
     const currentConnection = configuredMediaConnection(serviceId);
@@ -5946,25 +5984,37 @@ async function runMediaControl(button) {
       && mediaControlActions(currentItem).some((action) => (
         action.serviceId === serviceId
         && action.operation === operation
-        && action.resourceId === resourceId
+        && String(action.resourceId || "") === resourceId
+        && String(action.queueId || "") === queueId
       ));
   };
   await performControl(button, {
     key: button.dataset.controlKey,
     message: retry
       ? `Retry the failed Seerr request for ${item.title} (request ${resourceId})?`
+      : queueRecovery
+        ? `Remove ${item.title} and its downloaded data from the download client, blocklist this release in ${serviceId === "radarr" ? "Radarr" : "Sonarr"}, and allow it to look for a replacement according to its settings?`
       : item.mediaType === "episode"
         ? `Search the Sonarr series containing ${item.title}? Sonarr may send a matching release to the download client.`
         : `Search again for ${item.title} in ${serviceId === "radarr" ? "Radarr" : "Sonarr"}? It may send a matching release to the download client.`,
     path: "/api/v2/actions/media",
-    body: {
-      serviceId,
-      operation,
-      resourceId: Number(resourceId),
-      targetRevision: connection.targetRevision
-    },
+    body: queueRecovery
+      ? {
+          serviceId,
+          operation,
+          queueId: Number(queueId),
+          targetRevision: connection.targetRevision
+        }
+      : {
+          serviceId,
+          operation,
+          resourceId: Number(resourceId),
+          targetRevision: connection.targetRevision
+        },
     successMessage: retry
       ? `Seerr retry started for ${item.title}.`
+      : queueRecovery
+        ? `${serviceId === "radarr" ? "Radarr" : "Sonarr"} accepted the blocklist and replacement action for ${item.title}.`
       : `${serviceId === "radarr" ? "Radarr" : "Sonarr"} search started for ${item.title}.`,
     mediaId,
     operation,

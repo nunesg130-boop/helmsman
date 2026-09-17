@@ -1,4 +1,4 @@
-# Helmsman v1.0.1
+# Helmsman v1.0.2
 
 Helmsman is a self-hosted operations center for a homelab's media services and infrastructure. It runs as one portable Linux container on Docker Desktop, Linux, macOS, compatible NAS platforms, AMD64, and ARM64.
 
@@ -14,6 +14,12 @@ Helmsman is a self-hosted operations center for a homelab's media services and i
 This Helmsman is the media and infrastructure dashboard in this repository. It
 is not affiliated with or derived from the existing Kubernetes project also
 named [Helmsman](https://github.com/mkubaczyk/helmsman).
+
+## v1.0.2
+
+This release adds guided recovery controls for Sonarr and Radarr activity that
+needs intervention, reports connection health separately from upstream service
+health, and aligns the **All Activity** control with its activity section.
 
 ## License and project identity
 
@@ -31,7 +37,7 @@ identify the nine supported service integrations, plus original generic
 VM/container workload drawings. See
 [the asset notices](assets/services/THIRD_PARTY_NOTICES.md).
 
-Helmsman v1.0.1 combines Portainer monitoring and a small, fixed set of confirmed recovery actions under Infrastructure with targeted media recovery actions and Helmsman's cluster-aware Proxmox model:
+Helmsman v1.0.2 combines Portainer monitoring and a small, fixed set of confirmed recovery actions under Infrastructure with targeted media recovery actions and Helmsman's cluster-aware Proxmox model:
 
 - Media and Infrastructure are separate workspaces inside the same authenticated application, and only the selected workspace's navigation is shown;
 - the desktop sidebar collapses to an icon rail, remembers that preference, keeps its navigation scrollable at high browser zoom, and places its 44 px collapse control on the content-side edge below the shared header rule;
@@ -49,7 +55,7 @@ Helmsman v1.0.1 combines Portainer monitoring and a small, fixed set of confirme
 - unreleased Radarr movies remain **Upcoming** and are not counted as missing, Sonarr calendar episodes inherit their parent-series poster, and calendar-only episode rows are excluded from Library;
 - unchanged artwork keeps a stable browser URL with a one-day private cache, while image revisions produce a new opaque URL, cold proxy fetches receive an eight-second artwork-only budget, and temporary failures receive two bounded browser retries without cache-busting;
 - reviewed, hash-pinned icons for all nine supported service integrations are bundled locally without a runtime icon CDN, while original generic VM and container SVGs identify workloads;
-- media monitoring remains read-only by default; the only media writes are a Seerr failed-request retry, a selected standard-season request for one exact current series through Seerr, and a targeted Radarr/Sonarr search when Helmsman can resolve one exact current record, and each opens Helmsman's own confirmation dialog before it runs;
+- media monitoring remains read-only by default; the only media writes are a Seerr failed-request retry, a selected standard-season request for one exact current series through Seerr, a targeted Radarr/Sonarr search when Helmsman can resolve one exact current record, and a fixed blocked-queue recovery for one exact current errored Sonarr/Radarr queue item, and each opens Helmsman's own confirmation dialog before it runs;
 - each standalone Proxmox server or multi-node cluster is one environment, separate from its physical nodes and VM/LXC workloads;
 - **Connect and discover** verifies authentication, certificate trust, environment identity, cluster name, and visible nodes before an environment can be saved;
 - an environment can have up to four explicitly approved API endpoints, each with its own URL, TLS trust, encrypted API token, and availability state;
@@ -77,7 +83,7 @@ Helmsman v1.0.1 combines Portainer monitoring and a small, fixed set of confirme
 
 ## Deploy the published container
 
-Helmsman is distributed as the public Linux AMD64/ARM64 image `ghcr.io/nunesg130-boop/helmsman`. The `v1.0.1` Git tag runs the contracts and architecture smoke tests, publishes the version, `latest`, and full-commit image tags, and creates a GitHub Release containing ready-to-use `compose.yaml`, `container.env.example`, and `SHA256SUMS` assets. The release deployment files pin `ghcr.io/nunesg130-boop/helmsman` to the exact multi-architecture manifest digest (`@sha256:...`).
+Helmsman is distributed as the public Linux AMD64/ARM64 image `ghcr.io/nunesg130-boop/helmsman`. The `v1.0.2` Git tag runs the contracts and architecture smoke tests, publishes the version, `latest`, and full-commit image tags, and creates a GitHub Release containing ready-to-use `compose.yaml`, `container.env.example`, and `SHA256SUMS` assets. The release deployment files pin `ghcr.io/nunesg130-boop/helmsman` to the exact multi-architecture manifest digest (`@sha256:...`).
 
 Download those three files from the matching [GitHub Release](https://github.com/nunesg130-boop/helmsman/releases) into one directory, verify the two deployment files against `SHA256SUMS`, open a terminal there, and make sure Docker Desktop or Docker Engine is running. No source checkout, Dockerfile, Node.js installation, or server-side image build is required.
 
@@ -273,7 +279,7 @@ Helmsman is not a general-purpose proxy. Every outbound request must pass all of
 
 The image runs as UID/GID 10001 with a read-only root filesystem, all Linux capabilities dropped, `no-new-privileges`, bounded memory/PIDs/CPU, no Docker socket, and no host network. The fixed action routes use only saved upstream API credentials and do not grant Helmsman SSH, a shell, a hypervisor console, a generic Docker API, or host-filesystem access.
 
-Monitoring and probes remain fixed read-only GET routes. Actions are separate requests built from fixed method, path, query, and body templates and gated by an accessible Helmsman confirmation dialog. The target and current revision are checked again after approval before dispatch. The browser selects only a supported action and a current normalized record; it cannot supply an arbitrary upstream path or request body. Helmsman exposes no general media-service, Proxmox, Portainer, or Docker API proxy, and it has no delete, remove, force-stop, reset, kill, or bulk actions.
+Monitoring and probes remain fixed read-only GET routes. Actions are separate requests built from fixed method, path, query, and body templates and gated by an accessible Helmsman confirmation dialog. The target and current revision are checked again after approval before dispatch. The browser selects only a supported action and a current normalized record; it cannot supply an arbitrary upstream path or request body. Helmsman exposes no general media-service, Proxmox, Portainer, or Docker API proxy and no generic delete, remove, force-stop, reset, kill, or bulk action. Its sole removal path is the exact confirmed blocked-queue recovery described below.
 
 ## Media and Infrastructure workspaces
 
@@ -281,7 +287,7 @@ Use the workspace switcher to keep media activity separate from host, virtualiza
 
 Home keeps existing data visible while a refresh is in flight and patches volatile progress, speed, ETA, state, counts, and timestamps in place. Its Now Playing signal comes from one fixed, bounded Jellyfin sessions query and omits session identity metadata. Initial loads may use placeholders, but polling does not deliberately replace the whole page or reset stable artwork URLs. Discover presents Seerr's read-only discovery feed; items without a request are labeled **Not requested** rather than exposing an internal unknown state, and only Jellyfin evidence can label a title available in Helmsman's library. Library correlates Jellyfin availability with Radarr/Sonarr monitoring and import state. Requests preserve separate request IDs, approval state, acquisition state, requested seasons, and 4K scope; completed workflow rows become **Available** from Seerr's media availability, an exact Jellyfin movie match, or—when a series request is season-scoped—the matching Seerr media-season availability rather than the request-season workflow status. Activity and Calendar expose current read-only workflow state, while Health contains pipeline/service incidents and Connections owns service enrollment.
 
-The only Media writes are a Helmsman-confirmed Seerr failed-request retry, a selected standard-season request for one exact current series through Seerr, and a targeted Radarr/Sonarr search when Helmsman can resolve one exact current record. Series and parent-resolved episode drawers load a bounded current season catalog from Seerr on demand. The operator can select requestable standard seasons, review the exact selection in Helmsman's confirmation dialog, and submit one standard-quality request. Specials, 4K selection, arbitrary Seerr users, servers, profiles, root folders, and request bodies are not exposed. Helmsman revalidates the current series, Seerr target revision, season-detail revision, and selected seasons immediately before dispatch. Each action uses a Helmsman-styled confirmation dialog; browser-native confirmation prompts are not used. Helmsman cannot approve requests or delete requests, request movies or 4K/Specials, choose Seerr routing/profile fields, change monitoring, pause or remove downloads, alter files, or run a free-form search.
+The only Media writes are a Helmsman-confirmed Seerr failed-request retry, a selected standard-season request for one exact current series through Seerr, a targeted Radarr/Sonarr search when Helmsman can resolve one exact current record, and **Block release & search again** for one exact current errored Sonarr/Radarr queue item. The blocked-queue action warns that it removes the download and its data from the download client, blocklists that release, and allows Sonarr/Radarr to seek a replacement according to its settings. It appears only from fresh, connected, revision-matched error evidence and is revalidated after its explicit danger confirmation. Series and parent-resolved episode drawers load a bounded current season catalog from Seerr on demand. The operator can select requestable standard seasons, review the exact selection in Helmsman's confirmation dialog, and submit one standard-quality request. Specials, 4K selection, arbitrary Seerr users, servers, profiles, root folders, and request bodies are not exposed. Helmsman revalidates the current record, target revision, and action-specific detail immediately before dispatch. Each action uses a Helmsman-styled confirmation dialog; browser-native confirmation prompts are not used. Helmsman cannot approve requests or delete requests, request movies or 4K/Specials, choose Seerr routing/profile fields, change monitoring, pause downloads, remove healthy or arbitrary downloads, alter any other files, or run a free-form search.
 
 Each media record uses provider and service identifiers to join evidence from multiple systems. Its lifecycle indicates which of Requested, Monitored, Downloading, Imported, and Available have been observed. qBittorrent transfers are correlated to Sonarr/Radarr queue rows by download identifiers; a bounded sanitized queue error is displayed when the service supplies one. Titles, identifiers, progress, and errors exist only in the current in-memory snapshot.
 
@@ -373,7 +379,7 @@ docker compose up -d
 
 This is the sole break-glass path. It removes the owner binding, revokes every Helmsman browser session, and destroys Helmsman's encrypted copies of the browser-authentication tokens while preserving service URLs, the instance and network policy, registered targets, and encrypted monitoring credentials. Because this recovery command runs with the broker stopped, it cannot send Jellyfin logout requests; if a token may have been copied outside Helmsman's encrypted store, use Jellyfin's administration controls to invalidate that upstream session too. The next start emits a new one-time setup token so the operator can claim the instance and enroll an enabled Jellyfin administrator again. It does not create, print, or restore a reusable access key. The main service must stay stopped while the one-off container writes the shared `/data` volume.
 
-When upgrading from v1.0.0-beta.2, its reusable access key is accepted only as a temporary migration credential. Use an existing browser session or that legacy key to open Settings, make sure the Jellyfin connection is configured, and enroll the owner. Successful enrollment atomically removes the access-key verifier and revokes every legacy browser session; v1.0.1 cannot create, reveal, or rotate another key. If no beta.2 session or key remains usable, use `reset-access --confirm` as described above.
+When upgrading from v1.0.0-beta.2, its reusable access key is accepted only as a temporary migration credential. Use an existing browser session or that legacy key to open Settings, make sure the Jellyfin connection is configured, and enroll the owner. Successful enrollment atomically removes the access-key verifier and revokes every legacy browser session; v1.0.2 cannot create, reveal, or rotate another key. If no beta.2 session or key remains usable, use `reset-access --confirm` as described above.
 
 If the credential encryption key is lost or the configured key no longer matches, the ciphertext cannot be recovered. Stop the service and reset the credential store and browser-access seal, using the same command prefix selected above:
 
