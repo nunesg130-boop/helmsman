@@ -1859,6 +1859,7 @@ progress {
     .modal-card,
     .title-drawer,
     .drawer-season-picker,
+    .drawer-season-warning,
     .drawer-season-option,
     .drawer-season-state,
     .portainer-panel,
@@ -1931,6 +1932,7 @@ html[data-transparency="reduced"] body::before {
     .glass-form,
     .modal-card,
     .title-drawer,
+    .drawer-season-warning,
     .portainer-panel,
     .portainer-card,
     .portainer-container-group

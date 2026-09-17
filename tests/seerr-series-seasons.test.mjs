@@ -9,6 +9,7 @@ function detail() {
   return {
     id: 1396,
     name: "Example",
+    externalIds: { tvdbId: 81189 },
     secretServer: { rootFolder: "/private/media", apiKey: "must-not-leak" },
     seasons: [
       { seasonNumber: 10, name: "Future", episodeCount: 8, airDate: "2027-01-01" },
@@ -47,7 +48,8 @@ test("Seerr TV details are reduced to bounded standard-quality season state", ()
   const normalized = normalizeSeerrSeriesSeasons(detail(), { tmdbId: 1396, targetRevision: TARGET_REVISION });
   assert.ok(normalized);
   assert.match(normalized.detailRevision, /^[a-f0-9]{64}$/u);
-  assert.deepEqual(Object.keys(normalized), ["tmdbId", "targetRevision", "detailRevision", "seasons"]);
+  assert.deepEqual(Object.keys(normalized), ["tmdbId", "targetRevision", "detailRevision", "tvdbMappingPresent", "seasons"]);
+  assert.equal(normalized.tvdbMappingPresent, true);
   assert.deepEqual(normalized.seasons.map((season) => season.seasonNumber), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
   assert.equal(normalized.seasons[0].requestable, false, "Specials are display-only in the first version");
   assert.equal(normalized.seasons.find((season) => season.seasonNumber === 1).requestable, true, "4K requests do not block standard requests");
@@ -61,6 +63,21 @@ test("Seerr TV details are reduced to bounded standard-quality season state", ()
   assert.equal(normalized.seasons.find((season) => season.seasonNumber === 10).requestable, true);
   assert.equal(JSON.stringify(normalized).includes("secret"), false);
   assert.equal(JSON.stringify(normalized).includes("rootFolder"), false);
+});
+
+test("TVDB request-routing evidence is reduced to one safe warning signal", () => {
+  const unmapped = detail();
+  delete unmapped.externalIds;
+  assert.equal(normalizeSeerrSeriesSeasons(unmapped, {
+    tmdbId: 1396,
+    targetRevision: TARGET_REVISION
+  }).tvdbMappingPresent, false);
+
+  unmapped.mediaInfo.tvdbId = 81189;
+  assert.equal(normalizeSeerrSeriesSeasons(unmapped, {
+    tmdbId: 1396,
+    targetRevision: TARGET_REVISION
+  }).tvdbMappingPresent, true, "Seerr's stored media mapping is a valid fallback");
 });
 
 test("detail revisions cover requestability state but ignore discarded upstream fields", () => {

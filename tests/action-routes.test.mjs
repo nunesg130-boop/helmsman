@@ -317,6 +317,25 @@ test("Seerr season request responses distinguish creation, no-op, target change,
     { status: 201, noOp: false }
   );
   assert.deepEqual(
+    acceptedSeerrSeasonRequestStatus({ status: 201, body: Buffer.from('{"id":91}') }, [1, 3]),
+    { status: 201, noOp: false },
+    "Seerr does not guarantee that its 201 response echoes the requested seasons"
+  );
+  assert.deepEqual(
+    acceptedSeerrSeasonRequestStatus({
+      status: 201,
+      body: Buffer.from('{"id":91,"is4k":false}')
+    }, [1, 3]),
+    { status: 201, noOp: false }
+  );
+  assert.deepEqual(
+    acceptedSeerrSeasonRequestStatus({
+      status: 201,
+      body: Buffer.from('{"id":91,"seasons":[{"seasonNumber":3},{"seasonNumber":1}]}')
+    }, [1, 3]),
+    { status: 201, noOp: false }
+  );
+  assert.deepEqual(
     acceptedSeerrSeasonRequestStatus({
       status: 201,
       body: Buffer.from('{"id":91,"is4k":false,"seasons":[{"seasonNumber":3},{"seasonNumber":1}]}')
@@ -338,6 +357,19 @@ test("Seerr season request responses distinguish creation, no-op, target change,
     () => acceptedSeerrSeasonRequestStatus({ status: 201, body: Buffer.from("{}") }),
     (error) => error?.code === "UPSTREAM_RESPONSE_INVALID"
   );
+  for (const body of [
+    "not-json",
+    '{"id":0}',
+    '{"id":-1}',
+    '{"id":"91"}',
+    '{"id":10000000000}'
+  ]) {
+    assert.throws(
+      () => acceptedSeerrSeasonRequestStatus({ status: 201, body: Buffer.from(body) }, [1, 3]),
+      (error) => error?.code === "UPSTREAM_RESPONSE_INVALID",
+      `invalid request id was accepted: ${body}`
+    );
+  }
   let malformedAcknowledgement;
   try {
     acceptedSeerrSeasonRequestStatus({ status: 201, body: Buffer.from("{}") });
@@ -347,16 +379,38 @@ test("Seerr season request responses distinguish creation, no-op, target change,
   const unknown = actionDispatchError(malformedAcknowledgement, "Seerr");
   assert.equal(unknown.code, "ACTION_OUTCOME_UNKNOWN");
   assert.equal(unknown.status, 502);
-  let partialAcknowledgement;
-  try {
+  assert.deepEqual(
     acceptedSeerrSeasonRequestStatus({
       status: 201,
       body: Buffer.from('{"id":91,"is4k":false,"seasons":[{"seasonNumber":1}]}')
-    }, [1, 3]);
-  } catch (error) {
-    partialAcknowledgement = error;
+    }, [1, 3]),
+    { status: 201, noOp: false },
+    "Seerr may validly create only the requested subset that remains requestable"
+  );
+  for (const body of [
+    '{"id":91,"is4k":true}',
+    '{"id":91,"is4k":null}',
+    '{"id":91,"seasons":null}',
+    '{"id":91,"seasons":[]}',
+    '{"id":91,"seasons":[{"seasonNumber":1},{"seasonNumber":4}]}',
+    '{"id":91,"seasons":[{"seasonNumber":1},{"seasonNumber":1}]}',
+    '{"id":91,"seasons":[{"seasonNumber":"1"},{"seasonNumber":3}]}'
+  ]) {
+    assert.throws(
+      () => acceptedSeerrSeasonRequestStatus({ status: 201, body: Buffer.from(body) }, [1, 3]),
+      (error) => error?.code === "UPSTREAM_RESPONSE_INVALID",
+      `contradictory or malformed optional acknowledgement field was accepted: ${body}`
+    );
   }
-  assert.equal(actionDispatchError(partialAcknowledgement, "Seerr").code, "ACTION_OUTCOME_UNKNOWN");
+  let invalidAcknowledgement;
+  try {
+    acceptedSeerrSeasonRequestStatus({ status: 201, body: Buffer.from("{}") }, [1]);
+  } catch (error) {
+    invalidAcknowledgement = error;
+  }
+  const seerrUnknown = actionDispatchError(invalidAcknowledgement, "seerr");
+  assert.equal(seerrUnknown.code, "ACTION_OUTCOME_UNKNOWN");
+  assert.match(seerrUnknown.message, /did not confirm a persistent request record/u);
   for (const status of [200, 500, 503]) {
     assert.throws(
       () => acceptedSeerrSeasonRequestStatus({

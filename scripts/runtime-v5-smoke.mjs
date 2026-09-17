@@ -1893,6 +1893,7 @@ async function seriesSeasonControlsContract() {
   const mediaId = "episode:tvdb:99000001";
   let actionAccepted = false;
   let rejectStaleDetailOnce = false;
+  let rejectWithGatewayOnce = false;
   let currentDetailRevision = initialDetailRevision;
   const snapshot = {
     ...minimalOperationsSnapshot(),
@@ -1936,6 +1937,7 @@ async function seriesSeasonControlsContract() {
     tmdbId: 990001,
     targetRevision: seerrRevision,
     detailRevision: currentDetailRevision,
+    tvdbMappingPresent: false,
     seasons: [
       { seasonNumber: 0, name: "<Specials>", episodeCount: 3, airDate: "2025-01-01", status: "unknown", requestState: null, requestable: false },
       { seasonNumber: 1, name: "Season 1", episodeCount: 10, airDate: "2025-02-01", status: "available", requestState: "completed", requestable: false },
@@ -1964,6 +1966,13 @@ async function seriesSeasonControlsContract() {
         rejectStaleDetailOnce = false;
         currentDetailRevision = refreshedDetailRevision;
         return jsonResponse({ code: "STALE_SEASON_DETAILS", message: "Season details changed." }, 409);
+      }
+      if (rejectWithGatewayOnce) {
+        rejectWithGatewayOnce = false;
+        return new Response("Bad Gateway", {
+          status: 502,
+          headers: { "Content-Type": "text/plain; charset=utf-8" }
+        });
       }
       actionAccepted = true;
       currentDetailRevision = acceptedDetailRevision;
@@ -1995,6 +2004,7 @@ async function seriesSeasonControlsContract() {
   await waitFor(() => panel.innerHTML.includes("Season &lt;Two&gt;"), "sanitized season panel");
   assert.match(drawer.innerHTML, /title-drawer--seasons/u, "an episode with a parent request target must expose the season surface");
   assert.match(panel.innerHTML, /Season &lt;Two&gt;/u, "season names must be escaped");
+  assert.match(panel.innerHTML, /TVDB mapping not reported[\s\S]*?anthology-season mapping/u, "unmapped Seerr series must warn about auto-approved Sonarr routing without blocking the request");
   assert.match(panel.innerHTML, /<fieldset class="drawer-season-picker"[^>]+aria-describedby="drawer-season-help-/u, "season instructions must describe the checkbox group");
   assert.doesNotMatch(panel.innerHTML, /<Specials>|Season <Two>/u);
   assert.match(panel.innerHTML, /value="0" data-season-select disabled/u, "Specials must remain visible but disabled");
@@ -2098,14 +2108,18 @@ async function seriesSeasonControlsContract() {
     2,
     "a stale-detail rejection must invalidate and reload the season catalog"
   );
+  assert.ok(
+    environment.elements.get("#toast-region").children.some(({ textContent }) => textContent === "Season details changed."),
+    "structured JSON mutation errors must preserve their server-provided message"
+  );
 
-  await environment.dispatchDocument("change", { target: seasonFour });
-  const approved = environment.dispatchDocument("click", { target: requestButton });
-  await waitFor(() => environment.confirmationLayer.classList.contains("is-open"), "approved season confirmation");
+  rejectWithGatewayOnce = true;
+  const gatewayAttempt = environment.dispatchDocument("click", { target: requestButton });
+  await waitFor(() => environment.confirmationLayer.classList.contains("is-open"), "gateway-error season confirmation");
   await environment.dispatchDocument("click", { target: environment.confirmationApprove });
-  await approved;
+  await gatewayAttempt;
   actionCalls = environment.requestLog.filter(({ path }) => path === "/api/v2/actions/media");
-  assert.equal(actionCalls.length, 2, "each approved confirmation must produce exactly one action");
+  assert.equal(actionCalls.length, 2, "a non-JSON gateway failure must still send exactly one bounded action");
   assert.deepEqual(JSON.parse(actionCalls[1].options.body), {
     serviceId: "seerr",
     operation: "requestSeasons",
@@ -2114,12 +2128,55 @@ async function seriesSeasonControlsContract() {
     targetRevision: seerrRevision,
     detailRevision: refreshedDetailRevision
   });
-  assert.equal(actionCalls[1].options.credentials, "same-origin");
-  assert.equal(actionCalls[1].options.headers.get("X-Jellofin-CSRF"), "season-controls-csrf");
-  assert.equal(environment.requestLog.filter(({ path }) => path === "/api/v2/operations/refresh").length, 2);
+  const gatewayToasts = environment.elements.get("#toast-region").children.map(({ textContent }) => textContent);
+  assert.ok(
+    gatewayToasts.includes("The server or gateway returned HTTP 502 without a Helmsman error message."),
+    "a non-JSON 5xx must identify the server or gateway response instead of presenting a generic Helmsman error"
+  );
+  assert.ok(
+    gatewayToasts.includes("The action may have reached the service. Review the refreshed state before trying again."),
+    "an HTTP 5xx mutation must stay outcome-unknown even when the general operations refresh succeeds"
+  );
+  assert.equal(drawer.classList.contains("is-open"), false, "an unknown season-request outcome must close stale drawer controls");
+  const callsBeforeLockedRetry = actionCalls.length;
+  await environment.dispatchDocument("click", { target: requestButton });
+  assert.equal(
+    environment.requestLog.filter(({ path }) => path === "/api/v2/actions/media").length,
+    callsBeforeLockedRetry,
+    "a generic HTTP 5xx outcome must block retries until fresh operations evidence arrives"
+  );
+
+  const refreshAfterGateway = new FakeElement({ id: "refresh-after-season-gateway-error" });
+  refreshAfterGateway.dataset.action = "refresh-live";
+  refreshAfterGateway.closest = (selector) => selector === "[data-action]" ? refreshAfterGateway : null;
+  await environment.dispatchDocument("click", { target: refreshAfterGateway });
+  await environment.dispatchDocument("click", { target: opener });
+  await waitFor(
+    () => environment.requestLog.filter(({ path }) => path === `/api/v2/media/series/990001/seasons?targetRevision=${seerrRevision}`).length === 3,
+    "season catalog reload after gateway outcome refresh"
+  );
+
+  await environment.dispatchDocument("change", { target: seasonFour });
+  const approved = environment.dispatchDocument("click", { target: requestButton });
+  await waitFor(() => environment.confirmationLayer.classList.contains("is-open"), "approved season confirmation");
+  await environment.dispatchDocument("click", { target: environment.confirmationApprove });
+  await approved;
+  actionCalls = environment.requestLog.filter(({ path }) => path === "/api/v2/actions/media");
+  assert.equal(actionCalls.length, 3, "each approved confirmation must produce exactly one action");
+  assert.deepEqual(JSON.parse(actionCalls[2].options.body), {
+    serviceId: "seerr",
+    operation: "requestSeasons",
+    resourceId: 990001,
+    seasonNumbers: [2, 4],
+    targetRevision: seerrRevision,
+    detailRevision: refreshedDetailRevision
+  });
+  assert.equal(actionCalls[2].options.credentials, "same-origin");
+  assert.equal(actionCalls[2].options.headers.get("X-Jellofin-CSRF"), "season-controls-csrf");
+  assert.equal(environment.requestLog.filter(({ path }) => path === "/api/v2/operations/refresh").length, 4);
   assert.equal(
     environment.requestLog.filter(({ path }) => path === `/api/v2/media/series/990001/seasons?targetRevision=${seerrRevision}`).length,
-    3,
+    4,
     "an accepted action must reload the authoritative season catalog"
   );
   assert.match(panel.innerHTML, /Season &lt;Two&gt;[\s\S]*?Requested/u);

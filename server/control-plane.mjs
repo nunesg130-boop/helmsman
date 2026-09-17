@@ -3702,6 +3702,7 @@ export async function createControlPlane(options) {
       || value.tmdbId !== tmdbId
       || value.targetRevision !== targetRevision
       || !MEDIA_DETAIL_REVISION.test(value.detailRevision)
+      || typeof value.tvdbMappingPresent !== "boolean"
       || !Array.isArray(value.seasons)
       || value.seasons.length > 256) {
       fail(502, "UPSTREAM_RESPONSE_INVALID", "Seerr returned an invalid series season response.");
@@ -3746,6 +3747,7 @@ export async function createControlPlane(options) {
       tmdbId,
       targetRevision,
       detailRevision: value.detailRevision,
+      tvdbMappingPresent: value.tvdbMappingPresent,
       seasons
     };
   }

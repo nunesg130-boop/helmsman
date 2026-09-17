@@ -718,6 +718,7 @@ test("Seerr season details and requests require current identity, revisions, and
       tmdbId: 1396,
       targetRevision,
       detailRevision,
+      tvdbMappingPresent: false,
       privateServer: { rootFolder: "/must/not/leak" },
       seasons: [
         {
@@ -771,6 +772,7 @@ test("Seerr season details and requests require current identity, revisions, and
     assert.equal(loaded.status, 200, JSON.stringify(loaded.json));
     assert.equal(loaded.json.tmdbId, 1396);
     assert.equal(loaded.json.detailRevision, detailRevision);
+    assert.equal(loaded.json.tvdbMappingPresent, false);
     assert.equal(loaded.json.seasons[0].requestable, false);
     assert.equal(Object.hasOwn(loaded.json, "privateServer"), false);
     assert.equal(Object.hasOwn(loaded.json.seasons[0], "requestedBy"), false);

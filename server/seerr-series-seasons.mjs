@@ -128,10 +128,11 @@ function preferredRequestState(current, candidate) {
   return current;
 }
 
-function canonicalRevisionPayload(tmdbId, targetRevision, seasons) {
+function canonicalRevisionPayload(tmdbId, targetRevision, tvdbMappingPresent, seasons) {
   return JSON.stringify({
     tmdbId,
     targetRevision,
+    tvdbMappingPresent,
     seasons: seasons.map((season) => ({
       seasonNumber: season.seasonNumber,
       episodeCount: season.episodeCount,
@@ -161,6 +162,16 @@ export function normalizeSeerrSeriesSeasons(value, context = {}) {
   }
 
   const mediaInfo = record(own(detail, "mediaInfo")) || {};
+  const externalIds = record(own(detail, "externalIds")) || record(own(detail, "external_ids")) || {};
+  const tvdbMappingPresent = integer(
+    own(externalIds, "tvdbId") ?? own(externalIds, "tvdb_id"),
+    1,
+    MAX_TMDB_ID
+  ) !== null || integer(
+    own(mediaInfo, "tvdbId") ?? own(mediaInfo, "tvdb_id"),
+    1,
+    MAX_TMDB_ID
+  ) !== null;
   const statuses = new Map();
   for (const value of Array.isArray(own(mediaInfo, "seasons")) ? own(mediaInfo, "seasons") : []) {
     const source = record(value);
@@ -219,12 +230,13 @@ export function normalizeSeerrSeriesSeasons(value, context = {}) {
   }
   seasons.sort((left, right) => left.seasonNumber - right.seasonNumber);
   const detailRevision = createHash("sha256")
-    .update(canonicalRevisionPayload(tmdbId, targetRevision, seasons), "utf8")
+    .update(canonicalRevisionPayload(tmdbId, targetRevision, tvdbMappingPresent, seasons), "utf8")
     .digest("hex");
   return Object.freeze({
     tmdbId,
     targetRevision,
     detailRevision,
+    tvdbMappingPresent,
     seasons: Object.freeze(seasons)
   });
 }

@@ -3051,6 +3051,44 @@ body.has-overlay :is(.sidebar, .topbar, .hero-live, .library-toolbar, .segmented
   line-height: 1.45;
 }
 
+.drawer-season-warning {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 9px;
+  margin: 0 0 11px;
+  padding: 9px 10px;
+  border: 1px solid var(--warning);
+  background: rgba(255, 201, 90, 0.07);
+  color: var(--warning);
+}
+
+.drawer-season-warning svg {
+  width: 15px;
+  height: 15px;
+}
+
+.drawer-season-warning > span {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.drawer-season-warning strong,
+.drawer-season-warning small {
+  overflow-wrap: anywhere;
+}
+
+.drawer-season-warning strong {
+  color: var(--text);
+  font-size: 11px;
+}
+
+.drawer-season-warning small {
+  color: var(--text-soft);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
 .drawer-season-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(142px, 1fr));
@@ -5160,6 +5198,7 @@ html[data-transparency="reduced"] .modal-layer.is-open:has(.setup-wizard) {
   }
 
   .drawer-season-picker,
+  .drawer-season-warning,
   .drawer-season-option,
   .drawer-season-state {
     border: 1px solid CanvasText;

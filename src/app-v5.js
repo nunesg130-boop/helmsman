@@ -550,10 +550,13 @@ async function api(path, options = {}) {
     }
   }
   if (!response.ok) {
+    const fallbackMessage = response.status >= 500 && response.status <= 599 && payload === null
+      ? `The server or gateway returned HTTP ${response.status} without a Helmsman error message.`
+      : `Helmsman returned HTTP ${response.status}.`;
     throw new ApiError(
       response.status,
       payload?.code || "HTTP_ERROR",
-      payload?.message || `Helmsman returned HTTP ${response.status}.`
+      payload?.message || fallbackMessage
     );
   }
   return payload;
@@ -1954,6 +1957,7 @@ function normalizeSeasonDetail(value, expectedTarget, expectedRevision) {
   const tmdbId = mediaNumber(raw?.tmdbId, 1, 9_999_999_999);
   const targetRevision = mediaText(raw?.targetRevision, "", 80).toLowerCase();
   const detailRevision = mediaText(raw?.detailRevision, "", 80).toLowerCase();
+  const tvdbMappingPresent = raw?.tvdbMappingPresent !== false;
   if (!raw
     || !Number.isSafeInteger(tmdbId)
     || tmdbId !== expectedTarget.mediaId
@@ -1980,7 +1984,7 @@ function normalizeSeasonDetail(value, expectedTarget, expectedRevision) {
     });
   }
   seasons.sort((left, right) => left.seasonNumber - right.seasonNumber);
-  return { tmdbId, targetRevision, detailRevision, seasons };
+  return { tmdbId, targetRevision, detailRevision, tvdbMappingPresent, seasons };
 }
 
 function seasonRequestContext(item) {
@@ -2071,6 +2075,7 @@ function renderMediaSeasonPanelContent(item) {
   const awaitingRefresh = state.actionAwaitingRefresh === controlKey;
   return `<fieldset class="drawer-season-picker" data-season-picker data-detail-revision="${detail.detailRevision}" aria-describedby="drawer-season-help-${item.key}">
     <legend>Seasons</legend>
+    ${detail.tvdbMappingPresent ? "" : `<div class="drawer-season-warning" role="note">${icon("shield")}<span><strong>TVDB mapping not reported</strong><small>Seerr may be unable to pass an auto-approved request to Sonarr. Verify this title's TVDB or anthology-season mapping before requesting it again.</small></span></div>`}
     <p class="drawer-season-help" id="drawer-season-help-${item.key}">${requestableCount
       ? `Choose up to ${MAX_REQUESTED_SEASONS} seasons. Helmsman sends one request to Seerr.`
       : "Every reported season is already available, requested, or not requestable."}</p>
@@ -5826,11 +5831,17 @@ async function performControl(button, {
   } catch (error) {
     outcomeUnknown = ["ACTION_OUTCOME_UNKNOWN", "NETWORK_ERROR", "INVALID_RESPONSE"].includes(error?.code)
       || error?.status === 0
+      || Number.isSafeInteger(error?.status) && error.status >= 500 && error.status <= 599
       || !Number.isSafeInteger(error?.status);
     showToast(error.message, "danger");
   } finally {
     refreshed = await refreshOperations({ afterCurrent: true });
-    if (!refreshed && (accepted || outcomeUnknown)) {
+    if (outcomeUnknown) {
+      state.actionAwaitingRefresh = key;
+      showToast(refreshed
+        ? "The action may have reached the service. Review the refreshed state before trying again."
+        : "The action may have been accepted, but current state could not be refreshed. Wait before trying another action.", "danger");
+    } else if (!refreshed && accepted) {
       state.actionAwaitingRefresh = key;
       showToast("The action may have been accepted, but current state could not be refreshed. Wait before trying another action.", "danger");
     } else {

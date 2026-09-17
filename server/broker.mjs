@@ -35,7 +35,7 @@ import {
 } from "./network.mjs";
 import { generateSecretToken, hashToken, StateStore, tokenMatches } from "./state.mjs";
 
-const DEFAULT_VERSION = "1.0.3";
+const DEFAULT_VERSION = "1.0.4";
 const requestedVersion = String(process.env.HELMSMAN_VERSION || DEFAULT_VERSION);
 const VERSION = /^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/u.test(requestedVersion)
   ? requestedVersion
@@ -124,10 +124,13 @@ export function validSeerrRequestAcknowledgement(value, expectedSeasonNumbers = 
     && parsed.id > 0
     && parsed.id <= 9_999_999_999);
   if (!validId) return false;
+  // Seerr guarantees creation with HTTP 201, but response relations vary by
+  // release. Treat echoed request fields as optional evidence, not required
+  // acknowledgement fields, while rejecting them if they contradict our post.
+  if (Object.hasOwn(parsed, "is4k") && parsed.is4k !== false) return false;
+  if (!Object.hasOwn(parsed, "seasons")) return expectedSeasonNumbers === null || Array.isArray(expectedSeasonNumbers);
   if (expectedSeasonNumbers === null) return true;
-  if (!Array.isArray(expectedSeasonNumbers)
-    || !Array.isArray(parsed.seasons)
-    || parsed.is4k !== false) return false;
+  if (!Array.isArray(expectedSeasonNumbers) || !Array.isArray(parsed.seasons)) return false;
   const accepted = [];
   const seen = new Set();
   for (const value of parsed.seasons) {
@@ -142,8 +145,11 @@ export function validSeerrRequestAcknowledgement(value, expectedSeasonNumbers = 
     accepted.push(seasonNumber);
   }
   accepted.sort((left, right) => left - right);
-  return accepted.length === expectedSeasonNumbers.length
-    && accepted.every((seasonNumber, index) => seasonNumber === expectedSeasonNumbers[index]);
+  // Seerr may filter a season that became requested or available between our
+  // preflight and its write. A non-empty subset is still a valid creation;
+  // anything outside the posted set is not.
+  return accepted.length > 0
+    && accepted.every((seasonNumber) => expectedSeasonNumbers.includes(seasonNumber));
 }
 
 export function acceptedSeerrSeasonRequestStatus(upstream, expectedSeasonNumbers = null) {
@@ -182,6 +188,13 @@ export function acceptedSeerrSeasonRequestStatus(upstream, expectedSeasonNumbers
 }
 
 export function actionDispatchError(error, provider) {
+  if (String(provider || "").toLowerCase() === "seerr" && error?.code === "UPSTREAM_RESPONSE_INVALID") {
+    return new BrokerError(
+      502,
+      "ACTION_OUTCOME_UNKNOWN",
+      "Seerr began the request but did not confirm a persistent request record. Check the title's TVDB mapping and Seerr/Sonarr state before trying again."
+    );
+  }
   if ([
     "UPSTREAM_TIMEOUT",
     "UPSTREAM_RESPONSE_FAILED",
