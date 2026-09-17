@@ -1,5 +1,5 @@
 import { constants as fsConstants } from "node:fs";
-import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHmac, randomBytes } from "node:crypto";
 import { mkdir, open, rename, unlink } from "node:fs/promises";
 import path from "node:path";
 
@@ -14,9 +14,10 @@ const MAX_STORE_BYTES = 1024 * 1024;
 const MAX_SECRET_BYTES = 16 * 1024;
 // The control plane can stage a destination-bound replacement for all seven
 // media connectors, 25 Proxmox endpoints, and eight Portainer servers during
-// one policy migration (80 namespaces). Keep bounded recovery headroom while
-// rejecting unexpectedly large credential documents.
-const MAX_SERVICES = 96;
+// one policy migration (80 namespaces). Up to 64 browser sessions may also
+// hold a separately encrypted Jellyfin identity token. Keep bounded recovery
+// headroom while rejecting unexpectedly large credential documents.
+const MAX_SERVICES = 192;
 const MAX_FIELDS_PER_SERVICE = 32;
 const DEFAULT_KEY_NAME = "credentials.key";
 const DEFAULT_STORE_NAME = "credentials.json";
@@ -540,6 +541,7 @@ export class CredentialStore {
   #key = null;
   #now;
   #writeChain = Promise.resolve();
+  #createdDuringInitialization = false;
 
   constructor(dataDir, options = {}) {
     if (typeof dataDir !== "string" || !path.isAbsolute(dataDir)) {
@@ -577,6 +579,7 @@ export class CredentialStore {
         await directory?.close().catch(() => {});
       }
       const storeExists = await fileExists(this.storePath);
+      this.#createdDuringInitialization = !storeExists;
       key = await loadKey(this.dataDir, this.keyPath, this.configuredKeyFile, !storeExists);
 
       let document;
@@ -609,6 +612,29 @@ export class CredentialStore {
   publicSnapshot() {
     this.#assertInitialized();
     return publicMetadata(this.#document);
+  }
+
+  createdDuringInitialization() {
+    this.#assertInitialized();
+    return this.#createdDuringInitialization;
+  }
+
+  sessionStateIntegrityTag(payload) {
+    this.#assertInitialized();
+    if (!Buffer.isBuffer(payload) || payload.length < 1 || payload.length > 256 * 1_024) {
+      throw failure("INVALID_SESSION_STATE", "The browser authorization state could not be authenticated.");
+    }
+    const derivedKey = createHmac("sha256", this.#key)
+      .update(`helmsman/session-state-integrity-key/v1\0${this.instanceId}`, "utf8")
+      .digest();
+    try {
+      return createHmac("sha256", derivedKey)
+        .update("helmsman/session-state-integrity/v1\0", "utf8")
+        .update(payload)
+        .digest("hex");
+    } finally {
+      derivedKey.fill(0);
+    }
   }
 
   hasCredential(service, field) {

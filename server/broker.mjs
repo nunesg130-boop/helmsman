@@ -25,6 +25,7 @@ import { probeProxmox, probeProxmoxEndpoint } from "./proxmox-probes.mjs";
 import { probePortainer } from "./portainer-probes.mjs";
 import { probeService } from "./service-probes.mjs";
 import {
+  connectionAuthorizationBoundaryHash,
   isSecureBrowserOrigin,
   NetworkPolicyError,
   normalizePolicy,
@@ -34,7 +35,7 @@ import {
 } from "./network.mjs";
 import { generateSecretToken, hashToken, StateStore, tokenMatches } from "./state.mjs";
 
-const DEFAULT_VERSION = "1.0.0-beta.2";
+const DEFAULT_VERSION = "1.0.1";
 const requestedVersion = String(process.env.HELMSMAN_VERSION || DEFAULT_VERSION);
 const VERSION = /^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/u.test(requestedVersion)
   ? requestedVersion
@@ -379,6 +380,73 @@ function safeDeviceName(value) {
   return normalized;
 }
 
+const JELLYFIN_DEVICE_ID = /^[A-Za-z0-9._:-]{1,128}$/u;
+
+function normalizedJellyfinDeviceId(value) {
+  const candidate = value === undefined ? randomUUID() : value;
+  if (typeof candidate !== "string" || !JELLYFIN_DEVICE_ID.test(candidate)) {
+    throw new BrokerError(400, "INVALID_JELLYFIN_DEVICE", "The Jellyfin browser device is invalid.");
+  }
+  return candidate;
+}
+
+function validJellyfinSecretBuffer(value) {
+  if (!Buffer.isBuffer(value) || value.length < 1 || value.length > 4096) return false;
+  return !/[\u0000-\u001f\u007f-\u009f]/u.test(value.toString("utf8"));
+}
+
+function validJellyfinIdentityText(value) {
+  return typeof value === "string"
+    && value.length >= 1
+    && value.length <= 256
+    && !/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(value);
+}
+
+function parseJellyfinIdentity(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const wrapped = value.User && typeof value.User === "object" && !Array.isArray(value.User);
+  const user = wrapped ? value.User : value;
+  const outerServerId = wrapped && typeof value.ServerId === "string" ? value.ServerId : null;
+  const userServerId = typeof user.ServerId === "string" ? user.ServerId : null;
+  if (outerServerId && userServerId && outerServerId !== userServerId) return null;
+  const serverId = outerServerId || userServerId;
+  const userId = user.Id;
+  const username = user.Name;
+  const policy = user.Policy;
+  if (!validJellyfinIdentityText(serverId)
+    || !validJellyfinIdentityText(userId)
+    || typeof username !== "string"
+    || !username.trim()
+    || username.length > 256
+    || /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(username)
+    || !policy
+    || typeof policy !== "object"
+    || Array.isArray(policy)
+    || typeof policy.IsAdministrator !== "boolean"
+    || typeof policy.IsDisabled !== "boolean"
+    || (user.IsDisabled !== undefined && typeof user.IsDisabled !== "boolean")) {
+    return null;
+  }
+  return Object.freeze({
+    serverId,
+    userId,
+    username,
+    isAdministrator: policy.IsAdministrator,
+    isDisabled: policy.IsDisabled || user.IsDisabled === true
+  });
+}
+
+function takeJellyfinAccessToken(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const token = value.AccessToken;
+  value.AccessToken = undefined;
+  if (typeof token !== "string"
+    || token.length < 1
+    || token.length > 4096
+    || /[\u0000-\u001f\u007f-\u009f]/u.test(token)) return null;
+  return Buffer.from(token, "utf8");
+}
+
 function validateConnectionBody(body) {
   requireExactKeys(body, ["url"]);
   if (typeof body.url !== "string") throw new BrokerError(400, "INVALID_TARGET", "Enter one service URL.");
@@ -576,6 +644,20 @@ function expiredServiceCookies(service, deviceOrigin, targetRevision) {
   return [`${name}=; Path=${cookiePath}; Max-Age=0; HttpOnly; SameSite=Strict${secure}`];
 }
 
+function clearChunks(chunks) {
+  for (const chunk of chunks) {
+    if (Buffer.isBuffer(chunk)) chunk.fill(0);
+  }
+  chunks.length = 0;
+}
+
+function discardAndClearResponse(response) {
+  response.on("data", (chunk) => {
+    if (Buffer.isBuffer(chunk)) chunk.fill(0);
+  });
+  response.resume();
+}
+
 export async function performUpstreamRequest({
   request,
   body,
@@ -622,15 +704,17 @@ export async function performUpstreamRequest({
   const transport = target.protocol === "https:" ? https : http;
   return new Promise((resolve, reject) => {
     let settled = false;
+    let clearResponseState = () => {};
     const finishReject = (error) => {
       if (settled) return;
       settled = true;
+      clearResponseState();
       reject(error);
     };
     const upstream = transport.request(requestOptions, (upstreamResponse) => {
       const status = Number(upstreamResponse.statusCode || 502);
       if (status >= 300 && status < 400) {
-        upstreamResponse.resume();
+        discardAndClearResponse(upstreamResponse);
         finishReject(new BrokerError(502, "UPSTREAM_REDIRECT_REJECTED", "The configured service redirected the API request."));
         return;
       }
@@ -639,7 +723,7 @@ export async function performUpstreamRequest({
       // try an approved fallback; never mistake that expected error body for a
       // malformed successful image or relay it to the client.
       if (route.isArtwork && (status < 200 || status >= 300)) {
-        upstreamResponse.resume();
+        discardAndClearResponse(upstreamResponse);
         settled = true;
         resolve({
           status,
@@ -652,17 +736,29 @@ export async function performUpstreamRequest({
       const maximum = route.isArtwork ? limits.maxImageResponseBytes : limits.maxApiResponseBytes;
       const declared = Number(upstreamResponse.headers["content-length"]);
       if (Number.isFinite(declared) && declared > maximum) {
-        upstreamResponse.destroy();
+        discardAndClearResponse(upstreamResponse);
         finishReject(new BrokerError(502, "UPSTREAM_RESPONSE_TOO_LARGE", "The service response exceeded the bridge safety limit."));
+        upstreamResponse.destroy();
         return;
       }
       const chunks = [];
       let total = 0;
+      let responseBody = null;
+      clearResponseState = () => {
+        clearChunks(chunks);
+        responseBody?.fill(0);
+        responseBody = null;
+      };
       upstreamResponse.on("data", (chunk) => {
+        if (settled) {
+          if (Buffer.isBuffer(chunk)) chunk.fill(0);
+          return;
+        }
         total += chunk.length;
         if (total > maximum) {
-          upstreamResponse.destroy();
+          if (Buffer.isBuffer(chunk)) chunk.fill(0);
           finishReject(new BrokerError(502, "UPSTREAM_RESPONSE_TOO_LARGE", "The service response exceeded the bridge safety limit."));
+          upstreamResponse.destroy();
           return;
         }
         chunks.push(chunk);
@@ -670,39 +766,50 @@ export async function performUpstreamRequest({
       upstreamResponse.on("error", () => {
         finishReject(new BrokerError(502, "UPSTREAM_RESPONSE_FAILED", "The service response ended unexpectedly."));
       });
+      upstreamResponse.on("aborted", () => {
+        finishReject(new BrokerError(502, "UPSTREAM_RESPONSE_FAILED", "The service response ended unexpectedly."));
+      });
+      upstreamResponse.on("close", () => {
+        if (!upstreamResponse.complete) {
+          finishReject(new BrokerError(502, "UPSTREAM_RESPONSE_FAILED", "The service response ended unexpectedly."));
+        }
+      });
       upstreamResponse.on("end", () => {
         if (settled) return;
-        settled = true;
-        const responseContentType = String(upstreamResponse.headers["content-type"] || "application/octet-stream")
-          .split(";", 1)[0]
-          .trim()
-          .toLowerCase();
-        if (route.isArtwork && !/^image\/(?:avif|gif|jpeg|png|webp)$/u.test(responseContentType)) {
-          reject(new BrokerError(502, "UPSTREAM_CONTENT_REJECTED", "The artwork endpoint did not return a supported image."));
-          return;
-        }
-        if (!route.isArtwork && responseContentType === "text/html") {
-          reject(new BrokerError(502, "UPSTREAM_CONTENT_REJECTED", "The service returned HTML instead of an API response."));
-          return;
-        }
-        let loginSession = null;
         try {
+          responseBody = Buffer.concat(chunks, total);
+          clearChunks(chunks);
+          const responseContentType = String(upstreamResponse.headers["content-type"] || "application/octet-stream")
+            .split(";", 1)[0]
+            .trim()
+            .toLowerCase();
+          if (route.isArtwork && !/^image\/(?:avif|gif|jpeg|png|webp)$/u.test(responseContentType)) {
+            throw new BrokerError(502, "UPSTREAM_CONTENT_REJECTED", "The artwork endpoint did not return a supported image.");
+          }
+          if (!route.isArtwork && responseContentType === "text/html") {
+            throw new BrokerError(502, "UPSTREAM_CONTENT_REJECTED", "The service returned HTML instead of an API response.");
+          }
+          let loginSession = null;
           if (route.isLogin && status >= 200 && status < 300) {
             loginSession = strictLoginSession(upstreamResponse.headers["set-cookie"], route.service);
           }
-        } catch (error) {
-          reject(error);
-          return;
-        }
-        resolve({
-          status,
-          body: Buffer.concat(chunks, total),
-          contentType: responseContentType,
-          loginSession,
-          cookies: route.isLogin || explicitCredential
+          const responseCookies = route.isLogin || explicitCredential
             ? []
-            : safeSetCookies(upstreamResponse.headers["set-cookie"], route.service, deviceOrigin, targetRevision)
-        });
+            : safeSetCookies(upstreamResponse.headers["set-cookie"], route.service, deviceOrigin, targetRevision);
+          const result = {
+            status,
+            body: responseBody,
+            contentType: responseContentType,
+            loginSession,
+            cookies: responseCookies
+          };
+          responseBody = null;
+          clearResponseState = () => {};
+          settled = true;
+          resolve(result);
+        } catch (error) {
+          finishReject(error);
+        }
       });
     });
     upstream.on("timeout", () => upstream.destroy());
@@ -1368,11 +1475,12 @@ export async function createBroker(options = {}) {
     };
   }
 
-  function jellyfinAuthorization(token = null) {
+  function jellyfinAuthorization(token = null, deviceId = store.snapshot().instanceId) {
+    const normalizedDeviceId = normalizedJellyfinDeviceId(deviceId);
     const fields = [
       'Client="Helmsman"',
       'Device="Container"',
-      `DeviceId="${store.snapshot().instanceId}"`,
+      `DeviceId="${normalizedDeviceId}"`,
       `Version="${VERSION}"`
     ];
     if (token !== null) fields.push(`Token="${encodeURIComponent(token)}"`);
@@ -1584,6 +1692,331 @@ export async function createBroker(options = {}) {
     }
   }
 
+  async function dispatchJellyfinLogout({
+    token,
+    deviceId,
+    targetResolution,
+    targetRevision,
+    reserveCapacity = true
+  }) {
+    const route = authorizeBridgeRoute("jellyfin", "POST", "/bridge/jellyfin/Sessions/Logout");
+    if (!route.allowed || !route.internalOnly || route.isLogin) {
+      throw new BrokerError(500, "JELLYFIN_AUTH_UNAVAILABLE", "Jellyfin session logout is unavailable.");
+    }
+    let upstream = null;
+    let release = null;
+    const headers = { authorization: jellyfinAuthorization(token.toString("utf8"), deviceId) };
+    try {
+      if (reserveCapacity) release = reserveServiceCapacity("jellyfin");
+      upstream = await dispatchUpstream({
+        request: { method: route.method, headers },
+        body: Buffer.alloc(0),
+        targetResolution,
+        route,
+        deviceOrigin: "http://127.0.0.1",
+        targetRevision,
+        shutdownSignal: shutdownController.signal,
+        limits: {
+          ...limits,
+          maxApiResponseBytes: Math.min(limits.maxApiResponseBytes, 64 * 1024),
+          upstreamTimeoutMs: Math.min(limits.upstreamTimeoutMs, 5_000)
+        }
+      });
+      return Number(upstream.status);
+    } finally {
+      headers.authorization = undefined;
+      if (Buffer.isBuffer(upstream?.body)) upstream.body.fill(0);
+      release?.();
+    }
+  }
+
+  async function exchangeJellyfinLogin({
+    targetResolution,
+    targetRevision,
+    login,
+    deviceId,
+    requireAdministrator = false
+  }) {
+    let body = null;
+    let upstream = null;
+    let release = null;
+    let token = null;
+    try {
+      if (!Buffer.isBuffer(login?.username)
+        || login.username.length < 1
+        || login.username.length > 1024
+        || !validJellyfinSecretBuffer(login.username)
+        || !validJellyfinSecretBuffer(login.password)) {
+        throw new BrokerError(
+          requireAdministrator ? 401 : 400,
+          requireAdministrator ? "JELLYFIN_AUTH_REJECTED" : "INVALID_LOGIN",
+          requireAdministrator
+            ? "Jellyfin did not accept that administrator sign-in."
+            : "Enter a supported service account and password."
+        );
+      }
+      const normalizedDeviceId = normalizedJellyfinDeviceId(deviceId);
+      const route = authorizeBridgeRoute(
+        "jellyfin",
+        "POST",
+        "/bridge/jellyfin/Users/AuthenticateByName"
+      );
+      if (!route.allowed || !route.isLogin || !route.internalOnly) {
+        throw new BrokerError(500, "LOGIN_EXCHANGE_UNAVAILABLE", "The service sign-in route is unavailable.");
+      }
+
+      const payload = {
+        Username: login.username.toString("utf8"),
+        Pw: login.password.toString("utf8")
+      };
+      body = Buffer.from(JSON.stringify(payload), "utf8");
+      payload.Username = undefined;
+      payload.Pw = undefined;
+      const headers = {
+        "content-type": "application/json",
+        authorization: jellyfinAuthorization(null, normalizedDeviceId)
+      };
+
+      release = reserveServiceCapacity("jellyfin");
+      upstream = await dispatchUpstream({
+        request: { method: route.method, headers },
+        body,
+        targetResolution,
+        route,
+        deviceOrigin: "http://127.0.0.1",
+        targetRevision,
+        shutdownSignal: shutdownController.signal,
+        limits: { ...limits, maxApiResponseBytes: Math.min(limits.maxApiResponseBytes, 64 * 1024) }
+      });
+      const status = Number(upstream.status);
+      if (status < 200 || status >= 300) {
+        if ([400, 401, 403].includes(status)) {
+          throw new BrokerError(
+            401,
+            requireAdministrator ? "JELLYFIN_AUTH_REJECTED" : "SERVICE_LOGIN_REJECTED",
+            requireAdministrator
+              ? "Jellyfin did not accept that administrator sign-in."
+              : "Jellyfin did not accept that username and password."
+          );
+        }
+        throw new BrokerError(502, "LOGIN_EXCHANGE_FAILED", "Jellyfin could not complete sign-in.");
+      }
+
+      let responseBody;
+      try {
+        const raw = Buffer.isBuffer(upstream.body)
+          ? upstream.body.toString("utf8")
+          : String(upstream.body ?? "");
+        responseBody = JSON.parse(raw);
+      } catch {
+        throw new BrokerError(502, "LOGIN_EXCHANGE_FAILED", "Jellyfin returned an invalid sign-in response.");
+      }
+      token = takeJellyfinAccessToken(responseBody);
+      if (!token) {
+        throw new BrokerError(502, "LOGIN_EXCHANGE_FAILED", "Jellyfin did not return a usable access token.");
+      }
+      const identity = requireAdministrator ? parseJellyfinIdentity(responseBody) : null;
+      if (requireAdministrator
+        && (!identity || !identity.isAdministrator || identity.isDisabled)) {
+        await dispatchJellyfinLogout({
+          token,
+          deviceId: normalizedDeviceId,
+          targetResolution,
+          targetRevision,
+          reserveCapacity: false
+        }).catch(() => {});
+        throw new BrokerError(
+          401,
+          "JELLYFIN_AUTH_REJECTED",
+          "Jellyfin did not accept that administrator sign-in."
+        );
+      }
+      const result = { token, identity, deviceId: normalizedDeviceId };
+      token = null;
+      return result;
+    } finally {
+      token?.fill(0);
+      body?.fill(0);
+      if (Buffer.isBuffer(upstream?.body)) upstream.body.fill(0);
+      login?.username?.fill?.(0);
+      login?.password?.fill?.(0);
+      release?.();
+    }
+  }
+
+  async function configuredJellyfinTarget() {
+    const state = store.snapshot();
+    const connection = state.connections.jellyfin;
+    if (!connection) {
+      throw new BrokerError(503, "JELLYFIN_AUTH_UNAVAILABLE", "Jellyfin sign-in is not configured.");
+    }
+    let targetResolution;
+    try {
+      targetResolution = await resolveAndAuthorizeTarget(connection.url, state.policy, {
+        lookup,
+        approvedHostCidrs: connection.approvedHostCidrs || []
+      });
+    } catch (error) {
+      if (error instanceof NetworkPolicyError) {
+        throw new BrokerError(503, "JELLYFIN_AUTH_UNAVAILABLE", "The configured Jellyfin server is unavailable.");
+      }
+      throw error;
+    }
+    const boundary = connectionAuthorizationBoundaryHash(connection, state.policy);
+    if (!jellyfinBoundaryIsCurrent(boundary)) {
+      throw new BrokerError(503, "JELLYFIN_AUTH_UNAVAILABLE", "The Jellyfin connection changed; try again.");
+    }
+    return { boundary, connection, targetResolution };
+  }
+
+  function jellyfinBoundaryIsCurrent(boundary) {
+    const current = store.snapshot();
+    const connection = current.connections.jellyfin;
+    if (!connection) return false;
+    try {
+      return connectionAuthorizationBoundaryHash(connection, current.policy) === boundary;
+    } catch {
+      return false;
+    }
+  }
+
+  async function authenticateJellyfinBrowser({ username, password, deviceId } = {}) {
+    const login = { username, password };
+    try {
+      const { boundary, connection, targetResolution } = await configuredJellyfinTarget();
+      const result = await exchangeJellyfinLogin({
+        targetResolution,
+        targetRevision: connection.targetRevision,
+        login,
+        deviceId,
+        requireAdministrator: true
+      });
+      if (!jellyfinBoundaryIsCurrent(boundary)) {
+        await dispatchJellyfinLogout({
+          token: result.token,
+          deviceId: result.deviceId,
+          targetResolution,
+          targetRevision: connection.targetRevision
+        }).catch(() => {});
+        result.token.fill(0);
+        throw new BrokerError(503, "JELLYFIN_AUTH_UNAVAILABLE", "The Jellyfin connection changed; try again.");
+      }
+      return {
+        token: result.token,
+        deviceId: result.deviceId,
+        jellyfinUrl: connection.url,
+        targetRevision: connection.targetRevision,
+        boundaryHash: boundary,
+        revokeAtBoundary: async (token) => {
+          if (!validJellyfinSecretBuffer(token)) return { revoked: true };
+          const status = await dispatchJellyfinLogout({
+            token,
+            deviceId: result.deviceId,
+            targetResolution,
+            targetRevision: connection.targetRevision
+          });
+          if ((status >= 200 && status < 300) || [401, 403].includes(status)) return { revoked: true };
+          throw new BrokerError(502, "JELLYFIN_LOGOUT_FAILED", "Jellyfin could not complete session logout.");
+        },
+        identity: result.identity
+      };
+    } finally {
+      username?.fill?.(0);
+      password?.fill?.(0);
+    }
+  }
+
+  async function validateJellyfinBrowserToken({ token, deviceId, boundaryHash } = {}) {
+    if (!validJellyfinSecretBuffer(token)) {
+      throw new BrokerError(401, "JELLYFIN_AUTH_REJECTED", "The Jellyfin sign-in is no longer valid.");
+    }
+    if (typeof boundaryHash !== "string" || !SHA256_FINGERPRINT.test(boundaryHash)) {
+      throw new BrokerError(401, "JELLYFIN_AUTH_REJECTED", "The Jellyfin sign-in boundary is invalid.");
+    }
+    const normalizedDeviceId = normalizedJellyfinDeviceId(deviceId);
+    const { boundary, connection, targetResolution } = await configuredJellyfinTarget();
+    if (boundary !== boundaryHash) {
+      throw new BrokerError(503, "JELLYFIN_AUTH_UNAVAILABLE", "The Jellyfin connection changed; sign in again.");
+    }
+    const route = authorizeBridgeRoute("jellyfin", "GET", "/bridge/jellyfin/Users/Me");
+    if (!route.allowed || !route.internalOnly || route.isLogin) {
+      throw new BrokerError(500, "JELLYFIN_AUTH_UNAVAILABLE", "Jellyfin session validation is unavailable.");
+    }
+    let upstream = null;
+    let release = null;
+    const headers = { authorization: jellyfinAuthorization(token.toString("utf8"), normalizedDeviceId) };
+    try {
+      release = reserveServiceCapacity("jellyfin");
+      upstream = await dispatchUpstream({
+        request: { method: route.method, headers },
+        body: Buffer.alloc(0),
+        targetResolution,
+        route,
+        deviceOrigin: "http://127.0.0.1",
+        targetRevision: connection.targetRevision,
+        shutdownSignal: shutdownController.signal,
+        limits: { ...limits, maxApiResponseBytes: Math.min(limits.maxApiResponseBytes, 64 * 1024) }
+      });
+      if (!jellyfinBoundaryIsCurrent(boundary)) {
+        throw new BrokerError(503, "JELLYFIN_AUTH_UNAVAILABLE", "The Jellyfin connection changed; try again.");
+      }
+      const status = Number(upstream.status);
+      if ([400, 401, 403].includes(status)) {
+        throw new BrokerError(401, "JELLYFIN_AUTH_REJECTED", "The Jellyfin sign-in is no longer valid.");
+      }
+      if (status < 200 || status >= 300) {
+        throw new BrokerError(502, "JELLYFIN_AUTH_VALIDATION_FAILED", "Jellyfin could not validate this sign-in.");
+      }
+      let responseBody;
+      try {
+        const raw = Buffer.isBuffer(upstream.body)
+          ? upstream.body.toString("utf8")
+          : String(upstream.body ?? "");
+        responseBody = JSON.parse(raw);
+      } catch {
+        throw new BrokerError(401, "JELLYFIN_AUTH_REJECTED", "The Jellyfin sign-in is no longer valid.");
+      }
+      const identity = parseJellyfinIdentity(responseBody);
+      if (!identity || !identity.isAdministrator || identity.isDisabled) {
+        throw new BrokerError(401, "JELLYFIN_AUTH_REJECTED", "The Jellyfin sign-in is no longer valid.");
+      }
+      return {
+        jellyfinUrl: connection.url,
+        targetRevision: connection.targetRevision,
+        boundaryHash: boundary,
+        identity
+      };
+    } finally {
+      headers.authorization = undefined;
+      if (Buffer.isBuffer(upstream?.body)) upstream.body.fill(0);
+      release?.();
+    }
+  }
+
+  async function revokeJellyfinBrowserToken({ token, deviceId, boundaryHash } = {}) {
+    if (!validJellyfinSecretBuffer(token)) {
+      return { revoked: true };
+    }
+    if (typeof boundaryHash !== "string" || !SHA256_FINGERPRINT.test(boundaryHash)) {
+      throw new BrokerError(503, "JELLYFIN_LOGOUT_FAILED", "The Jellyfin sign-in boundary is unavailable.");
+    }
+    const normalizedDeviceId = normalizedJellyfinDeviceId(deviceId);
+    const { boundary, connection, targetResolution } = await configuredJellyfinTarget();
+    if (boundary !== boundaryHash) {
+      throw new BrokerError(503, "JELLYFIN_LOGOUT_FAILED", "The Jellyfin connection changed before logout.");
+    }
+    const status = await dispatchJellyfinLogout({
+      token,
+      deviceId: normalizedDeviceId,
+      targetResolution,
+      targetRevision: connection.targetRevision
+    });
+    if ((status >= 200 && status < 300) || [401, 403].includes(status)) {
+      return { revoked: true };
+    }
+    throw new BrokerError(502, "JELLYFIN_LOGOUT_FAILED", "Jellyfin could not complete session logout.");
+  }
+
   async function exchangeServiceLogin({ service: serviceValue, targetResolution, targetRevision, login }) {
     const service = canonicalServiceId(serviceValue);
     if (!["jellyfin", "seerr"].includes(service)
@@ -1591,27 +2024,29 @@ export async function createBroker(options = {}) {
       || !Buffer.isBuffer(login?.password)) {
       throw new BrokerError(400, "INVALID_LOGIN", "Enter a supported service account and password.");
     }
-    const upstreamPath = service === "jellyfin"
-      ? "/Users/AuthenticateByName"
-      : "/api/v1/auth/local";
-    const bridgeName = service === "qbittorrent" ? "qbit" : service;
-    const route = authorizeBridgeRoute(service, "POST", `/bridge/${bridgeName}${upstreamPath}`);
+    if (service === "jellyfin") {
+      const result = await exchangeJellyfinLogin({
+        targetResolution,
+        targetRevision,
+        login,
+        deviceId: store.snapshot().instanceId
+      });
+      return result.token;
+    }
+
+    const route = authorizeBridgeRoute("seerr", "POST", "/bridge/seerr/api/v1/auth/local");
     if (!route.allowed || !route.isLogin) {
       throw new BrokerError(500, "LOGIN_EXCHANGE_UNAVAILABLE", "The service sign-in route is unavailable.");
     }
-
-    const payload = service === "jellyfin"
-      ? { Username: login.username.toString("utf8"), Pw: login.password.toString("utf8") }
-      : { email: login.username.toString("utf8"), password: login.password.toString("utf8") };
+    const payload = {
+      email: login.username.toString("utf8"),
+      password: login.password.toString("utf8")
+    };
     const body = Buffer.from(JSON.stringify(payload), "utf8");
-    payload.Username = undefined;
-    payload.Pw = undefined;
     payload.email = undefined;
     payload.password = undefined;
     const headers = { "content-type": "application/json" };
-    if (service === "jellyfin") headers.authorization = jellyfinAuthorization();
-
-    const release = reserveServiceCapacity(service);
+    const release = reserveServiceCapacity("seerr");
     let upstream = null;
     try {
       upstream = await dispatchUpstream({
@@ -1627,46 +2062,22 @@ export async function createBroker(options = {}) {
       const status = Number(upstream.status);
       if (status < 200 || status >= 300) {
         if ([400, 401, 403].includes(status)) {
-          throw new BrokerError(401, "SERVICE_LOGIN_REJECTED", service === "seerr"
-            ? "Seerr did not accept that local account email and password."
-            : "Jellyfin did not accept that username and password.");
+          throw new BrokerError(401, "SERVICE_LOGIN_REJECTED", "Seerr did not accept that local account email and password.");
         }
         throw new BrokerError(502, "LOGIN_EXCHANGE_FAILED", "The service could not complete sign-in.");
       }
-
-      if (service === "seerr") {
-        if (!upstream.loginSession) {
-          throw new BrokerError(502, "LOGIN_EXCHANGE_FAILED", "Seerr did not return a usable sign-in session.");
-        }
-        const wrapped = wrapUpstreamSession(upstream.loginSession.name, upstream.loginSession.value);
-        // Validate the exact representation that will be encrypted at rest.
-        unwrapUpstreamSession("seerr", wrapped);
-        return Buffer.from(wrapped, "utf8");
+      if (!upstream.loginSession) {
+        throw new BrokerError(502, "LOGIN_EXCHANGE_FAILED", "Seerr did not return a usable sign-in session.");
       }
-
-      let responseBody;
-      try {
-        const raw = Buffer.isBuffer(upstream.body)
-          ? upstream.body.toString("utf8")
-          : String(upstream.body ?? "");
-        responseBody = JSON.parse(raw);
-      } catch {
-        throw new BrokerError(502, "LOGIN_EXCHANGE_FAILED", "Jellyfin returned an invalid sign-in response.");
-      }
-      const token = responseBody && typeof responseBody === "object" && !Array.isArray(responseBody)
-        ? responseBody.AccessToken
-        : null;
-      if (typeof token !== "string"
-        || token.length < 1
-        || token.length > 4096
-        || /[\u0000-\u001f\u007f-\u009f]/u.test(token)) {
-        throw new BrokerError(502, "LOGIN_EXCHANGE_FAILED", "Jellyfin did not return a usable access token.");
-      }
-      responseBody.AccessToken = undefined;
-      return Buffer.from(token, "utf8");
+      const wrapped = wrapUpstreamSession(upstream.loginSession.name, upstream.loginSession.value);
+      // Validate the exact representation that will be encrypted at rest.
+      unwrapUpstreamSession("seerr", wrapped);
+      return Buffer.from(wrapped, "utf8");
     } finally {
       body.fill(0);
       if (Buffer.isBuffer(upstream?.body)) upstream.body.fill(0);
+      login.username.fill(0);
+      login.password.fill(0);
       release();
     }
   }
@@ -2115,6 +2526,9 @@ export async function createBroker(options = {}) {
     fetchSeerrSeriesSeasons,
     fetchMediaArtwork: (descriptor, context = {}) => mediaArtwork.get(descriptor, { signal: context.signal }),
     exchangeServiceLogin,
+    authenticateJellyfinBrowser,
+    validateJellyfinBrowserToken,
+    revokeJellyfinBrowserToken,
     stateGuard: options.stateGuard,
     keyFilePath: options.keyFilePath
       ?? process.env.HELMSMAN_MASTER_KEY_FILE

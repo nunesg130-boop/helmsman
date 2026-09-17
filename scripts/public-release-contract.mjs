@@ -45,10 +45,27 @@ function jpegDimensions(contents) {
 }
 
 const packageJson = JSON.parse(read("package.json"));
-assert.equal(packageJson.version, "1.0.0-beta.2", "the public beta must use the selected SemVer");
+assert.equal(packageJson.version, "1.0.1", "the public release must use the selected SemVer");
 assert.equal(packageJson.license, "AGPL-3.0-only", "package metadata must declare the source license");
 assert.equal(packageJson.private, true, "the package must remain protected from accidental npm publication");
 assert.equal(packageJson.repository?.url, "https://github.com/nunesg130-boop/helmsman.git");
+
+const readme = read("README.md");
+const securityPolicy = read("SECURITY.md");
+const deploymentGuide = read("deploy/DOCKER.md");
+const browserAccessDocumentation = `${readme}\n${securityPolicy}\n${deploymentGuide}`;
+assert.match(readme, /^# Helmsman v1[.]0[.]1$/mu, "the public README must identify the stable release");
+assert.match(readme, /`v1[.]0[.]1` Git tag[\s\S]*?version, `latest`, and full-commit image tags/iu);
+assert.match(browserAccessDocumentation, /exact (?:enabled )?Jellyfin administrator/iu);
+assert.match(browserAccessDocumentation, /username and password/iu);
+assert.match(browserAccessDocumentation, /server ID and user ID[\s\S]{0,160}(?:never requested|never asks)/iu);
+assert.match(browserAccessDocumentation, /30-day[\s\S]{0,160}HttpOnly/iu);
+assert.match(browserAccessDocumentation, /monitoring connector[\s\S]{0,160}(?:distinct|separate)/iu);
+assert.match(browserAccessDocumentation, /Authentik[\s\S]{0,200}(?:external MFA|MFA layer)/iu);
+assert.match(browserAccessDocumentation, /Jellyfin is unreachable[\s\S]{0,240}read-only[\s\S]{0,180}(?:writes|state-changing actions)[\s\S]{0,100}(?:fail closed|fresh validation)/iu);
+assert.match(browserAccessDocumentation, /v1[.]0[.]0-beta[.]2[\s\S]{0,240}(?:temporar|only long enough)[\s\S]{0,260}(?:removes|removed)/iu);
+assert.match(browserAccessDocumentation, /reset-access --confirm/u);
+assert.doesNotMatch(browserAccessDocumentation, /rotate-access-key --confirm/u, "the removed access-key recovery command must not ship in public documentation");
 
 for (const required of [
   "LICENSE",

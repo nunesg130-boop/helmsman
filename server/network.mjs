@@ -1,4 +1,5 @@
 import { lookup as systemLookup } from "node:dns/promises";
+import { createHash } from "node:crypto";
 import { BlockList, isIP } from "node:net";
 
 const CONTROL_OR_WHITESPACE = /[\u0000-\u0020\u007f-\u009f\u2028\u2029]/u;
@@ -109,6 +110,42 @@ function canonicalAddress(address) {
   throw new NetworkPolicyError("INVALID_ADDRESS", "An approved host contains an invalid address.");
 }
 
+function maskedIpv4Network(address, prefix) {
+  let remaining = prefix;
+  return address.split(".").map((part) => {
+    const significantBits = Math.min(remaining, 8);
+    remaining -= significantBits;
+    if (significantBits === 0) return "0";
+    const mask = 0xff << (8 - significantBits);
+    return String(Number(part) & mask);
+  }).join(".");
+}
+
+function expandedIpv6Groups(address) {
+  const canonical = canonicalAddress(address);
+  const halves = canonical.split("::");
+  const left = halves[0] ? halves[0].split(":") : [];
+  const right = halves.length === 2 && halves[1] ? halves[1].split(":") : [];
+  const omitted = halves.length === 2 ? 8 - left.length - right.length : 0;
+  return [
+    ...left,
+    ...Array.from({ length: omitted }, () => "0"),
+    ...right
+  ].map((group) => Number.parseInt(group, 16));
+}
+
+function maskedIpv6Network(address, prefix) {
+  let remaining = prefix;
+  const groups = expandedIpv6Groups(address).map((group) => {
+    const significantBits = Math.min(remaining, 16);
+    remaining -= significantBits;
+    if (significantBits === 0) return 0;
+    const mask = (0xffff << (16 - significantBits)) & 0xffff;
+    return group & mask;
+  });
+  return canonicalAddress(groups.map((group) => group.toString(16)).join(":"));
+}
+
 function normalizeCidr(value) {
   if (typeof value !== "string" || value.length > 128 || CONTROL_OR_WHITESPACE.test(value)) {
     throw new NetworkPolicyError("INVALID_CIDR", "Each allowed network must be a valid CIDR.");
@@ -124,13 +161,16 @@ function normalizeCidr(value) {
   if (maximum < 0 || prefix < 0 || prefix > maximum) {
     throw new NetworkPolicyError("INVALID_CIDR", "An allowed network contains an invalid address or prefix.");
   }
+  const normalizedNetwork = version === 4
+    ? maskedIpv4Network(network, prefix)
+    : maskedIpv6Network(network, prefix);
   try {
     const check = new BlockList();
-    check.addSubnet(network, prefix, version === 4 ? "ipv4" : "ipv6");
+    check.addSubnet(normalizedNetwork, prefix, version === 4 ? "ipv4" : "ipv6");
   } catch {
     throw new NetworkPolicyError("INVALID_CIDR", "An allowed network is not a canonical CIDR subnet.");
   }
-  return `${network}/${prefix}`;
+  return `${normalizedNetwork}/${prefix}`;
 }
 
 function buildAllowedBlocks(cidrs) {
@@ -184,7 +224,7 @@ export function normalizeApprovedHostCidrs(input) {
       seen.add(normalized);
     }
   }
-  return approved;
+  return approved.sort();
 }
 
 export function normalizePolicy(input) {
@@ -197,11 +237,29 @@ export function normalizePolicy(input) {
   if (typeof input.allowPublicHttps !== "boolean") {
     throw new NetworkPolicyError("INVALID_POLICY", "allowPublicHttps must be true or false.");
   }
-  const allowedCidrs = [...new Set(input.allowedCidrs.map(normalizeCidr))];
+  const allowedCidrs = [...new Set(input.allowedCidrs.map(normalizeCidr))].sort();
   return {
     allowedCidrs,
     allowPublicHttps: input.allowPublicHttps
   };
+}
+
+export function connectionAuthorizationBoundaryHash(connection, policyInput) {
+  if (!connection || typeof connection !== "object" || Array.isArray(connection)) {
+    throw new NetworkPolicyError("INVALID_TARGET", "A configured service connection is required.");
+  }
+  const target = parseServiceUrl(connection.url);
+  if (typeof connection.targetRevision !== "string" || connection.targetRevision.length > 128) {
+    throw new NetworkPolicyError("INVALID_TARGET", "The service target revision is invalid.");
+  }
+  const policy = normalizePolicy(policyInput);
+  const approvedHostCidrs = normalizeApprovedHostCidrs(connection.approvedHostCidrs || []);
+  return createHash("sha256").update(JSON.stringify({
+    url: target.url,
+    targetRevision: connection.targetRevision,
+    approvedHostCidrs,
+    policy
+  }), "utf8").digest("hex");
 }
 
 export function parseServiceUrl(rawValue) {

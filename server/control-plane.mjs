@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { canonicalServiceId, SERVICE_IDS } from "./routes.mjs";
 import {
+  connectionAuthorizationBoundaryHash,
   normalizePolicy,
   parseServiceUrl,
   resolveAndAuthorizeExplicitTarget,
@@ -10,6 +11,7 @@ import { CredentialStore, CredentialStoreError } from "./secrets.mjs";
 import {
   claimRequestBinding,
   CSRF_HEADER_NAME,
+  jellyfinSessionCredentialBinding,
   requestBinding,
   SessionAuthError,
   SessionAuthStore
@@ -23,6 +25,21 @@ const MAX_LOGIN_ATTEMPTS_PER_WINDOW = 10;
 const ACCESS_LOGIN_WINDOW_MS = 10 * 60 * 1000;
 const MAX_ACCESS_LOGIN_ATTEMPTS_PER_WINDOW = 10;
 const MAX_ACCESS_LOGIN_BUCKETS = 256;
+const JELLYFIN_LOGIN_WINDOW_MS = 10 * 60 * 1000;
+const MAX_JELLYFIN_LOGIN_ATTEMPTS_PER_BUCKET = 10;
+const MAX_JELLYFIN_LOGIN_ATTEMPTS_GLOBAL = 100;
+const MAX_JELLYFIN_LOGIN_BUCKETS = 512;
+const SETUP_SESSION_TTL_MS = 60 * 60 * 1_000;
+const JELLYFIN_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
+const JELLYFIN_READ_VALIDATION_MS = 12 * 60 * 60 * 1_000;
+const JELLYFIN_WRITE_VALIDATION_MS = 2 * 60 * 1_000;
+const JELLYFIN_OFFLINE_GRACE_MS = 24 * 60 * 60 * 1_000;
+const BROWSER_AUTH_NAMESPACE_PREFIX = "browser-auth-";
+const BROWSER_AUTH_BOUNDARY_HASH = /^[a-f0-9]{64}$/u;
+const BROWSER_AUTH_STATE_NAMESPACE = "browser-auth-state";
+const BROWSER_AUTH_STATE_FIELD = "schema";
+const BROWSER_AUTH_STATE_VERSION = "4";
+const BACKGROUND_JELLYFIN_REVOCATION_TTL_MS = 6_000;
 // Keep enough encrypted-store headroom to stage every destination-bound
 // credential during an atomic network-policy migration (seven media
 // connectors, 25 Proxmox endpoints, and eight infrastructure services).
@@ -211,19 +228,29 @@ async function readBoundedJson(request) {
   }
   const chunks = [];
   let total = 0;
-  for await (const chunk of request) {
-    total += chunk.length;
-    if (total > MAX_JSON_BODY_BYTES) {
-      request.resume();
-      fail(413, "REQUEST_TOO_LARGE", "The request body exceeded its safety limit.");
-    }
-    chunks.push(chunk);
-  }
+  let raw = null;
   try {
-    return requirePlainObject(JSON.parse(Buffer.concat(chunks, total).toString("utf8")));
-  } catch (error) {
-    if (error instanceof ControlPlaneError) throw error;
-    fail(400, "INVALID_JSON", "The request body is not valid JSON.");
+    for await (const value of request) {
+      const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+      total += chunk.length;
+      if (total > MAX_JSON_BODY_BYTES) {
+        chunk.fill(0);
+        request.resume();
+        fail(413, "REQUEST_TOO_LARGE", "The request body exceeded its safety limit.");
+      }
+      chunks.push(chunk);
+    }
+    raw = Buffer.concat(chunks, total);
+    try {
+      return requirePlainObject(JSON.parse(raw.toString("utf8")));
+    } catch (error) {
+      if (error instanceof ControlPlaneError) throw error;
+      fail(400, "INVALID_JSON", "The request body is not valid JSON.");
+    }
+  } finally {
+    raw?.fill(0);
+    for (const chunk of chunks) chunk.fill(0);
+    chunks.length = 0;
   }
 }
 
@@ -270,6 +297,54 @@ function safeDeviceName(value) {
     fail(400, "INVALID_SESSION_NAME", "Enter a browser name between 1 and 80 characters.");
   }
   return normalized;
+}
+
+function browserAuthNamespace(sessionId) {
+  if (typeof sessionId !== "string" || !UUID.test(sessionId)) {
+    fail(500, "SESSION_INVALID", "The browser session identity is invalid.");
+  }
+  return `${BROWSER_AUTH_NAMESPACE_PREFIX}${sessionId}`;
+}
+
+function browserAuthField(credentialBinding) {
+  if (typeof credentialBinding !== "string"
+    || !BROWSER_AUTH_BOUNDARY_HASH.test(credentialBinding)) {
+    fail(500, "SESSION_INVALID", "The browser session authorization boundary is invalid.");
+  }
+  return `token_${credentialBinding.slice(0, 56)}`;
+}
+
+function publicAuthentication(sessionStore, options = {}) {
+  const owner = sessionStore.owner();
+  return {
+    provider: owner ? "jellyfin" : null,
+    configured: Boolean(owner),
+    ownerName: owner && options.includeOwnerName === true ? owner.username : null,
+    legacyAccessKeyAvailable: !owner && sessionStore.accessKeyConfigured()
+  };
+}
+
+function validJellyfinIdentity(identity) {
+  const safeText = (value, maximum) => typeof value === "string"
+    && value.length > 0
+    && value.length <= maximum
+    && !/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(value);
+  return Boolean(identity
+    && typeof identity === "object"
+    && !Array.isArray(identity)
+    && safeText(identity.serverId, 256)
+    && safeText(identity.userId, 256)
+    && safeText(identity.username, 320)
+    && identity.isAdministrator === true
+    && identity.isDisabled === false);
+}
+
+function sameJellyfinIdentity(left, right) {
+  return Boolean(left
+    && right
+    && left.provider === "jellyfin"
+    && left.serverId === right.serverId
+    && left.userId === right.userId);
 }
 
 function normalizeSecret(service, value) {
@@ -480,10 +555,11 @@ function clearLogin(login) {
 }
 
 function sameStrings(left, right) {
-  return Array.isArray(left)
-    && Array.isArray(right)
-    && left.length === right.length
-    && left.every((value, index) => value === right[index]);
+  if (!Array.isArray(left) || !Array.isArray(right)) return false;
+  const normalizedLeft = [...new Set(left)].sort();
+  const normalizedRight = [...new Set(right)].sort();
+  return normalizedLeft.length === normalizedRight.length
+    && normalizedLeft.every((value, index) => value === normalizedRight[index]);
 }
 
 function infrastructureEndpoints(target) {
@@ -528,7 +604,7 @@ function legacyCredentialNamespace(service, connection) {
   return `${service}-${targetDigest}`;
 }
 
-function credentialNamespace(service, connection, policy) {
+function policyBoundCredentialNamespaceV2(service, connection, policy) {
   if (!connection?.url || !policy) return null;
   const binding = JSON.stringify({
     url: connection.url,
@@ -542,6 +618,23 @@ function credentialNamespace(service, connection, policy) {
     .digest("hex")
     .slice(0, 48);
   return `${service}-b2-${targetDigest}`;
+}
+
+function credentialNamespace(service, connection, policy) {
+  if (!connection?.url || !policy || typeof connection.targetRevision !== "string") return null;
+  const binding = JSON.stringify({
+    url: connection.url,
+    targetRevision: connection.targetRevision,
+    authMode: connection.authMode || SERVICE_DEFINITIONS[service]?.authMode || "",
+    allowedCidrs: [...(policy.allowedCidrs || [])].sort(),
+    allowPublicHttps: policy.allowPublicHttps === true,
+    approvedHostCidrs: [...(connection.approvedHostCidrs || [])].sort()
+  });
+  const targetDigest = createHash("sha256")
+    .update(binding, "utf8")
+    .digest("hex")
+    .slice(0, 48);
+  return `${service}-b3-${targetDigest}`;
 }
 
 function credentialRecord(credentials, service, connection, policy) {
@@ -819,6 +912,15 @@ export async function createControlPlane(options) {
   const exchangeServiceLogin = typeof options.exchangeServiceLogin === "function"
     ? options.exchangeServiceLogin
     : null;
+  const authenticateJellyfinBrowser = typeof options.authenticateJellyfinBrowser === "function"
+    ? options.authenticateJellyfinBrowser
+    : null;
+  const validateJellyfinBrowserToken = typeof options.validateJellyfinBrowserToken === "function"
+    ? options.validateJellyfinBrowserToken
+    : null;
+  const revokeJellyfinBrowserToken = typeof options.revokeJellyfinBrowserToken === "function"
+    ? options.revokeJellyfinBrowserToken
+    : null;
   const testInfrastructureConnection = typeof options.testInfrastructureConnection === "function"
     ? options.testInfrastructureConnection
     : null;
@@ -845,12 +947,46 @@ export async function createControlPlane(options) {
     keyFilePath: options.keyFilePath,
     guard: options.stateGuard
   });
-  const sessionStore = options.sessionStore || new SessionAuthStore(dataDir, { guard: options.stateGuard });
   await credentialStore.initialize();
+  const sessionStateMarkerPresent = credentialStore.hasCredential(
+    BROWSER_AUTH_STATE_NAMESPACE,
+    BROWSER_AUTH_STATE_FIELD
+  );
+  if (sessionStateMarkerPresent) {
+    const markerValid = await credentialStore.useCredential(
+      BROWSER_AUTH_STATE_NAMESPACE,
+      BROWSER_AUTH_STATE_FIELD,
+      (value) => value.equals(Buffer.from(BROWSER_AUTH_STATE_VERSION, "utf8"))
+    );
+    if (!markerValid) {
+      throw new Error("The browser authorization-state version is not supported.");
+    }
+  }
+  const allowLegacySessionMigration = !sessionStateMarkerPresent
+    && !credentialStore.createdDuringInitialization();
+  // Commit the anti-downgrade marker before converting legacy session state.
+  // A crash can therefore make an operator reset access, but can never reopen
+  // the one-time beta migration on a later process.
+  if (!sessionStateMarkerPresent) {
+    await credentialStore.setCredential(
+      BROWSER_AUTH_STATE_NAMESPACE,
+      BROWSER_AUTH_STATE_FIELD,
+      BROWSER_AUTH_STATE_VERSION
+    );
+  }
+  const sessionStore = options.sessionStore || new SessionAuthStore(dataDir, {
+    guard: options.stateGuard,
+    stateIntegrityTag: (payload) => credentialStore.sessionStateIntegrityTag(payload),
+    allowLegacyMigration: allowLegacySessionMigration
+  });
   await sessionStore.initialize();
+  const stagedBrowserNamespaces = new Set();
+  const browserRevocationQueue = [];
+  let activeBrowserRevocation = null;
+  let browserRevocationClosing = false;
 
-  // beta.2 bound ciphertext to the canonical URL. Upgrade those records once
-  // so beta.3 additionally binds authentication mode and the complete outbound
+  // Older records bound ciphertext only to the canonical URL. Upgrade them once
+  // so current records also bind authentication mode and the complete outbound
   // network authorization boundary. The old ciphertext remains intact until
   // the new authenticated record is durable, making an interrupted migration
   // retryable without ever exposing cleartext.
@@ -863,29 +999,57 @@ export async function createControlPlane(options) {
       if (!connection) continue;
       const definition = SERVICE_DEFINITIONS[service];
       const field = credentialField(definition, connection);
-      const legacyNamespace = legacyCredentialNamespace(service, connection);
       const boundNamespace = credentialNamespace(service, connection, state.policy);
-      const legacyConfigured = Boolean(metadata.credentials?.[legacyNamespace]?.[field]?.configured);
-      const boundConfigured = Boolean(metadata.credentials?.[boundNamespace]?.[field]?.configured);
-      if (legacyConfigured && !boundConfigured) {
-        await credentialStore.useCredential(legacyNamespace, field, (credential) => (
-          credentialStore.replaceServiceCredentials(boundNamespace, { [field]: credential })
-        ));
-        migrated = true;
-      }
-      if (legacyConfigured) {
-        await credentialStore.removeServiceCredentials(legacyNamespace);
+      // Prefer the newer policy-bound record when both migration sources
+      // survive. A stale URL-only record must never replace a credential that
+      // was subsequently updated under the v2 boundary.
+      const sourceNamespaces = [
+        policyBoundCredentialNamespaceV2(service, connection, state.policy),
+        legacyCredentialNamespace(service, connection)
+      ].filter((namespace, index, values) => namespace && namespace !== boundNamespace && values.indexOf(namespace) === index);
+      let boundConfigured = Boolean(metadata.credentials?.[boundNamespace]?.[field]?.configured);
+      for (const sourceNamespace of sourceNamespaces) {
+        const sourceConfigured = Boolean(metadata.credentials?.[sourceNamespace]?.[field]?.configured);
+        if (sourceConfigured && !boundConfigured) {
+          await credentialStore.useCredential(sourceNamespace, field, (credential) => (
+            credentialStore.replaceServiceCredentials(boundNamespace, { [field]: credential })
+          ));
+          boundConfigured = true;
+          migrated = true;
+        }
+        if (!sourceConfigured) continue;
+        await credentialStore.removeServiceCredentials(sourceNamespace);
         migrated = true;
       }
     }
     if (migrated) log("Credential destination bindings upgraded.");
   }
 
+  async function cleanupOrphanServiceCredentials() {
+    const state = stateStore.snapshot();
+    const metadata = credentialStore.publicSnapshot();
+    for (const service of SERVICE_IDS) {
+      const activeNamespace = credentialNamespace(service, state.connections[service], state.policy);
+      for (const namespace of credentialNamespacesForService(metadata, service)) {
+        if (namespace === activeNamespace) continue;
+        await credentialStore.removeServiceCredentials(namespace).catch(() => {
+          log("An orphaned encrypted service credential could not be removed.");
+        });
+      }
+    }
+  }
+
   await migrateLegacyCredentialBindings();
+  await cleanupOrphanServiceCredentials();
+  await drainPrunedBrowserSessions();
+  await cleanupTokenlessBrowserSessions();
+  await cleanupInvalidBrowserSessions();
+  await cleanupOrphanBrowserCredentials();
 
   let monitor = options.monitor || null;
   const loginAttempts = new Map();
   const accessLoginAttempts = new Map();
+  const jellyfinLoginAttempts = new Map();
   let serviceMutationChain = Promise.resolve();
   let claimMutationChain = Promise.resolve();
   const activeActions = new Set();
@@ -905,7 +1069,7 @@ export async function createControlPlane(options) {
 
   function consumeLoginAttempt(service, now = Date.now()) {
     // Deliberately scope this to the service, not the browser session. A new
-    // access-key login or renewed session must not reset the upstream password-guessing
+    // browser login or renewed session must not reset the upstream password-guessing
     // budget. Since `service` is a validated SERVICE_IDS value, this map is
     // strictly bounded by the number of supported services.
     const current = loginAttempts.get(service);
@@ -950,27 +1114,89 @@ export async function createControlPlane(options) {
     return bucket;
   }
 
+  function jellyfinLoginBucketKeys(request, username) {
+    const remoteAddress = typeof request?.socket?.remoteAddress === "string"
+      ? request.socket.remoteAddress.slice(0, 128)
+      : "unknown";
+    const normalizedUsername = Buffer.isBuffer(username)
+      ? username.toString("utf8").toLowerCase()
+      : "invalid";
+    const usernameDigest = createHash("sha256").update(normalizedUsername, "utf8").digest("hex");
+    return [`ip:${remoteAddress || "unknown"}`, `user:${usernameDigest}`];
+  }
+
+  function pruneJellyfinLoginAttempts(now = Date.now()) {
+    for (const [bucket, attempt] of jellyfinLoginAttempts) {
+      if (attempt.startedAt + JELLYFIN_LOGIN_WINDOW_MS <= now) jellyfinLoginAttempts.delete(bucket);
+    }
+  }
+
+  function consumeJellyfinLoginAttempt(request, username, now = Date.now()) {
+    pruneJellyfinLoginAttempts(now);
+    const bucketKeys = jellyfinLoginBucketKeys(request, username);
+    const limits = new Map([
+      ["global", MAX_JELLYFIN_LOGIN_ATTEMPTS_GLOBAL],
+      ...bucketKeys.map((bucket) => [bucket, MAX_JELLYFIN_LOGIN_ATTEMPTS_PER_BUCKET])
+    ]);
+    for (const [bucket, limit] of limits) {
+      const current = jellyfinLoginAttempts.get(bucket);
+      if (current && current.attempts >= limit) {
+        fail(429, "JELLYFIN_LOGIN_RATE_LIMITED", "Too many sign-in attempts. Wait a few minutes and try again.");
+      }
+    }
+    for (const [bucket] of limits) {
+      const current = jellyfinLoginAttempts.get(bucket);
+      if (current) current.attempts += 1;
+      else jellyfinLoginAttempts.set(bucket, { startedAt: now, attempts: 1 });
+    }
+    while (jellyfinLoginAttempts.size > MAX_JELLYFIN_LOGIN_BUCKETS + 1) {
+      const evicted = [...jellyfinLoginAttempts.keys()].find((bucket) => bucket !== "global");
+      if (!evicted) break;
+      jellyfinLoginAttempts.delete(evicted);
+    }
+    return bucketKeys;
+  }
+
+  function clearJellyfinLoginBuckets(bucketKeys) {
+    for (const bucket of bucketKeys || []) jellyfinLoginAttempts.delete(bucket);
+  }
+
   async function connectionsForPolicy(state, policy) {
     const exactMode = policy.allowedCidrs.length === 0;
+    const policyChanged = state.policy.allowPublicHttps !== policy.allowPublicHttps
+      || !sameStrings(state.policy.allowedCidrs, policy.allowedCidrs);
     const entries = await Promise.all(Object.entries(state.connections).map(async ([service, connection]) => {
       try {
+        let approvedHostCidrs;
         if (!exactMode) {
           await resolveAndAuthorizeTarget(connection.url, policy, { lookup, approvedHostCidrs: [] });
-          return [service, { ...connection, approvedHostCidrs: [] }];
+          approvedHostCidrs = [];
+        } else {
+          // Clearing a manual network policy must not silently broaden access.
+          // First prove the target is allowed by the current policy/connection,
+          // then carry only its currently resolved exact private hosts forward.
+          const current = await resolveAndAuthorizeTarget(connection.url, state.policy, {
+            lookup,
+            approvedHostCidrs: connection.approvedHostCidrs || []
+          });
+          const candidate = await resolveAndAuthorizeTarget(connection.url, policy, {
+            lookup,
+            approvedHostCidrs: current.approvedHostCidrs
+          });
+          approvedHostCidrs = candidate.approvedHostCidrs;
         }
-
-        // Clearing a manual network policy must not silently broaden access.
-        // First prove the target is allowed by the current policy/connection,
-        // then carry only its currently resolved exact private hosts forward.
-        const current = await resolveAndAuthorizeTarget(connection.url, state.policy, {
-          lookup,
-          approvedHostCidrs: connection.approvedHostCidrs || []
-        });
-        const candidate = await resolveAndAuthorizeTarget(connection.url, policy, {
-          lookup,
-          approvedHostCidrs: current.approvedHostCidrs
-        });
-        return [service, { ...connection, approvedHostCidrs: candidate.approvedHostCidrs }];
+        const approvalChanged = !sameStrings(connection.approvedHostCidrs || [], approvedHostCidrs);
+        const changed = policyChanged || approvalChanged;
+        return [service, {
+          ...connection,
+          approvedHostCidrs,
+          // A service revision identifies the complete outbound authorization
+          // boundary, not just its URL. Rotating it prevents a request that
+          // resolved under an older policy from acquiring a credential after
+          // a policy transition and dispatching to its stale pinned address.
+          targetRevision: changed ? randomUUID() : connection.targetRevision,
+          updatedAt: changed ? new Date().toISOString() : connection.updatedAt
+        }];
       } catch {
         fail(409, "POLICY_BLOCKS_CONNECTION", `The proposed policy would block the configured ${service} target.`);
       }
@@ -1078,29 +1304,406 @@ export async function createControlPlane(options) {
     return Object.fromEntries(entries);
   }
 
-  async function authenticate(request, requireCsrf = false) {
+  function isBrowserAuthNamespace(value) {
+    return typeof value === "string"
+      && value.startsWith(BROWSER_AUTH_NAMESPACE_PREFIX)
+      && UUID.test(value.slice(BROWSER_AUTH_NAMESPACE_PREFIX.length));
+  }
+
+  async function cleanupTokenlessBrowserSessions() {
+    let revoked = 0;
+    for (const record of sessionStore.internalSessions()) {
+      if (record.principal?.provider !== "jellyfin") continue;
+      if (credentialStore.hasCredential(
+        browserAuthNamespace(record.id),
+        browserAuthField(jellyfinSessionCredentialBinding(record))
+      )) continue;
+      if (await sessionStore.revoke(record.id)) revoked += 1;
+    }
+    if (revoked > 0) {
+      log("Browser sessions without encrypted Jellyfin tokens were revoked during startup reconciliation.");
+    }
+  }
+
+  async function cleanupInvalidBrowserSessions() {
+    const state = stateStore.snapshot();
+    const connection = state.connections.jellyfin;
+    let currentBoundaryHash = null;
     try {
-      return await sessionStore.authenticateRequest(request, { requireCsrf });
+      currentBoundaryHash = connection
+        ? connectionAuthorizationBoundaryHash(connection, state.policy)
+        : null;
+    } catch {
+      currentBoundaryHash = null;
+    }
+    let revoked = 0;
+    for (const record of sessionStore.internalSessions()) {
+      if (record.principal?.provider !== "jellyfin") continue;
+      const verifiedAt = Date.parse(record.principal.verifiedAt);
+      const invalid = !connection
+        || connection.url !== record.principal.jellyfinUrl
+        || connection.targetRevision !== record.principal.targetRevision
+        || currentBoundaryHash !== record.principal.boundaryHash
+        || !Number.isFinite(verifiedAt)
+        || verifiedAt > Date.now();
+      if (!invalid) continue;
+      if (await revokeBrowserSession(record.id, { notify: false })) revoked += 1;
+    }
+    if (revoked > 0) {
+      log("Browser sessions outside the current Jellyfin authorization boundary were revoked during startup reconciliation.");
+    }
+  }
+
+  async function cleanupOrphanBrowserCredentials() {
+    const namespaces = Object.keys(credentialStore.publicSnapshot().credentials || {})
+      .filter((namespace) => isBrowserAuthNamespace(namespace));
+    for (const namespace of namespaces) {
+      const sessionId = namespace.slice(BROWSER_AUTH_NAMESPACE_PREFIX.length);
+      const active = () => Boolean(sessionStore.getInternalSession(sessionId));
+      if (stagedBrowserNamespaces.has(namespace) || active()) continue;
+      if (stagedBrowserNamespaces.has(namespace) || active()) {
+        continue;
+      }
+      try {
+        await credentialStore.removeServiceCredentials(namespace);
+      } catch {
+        log("An orphaned encrypted browser credential could not be removed.");
+      }
+    }
+  }
+
+  function queueBrowserRevocation(token, deviceId, boundaryHash) {
+    if (!Buffer.isBuffer(token)) return;
+    if (browserRevocationClosing || !revokeJellyfinBrowserToken) {
+      token.fill(0);
+      return;
+    }
+    browserRevocationQueue.push({
+      token,
+      deviceId,
+      boundaryHash,
+      expiresAt: Date.now() + BACKGROUND_JELLYFIN_REVOCATION_TTL_MS
+    });
+    pumpBrowserRevocations();
+  }
+
+  function pumpBrowserRevocations() {
+    if (browserRevocationClosing || activeBrowserRevocation) return;
+    const now = Date.now();
+    while (browserRevocationQueue.length && browserRevocationQueue[0].expiresAt <= now) {
+      browserRevocationQueue.shift().token.fill(0);
+    }
+    const job = browserRevocationQueue.shift();
+    if (!job) return;
+    activeBrowserRevocation = Promise.resolve()
+      .then(() => revokeJellyfinBrowserToken({
+        token: job.token,
+        deviceId: job.deviceId,
+        boundaryHash: job.boundaryHash
+      }))
+      .catch(() => {
+        log("Jellyfin did not confirm a background browser-token revocation; the local token was still removed.");
+      })
+      .finally(() => {
+        job.token.fill(0);
+        activeBrowserRevocation = null;
+        pumpBrowserRevocations();
+      });
+  }
+
+  async function closeBrowserRevocations() {
+    browserRevocationClosing = true;
+    for (const job of browserRevocationQueue.splice(0)) job.token.fill(0);
+    await activeBrowserRevocation?.catch(() => {});
+  }
+
+  async function drainPrunedBrowserSessions() {
+    for (const record of sessionStore.takePrunedSessions()) {
+      await discardBrowserCredential(record, { background: true });
+    }
+  }
+
+  async function cleanupExpiredBrowserSessions() {
+    await sessionStore.pruneExpired();
+    await drainPrunedBrowserSessions();
+  }
+
+  async function discardBrowserCredential(record, options = {}) {
+    if (!record?.principal || record.principal.provider !== "jellyfin") return;
+    const namespace = browserAuthNamespace(record.id);
+    const field = browserAuthField(jellyfinSessionCredentialBinding(record));
+    const configured = credentialStore.hasCredential(namespace, field);
+    let token = null;
+    if (configured) {
+      try {
+        await credentialStore.useCredential(namespace, field, (cleartext) => {
+          token = Buffer.from(cleartext);
+        });
+      } catch {
+        log("An encrypted browser token could not be opened and will be removed.");
+      }
+    }
+    try {
+      await credentialStore.removeServiceCredentials(namespace);
+    } catch {
+      log("An obsolete encrypted browser credential could not be cleaned up.");
+    }
+    if (!token) return;
+    const currentState = stateStore.snapshot();
+    const currentConnection = currentState.connections.jellyfin;
+    let boundaryCurrent = false;
+    try {
+      boundaryCurrent = Boolean(currentConnection
+        && connectionAuthorizationBoundaryHash(currentConnection, currentState.policy)
+          === record.principal.boundaryHash);
+    } catch {
+      boundaryCurrent = false;
+    }
+    if (options.notify === false || !revokeJellyfinBrowserToken || !boundaryCurrent) {
+      token.fill(0);
+      return;
+    }
+    if (options.background === true) {
+      queueBrowserRevocation(token, record.principal.deviceId, record.principal.boundaryHash);
+      return;
+    }
+    try {
+      await revokeJellyfinBrowserToken({
+        token,
+        deviceId: record.principal.deviceId,
+        boundaryHash: record.principal.boundaryHash
+      });
+    } catch {
+      log("Jellyfin did not confirm browser-token revocation; the local session was still removed.");
+    } finally {
+      token.fill(0);
+    }
+  }
+
+  async function revokeBrowserSession(sessionId, options = {}) {
+    const record = sessionStore.getInternalSession(sessionId);
+    const removed = await sessionStore.revoke(sessionId);
+    if (removed && record) await discardBrowserCredential(record, options);
+    return removed;
+  }
+
+  async function revokeAllBrowserSessionsLocally(boundaryChange = null) {
+    const records = sessionStore.internalSessions()
+      .filter((record) => record.principal?.provider === "jellyfin");
+    const removed = boundaryChange
+      ? await sessionStore.rebindOwnerAndRevokeAll(
+        boundaryChange.expected,
+        boundaryChange.replacement
+      )
+      : await sessionStore.revokeAll();
+    for (const record of records) {
+      await discardBrowserCredential(record, { notify: false });
+    }
+    return removed;
+  }
+
+  async function recheckMutationSession(request, expected) {
+    let current;
+    try {
+      current = await sessionStore.authenticateRequest(request, { requireCsrf: true });
     } catch (error) {
       throw translateStoreError(error);
     }
+    if (!expected?.session?.id || current.session.id !== expected.session.id) {
+      fail(401, "SESSION_INVALID", "The browser session is invalid or revoked.");
+    }
+    return current;
+  }
+
+  async function revokeRejectedJellyfinSession(record) {
+    await revokeBrowserSession(record.id).catch(() => {});
+    fail(401, "JELLYFIN_AUTH_REJECTED", "Sign in again with the Helmsman owner account.");
+  }
+
+  async function revokeBoundaryChangedJellyfinSession(record) {
+    await revokeBrowserSession(record.id, { notify: false }).catch(() => {});
+    fail(401, "JELLYFIN_AUTH_REJECTED", "The Jellyfin connection changed. Sign in again.");
+  }
+
+  async function validateJellyfinSession(authenticated, requireFresh) {
+    const record = sessionStore.getInternalSession(authenticated.session.id);
+    if (!record) fail(401, "SESSION_INVALID", "The browser session is invalid or revoked.");
+    if (!record.principal) return authenticated;
+
+    const owner = sessionStore.owner();
+    const state = stateStore.snapshot();
+    const connection = state.connections.jellyfin;
+    if (!sameJellyfinIdentity(owner, record.principal)) {
+      await revokeRejectedJellyfinSession(record);
+    }
+    let currentBoundaryHash = null;
+    try {
+      currentBoundaryHash = connection
+        ? connectionAuthorizationBoundaryHash(connection, state.policy)
+        : null;
+    } catch {
+      currentBoundaryHash = null;
+    }
+    if (!connection
+      || connection.url !== record.principal.jellyfinUrl
+      || connection.targetRevision !== record.principal.targetRevision
+      || currentBoundaryHash !== record.principal.boundaryHash) {
+      await revokeBoundaryChangedJellyfinSession(record);
+    }
+
+    const verifiedAt = Date.parse(record.principal.verifiedAt);
+    const validationTime = Date.now();
+    if (!Number.isFinite(verifiedAt) || verifiedAt > validationTime) {
+      await revokeBrowserSession(record.id, { notify: false }).catch(() => {});
+      fail(401, "JELLYFIN_AUTH_REJECTED", "Sign in again with the Helmsman owner account.");
+    }
+    const verificationAge = validationTime - verifiedAt;
+    const validationInterval = requireFresh
+      ? JELLYFIN_WRITE_VALIDATION_MS
+      : JELLYFIN_READ_VALIDATION_MS;
+    if (verificationAge <= validationInterval) return authenticated;
+    if (!validateJellyfinBrowserToken) {
+      fail(503, "JELLYFIN_AUTH_UNAVAILABLE", "Jellyfin sign-in validation is temporarily unavailable.");
+    }
+
+    let validated;
+    try {
+      validated = await credentialStore.useCredential(
+        browserAuthNamespace(record.id),
+        browserAuthField(jellyfinSessionCredentialBinding(record)),
+        (token) => validateJellyfinBrowserToken({
+          token,
+          deviceId: record.principal.deviceId,
+          boundaryHash: record.principal.boundaryHash
+        })
+      );
+    } catch (error) {
+      if (error instanceof CredentialStoreError && error.code === "CREDENTIAL_NOT_CONFIGURED") {
+        await revokeRejectedJellyfinSession(record);
+      }
+      if (error?.status === 401 && error?.code === "JELLYFIN_AUTH_REJECTED") {
+        await revokeRejectedJellyfinSession(record);
+      }
+      const failedState = stateStore.snapshot();
+      const failedConnection = failedState.connections.jellyfin;
+      let failedBoundaryHash = null;
+      try {
+        failedBoundaryHash = failedConnection
+          ? connectionAuthorizationBoundaryHash(failedConnection, failedState.policy)
+          : null;
+      } catch {
+        failedBoundaryHash = null;
+      }
+      if (failedBoundaryHash !== record.principal.boundaryHash) {
+        await revokeBoundaryChangedJellyfinSession(record);
+      }
+      if (!requireFresh && verificationAge <= JELLYFIN_OFFLINE_GRACE_MS) return authenticated;
+      fail(503, "JELLYFIN_AUTH_UNAVAILABLE", "Jellyfin could not validate this session. Try again when Jellyfin is available.");
+    }
+
+    const latestState = stateStore.snapshot();
+    const latestConnection = latestState.connections.jellyfin;
+    let latestBoundaryHash = null;
+    try {
+      latestBoundaryHash = latestConnection
+        ? connectionAuthorizationBoundaryHash(latestConnection, latestState.policy)
+        : null;
+    } catch {
+      latestBoundaryHash = null;
+    }
+    if (!latestConnection
+      || latestBoundaryHash !== record.principal.boundaryHash
+      || validated?.jellyfinUrl !== record.principal.jellyfinUrl
+      || validated?.targetRevision !== record.principal.targetRevision
+      || validated?.boundaryHash !== record.principal.boundaryHash
+      || !validJellyfinIdentity(validated?.identity)
+      || !sameJellyfinIdentity(owner, { provider: "jellyfin", ...validated.identity })) {
+      if (latestBoundaryHash !== record.principal.boundaryHash) {
+        await revokeBoundaryChangedJellyfinSession(record);
+      }
+      await revokeRejectedJellyfinSession(record);
+    }
+    let refreshed;
+    try {
+      refreshed = await sessionStore.markVerified(record.id, {
+        provider: "jellyfin",
+        serverId: validated.identity.serverId,
+        userId: validated.identity.userId,
+        username: validated.identity.username
+      });
+    } catch (error) {
+      throw translateStoreError(error);
+    }
+    return { session: refreshed.session, csrfToken: authenticated.csrfToken };
+  }
+
+  async function authenticate(request, requireCsrf = false) {
+    await cleanupExpiredBrowserSessions();
+    let authenticated;
+    try {
+      authenticated = await sessionStore.authenticateRequest(request, { requireCsrf });
+    } catch (error) {
+      if (error instanceof SessionAuthError && error.code === "SESSION_EXPIRED") {
+        await drainPrunedBrowserSessions();
+        await serializeServiceMutation(() => cleanupOrphanBrowserCredentials()).catch(() => {});
+      }
+      throw translateStoreError(error);
+    }
+    return validateJellyfinSession(authenticated, requireCsrf);
   }
 
   async function useServiceCredential(serviceValue, expectedConnection, consumer) {
     const service = canonicalServiceId(serviceValue);
     if (!service) fail(404, "SERVICE_NOT_SUPPORTED", "That service is not supported.");
     const definition = SERVICE_DEFINITIONS[service];
-    const connection = stateStore.snapshot().connections[service];
+    // Read the connection and policy as one immutable state snapshot. Taking
+    // them from separate snapshots can splice an old target revision together
+    // with a newly committed policy during an authorization-boundary change.
+    const state = stateStore.snapshot();
+    const connection = state.connections[service];
     if (!connection) fail(409, "SERVICE_NOT_CONFIGURED", "That service is not configured.");
+    let expectedBoundary;
+    let currentBoundary;
+    try {
+      expectedBoundary = expectedConnection
+        ? connectionAuthorizationBoundaryHash(expectedConnection, state.policy)
+        : null;
+      currentBoundary = connectionAuthorizationBoundaryHash(connection, state.policy);
+    } catch {
+      fail(409, "TARGET_CHANGED", "The service target changed while this check was starting.");
+    }
     if (!expectedConnection
       || expectedConnection.url !== connection.url
-      || expectedConnection.targetRevision !== connection.targetRevision) {
+      || expectedConnection.targetRevision !== connection.targetRevision
+      || expectedBoundary !== currentBoundary) {
       fail(409, "TARGET_CHANGED", "The service target changed while this check was starting.");
     }
     if (typeof consumer !== "function") fail(500, "INVALID_CREDENTIAL_CONSUMER", "The credential consumer is unavailable.");
-    const namespace = credentialNamespace(service, expectedConnection, stateStore.snapshot().policy);
+    const namespace = credentialNamespace(service, connection, state.policy);
     try {
-      return await credentialStore.useCredential(namespace, credentialField(definition, connection), consumer);
+      return await credentialStore.useCredential(namespace, credentialField(definition, connection), (credential) => {
+        // Credential decryption is deliberately followed by one last
+        // synchronous boundary check before the consumer can initiate I/O.
+        // This also closes a transition that commits while the credential
+        // store is selecting or decrypting the bound record.
+        const latestState = stateStore.snapshot();
+        const latestConnection = latestState.connections[service];
+        let latestBoundary = null;
+        try {
+          latestBoundary = latestConnection
+            ? connectionAuthorizationBoundaryHash(latestConnection, latestState.policy)
+            : null;
+        } catch {
+          latestBoundary = null;
+        }
+        if (!latestConnection
+          || latestConnection.url !== connection.url
+          || latestConnection.targetRevision !== connection.targetRevision
+          || latestBoundary !== currentBoundary) {
+          fail(409, "TARGET_CHANGED", "The service target changed before this request could be sent.");
+        }
+        return consumer(credential);
+      });
     } catch (error) {
       throw translateStoreError(error);
     }
@@ -1217,15 +1820,15 @@ export async function createControlPlane(options) {
     const state = stateStore.snapshot();
     let authenticated = null;
     try {
-      authenticated = await sessionStore.authenticateRequest(request);
+      authenticated = await authenticate(request, false);
     } catch (error) {
-      if (!(error instanceof SessionAuthError)) throw error;
+      if (error?.status !== 401) throw error;
     }
     sendJson(response, 200, {
       version,
       instanceId: state.instanceId,
       setupRequired: !state.claimed,
-      accessKeyConfigured: sessionStore.accessKeyConfigured(),
+      authentication: publicAuthentication(sessionStore, { includeOwnerName: Boolean(authenticated) }),
       authenticated: Boolean(authenticated),
       session: authenticated?.session || null,
       csrfToken: authenticated?.csrfToken || null,
@@ -1275,13 +1878,15 @@ export async function createControlPlane(options) {
         // state.json was claimed can leave orphaned access state. The broker
         // claim state is authoritative, so a valid setup-token holder may
         // safely reconcile that interrupted attempt before retrying.
-        if (sessionStore.accessKeyConfigured() || sessionStore.list().length) {
-          await sessionStore.clearAccess();
+        if (sessionStore.accessKeyConfigured() || sessionStore.ownerConfigured() || sessionStore.list().length) {
+          await sessionStore.clearAuthentication();
+          await cleanupOrphanBrowserCredentials();
         }
-        const provisional = await sessionStore.claimAccess({
+        const provisional = await sessionStore.issue({
           name,
           origin: body.origin,
-          host: binding.host
+          host: binding.host,
+          ttlMs: SETUP_SESSION_TTL_MS
         });
         try {
           await stateStore.mutate((next) => {
@@ -1299,7 +1904,7 @@ export async function createControlPlane(options) {
           });
           return provisional;
         } catch (error) {
-          await sessionStore.clearAccess().catch(() => {});
+          await sessionStore.clearAuthentication().catch(() => {});
           throw error;
         }
       });
@@ -1307,12 +1912,211 @@ export async function createControlPlane(options) {
       throw translateStoreError(error);
     }
     response.setHeader("Set-Cookie", issued.cookie);
-    log("First-time setup completed, and reusable access was configured.");
+    log("First-time setup completed; enroll the Jellyfin owner account to finish browser authentication.");
     sendJson(response, 201, {
-      accessKey: issued.accessKey,
       session: issued.session,
       csrfToken: issued.csrfToken,
+      authentication: publicAuthentication(sessionStore),
       config: publicConfiguration(stateStore.snapshot(), credentialStore)
+    });
+  }
+
+  async function issueJellyfinBrowserSession(request, body, options = {}) {
+    await cleanupExpiredBrowserSessions();
+    const name = safeDeviceName(options.deviceName);
+    const login = normalizeLogin("jellyfin", body);
+    const initialState = stateStore.snapshot();
+    const connection = initialState.connections.jellyfin;
+    const boundaryHash = connection
+      ? connectionAuthorizationBoundaryHash(connection, initialState.policy)
+      : null;
+    if (!connection) {
+      clearLogin(login);
+      fail(409, "JELLYFIN_CONNECTION_REQUIRED", "Configure the Jellyfin media connection before enrolling browser sign-in.");
+    }
+    if (options.enroll !== true && !sessionStore.ownerBoundaryMatches({
+      jellyfinUrl: connection.url,
+      targetRevision: connection.targetRevision,
+      boundaryHash
+    })) {
+      clearLogin(login);
+      fail(401, "JELLYFIN_AUTH_REJECTED", "Jellyfin did not accept the Helmsman owner credentials.");
+    }
+    if (!authenticateJellyfinBrowser) {
+      clearLogin(login);
+      fail(503, "JELLYFIN_AUTH_UNAVAILABLE", "Jellyfin sign-in is temporarily unavailable.");
+    }
+
+    let bucketKeys = null;
+    // Reusing the opaque session UUID as Jellyfin's device ID lets startup
+    // recover the device identity from an orphaned credential namespace after
+    // a crash between durable session deletion and token cleanup.
+    const sessionId = randomUUID();
+    const deviceId = sessionId;
+    let authenticated = null;
+    let stagedNamespace = null;
+    let committed = false;
+    try {
+      bucketKeys = consumeJellyfinLoginAttempt(request, login.username);
+      authenticated = await authenticateJellyfinBrowser({
+        username: login.username,
+        password: login.password,
+        deviceId
+      });
+      const identity = authenticated?.identity;
+      if (!Buffer.isBuffer(authenticated?.token)
+        || authenticated.token.length < 1
+        || authenticated.token.length > 16 * 1024
+        || authenticated.deviceId !== deviceId
+        || authenticated.jellyfinUrl !== connection.url
+        || authenticated.targetRevision !== connection.targetRevision
+        || authenticated.boundaryHash !== boundaryHash
+        || typeof authenticated.revokeAtBoundary !== "function"
+        || !validJellyfinIdentity(identity)) {
+        fail(502, "JELLYFIN_AUTH_FAILED", "Jellyfin did not return a usable owner session.");
+      }
+      const boundIdentity = {
+        provider: "jellyfin",
+        serverId: identity.serverId,
+        userId: identity.userId,
+        username: identity.username,
+        jellyfinUrl: authenticated.jellyfinUrl,
+        targetRevision: authenticated.targetRevision,
+        boundaryHash
+      };
+      if (options.enroll !== true && !sessionStore.ownerMatches(boundIdentity)) {
+        fail(401, "JELLYFIN_AUTH_REJECTED", "Jellyfin did not accept the Helmsman owner credentials.");
+      }
+
+      let issued;
+      await serializeServiceMutation(async () => {
+        if (options.enroll === true) {
+          await recheckMutationSession(request, options.expectedAuthentication);
+        }
+        const current = stateStore.snapshot();
+        const currentConnection = current.connections.jellyfin;
+        if (!currentConnection
+          || currentConnection.url !== connection.url
+          || currentConnection.targetRevision !== connection.targetRevision
+          || connectionAuthorizationBoundaryHash(currentConnection, current.policy) !== boundaryHash) {
+          fail(503, "JELLYFIN_AUTH_UNAVAILABLE", "The Jellyfin connection changed; try again.");
+        }
+        const sessionOptions = {
+          sessionId,
+          name,
+          origin: options.origin,
+          host: options.host,
+          ttlMs: JELLYFIN_SESSION_TTL_MS,
+          principal: {
+            ...boundIdentity,
+            deviceId,
+            jellyfinUrl: authenticated.jellyfinUrl,
+            targetRevision: authenticated.targetRevision,
+            boundaryHash
+          }
+        };
+        const preparedSession = sessionStore.prepareOwnerSession(sessionOptions);
+        stagedNamespace = browserAuthNamespace(sessionId);
+        stagedBrowserNamespaces.add(stagedNamespace);
+        await credentialStore.replaceServiceCredentials(stagedNamespace, {
+          [browserAuthField(preparedSession.credentialBinding)]: authenticated.token
+        });
+        try {
+          issued = options.enroll === true
+            ? await sessionStore.enrollOwnerAndIssue({ preparedSession, owner: boundIdentity })
+            : await sessionStore.loginOwner({ preparedSession });
+        } catch (error) {
+          throw translateStoreError(error);
+        }
+        committed = true;
+      });
+      await drainPrunedBrowserSessions().catch(() => {
+        log("An obsolete browser credential could not be cleaned up after session issuance.");
+      });
+      clearJellyfinLoginBuckets(bucketKeys);
+      return issued;
+    } finally {
+      clearLogin(login);
+      if (!committed && authenticated?.token) {
+        if (typeof authenticated.revokeAtBoundary === "function") {
+          await authenticated.revokeAtBoundary(authenticated.token).catch(() => {});
+        }
+        if (stagedNamespace) await credentialStore.removeServiceCredentials(stagedNamespace).catch(() => {});
+      }
+      if (stagedNamespace) stagedBrowserNamespaces.delete(stagedNamespace);
+      authenticated?.token?.fill?.(0);
+    }
+  }
+
+  async function enrollJellyfinOwner(request, response) {
+    if (request.method !== "POST") fail(405, "METHOD_NOT_ALLOWED", "That method is not allowed.");
+    if (!stateStore.snapshot().claimed) {
+      request.resume();
+      fail(409, "SETUP_REQUIRED", "Complete first-time setup before enrolling the Jellyfin owner.");
+    }
+    if (sessionStore.ownerConfigured()) {
+      request.resume();
+      fail(409, "OWNER_ALREADY_CONFIGURED", "The Jellyfin owner account is already configured.");
+    }
+    const authenticated = await authenticate(request, true);
+    const body = await readBoundedJson(request);
+    requireExactKeys(body, ["username", "password", "deviceName", "origin"]);
+    let binding;
+    try {
+      binding = claimRequestBinding(request, body.origin);
+    } catch (error) {
+      throw translateStoreError(error);
+    }
+    const loginBody = { username: body.username, password: body.password };
+    body.username = undefined;
+    body.password = undefined;
+    const issued = await issueJellyfinBrowserSession(request, loginBody, {
+      enroll: true,
+      deviceName: body.deviceName,
+      origin: body.origin,
+      host: binding.host,
+      expectedAuthentication: authenticated
+    });
+    response.setHeader("Set-Cookie", issued.cookie);
+    log("Jellyfin owner authentication was enrolled; legacy browser access was removed.");
+    sendJson(response, 201, {
+      session: issued.session,
+      csrfToken: issued.csrfToken,
+      authentication: publicAuthentication(sessionStore, { includeOwnerName: true })
+    });
+  }
+
+  async function jellyfinLogin(request, response) {
+    if (request.method !== "POST") fail(405, "METHOD_NOT_ALLOWED", "That method is not allowed.");
+    if (!stateStore.snapshot().claimed) {
+      request.resume();
+      fail(409, "SETUP_REQUIRED", "Complete first-time setup before signing in.");
+    }
+    if (!sessionStore.ownerConfigured()) {
+      request.resume();
+      fail(409, "OWNER_NOT_CONFIGURED", "Enroll the Jellyfin owner account before signing in.");
+    }
+    const body = await readBoundedJson(request);
+    requireExactKeys(body, ["username", "password", "deviceName", "origin"]);
+    let binding;
+    try {
+      binding = claimRequestBinding(request, body.origin);
+    } catch (error) {
+      throw translateStoreError(error);
+    }
+    const loginBody = { username: body.username, password: body.password };
+    body.username = undefined;
+    body.password = undefined;
+    const issued = await issueJellyfinBrowserSession(request, loginBody, {
+      deviceName: body.deviceName,
+      origin: body.origin,
+      host: binding.host
+    });
+    response.setHeader("Set-Cookie", issued.cookie);
+    sendJson(response, 201, {
+      session: issued.session,
+      csrfToken: issued.csrfToken,
+      authentication: publicAuthentication(sessionStore, { includeOwnerName: true })
     });
   }
 
@@ -1323,8 +2127,13 @@ export async function createControlPlane(options) {
       return;
     }
     if (request.method === "DELETE") {
-      const authenticated = await authenticate(request, true);
-      await sessionStore.revoke(authenticated.session.id);
+      let authenticated;
+      try {
+        authenticated = await sessionStore.authenticateRequest(request, { requireCsrf: true });
+      } catch (error) {
+        throw translateStoreError(error);
+      }
+      await revokeBrowserSession(authenticated.session.id);
       response.setHeader("Set-Cookie", sessionStore.expiredCookie(authenticated.session.origin));
       noContent(response);
       return;
@@ -1337,6 +2146,10 @@ export async function createControlPlane(options) {
     if (!stateStore.snapshot().claimed) {
       request.resume();
       fail(409, "SETUP_REQUIRED", "Complete first-time setup before signing in with an access key.");
+    }
+    if (sessionStore.ownerConfigured() || !sessionStore.accessKeyConfigured()) {
+      request.resume();
+      fail(404, "ACCESS_KEY_UNAVAILABLE", "Legacy access-key sign-in is not available.");
     }
     const body = await readBoundedJson(request);
     requireExactKeys(body, ["accessKey", "deviceName", "origin"]);
@@ -1355,6 +2168,7 @@ export async function createControlPlane(options) {
         origin: body.origin,
         host: binding.host
       });
+      await drainPrunedBrowserSessions();
     } catch (error) {
       if (error instanceof SessionAuthError && error.code === "ACCESS_KEY_INVALID") {
         consumeAccessLoginAttempt(request);
@@ -1363,30 +2177,10 @@ export async function createControlPlane(options) {
     }
     accessLoginAttempts.delete(bucket);
     response.setHeader("Set-Cookie", issued.cookie);
-    sendJson(response, 201, { session: issued.session, csrfToken: issued.csrfToken });
-  }
-
-  async function rotateAccessKey(request, response) {
-    if (request.method !== "POST") fail(405, "METHOD_NOT_ALLOWED", "That method is not allowed.");
-    const authenticated = await authenticate(request, true);
-    const body = await readBoundedJson(request);
-    requireExactKeys(body, []);
-    let issued;
-    try {
-      issued = await sessionStore.rotateAccessKeyAndIssue({
-        name: authenticated.session.name,
-        origin: authenticated.session.origin,
-        currentSessionId: authenticated.session.id
-      });
-    } catch (error) {
-      throw translateStoreError(error);
-    }
-    response.setHeader("Set-Cookie", issued.cookie);
-    log("The reusable access key was rotated, and prior browser sessions were revoked.");
-    sendJson(response, 200, {
-      accessKey: issued.accessKey,
+    sendJson(response, 201, {
       session: issued.session,
-      csrfToken: issued.csrfToken
+      csrfToken: issued.csrfToken,
+      authentication: publicAuthentication(sessionStore, { includeOwnerName: true })
     });
   }
 
@@ -1397,7 +2191,7 @@ export async function createControlPlane(options) {
       return;
     }
     if (request.method === "DELETE" && sessionId) {
-      const removed = await sessionStore.revoke(sessionId);
+      const removed = await revokeBrowserSession(sessionId);
       if (!removed) fail(404, "SESSION_NOT_FOUND", "That browser session does not exist.");
       if (sessionId === authenticated.session.id) {
         response.setHeader("Set-Cookie", sessionStore.expiredCookie(authenticated.session.origin));
@@ -1409,7 +2203,7 @@ export async function createControlPlane(options) {
   }
 
   async function configuration(request, response) {
-    await authenticate(request, request.method !== "GET");
+    const authenticated = await authenticate(request, request.method !== "GET");
     if (request.method === "GET") {
       const state = stateStore.snapshot();
       sendJson(response, 200, publicConfiguration(state, credentialStore));
@@ -1420,13 +2214,25 @@ export async function createControlPlane(options) {
     requireExactKeys(body, ["allowedCidrs", "allowPublicHttps"]);
     const policy = normalizePolicy(body);
     let configured;
+    let browserAuthenticationReset = false;
     await serializeServiceMutation(async () => {
+      await recheckMutationSession(request, authenticated);
       const state = stateStore.snapshot();
       const connections = await connectionsForPolicy(state, policy);
       const infrastructureTargets = await infrastructureTargetsForPolicy(state, policy);
       const infrastructureServices = await infrastructureServicesForPolicy(state, policy);
       const credentialMetadata = credentialStore.publicSnapshot();
+      const previousJellyfin = state.connections.jellyfin;
+      const nextJellyfin = connections.jellyfin;
+      const jellyfinBoundaryChanged = Boolean(
+        sessionStore.ownerConfigured()
+        && previousJellyfin
+        && nextJellyfin
+        && connectionAuthorizationBoundaryHash(previousJellyfin, state.policy)
+          !== connectionAuthorizationBoundaryHash(nextJellyfin, policy)
+      );
       const staged = [];
+      let stateCommitted = false;
       try {
         for (const service of SERVICE_IDS) {
           const previous = state.connections[service];
@@ -1496,9 +2302,27 @@ export async function createControlPlane(options) {
           next.infrastructureTargets = infrastructureTargets;
           next.infrastructureServices = infrastructureServices;
         });
+        stateCommitted = true;
+        if (jellyfinBoundaryChanged) {
+          await revokeAllBrowserSessionsLocally({
+            expected: {
+              jellyfinUrl: previousJellyfin.url,
+              targetRevision: previousJellyfin.targetRevision,
+              boundaryHash: connectionAuthorizationBoundaryHash(previousJellyfin, state.policy)
+            },
+            replacement: {
+              jellyfinUrl: nextJellyfin.url,
+              targetRevision: nextJellyfin.targetRevision,
+              boundaryHash: connectionAuthorizationBoundaryHash(nextJellyfin, policy)
+            }
+          });
+          browserAuthenticationReset = true;
+        }
       } catch (error) {
-        for (const { nextNamespace } of staged) {
-          await credentialStore.removeServiceCredentials(nextNamespace).catch(() => {});
+        if (!stateCommitted) {
+          for (const { nextNamespace } of staged) {
+            await credentialStore.removeServiceCredentials(nextNamespace).catch(() => {});
+          }
         }
         throw error;
       }
@@ -1510,11 +2334,15 @@ export async function createControlPlane(options) {
       configured = publicConfiguration(stateStore.snapshot(), credentialStore);
     });
     monitor?.requestRefresh?.();
+    if (browserAuthenticationReset) {
+      response.setHeader("Set-Cookie", sessionStore.expiredCookie(authenticated.session.origin));
+      configured.browserAuthenticationReset = true;
+    }
     sendJson(response, 200, configured);
   }
 
   async function services(request, response, serviceValue) {
-    await authenticate(request, request.method !== "GET");
+    const authenticated = await authenticate(request, request.method !== "GET");
     const service = serviceValue ? canonicalServiceId(serviceValue) : null;
     if (serviceValue && !service) fail(404, "SERVICE_NOT_SUPPORTED", "That service is not supported.");
     if (!serviceValue && request.method === "GET") {
@@ -1527,7 +2355,22 @@ export async function createControlPlane(options) {
       return;
     }
     if (request.method === "DELETE") {
+      if (service === "jellyfin" && sessionStore.ownerConfigured()) {
+        fail(
+          409,
+          "JELLYFIN_AUTH_IN_USE",
+          "Reset Helmsman access before removing the Jellyfin connection used for browser sign-in."
+        );
+      }
       await serializeServiceMutation(async () => {
+        await recheckMutationSession(request, authenticated);
+        if (service === "jellyfin" && sessionStore.ownerConfigured()) {
+          fail(
+            409,
+            "JELLYFIN_AUTH_IN_USE",
+            "Reset Helmsman access before removing the Jellyfin connection used for browser sign-in."
+          );
+        }
         const before = stateStore.snapshot();
         const credentialMetadata = credentialStore.publicSnapshot();
         const namespaces = credentialNamespacesForService(credentialMetadata, service);
@@ -1543,6 +2386,17 @@ export async function createControlPlane(options) {
     requireExactKeys(body, ["url", "authMode", "credential", "login", "clearCredential", "monitoringEnabled"]);
     if (typeof body.url !== "string") fail(400, "INVALID_TARGET", "Enter one service URL.");
     const target = parseServiceUrl(body.url);
+    const currentConnection = stateStore.snapshot().connections[service];
+    if (service === "jellyfin"
+      && sessionStore.ownerConfigured()
+      && currentConnection
+      && currentConnection.url !== target.url) {
+      fail(
+        409,
+        "JELLYFIN_AUTH_IN_USE",
+        "Reset Helmsman access before changing the Jellyfin server used for browser sign-in."
+      );
+    }
     const definition = SERVICE_DEFINITIONS[service];
     const authMode = normalizeAuthMode(definition, body.authMode);
     const selectedAuth = authOption(definition, authMode);
@@ -1571,14 +2425,26 @@ export async function createControlPlane(options) {
     const login = body.login === undefined ? null : normalizeLogin(service, body.login);
     if (Object.hasOwn(body, "credential")) body.credential = undefined;
     if (Object.hasOwn(body, "login")) body.login = undefined;
+    let browserAuthenticationReset = false;
     try {
       if (login) {
         if (!exchangeServiceLogin) fail(503, "LOGIN_EXCHANGE_UNAVAILABLE", "Service sign-in is temporarily unavailable.");
         consumeLoginAttempt(service);
       }
       await serializeServiceMutation(async () => {
+        await recheckMutationSession(request, authenticated);
         const state = stateStore.snapshot();
         const previous = state.connections[service];
+        if (service === "jellyfin"
+          && sessionStore.ownerConfigured()
+          && previous
+          && previous.url !== target.url) {
+          fail(
+            409,
+            "JELLYFIN_AUTH_IN_USE",
+            "Reset Helmsman access before changing the Jellyfin server used for browser sign-in."
+          );
+        }
         const targetChanged = previous?.url !== target.url;
         const authChanged = Boolean(previous) && (previous.authMode || definition.authMode) !== authMode;
         const previousNamespace = credentialNamespace(service, previous, state.policy);
@@ -1615,7 +2481,15 @@ export async function createControlPlane(options) {
           : [];
         const approvalChanged = Boolean(previous)
           && !sameStrings(previous.approvedHostCidrs || [], approvedHostCidrs);
-        const targetRevision = !previous || targetChanged || authChanged || approvalChanged
+        // Clearing an optional credential is an authorization-boundary change.
+        // Rotate before committing state so an interrupted/failed ciphertext
+        // deletion leaves only an orphaned record that the active connection
+        // can never select after this process or a restart.
+        const targetRevision = !previous
+          || targetChanged
+          || authChanged
+          || approvalChanged
+          || body.clearCredential === true
           ? randomUUID()
           : previous.targetRevision;
         const nextConnection = {
@@ -1628,6 +2502,13 @@ export async function createControlPlane(options) {
             : body.monitoringEnabled,
           approvedHostCidrs
         };
+        const jellyfinBoundaryChanged = Boolean(
+          service === "jellyfin"
+          && sessionStore.ownerConfigured()
+          && previous
+          && connectionAuthorizationBoundaryHash(previous, state.policy)
+            !== connectionAuthorizationBoundaryHash(nextConnection, state.policy)
+        );
         const nextNamespace = credentialNamespace(service, nextConnection, state.policy);
 
         if ((targetChanged || authChanged) && hadCredential && !submittedCredential && body.clearCredential !== true) {
@@ -1662,6 +2543,7 @@ export async function createControlPlane(options) {
         }
 
         let stagedCredential = false;
+        let stateCommitted = false;
         try {
           if (credential) {
             await credentialStore.replaceServiceCredentials(nextNamespace, {
@@ -1676,8 +2558,24 @@ export async function createControlPlane(options) {
               if (next.revision !== revision) fail(409, "CONFIG_CHANGED", "Configuration changed; reload and try again.");
               next.connections[service] = nextConnection;
             });
+            stateCommitted = true;
+            if (jellyfinBoundaryChanged) {
+              await revokeAllBrowserSessionsLocally({
+                expected: {
+                  jellyfinUrl: previous.url,
+                  targetRevision: previous.targetRevision,
+                  boundaryHash: connectionAuthorizationBoundaryHash(previous, state.policy)
+                },
+                replacement: {
+                  jellyfinUrl: nextConnection.url,
+                  targetRevision: nextConnection.targetRevision,
+                  boundaryHash: connectionAuthorizationBoundaryHash(nextConnection, state.policy)
+                }
+              });
+              browserAuthenticationReset = true;
+            }
           } catch (error) {
-            if (stagedCredential && nextNamespace !== previousNamespace) {
+            if (!stateCommitted && stagedCredential && nextNamespace !== previousNamespace) {
               await credentialStore.removeServiceCredentials(nextNamespace).catch(() => {});
             }
             throw error;
@@ -1687,7 +2585,9 @@ export async function createControlPlane(options) {
             const namespaces = credentialNamespacesForService(credentialStore.publicSnapshot(), service);
             for (const namespace of namespaces) await credentialStore.removeServiceCredentials(namespace);
           } else if (previousNamespace && previousNamespace !== nextNamespace) {
-            await credentialStore.removeServiceCredentials(previousNamespace);
+            await credentialStore.removeServiceCredentials(previousNamespace).catch(() => {
+              log("An obsolete encrypted credential record could not be cleaned up.");
+            });
           }
         } finally {
           derivedCredential?.fill(0);
@@ -1698,7 +2598,12 @@ export async function createControlPlane(options) {
       clearLogin(login);
     }
     monitor?.requestRefresh?.();
-    sendJson(response, 200, connectionMetadata(stateStore.snapshot(), credentialStore.publicSnapshot(), service));
+    const metadata = connectionMetadata(stateStore.snapshot(), credentialStore.publicSnapshot(), service);
+    if (browserAuthenticationReset) {
+      response.setHeader("Set-Cookie", sessionStore.expiredCookie(authenticated.session.origin));
+      metadata.browserAuthenticationReset = true;
+    }
+    sendJson(response, 200, metadata);
   }
 
   async function testConnection(request, response, serviceValue) {
@@ -3328,12 +4233,16 @@ export async function createControlPlane(options) {
         await session(request, response);
         return true;
       }
-      if (url.pathname === "/api/v2/access/login") {
-        await accessLogin(request, response);
+      if (url.pathname === "/api/v2/auth/jellyfin/enroll") {
+        await enrollJellyfinOwner(request, response);
         return true;
       }
-      if (url.pathname === "/api/v2/access/rotate") {
-        await rotateAccessKey(request, response);
+      if (url.pathname === "/api/v2/auth/jellyfin/login") {
+        await jellyfinLogin(request, response);
+        return true;
+      }
+      if (url.pathname === "/api/v2/access/login") {
+        await accessLogin(request, response);
         return true;
       }
       const sessionMatch = url.pathname.match(/^\/api\/v2\/sessions\/([a-f0-9-]+)$/u);
@@ -3480,7 +4389,10 @@ export async function createControlPlane(options) {
     useInfrastructureCredentials,
     useInfrastructureServiceCredentials,
     setMonitor(value) { monitor = value; },
-    close: async () => credentialStore.close(),
+    close: async () => {
+      await closeBrowserRevocations();
+      await credentialStore.close();
+    },
     csrfHeaderName: CSRF_HEADER_NAME
   };
 }

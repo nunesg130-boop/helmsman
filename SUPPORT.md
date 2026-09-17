@@ -1,6 +1,6 @@
 # Support
 
-Helmsman v1.0 is volunteer-maintained beta software. Breaking changes remain
+Helmsman v1.0.1 is volunteer-maintained software. Breaking changes remain
 possible, community help is best effort, and only the newest published release
 is supported. Back up `/data` before an update.
 
@@ -23,7 +23,9 @@ There is no guaranteed response time, individual deployment administration,
 or support for modified builds that cannot reproduce against current `main` or
 the newest release.
 
-Helmsman currently uses one shared access key and has no per-user roles or
-audit attribution. Support cannot determine which person performed an action
-or recover a lost plaintext access key; use the documented offline rotation
-procedure and protect the host and volume backups.
+Helmsman browser access is bound to one exact enrolled Jellyfin administrator
+owner account and accepts that owner's Jellyfin username and password at
+sign-in. Helmsman has no per-user roles or audit attribution, so support cannot
+determine which person used the owner account. For browser-authentication
+recovery, use the documented offline `reset-access --confirm` procedure, then
+protect the Jellyfin credentials, host, and volume backups.

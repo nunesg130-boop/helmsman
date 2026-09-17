@@ -1,5 +1,5 @@
 import { constants as fsConstants } from "node:fs";
-import { chmod, mkdir, open, rename, stat } from "node:fs/promises";
+import { chmod, mkdir, open, rename, stat, unlink } from "node:fs/promises";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { isIP } from "node:net";
 import path from "node:path";
@@ -378,13 +378,14 @@ async function atomicWriteJson(dataDir, filePath, value) {
   try {
     await handle.writeFile(serialized, { encoding: "utf8" });
     await handle.sync();
+    await handle.close();
+    await chmod(temporary, 0o600);
+    await rename(temporary, filePath);
   } catch (error) {
     await handle.close().catch(() => {});
+    await unlink(temporary).catch(() => {});
     throw error;
   }
-  await handle.close();
-  await rename(temporary, filePath);
-  await chmod(filePath, 0o600);
 
   // Best-effort directory sync keeps the rename durable on filesystems that
   // support fsync on directories. Unsupported platforms can safely continue.

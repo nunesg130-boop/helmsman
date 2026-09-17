@@ -3,11 +3,13 @@ import { chmod, mkdir, open, rename, stat, unlink } from "node:fs/promises";
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import path from "node:path";
 
-const SESSION_STATE_VERSION = 2;
+const SESSION_STATE_VERSION = 4;
 const LEGACY_SESSION_STATE_VERSION = 1;
+const ACCESS_KEY_SESSION_STATE_VERSION = 2;
+const JELLYFIN_OWNER_SESSION_STATE_VERSION = 3;
 const SESSION_TOKEN_BYTES = 32;
-const ACCESS_KEY_BYTES = 32;
-const DEFAULT_TTL_MS = 365 * 24 * 60 * 60 * 1_000;
+const DEFAULT_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
+const MAX_TTL_MS = 365 * 24 * 60 * 60 * 1_000;
 const DEFAULT_MAX_SESSIONS = 64;
 const MAX_SESSION_STATE_BYTES = 256 * 1_024;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
@@ -17,6 +19,8 @@ const COOKIE_NAME_PATTERN = /^[A-Za-z0-9_.-]{1,80}$/u;
 const CONTROL_CHARACTERS = /[\u0000-\u0020\u007f-\u009f/@?#\\]/u;
 const DEFAULT_COOKIE_NAME = "JFC_SESSION";
 const DEFAULT_CSRF_HEADER = "x-jellofin-csrf";
+const JELLYFIN_PROVIDER = "jellyfin";
+const PREPARED_OWNER_SESSION_PLANS = new WeakMap();
 
 export class SessionAuthError extends Error {
   constructor(status, code, message) {
@@ -89,6 +93,115 @@ function safeSessionName(value) {
     fail(400, "INVALID_SESSION_NAME", "Enter a browser session name between 1 and 80 characters.");
   }
   return normalized;
+}
+
+function safeIdentityText(value, fieldName, maximumLength = 256) {
+  if (typeof value !== "string"
+    || value.length < 1
+    || value.length > maximumLength
+    || /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(value)) {
+    throw new Error(`The Jellyfin ${fieldName} is invalid.`);
+  }
+  return value;
+}
+
+function canonicalJellyfinUrl(value) {
+  if (typeof value !== "string" || value.length < 1 || value.length > 2_048) {
+    throw new Error("The Jellyfin URL is invalid.");
+  }
+  try {
+    const parsed = new URL(value);
+    if ((parsed.protocol !== "http:" && parsed.protocol !== "https:")
+      || parsed.username
+      || parsed.password
+      || parsed.search
+      || parsed.hash
+      || !parsed.hostname
+      || parsed.pathname.includes("//")) {
+      throw new Error("invalid URL shape");
+    }
+    const pathname = parsed.pathname === "/" ? "" : parsed.pathname.replace(/\/+$/u, "");
+    const canonical = `${parsed.origin}${pathname}`;
+    if (canonical !== value) throw new Error("non-canonical URL");
+    return canonical;
+  } catch {
+    throw new Error("The Jellyfin URL is invalid.");
+  }
+}
+
+function normalizeOwner(value, enrolledAt) {
+  if (!isPlainObject(value)
+    || value.provider !== JELLYFIN_PROVIDER
+    || !hasExactKeys(value, value.enrolledAt === undefined
+      ? ["provider", "serverId", "userId", "username", "jellyfinUrl", "targetRevision", "boundaryHash"]
+      : ["provider", "serverId", "userId", "username", "jellyfinUrl", "targetRevision", "boundaryHash", "enrolledAt"])) {
+    throw new Error("The Jellyfin owner identity is invalid.");
+  }
+  const normalizedEnrolledAt = value.enrolledAt === undefined ? enrolledAt : value.enrolledAt;
+  if (parseIsoTime(normalizedEnrolledAt) === null) {
+    throw new Error("The Jellyfin owner enrollment time is invalid.");
+  }
+  const targetRevision = safeIdentityText(value.targetRevision, "target revision", 128);
+  if (!UUID_PATTERN.test(targetRevision)) throw new Error("The Jellyfin target revision is invalid.");
+  const boundaryHash = safeIdentityText(value.boundaryHash, "authorization boundary", 64);
+  if (!TOKEN_HASH_PATTERN.test(boundaryHash)) throw new Error("The Jellyfin authorization boundary is invalid.");
+  return {
+    provider: JELLYFIN_PROVIDER,
+    serverId: safeIdentityText(value.serverId, "server ID"),
+    userId: safeIdentityText(value.userId, "user ID"),
+    username: safeIdentityText(value.username, "username"),
+    jellyfinUrl: canonicalJellyfinUrl(value.jellyfinUrl),
+    targetRevision,
+    boundaryHash,
+    enrolledAt: normalizedEnrolledAt
+  };
+}
+
+function normalizePrincipal(value, verifiedAt) {
+  if (!isPlainObject(value)
+    || value.provider !== JELLYFIN_PROVIDER
+    || !hasExactKeys(value, value.verifiedAt === undefined
+      ? ["provider", "serverId", "userId", "username", "deviceId", "jellyfinUrl", "targetRevision", "boundaryHash"]
+      : ["provider", "serverId", "userId", "username", "deviceId", "jellyfinUrl", "targetRevision", "boundaryHash", "verifiedAt"])) {
+    throw new Error("The Jellyfin session identity is invalid.");
+  }
+  const normalizedVerifiedAt = value.verifiedAt === undefined ? verifiedAt : value.verifiedAt;
+  if (parseIsoTime(normalizedVerifiedAt) === null) {
+    throw new Error("The Jellyfin session verification time is invalid.");
+  }
+  const deviceId = safeIdentityText(value.deviceId, "device ID", 128);
+  if (!UUID_PATTERN.test(deviceId)) throw new Error("The Jellyfin device ID is invalid.");
+  const targetRevision = safeIdentityText(value.targetRevision, "target revision", 128);
+  if (!UUID_PATTERN.test(targetRevision)) throw new Error("The Jellyfin target revision is invalid.");
+  const boundaryHash = safeIdentityText(value.boundaryHash, "authorization boundary", 64);
+  if (!TOKEN_HASH_PATTERN.test(boundaryHash)) throw new Error("The Jellyfin authorization boundary is invalid.");
+  return {
+    provider: JELLYFIN_PROVIDER,
+    serverId: safeIdentityText(value.serverId, "server ID"),
+    userId: safeIdentityText(value.userId, "user ID"),
+    username: safeIdentityText(value.username, "username"),
+    deviceId,
+    jellyfinUrl: canonicalJellyfinUrl(value.jellyfinUrl),
+    targetRevision,
+    boundaryHash,
+    verifiedAt: normalizedVerifiedAt
+  };
+}
+
+function sameOwnerAccount(owner, identity) {
+  return isPlainObject(owner)
+    && isPlainObject(identity)
+    && owner.provider === JELLYFIN_PROVIDER
+    && identity.provider === JELLYFIN_PROVIDER
+    && safeEqualText(owner.serverId, identity.serverId)
+    && safeEqualText(owner.userId, identity.userId);
+}
+
+function sameOwnerIdentity(owner, identity) {
+  return sameOwnerAccount(owner, identity)
+    && safeEqualText(owner.jellyfinUrl, identity.jellyfinUrl)
+    && safeEqualText(owner.targetRevision, identity.targetRevision)
+    && safeEqualText(owner.boundaryHash, identity.boundaryHash);
 }
 
 function safeCookieName(value) {
@@ -302,7 +415,14 @@ function requireCsrf(request, record, headerName) {
 }
 
 function initialSessionState() {
-  return { version: SESSION_STATE_VERSION, revision: 0, accessKeyHash: null, sessions: {} };
+  return {
+    version: SESSION_STATE_VERSION,
+    revision: 0,
+    accessKeyHash: null,
+    owner: null,
+    sessions: {},
+    integrity: null
+  };
 }
 
 function hasExactKeys(value, expected) {
@@ -311,10 +431,54 @@ function hasExactKeys(value, expected) {
   return keys.length === allowed.length && keys.every((key, index) => key === allowed[index]);
 }
 
-function validStoredRecord(id, record) {
+function validStoredOwner(owner) {
+  if (owner === null) return true;
+  try {
+    if (!hasExactKeys(owner, [
+      "provider",
+      "serverId",
+      "userId",
+      "username",
+      "jellyfinUrl",
+      "targetRevision",
+      "boundaryHash",
+      "enrolledAt"
+    ])) return false;
+    normalizeOwner(owner, owner.enrolledAt);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function validStoredPrincipal(principal) {
+  if (principal === null) return true;
+  try {
+    if (!hasExactKeys(principal, [
+      "provider",
+      "serverId",
+      "userId",
+      "username",
+      "deviceId",
+      "jellyfinUrl",
+      "targetRevision",
+      "boundaryHash",
+      "verifiedAt"
+    ])) return false;
+    normalizePrincipal(principal, principal.verifiedAt);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function validStoredRecord(id, record, options = {}) {
+  const expectedKeys = options.legacy === true
+    ? ["id", "name", "origin", "host", "tokenHash", "createdAt", "expiresAt"]
+    : ["id", "name", "origin", "host", "tokenHash", "createdAt", "expiresAt", "principal"];
   if (!UUID_PATTERN.test(id)
     || !isPlainObject(record)
-    || !hasExactKeys(record, ["id", "name", "origin", "host", "tokenHash", "createdAt", "expiresAt"])
+    || !hasExactKeys(record, expectedKeys)
     || record.id !== id
     || typeof record.name !== "string"
     || !record.name
@@ -323,7 +487,8 @@ function validStoredRecord(id, record) {
     || typeof record.origin !== "string"
     || typeof record.host !== "string"
     || typeof record.tokenHash !== "string"
-    || !TOKEN_HASH_PATTERN.test(record.tokenHash)) return false;
+    || !TOKEN_HASH_PATTERN.test(record.tokenHash)
+    || (options.legacy !== true && !validStoredPrincipal(record.principal))) return false;
   const createdAt = parseIsoTime(record.createdAt);
   const expiresAt = parseIsoTime(record.expiresAt);
   if (createdAt === null || expiresAt === null || expiresAt <= createdAt) return false;
@@ -336,7 +501,33 @@ function validStoredRecord(id, record) {
   }
 }
 
-function validateSessionRecords(value, maximumSessions) {
+export function jellyfinSessionCredentialBinding(record) {
+  if (!isPlainObject(record)
+    || typeof record.id !== "string"
+    || !validStoredRecord(record.id, record)
+    || record.principal === null) {
+    throw new Error("The Jellyfin browser session binding is invalid.");
+  }
+  const principal = record.principal;
+  return createHash("sha256").update(JSON.stringify([
+    "helmsman-jellyfin-browser-credential-v1",
+    record.id,
+    record.tokenHash,
+    record.origin,
+    record.host,
+    record.createdAt,
+    record.expiresAt,
+    principal.provider,
+    principal.serverId,
+    principal.userId,
+    principal.deviceId,
+    principal.jellyfinUrl,
+    principal.targetRevision,
+    principal.boundaryHash
+  ]), "utf8").digest("hex");
+}
+
+function validateSessionRecords(value, maximumSessions, options = {}) {
   if (!isPlainObject(value)
     || !Number.isSafeInteger(value.revision)
     || value.revision < 0
@@ -344,38 +535,144 @@ function validateSessionRecords(value, maximumSessions) {
     throw new Error("Unsupported or malformed session state.");
   }
   const entries = Object.entries(value.sessions);
-  if (entries.length > maximumSessions || entries.some(([id, record]) => !validStoredRecord(id, record))) {
+  if (entries.length > maximumSessions
+    || entries.some(([id, record]) => !validStoredRecord(id, record, options))) {
     throw new Error("Malformed browser session state.");
   }
 }
 
-function validateSessionState(value, maximumSessions) {
+function validateSessionState(value, maximumSessions, options = {}) {
   if (!isPlainObject(value)
     || value.version !== SESSION_STATE_VERSION
-    || !hasExactKeys(value, ["version", "revision", "accessKeyHash", "sessions"])
+    || !hasExactKeys(value, ["version", "revision", "accessKeyHash", "owner", "sessions", "integrity"])
     || (value.accessKeyHash !== null
-      && (typeof value.accessKeyHash !== "string" || !TOKEN_HASH_PATTERN.test(value.accessKeyHash)))) {
+      && (typeof value.accessKeyHash !== "string" || !TOKEN_HASH_PATTERN.test(value.accessKeyHash)))
+    || (value.integrity !== null
+      && (typeof value.integrity !== "string" || !TOKEN_HASH_PATTERN.test(value.integrity)))
+    || (options.requireIntegrity === true && value.integrity === null)
+    || !validStoredOwner(value.owner)
+    || (value.owner !== null && value.accessKeyHash !== null)) {
     throw new Error("Unsupported or malformed session state.");
   }
   validateSessionRecords(value, maximumSessions);
+  if (value.owner === null
+    && Object.values(value.sessions).some((record) => record.principal !== null)) {
+    throw new Error("Malformed browser session state.");
+  }
+  if (value.owner !== null
+    && Object.values(value.sessions).some((record) => record.principal === null
+      || !sameOwnerIdentity(value.owner, record.principal))) {
+    throw new Error("Malformed browser session state.");
+  }
   return value;
 }
 
 function migrateSessionState(value, maximumSessions) {
-  if (!isPlainObject(value) || value.version !== LEGACY_SESSION_STATE_VERSION) {
-    return { state: validateSessionState(value, maximumSessions), changed: false };
-  }
-  if (!hasExactKeys(value, ["version", "revision", "sessions"])) {
+  if (!isPlainObject(value)) {
     throw new Error("Unsupported or malformed session state.");
   }
-  validateSessionRecords(value, maximumSessions);
+  if (value.version === SESSION_STATE_VERSION) {
+    return { state: validateSessionState(value, maximumSessions), changed: false };
+  }
+  if (value.version === JELLYFIN_OWNER_SESSION_STATE_VERSION) {
+    if (!hasExactKeys(value, ["version", "revision", "accessKeyHash", "owner", "sessions"])
+      || (value.accessKeyHash !== null
+        && (typeof value.accessKeyHash !== "string" || !TOKEN_HASH_PATTERN.test(value.accessKeyHash)))
+      || !validStoredOwner(value.owner)
+      || (value.owner !== null && value.accessKeyHash !== null)) {
+      throw new Error("Unsupported or malformed session state.");
+    }
+    validateSessionRecords(value, maximumSessions);
+    if (value.owner === null
+      && Object.values(value.sessions).some((record) => record.principal !== null)) {
+      throw new Error("Malformed browser session state.");
+    }
+    if (value.owner !== null
+      && Object.values(value.sessions).some((record) => record.principal === null
+        || !sameOwnerIdentity(value.owner, record.principal))) {
+      throw new Error("Malformed browser session state.");
+    }
+    return {
+      state: validateSessionState({ ...value, version: SESSION_STATE_VERSION, integrity: null }, maximumSessions),
+      changed: true
+    };
+  }
+  if (value.version !== LEGACY_SESSION_STATE_VERSION
+    && value.version !== ACCESS_KEY_SESSION_STATE_VERSION) {
+    throw new Error("Unsupported or malformed session state.");
+  }
+  const isVersionOne = value.version === LEGACY_SESSION_STATE_VERSION;
+  const expectedKeys = isVersionOne
+    ? ["version", "revision", "sessions"]
+    : ["version", "revision", "accessKeyHash", "sessions"];
+  if (!hasExactKeys(value, expectedKeys)
+    || (!isVersionOne
+      && value.accessKeyHash !== null
+      && (typeof value.accessKeyHash !== "string" || !TOKEN_HASH_PATTERN.test(value.accessKeyHash)))) {
+    throw new Error("Unsupported or malformed session state.");
+  }
+  validateSessionRecords(value, maximumSessions, { legacy: true });
   const migrated = {
     version: SESSION_STATE_VERSION,
     revision: value.revision,
-    accessKeyHash: null,
-    sessions: value.sessions
+    accessKeyHash: isVersionOne ? null : value.accessKeyHash,
+    owner: null,
+    sessions: Object.fromEntries(Object.entries(value.sessions).map(([id, record]) => [
+      id,
+      { ...record, principal: null }
+    ])),
+    integrity: null
   };
   return { state: validateSessionState(migrated, maximumSessions), changed: true };
+}
+
+function sessionStateIntegrityPayload(state) {
+  const owner = state.owner === null
+    ? null
+    : [
+      state.owner.provider,
+      state.owner.serverId,
+      state.owner.userId,
+      state.owner.username,
+      state.owner.jellyfinUrl,
+      state.owner.targetRevision,
+      state.owner.boundaryHash,
+      state.owner.enrolledAt
+    ];
+  const sessions = Object.keys(state.sessions).sort().map((id) => {
+    const record = state.sessions[id];
+    const principal = record.principal === null
+      ? null
+      : [
+        record.principal.provider,
+        record.principal.serverId,
+        record.principal.userId,
+        record.principal.username,
+        record.principal.deviceId,
+        record.principal.jellyfinUrl,
+        record.principal.targetRevision,
+        record.principal.boundaryHash,
+        record.principal.verifiedAt
+      ];
+    return [
+      record.id,
+      record.name,
+      record.origin,
+      record.host,
+      record.tokenHash,
+      record.createdAt,
+      record.expiresAt,
+      principal
+    ];
+  });
+  return Buffer.from(JSON.stringify([
+    "helmsman-browser-authorization-state-v1",
+    state.version,
+    state.revision,
+    state.accessKeyHash,
+    owner,
+    sessions
+  ]), "utf8");
 }
 
 async function secureReadJson(filePath) {
@@ -407,8 +704,8 @@ async function atomicWriteJson(dataDir, filePath, value) {
     await handle.writeFile(serialized, { encoding: "utf8" });
     await handle.sync();
     await handle.close();
+    await chmod(temporary, 0o600);
     await rename(temporary, filePath);
-    await chmod(filePath, 0o600);
   } catch (error) {
     await handle.close().catch(() => {});
     await unlink(temporary).catch(() => {});
@@ -424,17 +721,23 @@ async function atomicWriteJson(dataDir, filePath, value) {
 }
 
 function publicSession(record) {
+  const user = record.principal === null
+    ? null
+    : { provider: record.principal.provider, name: record.principal.username };
   return {
     id: record.id,
     name: record.name,
     origin: record.origin,
     createdAt: record.createdAt,
-    expiresAt: record.expiresAt
+    expiresAt: record.expiresAt,
+    provider: user?.provider || null,
+    user
   };
 }
 
 export class SessionAuthStore {
   #state = null;
+  #prunedSessions = [];
   #writeChain = Promise.resolve();
   #guard;
   #now;
@@ -442,6 +745,8 @@ export class SessionAuthStore {
   #maxSessions;
   #cookieName;
   #csrfHeader;
+  #stateIntegrityTag;
+  #allowLegacyMigration;
 
   constructor(dataDir, options = {}) {
     if (typeof dataDir !== "string" || !path.isAbsolute(dataDir)) {
@@ -449,7 +754,9 @@ export class SessionAuthStore {
     }
     const ttlMs = options.ttlMs === undefined ? DEFAULT_TTL_MS : Number(options.ttlMs);
     const maxSessions = options.maxSessions === undefined ? DEFAULT_MAX_SESSIONS : Number(options.maxSessions);
-    if (!Number.isSafeInteger(ttlMs) || ttlMs < 1) throw new Error("The session lifetime is invalid.");
+    if (!Number.isSafeInteger(ttlMs) || ttlMs < 1 || ttlMs > MAX_TTL_MS) {
+      throw new Error("The session lifetime is invalid.");
+    }
     if (!Number.isSafeInteger(maxSessions) || maxSessions < 1 || maxSessions > 1_024) {
       throw new Error("The browser session limit is invalid.");
     }
@@ -462,6 +769,63 @@ export class SessionAuthStore {
     this.#cookieName = safeCookieName(options.cookieName || DEFAULT_COOKIE_NAME);
     this.#csrfHeader = String(options.csrfHeader || DEFAULT_CSRF_HEADER).toLowerCase();
     if (!/^[a-z0-9-]{1,80}$/u.test(this.#csrfHeader)) throw new Error("The CSRF header name is invalid.");
+    this.#stateIntegrityTag = options.stateIntegrityTag === undefined
+      ? null
+      : options.stateIntegrityTag;
+    if (this.#stateIntegrityTag !== null && typeof this.#stateIntegrityTag !== "function") {
+      throw new Error("The session-state integrity provider is invalid.");
+    }
+    this.#allowLegacyMigration = options.allowLegacyMigration !== false;
+  }
+
+  #applyIntegrity(state) {
+    if (!this.#stateIntegrityTag) {
+      state.integrity = null;
+      return;
+    }
+    const payload = sessionStateIntegrityPayload(state);
+    try {
+      const integrity = this.#stateIntegrityTag(payload);
+      if (typeof integrity !== "string" || !TOKEN_HASH_PATTERN.test(integrity)) {
+        throw new Error("The session-state integrity provider returned an invalid tag.");
+      }
+      state.integrity = integrity;
+    } finally {
+      payload.fill(0);
+    }
+  }
+
+  #verifyIntegrity(state) {
+    if (!this.#stateIntegrityTag) {
+      if (state.integrity !== null) {
+        throw new Error("The browser authorization state requires its integrity key.");
+      }
+      return;
+    }
+    if (typeof state.integrity !== "string" || !TOKEN_HASH_PATTERN.test(state.integrity)) {
+      throw new Error("The browser authorization state is not authenticated.");
+    }
+    const payload = sessionStateIntegrityPayload(state);
+    let expected = null;
+    try {
+      expected = this.#stateIntegrityTag(payload);
+      if (typeof expected !== "string" || !TOKEN_HASH_PATTERN.test(expected)) {
+        throw new Error("The session-state integrity provider returned an invalid tag.");
+      }
+      const storedBytes = Buffer.from(state.integrity, "hex");
+      const expectedBytes = Buffer.from(expected, "hex");
+      try {
+        if (storedBytes.length !== expectedBytes.length || !timingSafeEqual(storedBytes, expectedBytes)) {
+          throw new Error("The browser authorization state could not be authenticated.");
+        }
+      } finally {
+        storedBytes.fill(0);
+        expectedBytes.fill(0);
+      }
+    } finally {
+      payload.fill(0);
+      expected = null;
+    }
   }
 
   async initialize() {
@@ -472,12 +836,24 @@ export class SessionAuthStore {
       const metadata = await stat(this.filePath);
       if (!metadata.isFile()) throw new Error("Session state path is not a regular file.");
       const loaded = migrateSessionState(await secureReadJson(this.filePath), this.#maxSessions);
+      if (loaded.changed && !this.#allowLegacyMigration) {
+        throw new Error("Legacy browser authorization state cannot replace sealed state.");
+      }
       this.#state = loaded.state;
-      if (loaded.changed) await atomicWriteJson(this.dataDir, this.filePath, this.#state);
+      if (loaded.changed) {
+        this.#applyIntegrity(this.#state);
+        validateSessionState(this.#state, this.#maxSessions, {
+          requireIntegrity: Boolean(this.#stateIntegrityTag)
+        });
+        await atomicWriteJson(this.dataDir, this.filePath, this.#state);
+      } else {
+        this.#verifyIntegrity(this.#state);
+      }
       await chmod(this.filePath, 0o600);
     } catch (error) {
       if (error?.code !== "ENOENT") throw error;
       this.#state = initialSessionState();
+      this.#applyIntegrity(this.#state);
       await atomicWriteJson(this.dataDir, this.filePath, this.#state);
     }
     await this.pruneExpired();
@@ -497,7 +873,10 @@ export class SessionAuthStore {
         const next = this.#snapshot();
         const result = await mutator(next);
         next.revision += 1;
-        validateSessionState(next, this.#maxSessions);
+        this.#applyIntegrity(next);
+        validateSessionState(next, this.#maxSessions, {
+          requireIntegrity: Boolean(this.#stateIntegrityTag)
+        });
         await atomicWriteJson(this.dataDir, this.filePath, next);
         this.#state = next;
         return result;
@@ -519,6 +898,56 @@ export class SessionAuthStore {
     return this.#snapshot().accessKeyHash !== null;
   }
 
+  ownerConfigured() {
+    return this.#snapshot().owner !== null;
+  }
+
+  owner() {
+    return structuredClone(this.#snapshot().owner);
+  }
+
+  ownerMatches(identity) {
+    return sameOwnerIdentity(this.#snapshot().owner, identity);
+  }
+
+  ownerBoundaryMatches(identity) {
+    const owner = this.#snapshot().owner;
+    return isPlainObject(owner)
+      && isPlainObject(identity)
+      && safeEqualText(owner.jellyfinUrl, identity.jellyfinUrl)
+      && safeEqualText(owner.targetRevision, identity.targetRevision)
+      && safeEqualText(owner.boundaryHash, identity.boundaryHash);
+  }
+
+  getInternalSession(sessionId) {
+    if (typeof sessionId !== "string" || !UUID_PATTERN.test(sessionId)) return null;
+    return structuredClone(this.#snapshot().sessions[sessionId] || null);
+  }
+
+  internalSessions() {
+    return Object.values(this.#snapshot().sessions)
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+  }
+
+  prepareOwnerSession(options) {
+    const prepared = this.#prepareIssue(options);
+    if (prepared.record.principal === null) {
+      throw new Error("A Jellyfin session identity is required for owner authentication.");
+    }
+    const plan = Object.freeze({
+      sessionId: prepared.record.id,
+      credentialBinding: jellyfinSessionCredentialBinding(prepared.record)
+    });
+    PREPARED_OWNER_SESSION_PLANS.set(plan, { store: this, prepared, consumed: false });
+    return plan;
+  }
+
+  takePrunedSessions() {
+    const pruned = structuredClone(this.#prunedSessions);
+    this.#prunedSessions = [];
+    return pruned;
+  }
+
   #prepareIssue(options) {
     if (!isPlainObject(options)) throw new Error("Session issue options are required.");
     const name = safeSessionName(options.name);
@@ -531,29 +960,62 @@ export class SessionAuthStore {
       fail(400, "ORIGIN_REJECTED", "The browser session Origin does not match its Host.");
     }
     const currentTime = nowMilliseconds(this.#now);
-    const expiresAt = currentTime + this.#ttlMs;
+    const ttlMs = options.ttlMs === undefined ? this.#ttlMs : Number(options.ttlMs);
+    if (!Number.isSafeInteger(ttlMs) || ttlMs < 1 || ttlMs > MAX_TTL_MS) {
+      throw new Error("The session lifetime is invalid.");
+    }
+    const expiresAt = currentTime + ttlMs;
     if (!Number.isSafeInteger(expiresAt)) throw new Error("The session expiration is invalid.");
+    const sessionId = options.sessionId === undefined ? randomUUID() : options.sessionId;
+    if (typeof sessionId !== "string" || !UUID_PATTERN.test(sessionId)) {
+      throw new Error("The browser session ID is invalid.");
+    }
+    const principal = options.principal === undefined || options.principal === null
+      ? null
+      : normalizePrincipal({
+        provider: options.principal.provider,
+        serverId: options.principal.serverId,
+        userId: options.principal.userId,
+        username: options.principal.username,
+        deviceId: options.principal.deviceId,
+        jellyfinUrl: options.principal.jellyfinUrl,
+        targetRevision: options.principal.targetRevision,
+        boundaryHash: options.principal.boundaryHash,
+        verifiedAt: options.principal.verifiedAt ?? isoTime(currentTime)
+      }, isoTime(currentTime));
+    if (principal && Date.parse(principal.verifiedAt) > currentTime) {
+      throw new Error("The Jellyfin session verification time is in the future.");
+    }
     const token = randomBytes(SESSION_TOKEN_BYTES).toString("base64url");
     const record = {
-      id: randomUUID(),
+      id: sessionId,
       name,
       origin,
       host,
       tokenHash: tokenHash(token),
       createdAt: isoTime(currentTime),
-      expiresAt: isoTime(expiresAt)
+      expiresAt: isoTime(expiresAt),
+      principal
     };
     return { currentTime, record, token };
   }
 
   #insertPreparedSession(next, prepared) {
+    const pruned = [];
     for (const [sessionId, session] of Object.entries(next.sessions)) {
-      if (Date.parse(session.expiresAt) <= prepared.currentTime) delete next.sessions[sessionId];
+      if (Date.parse(session.expiresAt) <= prepared.currentTime) {
+        pruned.push(structuredClone(session));
+        delete next.sessions[sessionId];
+      }
+    }
+    if (next.sessions[prepared.record.id]) {
+      fail(409, "SESSION_ID_CONFLICT", "The browser session could not be created. Try again.");
     }
     if (Object.keys(next.sessions).length >= this.#maxSessions) {
       fail(409, "SESSION_LIMIT_REACHED", "Revoke an existing browser session before adding another one.");
     }
-    next.sessions[prepared.record.id] = prepared.record;
+    next.sessions[prepared.record.id] = structuredClone(prepared.record);
+    return pruned;
   }
 
   #issuedResult(prepared) {
@@ -569,77 +1031,199 @@ export class SessionAuthStore {
     };
   }
 
+  #preparedOwnerSession(options) {
+    const plan = options?.preparedSession;
+    if (!isPlainObject(plan)) return this.#prepareIssue(options);
+    const entry = PREPARED_OWNER_SESSION_PLANS.get(plan);
+    if (!entry || entry.store !== this || entry.consumed) {
+      throw new Error("The prepared Jellyfin browser session is invalid or already used.");
+    }
+    entry.consumed = true;
+    return entry.prepared;
+  }
+
   async issue(options) {
     const prepared = this.#prepareIssue(options);
-    await this.#mutate((next) => {
-      this.#insertPreparedSession(next, prepared);
+    const pruned = await this.#mutate((next) => {
+      if (prepared.record.principal === null && next.owner !== null) {
+        fail(409, "JELLYFIN_AUTH_REQUIRED", "New browser sessions must sign in with the Jellyfin owner account.");
+      }
+      if (prepared.record.principal !== null) {
+        if (next.owner === null) {
+          fail(409, "OWNER_NOT_CONFIGURED", "The Jellyfin owner account has not been configured.");
+        }
+        if (!sameOwnerIdentity(next.owner, prepared.record.principal)) {
+          fail(401, "JELLYFIN_OWNER_MISMATCH", "The Jellyfin account is not the Helmsman owner.");
+        }
+      }
+      return this.#insertPreparedSession(next, prepared);
     });
+    this.#prunedSessions.push(...pruned);
     return this.#issuedResult(prepared);
   }
 
-  async claimAccess(options) {
-    const prepared = this.#prepareIssue(options);
-    const accessKey = randomBytes(ACCESS_KEY_BYTES).toString("base64url");
-    await this.#mutate((next) => {
-      if (next.accessKeyHash !== null) {
-        fail(409, "ACCESS_KEY_ALREADY_CONFIGURED", "The reusable access key is already configured.");
+  async enrollOwnerAndIssue(options) {
+    if (!isPlainObject(options)) throw new Error("Owner enrollment options are required.");
+    const prepared = this.#preparedOwnerSession(options);
+    if (prepared.record.principal === null) {
+      throw new Error("A Jellyfin session identity is required for owner enrollment.");
+    }
+    const owner = normalizeOwner({
+      provider: options.owner?.provider,
+      serverId: options.owner?.serverId,
+      userId: options.owner?.userId,
+      username: options.owner?.username,
+      jellyfinUrl: options.owner?.jellyfinUrl,
+      targetRevision: options.owner?.targetRevision,
+      boundaryHash: options.owner?.boundaryHash,
+      enrolledAt: prepared.record.createdAt
+    }, prepared.record.createdAt);
+    if (!sameOwnerIdentity(owner, prepared.record.principal)
+      || !safeEqualText(owner.username, prepared.record.principal.username)) {
+      throw new Error("The Jellyfin owner and session identities do not match.");
+    }
+    const pruned = await this.#mutate((next) => {
+      if (next.owner !== null) {
+        fail(409, "OWNER_ALREADY_CONFIGURED", "The Jellyfin owner account is already configured.");
       }
-      next.accessKeyHash = tokenHash(accessKey);
+      next.owner = owner;
+      next.accessKeyHash = null;
       next.sessions = {};
-      this.#insertPreparedSession(next, prepared);
+      return this.#insertPreparedSession(next, prepared);
     });
-    return { ...this.#issuedResult(prepared), accessKey };
+    this.#prunedSessions.push(...pruned);
+    return this.#issuedResult(prepared);
+  }
+
+  async loginOwner(options) {
+    if (!isPlainObject(options)) throw new Error("Owner login options are required.");
+    const prepared = this.#preparedOwnerSession(options);
+    if (prepared.record.principal === null) {
+      throw new Error("A Jellyfin session identity is required for owner login.");
+    }
+    const pruned = await this.#mutate((next) => {
+      if (next.owner === null) {
+        fail(409, "OWNER_NOT_CONFIGURED", "The Jellyfin owner account has not been configured.");
+      }
+      if (!sameOwnerIdentity(next.owner, prepared.record.principal)) {
+        fail(401, "JELLYFIN_OWNER_MISMATCH", "The Jellyfin account is not the Helmsman owner.");
+      }
+      next.owner.username = prepared.record.principal.username;
+      return this.#insertPreparedSession(next, prepared);
+    });
+    this.#prunedSessions.push(...pruned);
+    return this.#issuedResult(prepared);
+  }
+
+  async rebindOwnerAndRevokeAll(expectedBoundary, nextBoundary) {
+    const normalizeBoundary = (value) => {
+      if (!isPlainObject(value)
+        || !hasExactKeys(value, ["jellyfinUrl", "targetRevision", "boundaryHash"])) {
+        throw new Error("The Jellyfin owner authorization boundary is invalid.");
+      }
+      const targetRevision = safeIdentityText(value.targetRevision, "target revision", 128);
+      if (!UUID_PATTERN.test(targetRevision)) throw new Error("The Jellyfin target revision is invalid.");
+      const boundaryHash = safeIdentityText(value.boundaryHash, "authorization boundary", 64);
+      if (!TOKEN_HASH_PATTERN.test(boundaryHash)) {
+        throw new Error("The Jellyfin authorization boundary is invalid.");
+      }
+      return {
+        jellyfinUrl: canonicalJellyfinUrl(value.jellyfinUrl),
+        targetRevision,
+        boundaryHash
+      };
+    };
+    const expected = normalizeBoundary(expectedBoundary);
+    const replacement = normalizeBoundary(nextBoundary);
+    return this.#mutate((next) => {
+      if (!next.owner || !sameOwnerIdentity(next.owner, {
+        provider: JELLYFIN_PROVIDER,
+        serverId: next.owner.serverId,
+        userId: next.owner.userId,
+        ...expected
+      })) {
+        fail(409, "OWNER_BOUNDARY_CHANGED", "The Jellyfin owner authorization boundary changed; reset access and try again.");
+      }
+      const count = Object.keys(next.sessions).length;
+      next.owner.jellyfinUrl = replacement.jellyfinUrl;
+      next.owner.targetRevision = replacement.targetRevision;
+      next.owner.boundaryHash = replacement.boundaryHash;
+      next.sessions = {};
+      return count;
+    });
+  }
+
+  async markVerified(sessionId, identity, verifiedAt = undefined) {
+    if (typeof sessionId !== "string" || !UUID_PATTERN.test(sessionId)) {
+      fail(401, "SESSION_INVALID", "The browser session is invalid or revoked.");
+    }
+    if (!isPlainObject(identity) || identity.provider !== JELLYFIN_PROVIDER) {
+      throw new Error("The verified Jellyfin identity is invalid.");
+    }
+    const verifiedIdentity = {
+      provider: JELLYFIN_PROVIDER,
+      serverId: safeIdentityText(identity.serverId, "server ID"),
+      userId: safeIdentityText(identity.userId, "user ID"),
+      username: safeIdentityText(identity.username, "username")
+    };
+    const verifiedTime = verifiedAt === undefined
+      ? isoTime(nowMilliseconds(this.#now))
+      : verifiedAt;
+    const verifiedMilliseconds = parseIsoTime(verifiedTime);
+    if (verifiedMilliseconds === null || verifiedMilliseconds > nowMilliseconds(this.#now)) {
+      throw new Error("The Jellyfin session verification time is invalid.");
+    }
+    return this.#mutate((next) => {
+      const record = next.sessions[sessionId];
+      if (!record || record.principal === null) {
+        fail(401, "SESSION_INVALID", "The browser session is invalid or revoked.");
+      }
+      if (Date.parse(record.expiresAt) <= nowMilliseconds(this.#now)) {
+        fail(401, "SESSION_EXPIRED", "The browser session has expired.");
+      }
+      if (!sameOwnerAccount(next.owner, verifiedIdentity)
+        || !sameOwnerAccount(record.principal, verifiedIdentity)) {
+        fail(401, "JELLYFIN_OWNER_MISMATCH", "The Jellyfin account is not the Helmsman owner.");
+      }
+      next.owner.username = verifiedIdentity.username;
+      record.principal.username = verifiedIdentity.username;
+      record.principal.verifiedAt = verifiedTime;
+      return {
+        session: publicSession(record),
+        principal: structuredClone(record.principal),
+        owner: structuredClone(next.owner)
+      };
+    });
   }
 
   async login(options) {
     if (!isPlainObject(options)) throw new Error("Access login options are required.");
     const prepared = this.#prepareIssue(options);
-    await this.#mutate((next) => {
+    const pruned = await this.#mutate((next) => {
       if (next.accessKeyHash === null) {
         fail(409, "ACCESS_KEY_NOT_CONFIGURED", "A reusable access key has not been configured.");
       }
       if (!accessKeyMatches(next.accessKeyHash, options.accessKey)) {
         fail(401, "ACCESS_KEY_INVALID", "The Helmsman access key is invalid.");
       }
-      this.#insertPreparedSession(next, prepared);
+      return this.#insertPreparedSession(next, prepared);
     });
+    this.#prunedSessions.push(...pruned);
     return this.#issuedResult(prepared);
   }
 
-  async rotateAccessKeyAndIssue(options) {
-    const prepared = this.#prepareIssue(options);
-    const currentSessionId = options.currentSessionId;
-    if (typeof currentSessionId !== "string" || !UUID_PATTERN.test(currentSessionId)) {
-      fail(401, "SESSION_INVALID", "The browser session is invalid or revoked.");
-    }
-    const accessKey = randomBytes(ACCESS_KEY_BYTES).toString("base64url");
-    await this.#mutate((next) => {
-      if (!next.sessions[currentSessionId]) {
-        fail(401, "SESSION_INVALID", "The browser session is invalid or revoked.");
-      }
-      next.accessKeyHash = tokenHash(accessKey);
-      next.sessions = {};
-      this.#insertPreparedSession(next, prepared);
-    });
-    return { ...this.#issuedResult(prepared), accessKey };
-  }
-
-  async rotateAccessKey() {
-    const accessKey = randomBytes(ACCESS_KEY_BYTES).toString("base64url");
-    await this.#mutate((next) => {
-      next.accessKeyHash = tokenHash(accessKey);
-      next.sessions = {};
-    });
-    return accessKey;
-  }
-
-  async clearAccess() {
+  async clearAuthentication() {
     return this.#mutate((next) => {
       const count = Object.keys(next.sessions).length;
       next.accessKeyHash = null;
+      next.owner = null;
       next.sessions = {};
       return count;
     });
+  }
+
+  async clearAccess() {
+    return this.clearAuthentication();
   }
 
   async authenticateToken(token) {
@@ -654,6 +1238,7 @@ export class SessionAuthStore {
     if (!matched) fail(401, "SESSION_INVALID", "The browser session is invalid or revoked.");
     if (Date.parse(matched.expiresAt) <= nowMilliseconds(this.#now)) {
       await this.revoke(matched.id);
+      this.#prunedSessions.push(structuredClone(matched));
       fail(401, "SESSION_EXPIRED", "The browser session has expired.");
     }
     return { session: publicSession(matched), csrfToken: csrfForRecord(matched) };
@@ -705,16 +1290,18 @@ export class SessionAuthStore {
       .filter((record) => Date.parse(record.expiresAt) <= currentTime)
       .map((record) => record.id);
     if (!expired.length) return 0;
-    return this.#mutate((next) => {
-      let removed = 0;
+    const removed = await this.#mutate((next) => {
+      const records = [];
       for (const id of expired) {
         if (next.sessions[id] && Date.parse(next.sessions[id].expiresAt) <= currentTime) {
+          records.push(structuredClone(next.sessions[id]));
           delete next.sessions[id];
-          removed += 1;
         }
       }
-      return removed;
+      return records;
     });
+    this.#prunedSessions.push(...removed);
+    return removed.length;
   }
 
   expiredCookie(origin) {

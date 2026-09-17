@@ -364,9 +364,9 @@ function assertSecretAbsentFromBrowserStorage(environment, secret) {
   ];
   assert.ok(
     persisted.every(([key, value]) => !String(key).includes(secret) && !String(value).includes(secret)),
-    "access keys must never be written to localStorage or sessionStorage"
+    "authentication secrets must never be written to localStorage or sessionStorage"
   );
-  assert.doesNotMatch(`${environment.location.origin}${environment.location.hash}`, new RegExp(secret.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "u"), "access keys must never enter the URL");
+  assert.doesNotMatch(`${environment.location.origin}${environment.location.hash}`, new RegExp(secret.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "u"), "authentication secrets must never enter the URL");
 }
 
 function minimalOperationsSnapshot() {
@@ -388,7 +388,7 @@ async function setupGateContract() {
       return jsonResponse({
         setupRequired: true,
         authenticated: false,
-        accessKeyConfigured: false,
+        authentication: { provider: null, configured: false, ownerName: null, legacyAccessKeyAvailable: false },
         csrfToken: null,
         storage: { credentialsEncrypted: true, externalKey: false }
       });
@@ -409,65 +409,86 @@ async function setupGateContract() {
   assert.match(markup, /no broad LAN allowlist is created/u);
   assert.match(markup, /Public HTTPS access is a separate opt-in/u);
   assert.match(markup, /name="setupToken" type="password"/u, "the one-time claim token must remain masked");
+  assert.doesNotMatch(markup, /name="deviceName"/u, "the setup session name must be generated automatically");
+  assert.doesNotMatch(markup, /generated Helmsman access key|reusable access key/iu);
   assert.doesNotMatch(markup, /vault/iu, "first-time setup must not retain browser-vault language");
   assert.doesNotMatch(markup, /passphrase/iu, "first-time setup must not ask for or mention a passphrase");
   assert.equal(environment.requestLog.filter(({ path }) => path === "/api/v2/status").length, 1);
 }
 
-async function accessKeyGateContract() {
+async function jellyfinGateContract() {
   const environment = installFakeBrowser(({ path }) => {
     if (path === "/api/v2/status") {
       return jsonResponse({
         setupRequired: false,
         authenticated: false,
-        accessKeyConfigured: true,
+        authentication: { provider: "jellyfin", configured: true, ownerName: null, legacyAccessKeyAvailable: false },
         csrfToken: null,
         storage: { credentialsEncrypted: true, externalKey: false }
       });
     }
     return jsonResponse({ code: "NOT_FOUND", message: "Unexpected test route." }, 404);
-  }, "pairing-heading");
+  }, "jellyfin-login-heading");
 
   await importShell(environment);
-  await waitFor(() => environment.main.innerHTML.includes("Unlock Helmsman"), "access-key gate");
-  assert.match(environment.main.innerHTML, /aria-labelledby="access-title"/u);
+  await waitFor(() => environment.main.innerHTML.includes("Sign in with Jellyfin"), "Jellyfin login gate");
+  assert.match(environment.main.innerHTML, /aria-labelledby="jellyfin-login-title"/u);
   assert.match(
     environment.main.innerHTML,
-    /<h2 id="access-title">Unlock Helmsman<\/h2>/u,
-    "the access-key heading reference must resolve"
+    /<h2 id="jellyfin-login-title">Sign in with Jellyfin<\/h2>/u,
+    "the Jellyfin login heading reference must resolve"
   );
-  assert.match(environment.main.innerHTML, /id="access-login-form"/u);
-  assert.match(environment.main.innerHTML, /name="accessKey" type="password"/u, "the reusable key must remain masked");
-  assert.match(environment.main.innerHTML, /one-year session/u);
-  assert.match(environment.main.innerHTML, /rotate-access-key --confirm/u);
-  assert.doesNotMatch(environment.main.innerHTML, /one-time browser invite|pair this browser/iu);
+  assert.match(environment.main.innerHTML, /id="jellyfin-login-form"/u);
+  assert.match(environment.main.innerHTML, /name="username" type="text" autocomplete="username"/u);
+  assert.match(environment.main.innerHTML, /name="password" type="password" autocomplete="current-password"/u);
+  assert.match(environment.main.innerHTML, /HTTP does not encrypt this password between Helmsman and Jellyfin/u);
+  assert.doesNotMatch(environment.main.innerHTML, /Gabriel/u);
+  assert.doesNotMatch(environment.main.innerHTML, /name="(?:deviceName|accessKey|serverId|userId)"/iu);
+  assert.doesNotMatch(environment.main.innerHTML, /rotate-access-key|Server ID|User ID/iu);
 }
 
-async function accessKeyRecoveryGateContract() {
+async function legacyAccessKeyGateContract() {
   const environment = installFakeBrowser(({ path }) => {
     if (path === "/api/v2/status") {
       return jsonResponse({
         setupRequired: false,
         authenticated: false,
-        accessKeyConfigured: false,
+        authentication: { provider: null, configured: false, ownerName: null, legacyAccessKeyAvailable: true },
         csrfToken: null,
         storage: { credentialsEncrypted: true, externalKey: false }
       });
     }
     return jsonResponse({ code: "NOT_FOUND", message: "Unexpected test route." }, 404);
-  }, "access-key-recovery");
+  }, "legacy-access-key-migration");
 
   await importShell(environment);
-  await waitFor(() => environment.main.innerHTML.includes("Create an access key"), "access-key recovery gate");
-  assert.match(environment.main.innerHTML, /aria-labelledby="access-recovery-title"/u);
-  assert.match(environment.main.innerHTML, /Settings → Security and access/u);
-  assert.match(environment.main.innerHTML, /rotate-access-key --confirm/u);
-  assert.doesNotMatch(environment.main.innerHTML, /id="access-login-form"/u, "a missing key must not render an unusable login form");
-  assert.doesNotMatch(environment.main.innerHTML, /reset-access|session\/invite|session\/pair/u);
+  await waitFor(() => environment.main.innerHTML.includes("Sign in with the legacy key"), "legacy migration gate");
+  assert.match(environment.main.innerHTML, /aria-labelledby="legacy-access-title"/u);
+  assert.match(environment.main.innerHTML, /id="legacy-access-login-form"/u);
+  assert.match(environment.main.innerHTML, /name="accessKey" type="password"/u);
+  assert.doesNotMatch(environment.main.innerHTML, /id="jellyfin-login-form"/u);
+  assert.doesNotMatch(environment.main.innerHTML, /rotate-access-key --confirm/u, "the browser UI must not advertise key rotation");
 }
 
-async function setupClaimAccessKeyContract() {
-  const generatedKey = "hm-generated-<script>claim-xss</script>";
+async function authenticationRecoveryGateContract() {
+  const environment = installFakeBrowser(({ path }) => path === "/api/v2/status"
+    ? jsonResponse({
+      setupRequired: false,
+      authenticated: false,
+      authentication: { provider: null, configured: false, ownerName: null, legacyAccessKeyAvailable: false },
+      csrfToken: null,
+      storage: { credentialsEncrypted: true, externalKey: false }
+    })
+    : jsonResponse({ code: "NOT_FOUND", message: "Unexpected test route." }, 404), "authentication-recovery");
+
+  await importShell(environment);
+  await waitFor(() => environment.main.innerHTML.includes("Jellyfin enrollment required"), "authentication recovery gate");
+  assert.match(environment.main.innerHTML, /Use an existing setup session/u);
+  assert.match(environment.main.innerHTML, /reset-access --confirm/u);
+  assert.doesNotMatch(environment.main.innerHTML, /legacy-access-login-form|jellyfin-login-form|rotate-access-key/u);
+}
+
+async function setupClaimJellyfinFlowContract() {
   const setupToken = "one-time-setup-token";
   const csrfToken = "claim-csrf-token";
   const config = { policy: { allowedCidrs: [], allowPublicHttps: false }, services: [] };
@@ -477,16 +498,16 @@ async function setupClaimAccessKeyContract() {
       return jsonResponse({
         setupRequired: true,
         authenticated: false,
-        accessKeyConfigured: false,
+        authentication: { provider: null, configured: false, ownerName: null, legacyAccessKeyAvailable: false },
         csrfToken: null,
         storage: { credentialsEncrypted: true, externalKey: false }
       });
     }
     if (path === "/api/v2/setup/claim" && options.method === "POST") {
       return jsonResponse({
-        accessKey: generatedKey,
         csrfToken,
-        session: { id: "161f1a48-b46d-43cd-bdd0-e921438f61be", name: "Claim Browser" },
+        session: { id: "161f1a48-b46d-43cd-bdd0-e921438f61be", name: "Runtime test" },
+        authentication: { provider: null, configured: false, ownerName: null, legacyAccessKeyAvailable: false },
         config: clone(config)
       }, 201);
     }
@@ -498,7 +519,7 @@ async function setupClaimAccessKeyContract() {
       });
     }
     return jsonResponse({ code: "NOT_FOUND", message: "Unexpected test route." }, 404);
-  }, "setup-claim-access-key");
+  }, "setup-claim-jellyfin-flow");
 
   await importShell(environment);
   await waitFor(() => environment.main.innerHTML.includes("Claim this container"), "claim form");
@@ -506,13 +527,12 @@ async function setupClaimAccessKeyContract() {
   form.dataset.networkMode = "exact";
   form.formDataValues = new Map([
     ["setupToken", setupToken],
-    ["deviceName", "Claim Browser"],
     ["networkMode", "exact"],
     ["allowPublicHttps", null]
   ]);
   form.registerSelector("#setup-error", new FakeElement());
   await environment.dispatchDocument("submit", { target: form, preventDefault() {} });
-  await waitFor(() => environment.main.innerHTML.includes("New Helmsman access key"), "one-time access-key reveal");
+  await waitFor(() => environment.main.innerHTML.includes("<h2>Connections</h2>"), "post-claim Jellyfin connection route");
 
   const claim = environment.requestLog.find(({ path }) => path === "/api/v2/setup/claim");
   assert.ok(claim, "first-time setup must use the claim route");
@@ -520,42 +540,32 @@ async function setupClaimAccessKeyContract() {
   assert.equal(claim.options.headers.has("X-Jellofin-CSRF"), false, "claim must not require an existing CSRF token");
   assert.deepEqual(JSON.parse(claim.options.body), {
     setupToken,
-    deviceName: "Claim Browser",
+    deviceName: "Runtime test",
     origin: "http://127.0.0.1:4180",
     allowedCidrs: [],
     allowPublicHttps: false
   });
-  assert.equal(environment.location.hash, "#/settings", "a successful claim must open Settings so the generated key cannot be missed");
-  assert.match(environment.main.innerHTML, /hm-generated-&lt;script&gt;claim-xss&lt;\/script&gt;/u);
-  assert.doesNotMatch(environment.main.innerHTML, /<script>claim-xss<\/script>/u, "the one-time key reveal must be escaped");
-  assert.equal((environment.main.innerHTML.match(/hm-generated-/gu) || []).length, 1, "the generated key must appear only once in the rendered page");
-  assert.match(environment.main.innerHTML, /save it in your password manager/iu);
-  assert.match(environment.main.innerHTML, /cannot recover it/iu);
-  assertSecretAbsentFromBrowserStorage(environment, generatedKey);
-
-  const actionTarget = (action) => {
-    const element = { dataset: { action }, disabled: false, isConnected: true };
-    element.closest = () => element;
-    return element;
-  };
-  await environment.dispatchDocument("click", { target: actionTarget("copy-access-key") });
-  assert.deepEqual(environment.clipboardWrites, [generatedKey], "copy must use the in-memory reveal without persisting it");
-  await environment.dispatchDocument("click", { target: actionTarget("dismiss-access-key") });
-  assert.doesNotMatch(environment.main.innerHTML, /hm-generated-/u, "dismissing the one-time reveal must remove the key from the page");
+  assert.equal(environment.location.hash, "#/connections", "a fresh claim must lead directly to Jellyfin connection setup");
+  assert.equal(claim.options.body.includes("accessKey"), false, "claim must not submit or receive a reusable browser key");
+  assert.doesNotMatch(environment.main.innerHTML, /New Helmsman access key|copy-access-key|rotate-access-key/iu);
 }
 
-async function firstAccessKeyCreationContract() {
-  const csrfToken = "legacy-session-csrf";
-  const generatedKey = "hm-first-universal-access-key";
+async function jellyfinEnrollmentContract() {
+  const csrfToken = "enrollment-csrf";
   const currentSessionId = "56565656-5656-4565-8565-565656565656";
-  const config = { policy: { allowedCidrs: [], allowPublicHttps: false }, services: [] };
+  const config = {
+    policy: { allowedCidrs: [], allowPublicHttps: false },
+    services: [{ id: "jellyfin", configured: true, enabled: true, monitoringEnabled: true }]
+  };
   const snapshot = minimalOperationsSnapshot();
+  const ownerName = "Captain <script>owner-xss</script>";
+  const password = "enrollment-password-<img>";
   const environment = installFakeBrowser(({ path, options }) => {
     if (path === "/api/v2/status") {
       return jsonResponse({
         setupRequired: false,
         authenticated: true,
-        accessKeyConfigured: false,
+        authentication: { provider: null, configured: false, ownerName: null, legacyAccessKeyAvailable: true },
         csrfToken,
         session: { id: currentSessionId, name: "Migrated Browser" },
         storage: { credentialsEncrypted: true, externalKey: false }
@@ -575,34 +585,53 @@ async function firstAccessKeyCreationContract() {
         }]
       });
     }
-    if (path === "/api/v2/access/rotate" && options.method === "POST") {
+    if (path === "/api/v2/auth/jellyfin/enroll" && options.method === "POST") {
       return jsonResponse({
-        accessKey: generatedKey,
-        csrfToken: "first-key-csrf",
-        session: { id: currentSessionId, name: "Migrated Browser" }
+        csrfToken: "enrolled-csrf",
+        session: { id: currentSessionId, name: "Runtime test" },
+        authentication: { provider: "jellyfin", configured: true, ownerName, legacyAccessKeyAvailable: false }
       });
     }
     return jsonResponse({ code: "NOT_FOUND", message: "Unexpected test route." }, 404);
-  }, "first-access-key-creation");
+  }, "jellyfin-owner-enrollment");
 
   environment.location.hash = "#/settings";
   await importShell(environment);
-  await waitFor(() => environment.main.innerHTML.includes("Access key not configured"), "first-key Settings state");
-  assert.match(environment.main.innerHTML, />Create access key<\/button>/u);
-  const target = { dataset: { action: "rotate-access-key" }, disabled: false, isConnected: true };
-  target.closest = () => target;
-  await environment.dispatchDocument("click", { target });
-  await waitFor(() => environment.requestLog.some(({ path }) => path === "/api/v2/access/rotate"), "first access-key creation");
+  await waitFor(() => environment.main.innerHTML.includes("Jellyfin owner not enrolled"), "Jellyfin enrollment Settings state");
+  const enrollmentMarkup = environment.main.innerHTML.match(/<form[^>]*id="jellyfin-enroll-form"[\s\S]*?<\/form>/u)?.[0] || "";
+  assert.match(enrollmentMarkup, /name="username" type="text" autocomplete="username"/u);
+  assert.match(enrollmentMarkup, /name="password" type="password" autocomplete="current-password"/u);
+  assert.match(enrollmentMarkup, /HTTP does not encrypt this password between Helmsman and Jellyfin/u);
+  assert.doesNotMatch(enrollmentMarkup, /deviceName|accessKey|serverId|userId/iu);
+  const form = new FakeElement({ id: "jellyfin-enroll-form" });
+  const error = new FakeElement();
+  const passwordInput = new FakeElement();
+  passwordInput.value = password;
+  form.registerSelector("#jellyfin-enroll-error", error);
+  form.registerSelector("input[name='password']", passwordInput);
+  form.formDataValues = new Map([["username", ownerName], ["password", password]]);
+  await environment.dispatchDocument("submit", { target: form, preventDefault() {} });
+  await waitFor(() => environment.requestLog.some(({ path }) => path === "/api/v2/auth/jellyfin/enroll"), "Jellyfin owner enrollment");
+  await waitFor(() => passwordInput.value === "", "enrollment password clearing");
 
-  assert.deepEqual(environment.browserConfirmCalls, [], "creating the first key must not show a browser-native confirmation");
-  const request = environment.requestLog.find(({ path }) => path === "/api/v2/access/rotate");
+  const request = environment.requestLog.find(({ path }) => path === "/api/v2/auth/jellyfin/enroll");
   assert.equal(request.options.headers.get("X-Jellofin-CSRF"), csrfToken);
-  assert.match(environment.main.innerHTML, /hm-first-universal-access-key/u);
+  assert.deepEqual(JSON.parse(request.options.body), {
+    username: ownerName,
+    password,
+    deviceName: "Runtime test",
+    origin: "http://127.0.0.1:4180"
+  });
+  assert.equal(passwordInput.value, "", "the enrollment password must be cleared after submission");
+  assert.match(environment.main.innerHTML, /Captain &lt;script&gt;owner-xss&lt;\/script&gt; enrolled/u);
+  assert.doesNotMatch(environment.main.innerHTML, /<script>owner-xss<\/script>|enrollment-password/u);
+  assertSecretAbsentFromBrowserStorage(environment, password);
 }
 
-async function accessKeyLoginContract() {
-  const rejectedKey = "hm-rejected-secret";
-  const acceptedKey = "hm-accepted-secret";
+async function jellyfinLoginContract() {
+  const rejectedPassword = "rejected-jellyfin-password";
+  const acceptedPassword = "accepted-jellyfin-password";
+  const username = "Gabriel";
   const csrfToken = "login-csrf-token";
   const config = { policy: { allowedCidrs: [], allowPublicHttps: false }, services: [] };
   const snapshot = minimalOperationsSnapshot();
@@ -612,19 +641,20 @@ async function accessKeyLoginContract() {
       return jsonResponse({
         setupRequired: false,
         authenticated: false,
-        accessKeyConfigured: true,
+        authentication: { provider: "jellyfin", configured: true, ownerName: username, legacyAccessKeyAvailable: false },
         csrfToken: null,
         storage: { credentialsEncrypted: true, externalKey: false }
       });
     }
-    if (path === "/api/v2/access/login" && options.method === "POST") {
+    if (path === "/api/v2/auth/jellyfin/login" && options.method === "POST") {
       attempts += 1;
       if (attempts === 1) {
-        return jsonResponse({ code: "ACCESS_DENIED", message: `Rejected ${rejectedKey}` }, 401);
+        return jsonResponse({ code: "ACCESS_DENIED", message: `Rejected ${rejectedPassword}` }, 401);
       }
       return jsonResponse({
         csrfToken,
-        session: { id: "467f10c9-7f8c-4164-aa34-a1c87f69670c", name: "Remote Browser" },
+        session: { id: "467f10c9-7f8c-4164-aa34-a1c87f69670c", name: "Runtime test" },
+        authentication: { provider: "jellyfin", configured: true, ownerName: username, legacyAccessKeyAvailable: false },
         config: clone(config)
       });
     }
@@ -634,40 +664,41 @@ async function accessKeyLoginContract() {
       return jsonResponse({ currentSessionId: "467f10c9-7f8c-4164-aa34-a1c87f69670c", sessions: [] });
     }
     return jsonResponse({ code: "NOT_FOUND", message: "Unexpected test route." }, 404);
-  }, "access-key-login");
+  }, "jellyfin-login");
 
   await importShell(environment);
-  await waitFor(() => environment.main.innerHTML.includes("Unlock Helmsman"), "access-key login form");
-  const form = new FakeElement({ id: "access-login-form" });
+  await waitFor(() => environment.main.innerHTML.includes("Sign in with Jellyfin"), "Jellyfin login form");
+  const form = new FakeElement({ id: "jellyfin-login-form" });
   const error = new FakeElement();
-  const accessKeyInput = new FakeElement();
-  form.registerSelector("#access-login-error", error);
-  form.registerSelector("input[name='accessKey']", accessKeyInput);
-  form.formDataValues = new Map([["accessKey", rejectedKey], ["deviceName", "Remote Browser"]]);
-  accessKeyInput.value = rejectedKey;
+  const passwordInput = new FakeElement();
+  form.registerSelector("#jellyfin-login-error", error);
+  form.registerSelector("input[name='password']", passwordInput);
+  form.formDataValues = new Map([["username", username], ["password", rejectedPassword]]);
+  passwordInput.value = rejectedPassword;
   await environment.dispatchDocument("submit", { target: form, preventDefault() {} });
-  await waitFor(() => attempts === 1, "rejected access-key login");
+  await waitFor(() => attempts === 1, "rejected Jellyfin login");
   await waitFor(() => error.textContent.length > 0, "redacted login error");
-  assert.equal(error.textContent, "The access key was not accepted. Check the key and try again.");
-  assert.doesNotMatch(error.textContent, new RegExp(rejectedKey, "u"), "a backend error must not echo a rejected key");
-  assert.equal(accessKeyInput.value, "", "the access-key input must be cleared after an attempt");
-  assertSecretAbsentFromBrowserStorage(environment, rejectedKey);
+  assert.equal(error.textContent, "The Jellyfin username or password was not accepted.");
+  assert.doesNotMatch(error.textContent, new RegExp(rejectedPassword, "u"), "a backend error must not echo a rejected password");
+  assert.equal(passwordInput.value, "", "the Jellyfin password must be cleared after an attempt");
+  assertSecretAbsentFromBrowserStorage(environment, rejectedPassword);
 
-  form.formDataValues = new Map([["accessKey", acceptedKey], ["deviceName", "Remote Browser"]]);
-  accessKeyInput.value = acceptedKey;
+  form.formDataValues = new Map([["username", username], ["password", acceptedPassword]]);
+  passwordInput.value = acceptedPassword;
   await environment.dispatchDocument("submit", { target: form, preventDefault() {} });
-  await waitFor(() => environment.main.innerHTML.includes("operations-page"), "successful access-key login");
-  const login = environment.requestLog.filter(({ path }) => path === "/api/v2/access/login").at(-1);
+  await waitFor(() => environment.main.innerHTML.includes("operations-page"), "successful Jellyfin login");
+  const login = environment.requestLog.filter(({ path }) => path === "/api/v2/auth/jellyfin/login").at(-1);
   assert.equal(login.options.credentials, "same-origin");
   assert.equal(login.options.headers.has("X-Jellofin-CSRF"), false, "login must not require an existing CSRF token");
   assert.deepEqual(JSON.parse(login.options.body), {
-    accessKey: acceptedKey,
-    deviceName: "Remote Browser",
+    username,
+    password: acceptedPassword,
+    deviceName: "Runtime test",
     origin: "http://127.0.0.1:4180"
   });
-  assert.equal(accessKeyInput.value, "", "the accepted key must be cleared from the detached form");
-  assert.doesNotMatch(environment.main.innerHTML, new RegExp(acceptedKey, "u"), "the submitted key must not enter authenticated markup");
-  assertSecretAbsentFromBrowserStorage(environment, acceptedKey);
+  assert.equal(passwordInput.value, "", "the accepted password must be cleared from the detached form");
+  assert.doesNotMatch(environment.main.innerHTML, new RegExp(acceptedPassword, "u"), "the submitted password must not enter authenticated markup");
+  assertSecretAbsentFromBrowserStorage(environment, acceptedPassword);
 }
 
 async function networkPolicyInteractionContract() {
@@ -798,6 +829,210 @@ async function networkPolicyInteractionContract() {
   });
 }
 
+async function networkBoundaryAuthenticationResetContract() {
+  const csrfToken = "network-boundary-reset-csrf";
+  const ownerName = "Network Boundary Owner";
+  const config = {
+    policy: { allowedCidrs: ["10.44.1.20/32"], allowPublicHttps: false, revision: 1 },
+    services: [{ id: "jellyfin", configured: true, enabled: true, monitoringEnabled: true }]
+  };
+  const snapshot = minimalOperationsSnapshot();
+  let statusCalls = 0;
+  const environment = installFakeBrowser(({ path, options }) => {
+    if (path === "/api/v2/status") {
+      statusCalls += 1;
+      if (statusCalls === 1) {
+        return jsonResponse({
+          setupRequired: false,
+          authenticated: true,
+          authentication: { provider: "jellyfin", configured: true, ownerName, legacyAccessKeyAvailable: false },
+          csrfToken,
+          session: { id: "31313131-3131-4131-8131-313131313131", name: "Network reset browser" },
+          storage: { credentialsEncrypted: true, externalKey: false }
+        });
+      }
+      return jsonResponse({
+        setupRequired: false,
+        authenticated: false,
+        authentication: { provider: "jellyfin", configured: true, ownerName: null, legacyAccessKeyAvailable: false },
+        csrfToken: null,
+        storage: { credentialsEncrypted: true, externalKey: false }
+      });
+    }
+    if (path === "/api/v2/config" && String(options.method || "GET") === "GET") return jsonResponse(clone(config));
+    if (path === "/api/v2/config" && options.method === "PUT") {
+      return jsonResponse({
+        ...clone(config),
+        policy: { allowedCidrs: [], allowPublicHttps: true, revision: 2 },
+        browserAuthenticationReset: true
+      });
+    }
+    if (path === "/api/v2/operations/snapshot") return jsonResponse(clone(snapshot));
+    if (path === "/api/v2/sessions") return jsonResponse({ currentSessionId: "", sessions: [] });
+    return jsonResponse({ code: "NOT_FOUND", message: "Unexpected test route." }, 404);
+  }, "network-boundary-authentication-reset");
+
+  environment.location.hash = "#/settings";
+  await importShell(environment);
+  await waitFor(() => environment.main.innerHTML.includes("settings-page-v5"), "authenticated network settings before reset");
+  const authenticatedLoadsBeforeSave = {
+    config: environment.requestLog.filter(({ path, options }) => path === "/api/v2/config" && String(options.method || "GET") === "GET").length,
+    operations: environment.requestLog.filter(({ path }) => path === "/api/v2/operations/snapshot").length,
+    sessions: environment.requestLog.filter(({ path }) => path === "/api/v2/sessions").length
+  };
+
+  const form = new FakeElement({ id: "network-form" });
+  form.dataset.networkMode = "exact";
+  form.formDataValues = new Map([
+    ["networkMode", "exact"],
+    ["allowPublicHttps", "on"]
+  ]);
+  await environment.dispatchDocument("submit", { target: form, preventDefault() {} });
+  await waitFor(() => statusCalls === 2, "network-boundary status reinitialization");
+  await waitFor(() => environment.main.innerHTML.includes("Sign in with Jellyfin"), "network-boundary login transition");
+  await waitFor(
+    () => environment.elements.get("#toast-region").children.some(({ textContent }) => textContent.includes("All browsers were signed out")),
+    "network-boundary all-browser sign-out notice"
+  );
+
+  const putIndex = environment.requestLog.findIndex(
+    ({ path, options }) => path === "/api/v2/config" && options.method === "PUT"
+  );
+  assert.ok(putIndex >= 0, "the network policy mutation must be dispatched");
+  assert.equal(environment.requestLog[putIndex + 1]?.path, "/api/v2/status", "a boundary reset must reinitialize status immediately after the mutation response");
+  assert.equal(
+    environment.requestLog.filter(({ path, options }) => path === "/api/v2/config" && String(options.method || "GET") === "GET").length,
+    authenticatedLoadsBeforeSave.config,
+    "a boundary reset must not continue by loading authenticated configuration"
+  );
+  assert.equal(
+    environment.requestLog.filter(({ path }) => path === "/api/v2/operations/snapshot").length,
+    authenticatedLoadsBeforeSave.operations,
+    "a boundary reset must not continue by loading authenticated operations"
+  );
+  assert.equal(
+    environment.requestLog.filter(({ path }) => path === "/api/v2/sessions").length,
+    authenticatedLoadsBeforeSave.sessions,
+    "a boundary reset must not continue by loading authenticated browser sessions"
+  );
+  assert.doesNotMatch(environment.main.innerHTML, new RegExp(ownerName, "u"), "the signed-out gate must not retain the former owner name");
+  assert.ok(
+    environment.elements.get("#toast-region").children.some(
+      ({ textContent }) => textContent === "The Jellyfin network boundary changed. All browsers were signed out; sign in again."
+    ),
+    "the network reset notice must clearly say that all browsers were signed out"
+  );
+}
+
+async function jellyfinServiceAuthenticationResetContract() {
+  const csrfToken = "service-boundary-reset-csrf";
+  const ownerName = "Service Boundary Owner";
+  const jellyfin = {
+    id: "jellyfin",
+    name: "Jellyfin",
+    role: "Library and playback",
+    url: "http://10.44.1.20:8096",
+    configured: true,
+    authMode: "token",
+    credentialConfigured: true,
+    monitoringEnabled: true
+  };
+  const config = {
+    policy: { allowedCidrs: ["10.44.1.20/32"], allowPublicHttps: false, revision: 1 },
+    services: [jellyfin]
+  };
+  const snapshot = minimalOperationsSnapshot();
+  let statusCalls = 0;
+  const environment = installFakeBrowser(({ path, options }) => {
+    if (path === "/api/v2/status") {
+      statusCalls += 1;
+      if (statusCalls === 1) {
+        return jsonResponse({
+          setupRequired: false,
+          authenticated: true,
+          authentication: { provider: "jellyfin", configured: true, ownerName, legacyAccessKeyAvailable: false },
+          csrfToken,
+          session: { id: "41414141-4141-4141-8141-414141414141", name: "Service reset browser" },
+          storage: { credentialsEncrypted: true, externalKey: false }
+        });
+      }
+      return jsonResponse({
+        setupRequired: false,
+        authenticated: false,
+        authentication: { provider: "jellyfin", configured: true, ownerName: null, legacyAccessKeyAvailable: false },
+        csrfToken: null,
+        storage: { credentialsEncrypted: true, externalKey: false }
+      });
+    }
+    if (path === "/api/v2/config" && String(options.method || "GET") === "GET") return jsonResponse(clone(config));
+    if (path === "/api/v2/services/jellyfin" && options.method === "PUT") {
+      return jsonResponse({ ...clone(jellyfin), authMode: "login", browserAuthenticationReset: true });
+    }
+    if (path === "/api/v2/operations/snapshot") return jsonResponse(clone(snapshot));
+    if (path === "/api/v2/sessions") return jsonResponse({ currentSessionId: "", sessions: [] });
+    return jsonResponse({ code: "NOT_FOUND", message: "Unexpected test route." }, 404);
+  }, "jellyfin-service-authentication-reset");
+
+  environment.location.hash = "#/services";
+  await importShell(environment);
+  await waitFor(() => environment.main.innerHTML.includes("service-grid-v5"), "authenticated service list before reset");
+  const authenticatedLoadsBeforeSave = {
+    config: environment.requestLog.filter(({ path, options }) => path === "/api/v2/config" && String(options.method || "GET") === "GET").length,
+    operations: environment.requestLog.filter(({ path }) => path === "/api/v2/operations/snapshot").length,
+    sessions: environment.requestLog.filter(({ path }) => path === "/api/v2/sessions").length
+  };
+
+  const form = new FakeElement({ id: "service-form" });
+  form.dataset.serviceId = "jellyfin";
+  form.dataset.originalUrl = jellyfin.url;
+  form.dataset.originalAuthMode = "token";
+  form.dataset.authMode = "login";
+  form.dataset.credentialConfigured = "true";
+  form.registerSelector("#service-error", new FakeElement({ id: "service-error" }));
+  form.formDataValues = new Map([
+    ["url", jellyfin.url],
+    ["authMode", "login"],
+    ["username", "monitor-user"],
+    ["password", "one-time-monitor-password"],
+    ["monitoringEnabled", "on"]
+  ]);
+  await environment.dispatchDocument("submit", { target: form, preventDefault() {} });
+  await waitFor(() => statusCalls === 2, "Jellyfin-service status reinitialization");
+  await waitFor(() => environment.main.innerHTML.includes("Sign in with Jellyfin"), "Jellyfin-service login transition");
+  await waitFor(
+    () => environment.elements.get("#toast-region").children.some(({ textContent }) => textContent.includes("All browsers were signed out")),
+    "Jellyfin-service all-browser sign-out notice"
+  );
+
+  const putIndex = environment.requestLog.findIndex(
+    ({ path, options }) => path === "/api/v2/services/jellyfin" && options.method === "PUT"
+  );
+  assert.ok(putIndex >= 0, "the Jellyfin service mutation must be dispatched");
+  assert.equal(environment.requestLog[putIndex + 1]?.path, "/api/v2/status", "a Jellyfin authorization reset must reinitialize status immediately after the mutation response");
+  assert.equal(
+    environment.requestLog.filter(({ path, options }) => path === "/api/v2/config" && String(options.method || "GET") === "GET").length,
+    authenticatedLoadsBeforeSave.config,
+    "a Jellyfin authorization reset must not continue by loading authenticated configuration"
+  );
+  assert.equal(
+    environment.requestLog.filter(({ path }) => path === "/api/v2/operations/snapshot").length,
+    authenticatedLoadsBeforeSave.operations,
+    "a Jellyfin authorization reset must not continue by loading authenticated operations"
+  );
+  assert.equal(
+    environment.requestLog.filter(({ path }) => path === "/api/v2/sessions").length,
+    authenticatedLoadsBeforeSave.sessions,
+    "a Jellyfin authorization reset must not continue by loading authenticated browser sessions"
+  );
+  assert.doesNotMatch(environment.main.innerHTML, new RegExp(ownerName, "u"), "the signed-out gate must not retain the former owner name");
+  assert.ok(
+    environment.elements.get("#toast-region").children.some(
+      ({ textContent }) => textContent === "Jellyfin authorization changed. All browsers were signed out; sign in again."
+    ),
+    "the service reset notice must clearly say that all browsers were signed out"
+  );
+}
+
 async function emptyStateLayoutContract() {
   const [styles, shellStyles, documentMarkup, application, operationsStyles] = await Promise.all([
     readFile(new URL("../src/ui/control.css", import.meta.url), "utf8"),
@@ -870,15 +1105,24 @@ async function emptyStateLayoutContract() {
   assert.match(application, /async function deleteService\([\s\S]*?runConfirmedDeletion/u, "media connection removal must use the shared in-app confirmation and mutation lock");
   assert.match(application, /async function runConfirmedDeletion[\s\S]*?state\.actionMutation = key;[\s\S]*?await api\(path, \{ method: "DELETE" \}\)/u, "confirmed removals must lock duplicate mutations before dispatch");
   assert.match(application, /async function loadOperations[\s\S]*?error\.status === 401[\s\S]*?await initialize\(\)/u, "background session expiry must close stale authenticated UI through initialization");
+  const clearAuthenticatedStateStart = application.indexOf("function clearAuthenticatedState()");
+  const clearAuthenticatedStateEnd = application.indexOf("\n}\n\nasync function revokeBrowserSession", clearAuthenticatedStateStart);
+  assert.ok(clearAuthenticatedStateStart >= 0 && clearAuthenticatedStateEnd > clearAuthenticatedStateStart, "the authenticated-state reset function must remain inspectable");
+  const clearAuthenticatedStateSource = application.slice(clearAuthenticatedStateStart, clearAuthenticatedStateEnd);
+  assert.match(clearAuthenticatedStateSource, /state\.status\s*=\s*\{[\s\S]*?csrfToken:\s*null/u, "clearing authenticated state must remove the status CSRF token");
+  assert.match(clearAuthenticatedStateSource, /authentication:[\s\S]*?ownerName:\s*null/u, "clearing authenticated state must remove the private owner name");
+  assert.match(clearAuthenticatedStateSource, /state\.csrfToken\s*=\s*""/u, "clearing authenticated state must also remove the request CSRF token");
   assert.match(operationsStyles, /@media \(max-width: 1450px\) \{[\s\S]*?\.portainer-container-row \{[^}]*grid-template-areas:/u, "Portainer controls must switch to the compact row layout before a laptop-width sidebar can clip them");
   assert.match(application, /await refreshOperations\(\{ afterCurrent: true \}\)/u, "every dispatched control attempt must wait for a post-action inventory refresh");
   assert.match(application, /\["ACTION_OUTCOME_UNKNOWN", "NETWORK_ERROR", "INVALID_RESPONSE"\]\.includes\(error\?\.code\)[\s\S]*?error\?\.status === 0/u, "lost or malformed action responses must retain the refresh lock until fresh evidence arrives");
   assert.match(application, /if \(state\.operationsRefreshPromise\) return state\.operationsRefreshPromise;/u, "background snapshot polling must not race an action refresh");
   assert.match(application, /const requestGeneration = \+\+state\.operationsRequestGeneration;[\s\S]*?if \(requestGeneration !== state\.operationsRequestGeneration\) return false;/u, "late snapshot responses must not overwrite newer post-action evidence");
-  assert.match(application, /api\("\/api\/v2\/access\/login"/u, "the unauthenticated gate must use the reusable access-key login route");
-  assert.match(application, /api\("\/api\/v2\/access\/rotate"/u, "Settings must use the authenticated access-key rotation route");
+  assert.match(application, /api\("\/api\/v2\/auth\/jellyfin\/login"/u, "the unauthenticated gate must use the Jellyfin login route");
+  assert.match(application, /api\("\/api\/v2\/auth\/jellyfin\/enroll"/u, "Settings must use the authenticated Jellyfin enrollment route");
+  assert.match(application, /legacyAccessKeyAvailable[\s\S]*?api\("\/api\/v2\/access\/login"/u, "legacy key login must remain a migration-only path");
+  assert.doesNotMatch(application, /api\("\/api\/v2\/access\/rotate"|accessKeyReveal/u, "the browser UI must not reveal or rotate universal access keys");
   assert.doesNotMatch(application, /\/api\/v2\/session\/(?:invite|pair)/u, "the retired browser-invite routes must not remain reachable from the runtime");
-  assert.doesNotMatch(application, /(?:localStorage|sessionStorage)\?\.setItem\([^\n]*accessKey/iu, "access keys must not be persisted in web storage");
+  assert.doesNotMatch(application, /(?:localStorage|sessionStorage)\?\.setItem\([^\n]*(?:accessKey|password)/iu, "browser authentication secrets must not be persisted in web storage");
   assert.match(application, /contains\("media-art-image"\)[\s\S]*?contains\("hero-art-image"\)/u, "failed poster and hero artwork must both reveal their CSS fallback");
 }
 
@@ -1850,8 +2094,8 @@ async function seriesSeasonControlsContract() {
     if (path === "/api/v2/status") {
       statusCalls += 1;
       return jsonResponse(statusCalls === 1
-        ? { setupRequired: false, authenticated: true, csrfToken: "expired-season-csrf", session: { name: "Expiring Browser" } }
-        : { setupRequired: false, authenticated: false, accessKeyConfigured: true });
+        ? { setupRequired: false, authenticated: true, authentication: { provider: "jellyfin", configured: true, ownerName: "Gabriel", legacyAccessKeyAvailable: false }, csrfToken: "expired-season-csrf", session: { name: "Expiring Browser" } }
+        : { setupRequired: false, authenticated: false, authentication: { provider: "jellyfin", configured: true, ownerName: null, legacyAccessKeyAvailable: false } });
     }
     if (path === "/api/v2/config") return jsonResponse({
       policy: { allowedCidrs: [] },
@@ -1873,7 +2117,7 @@ async function seriesSeasonControlsContract() {
   Object.assign(expiredOpener.dataset, { action: "open-media-detail", mediaId });
   expiredOpener.closest = (selector) => selector === "[data-action]" ? expiredOpener : null;
   await expired.dispatchDocument("click", { target: expiredOpener });
-  await waitFor(() => expired.main.innerHTML.includes("Unlock Helmsman"), "season-detail authentication reset");
+  await waitFor(() => expired.main.innerHTML.includes("Sign in with Jellyfin"), "season-detail authentication reset");
   assert.equal(expiredDrawer.classList.contains("is-open"), false, "season-detail 401 must close the authenticated drawer");
   assert.doesNotMatch(expiredPanel.innerHTML, /Expired/u, "authentication failures must not become an inline catalog error");
 
@@ -1887,7 +2131,7 @@ async function seriesSeasonControlsContract() {
     if (path === "/api/v2/status") return jsonResponse({
       setupRequired: false,
       authenticated: true,
-      accessKeyConfigured: true,
+      authentication: { provider: "jellyfin", configured: true, ownerName: "Gabriel", legacyAccessKeyAvailable: false },
       csrfToken: "season-race-csrf",
       session: { name: "Season Race Browser" }
     });
@@ -1936,7 +2180,7 @@ async function seriesSeasonControlsContract() {
   logout.dataset.action = "logout";
   logout.closest = (selector) => selector === "[data-action]" ? logout : null;
   await logoutRace.dispatchDocument("click", { target: logout });
-  assert.match(logoutRace.main.innerHTML, /Unlock Helmsman/u);
+  assert.match(logoutRace.main.innerHTML, /Sign in with Jellyfin/u);
   releaseStaleSeasonDetail(jsonResponse(seasonPayload()));
   await new Promise((resolve) => nativeSetTimeout(resolve, 0));
   const retryStartup = new FakeElement({ id: "retry-after-season-logout" });
@@ -2466,7 +2710,8 @@ async function serviceDialogInteractionContract() {
   assert.equal(modal.innerHTML, "", "closing the dialog must remove credential inputs from the DOM");
   assert.equal(modal.attributes.get("aria-hidden"), "true");
   assert.equal(modal.classList.contains("is-open"), false);
-  assert.doesNotMatch(`${environment.main.innerHTML}${modal.innerHTML}`, /name="credential"|type="password"/u);
+  assert.doesNotMatch(modal.innerHTML, /name="credential"|type="password"/u);
+  assert.doesNotMatch(environment.main.innerHTML, /save-password/u, "service credentials must not move into Settings markup");
 
   await environment.dispatchDocument("click", { target: opener });
   const removeService = new FakeElement({ id: "remove-jellyfin" });
@@ -3452,8 +3697,8 @@ async function portainerInfrastructureContract() {
   const environment = installFakeBrowser(({ path, options }) => {
     const method = String(options.method || "GET").toUpperCase();
     if (path === "/api/v2/status") return sessionExpired
-      ? jsonResponse({ setupRequired: false, authenticated: false, accessKeyConfigured: true })
-      : jsonResponse({ setupRequired: false, authenticated: true, csrfToken: "portainer-csrf", session: { name: "Portainer Browser" } });
+      ? jsonResponse({ setupRequired: false, authenticated: false, authentication: { provider: "jellyfin", configured: true, ownerName: null, legacyAccessKeyAvailable: false } })
+      : jsonResponse({ setupRequired: false, authenticated: true, authentication: { provider: "jellyfin", configured: true, ownerName: "Gabriel", legacyAccessKeyAvailable: false }, csrfToken: "portainer-csrf", session: { name: "Portainer Browser" } });
     if (path === "/api/v2/config") return jsonResponse(clone(config));
     if (path === "/api/v2/operations/snapshot") return sessionExpired
       ? jsonResponse({ code: "AUTHENTICATION_REQUIRED", message: "The browser session expired." }, 401)
@@ -3712,7 +3957,7 @@ async function portainerInfrastructureContract() {
   assert.equal(environment.elements.get("#app").inert, false, "session expiry must release the authenticated shell");
   assert.equal(environment.elements.get("#modal-layer").classList.contains("is-open"), false);
   assert.equal(environment.elements.get("#drawer-layer").classList.contains("is-open"), false);
-  assert.match(environment.main.innerHTML, /Unlock Helmsman/u, "an expired browser must return to the access-key gate");
+  assert.match(environment.main.innerHTML, /Sign in with Jellyfin/u, "an expired browser must return to the Jellyfin login gate");
   assert.equal(
     environment.requestLog.filter(({ path }) => path === "/api/v2/actions/portainer/container").length,
     actionCallsBeforeExpiry,
@@ -3722,10 +3967,7 @@ async function portainerInfrastructureContract() {
 
 async function authenticatedRuntimeContract() {
   const csrfToken = "runtime-csrf-token";
-  const rotatedCsrfToken = "rotated-runtime-csrf-token";
-  const rotatedAccessKey = "hm-rotated-<script>rotation-xss</script>";
   const currentSessionId = "11111111-1111-4111-8111-111111111111";
-  const rotatedSessionId = "33333333-3333-4333-8333-333333333333";
   const otherSessionId = "22222222-2222-4222-8222-222222222222";
   const hostileSessionName = 'Kitchen <img src=x onerror="session-xss">';
   const hostileSessionOrigin = 'http://kitchen.test/\"><svg/onload=session-xss>';
@@ -3834,13 +4076,12 @@ async function authenticatedRuntimeContract() {
     events: []
   };
 
-  let accessRotated = false;
   const environment = installFakeBrowser(({ path, options }) => {
     if (path === "/api/v2/status") {
       return jsonResponse({
         setupRequired: false,
         authenticated: true,
-        accessKeyConfigured: true,
+        authentication: { provider: "jellyfin", configured: true, ownerName: "Gabriel", legacyAccessKeyAvailable: false },
         csrfToken,
         session: { id: currentSessionId, name: "Runtime Browser" },
         storage: { credentialsEncrypted: true, externalKey: false }
@@ -3850,18 +4091,6 @@ async function authenticatedRuntimeContract() {
     if (path === "/api/v2/operations/snapshot") return jsonResponse(clone(snapshot));
     if (path === "/api/v2/operations/refresh") return jsonResponse(clone(snapshot));
     if (path === "/api/v2/sessions" && String(options.method || "GET") === "GET") {
-      if (accessRotated) {
-        return jsonResponse({
-          currentSessionId: rotatedSessionId,
-          sessions: [{
-            id: rotatedSessionId,
-            name: "Rotated Runtime Browser",
-            origin: "http://127.0.0.1:4180",
-            createdAt: "2026-09-14T12:00:00.000Z",
-            expiresAt: "2027-09-14T12:00:00.000Z"
-          }]
-        });
-      }
       return jsonResponse({
         currentSessionId,
         sessions: [
@@ -3887,14 +4116,6 @@ async function authenticatedRuntimeContract() {
     }
     if (path === "/api/v2/session" && options.method === "DELETE") {
       return new Response(null, { status: 204 });
-    }
-    if (path === "/api/v2/access/rotate" && options.method === "POST") {
-      accessRotated = true;
-      return jsonResponse({
-        accessKey: rotatedAccessKey,
-        csrfToken: rotatedCsrfToken,
-        session: { id: rotatedSessionId, name: "Rotated Runtime Browser" }
-      });
     }
     return jsonResponse({ code: "NOT_FOUND", message: "Unexpected test route." }, 404);
   }, "authenticated");
@@ -3984,9 +4205,11 @@ async function authenticatedRuntimeContract() {
   assert.match(environment.main.innerHTML, /name="networkMode" type="radio" value="manual"[^>]*checked/u, "saved CIDRs must reopen in manual mode");
   assert.match(environment.main.innerHTML, /name="allowedCidrs"[^>]*required/u, "manual mode must require its CIDR textarea");
   assert.doesNotMatch(environment.main.innerHTML, /name="allowedCidrs"[^>]*disabled/u, "manual mode must enable its CIDR textarea");
-  assert.match(environment.main.innerHTML, /Universal access key/u);
-  assert.match(environment.main.innerHTML, /trusted for one year/u);
-  assert.match(environment.main.innerHTML, /data-action="rotate-access-key"/u);
+  assert.match(environment.main.innerHTML, /Jellyfin owner authentication/u);
+  assert.match(environment.main.innerHTML, /Gabriel enrolled/u);
+  assert.doesNotMatch(environment.main.innerHTML, /id="jellyfin-enroll-form"/u, "an enrolled owner must not be replaceable through the enrollment-only endpoint");
+  assert.match(environment.main.innerHTML, /data-action="refresh-sessions"/u);
+  assert.doesNotMatch(environment.main.innerHTML, /data-action="rotate-access-key"|Server ID|User ID/iu);
   assert.doesNotMatch(environment.main.innerHTML, /Create browser invite|one-time browser invite/iu);
   assert.match(environment.main.innerHTML, /Authorized browsers/u);
   assert.match(environment.main.innerHTML, /data-current-session="true"/u, "the active session must be marked structurally");
@@ -4115,79 +4338,36 @@ async function authenticatedRuntimeContract() {
   assert.doesNotMatch(environment.main.innerHTML, /Kitchen &lt;img/u, "a revoked browser must leave the rendered session list");
   assert.match(environment.main.innerHTML, /Current browser/u, "revoking another browser must preserve the current session");
 
-  const rotateTarget = actionTarget("rotate-access-key");
-  const rotationsBeforeConfirmation = environment.requestLog.filter(({ path }) => path === "/api/v2/access/rotate").length;
-  const cancelledRotation = environment.dispatchDocument("click", { target: rotateTarget });
-  await waitFor(() => environment.confirmationLayer.classList.contains("is-open"), "access-key rotation confirmation");
-  assert.match(environment.confirmationLayer.innerHTML, /current key will stop working and every other browser will be signed out/iu);
-  let escapePrevented = false;
-  await environment.dispatchWindow("keydown", {
-    key: "Escape",
-    preventDefault() { escapePrevented = true; }
-  });
-  await cancelledRotation;
-  assert.equal(
-    environment.requestLog.filter(({ path }) => path === "/api/v2/access/rotate").length,
-    rotationsBeforeConfirmation,
-    "cancelling rotation must not send a request"
-  );
-  assert.equal(escapePrevented, true, "Escape must be consumed by the in-app confirmation");
-  assert.equal(environment.confirmationLayer.classList.contains("is-open"), false);
-
-  const approvedRotation = environment.dispatchDocument("click", { target: rotateTarget });
-  await waitFor(() => environment.confirmationLayer.classList.contains("is-open"), "approved access-key rotation confirmation");
-  await environment.dispatchDocument("click", { target: environment.confirmationApprove });
-  await approvedRotation;
-  await waitFor(() => environment.requestLog.some(({ path }) => path === "/api/v2/access/rotate"), "access-key rotation mutation");
-  assert.deepEqual(environment.browserConfirmCalls, [], "no Helmsman action may invoke the browser-native confirmation UI");
-  await waitFor(() => environment.main.innerHTML.includes("hm-rotated-"), "rotated access-key reveal");
-  assert.match(environment.main.innerHTML, /hm-rotated-&lt;script&gt;rotation-xss&lt;\/script&gt;/u);
-  assert.doesNotMatch(environment.main.innerHTML, /<script>rotation-xss<\/script>/u, "a rotated access key must be escaped");
-  assert.equal((environment.main.innerHTML.match(/hm-rotated-/gu) || []).length, 1, "the rotated key must appear once");
-  assert.equal(environment.requestLog.filter(({ path }) => path === "/api/v2/sessions").length, 2, "rotation must refresh the authorized-browser list");
-  assert.match(environment.main.innerHTML, /Rotated Runtime Browser/u, "rotation must display the refreshed current session");
-  assert.doesNotMatch(environment.main.innerHTML, /Kitchen &lt;img/u, "rotation must not restore revoked browser sessions");
-  assertSecretAbsentFromBrowserStorage(environment, rotatedAccessKey);
-
-  await environment.dispatchDocument("click", { target: actionTarget("copy-access-key") });
-  assert.deepEqual(environment.clipboardWrites, [rotatedAccessKey]);
-  environment.location.hash = "#/overview";
-  await environment.dispatchWindow("hashchange", { type: "hashchange" });
-  environment.location.hash = "#/settings";
-  await environment.dispatchWindow("hashchange", { type: "hashchange" });
-  assert.doesNotMatch(environment.main.innerHTML, /hm-rotated-/u, "the one-time reveal must not return after leaving Settings");
-
   const mutations = environment.requestLog.filter(({ path }) => [
     "/api/v2/operations/refresh",
-    "/api/v2/access/rotate",
     `/api/v2/sessions/${otherSessionId}`
   ].includes(path));
-  assert.equal(mutations.length, 3);
+  assert.equal(mutations.length, 2);
   for (const mutation of mutations) {
     assert.equal(mutation.options.credentials, "same-origin", `${mutation.path} must send only same-origin browser credentials`);
     assert.equal(mutation.options.headers.get("X-Jellofin-CSRF"), csrfToken, `${mutation.path} must carry the authenticated CSRF token`);
     assert.equal(mutation.options.method, mutation.path.startsWith("/api/v2/sessions/") ? "DELETE" : "POST");
   }
-  const rotation = mutations.find(({ path }) => path === "/api/v2/access/rotate");
-  assert.deepEqual(JSON.parse(rotation.options.body), {});
-  assert.equal(rotation.options.headers.get("X-Jellofin-CSRF"), csrfToken, "rotation must use the pre-rotation authenticated CSRF token");
 
   await environment.dispatchDocument("click", { target: actionTarget("logout") });
   const logout = environment.requestLog.find(({ path }) => path === "/api/v2/session");
-  assert.equal(logout.options.headers.get("X-Jellofin-CSRF"), rotatedCsrfToken, "the rotated session's CSRF token must replace the previous token");
-  assert.match(environment.main.innerHTML, /Unlock Helmsman/u, "signing out after rotation must return to reusable-key login");
+  assert.equal(logout.options.headers.get("X-Jellofin-CSRF"), csrfToken);
+  assert.match(environment.main.innerHTML, /Sign in with Jellyfin/u, "signing out must return to Jellyfin login");
 }
 
 const failures = [];
 
 for (const [name, contract] of [
   ["setup gate without browser-vault language", setupGateContract],
-  ["universal access-key gate", accessKeyGateContract],
-  ["access-key recovery gate", accessKeyRecoveryGateContract],
-  ["first-time access-key reveal", setupClaimAccessKeyContract],
-  ["first access-key creation skips rotation confirmation", firstAccessKeyCreationContract],
-  ["reusable access-key login and redaction", accessKeyLoginContract],
+  ["Jellyfin username and password gate", jellyfinGateContract],
+  ["legacy access-key migration gate", legacyAccessKeyGateContract],
+  ["unenrolled authentication recovery gate", authenticationRecoveryGateContract],
+  ["first-time claim routes to Jellyfin setup", setupClaimJellyfinFlowContract],
+  ["Jellyfin owner enrollment and redaction", jellyfinEnrollmentContract],
+  ["Jellyfin login and password redaction", jellyfinLoginContract],
   ["exact and manual network policy modes", networkPolicyInteractionContract],
+  ["network boundary reset signs out every browser", networkBoundaryAuthenticationResetContract],
+  ["Jellyfin authorization reset signs out every browser", jellyfinServiceAuthenticationResetContract],
   ["readable empty-state layout", emptyStateLayoutContract],
   ["persistent collapsible sidebar", sidebarPersistenceContract],
   ["prioritized and retry-bounded media artwork", mediaArtworkLoadingContract],
@@ -4212,4 +4392,4 @@ if (failures.length) {
   throw new Error(`Runtime v5 smoke test failed:\n${failures.map((failure) => `  - ${failure}`).join("\n")}`);
 }
 
-console.log("Runtime v5 smoke test passed: setup, universal access-key login and rotation, key redaction, network modes, categorized Media connections, configured-only Infrastructure Overview, connector catalog, Proxmox and Portainer workflows, stable polling, browser-session revocation, CSRF, same-origin credentials, and escaping.");
+console.log("Runtime v5 smoke test passed: setup, Jellyfin owner enrollment and login, legacy-key migration, password redaction, network modes, categorized Media connections, configured-only Infrastructure Overview, connector catalog, Proxmox and Portainer workflows, stable polling, browser-session revocation, CSRF, same-origin credentials, and escaping.");

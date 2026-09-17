@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import http from "node:http";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -95,6 +95,16 @@ test("Helmsman boots the frozen v0.5 state, session, and credential formats", as
   const issued = await legacySessions.issue({ name: "Existing v0.5 browser", origin });
   const cookie = issued.cookie.split(";", 1)[0];
   assert.match(cookie, /^JFC_SESSION=/u);
+  const legacySessionState = JSON.parse(await readFile(legacySessions.filePath, "utf8"));
+  legacySessionState.version = 1;
+  delete legacySessionState.accessKeyHash;
+  delete legacySessionState.owner;
+  delete legacySessionState.integrity;
+  for (const record of Object.values(legacySessionState.sessions)) delete record.principal;
+  await writeFile(legacySessions.filePath, `${JSON.stringify(legacySessionState)}\n`, {
+    encoding: "utf8",
+    mode: 0o600
+  });
 
   const logs = [];
   const broker = await createBroker({ dataDir, log: (message) => logs.push(String(message)) });
@@ -108,9 +118,14 @@ test("Helmsman boots the frozen v0.5 state, session, and credential formats", as
 
   const status = await statusRequest(port, cookie);
   assert.equal(status.status, 200);
-  assert.equal(status.body.version, "1.0.0-beta.2");
+  assert.equal(status.body.version, "1.0.1");
   assert.equal(status.body.authenticated, true);
-  assert.equal(status.body.accessKeyConfigured, false);
+  assert.deepEqual(status.body.authentication, {
+    provider: null,
+    configured: false,
+    ownerName: null,
+    legacyAccessKeyAvailable: false
+  });
   assert.equal(status.body.session.name, "Existing v0.5 browser");
   assert.equal(logs.some((line) => line.includes("setup token")), false);
 
@@ -118,7 +133,7 @@ test("Helmsman boots the frozen v0.5 state, session, and credential formats", as
   const metadata = await reopenedCredentials.initialize();
   assert.equal(metadata.credentials[namespace], undefined, "the URL-only v0.5 namespace was not retired");
   const migratedNamespaces = Object.keys(metadata.credentials)
-    .filter((candidate) => candidate.startsWith("jellyfin-b2-"));
+    .filter((candidate) => candidate.startsWith("jellyfin-b3-"));
   assert.equal(migratedNamespaces.length, 1, "the legacy credential was not rebound to the hardened namespace");
   const [migratedNamespace] = migratedNamespaces;
   assert.equal(metadata.credentials[migratedNamespace].token.configured, true);

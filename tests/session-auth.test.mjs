@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -25,6 +26,34 @@ function request(headers = {}) {
 function cookieValue(setCookie) {
   const first = setCookie.split(";", 1)[0];
   return first.slice(first.indexOf("=") + 1);
+}
+
+function jellyfinPrincipal(overrides = {}) {
+  return {
+    provider: "jellyfin",
+    serverId: "server-0123456789abcdef",
+    userId: "user-0123456789abcdef",
+    username: "Captain",
+    deviceId: "22222222-2222-4222-8222-222222222222",
+    jellyfinUrl: "https://jellyfin.example.test",
+    targetRevision: "33333333-3333-4333-8333-333333333333",
+    boundaryHash: "a".repeat(64),
+    verifiedAt: "2026-09-12T12:00:00.000Z",
+    ...overrides
+  };
+}
+
+function jellyfinOwner(overrides = {}) {
+  const principal = jellyfinPrincipal(overrides);
+  return {
+    provider: principal.provider,
+    serverId: principal.serverId,
+    userId: principal.userId,
+    username: principal.username,
+    jellyfinUrl: principal.jellyfinUrl,
+    targetRevision: principal.targetRevision,
+    boundaryHash: principal.boundaryHash
+  };
 }
 
 function expectCode(callback, code) {
@@ -160,27 +189,40 @@ test("opaque sessions persist only hashes and authenticate with Origin plus CSRF
     clock += 60_001;
     await expectCodeAsync(() => restarted.authenticateToken(token), "SESSION_EXPIRED");
     assert.deepEqual(restarted.list(), []);
+    assert.equal(restarted.takePrunedSessions()[0]?.id, issued.session.id);
+    assert.deepEqual(restarted.takePrunedSessions(), []);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("new browser sessions use the one-year default lifetime", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "helmsman-session-one-year-"));
+test("new browser sessions use a 30-day default lifetime and accept a bounded override", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "helmsman-session-thirty-days-"));
   const dataDir = path.join(root, "data");
   const clock = Date.parse("2026-09-12T12:00:00.000Z");
   const store = new SessionAuthStore(dataDir, { now: () => clock });
   try {
     await store.initialize();
     const issued = await store.issue({ name: "Long-lived browser", origin: "https://command.example.test" });
-    assert.equal(issued.session.expiresAt, "2027-09-12T12:00:00.000Z");
-    assert.match(issued.cookie, /; Max-Age=31536000;/u);
+    assert.equal(issued.session.expiresAt, "2026-10-12T12:00:00.000Z");
+    assert.match(issued.cookie, /; Max-Age=2592000;/u);
+    const bootstrap = await store.issue({
+      name: "Setup browser",
+      origin: "https://command.example.test",
+      ttlMs: 60 * 60 * 1_000
+    });
+    assert.equal(bootstrap.session.expiresAt, "2026-09-12T13:00:00.000Z");
+    await assert.rejects(() => store.issue({
+      name: "Unsafe lifetime",
+      origin: "https://command.example.test",
+      ttlMs: 366 * 24 * 60 * 60 * 1_000
+    }), /session lifetime is invalid/u);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("valid v1 session state migrates to v2 without revoking existing sessions", async () => {
+test("valid v1 session state migrates to sealed-state shape without revoking existing sessions", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "helmsman-session-v1-migration-"));
   const dataDir = path.join(root, "data");
   const store = new SessionAuthStore(dataDir);
@@ -191,6 +233,9 @@ test("valid v1 session state migrates to v2 without revoking existing sessions",
     const legacy = JSON.parse(await readFile(store.filePath, "utf8"));
     legacy.version = 1;
     delete legacy.accessKeyHash;
+    delete legacy.owner;
+    delete legacy.integrity;
+    for (const record of Object.values(legacy.sessions)) delete record.principal;
     await writeFile(store.filePath, `${JSON.stringify(legacy)}\n`, { encoding: "utf8", mode: 0o600 });
 
     const restarted = new SessionAuthStore(dataDir);
@@ -198,156 +243,231 @@ test("valid v1 session state migrates to v2 without revoking existing sessions",
     assert.equal((await restarted.authenticateToken(token)).session.id, issued.session.id);
     assert.equal(restarted.accessKeyConfigured(), false);
     const migrated = JSON.parse(await readFile(store.filePath, "utf8"));
-    assert.equal(migrated.version, 2);
+    assert.equal(migrated.version, 4);
+    assert.equal(migrated.integrity, null);
     assert.equal(migrated.accessKeyHash, null);
-    assert.deepEqual(migrated.sessions, legacy.sessions);
+    assert.equal(migrated.owner, null);
+    assert.deepEqual(
+      migrated.sessions,
+      Object.fromEntries(Object.entries(legacy.sessions).map(([id, record]) => [
+        id,
+        { ...record, principal: null }
+      ]))
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("access keys are hashed, reusable for login, and atomically rotated with sessions", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "helmsman-access-key-"));
+test("valid v2 access-key state migrates to sealed-state shape and remains available for owner enrollment", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "helmsman-session-v2-migration-"));
   const dataDir = path.join(root, "data");
   const store = new SessionAuthStore(dataDir);
   try {
     await store.initialize();
-    assert.equal(store.accessKeyConfigured(), false);
-    await expectCodeAsync(
-      () => store.login({
-        accessKey: "x".repeat(43),
-        name: "Unavailable",
-        origin: "https://command.example.test"
-      }),
-      "ACCESS_KEY_NOT_CONFIGURED"
-    );
+    const legacyKey = "a".repeat(43);
+    const issued = await store.issue({ name: "Beta 2 browser", origin: "https://command.example.test" });
+    const token = cookieValue(issued.cookie);
+    const legacy = JSON.parse(await readFile(store.filePath, "utf8"));
+    legacy.version = 2;
+    legacy.accessKeyHash = createHash("sha256").update(legacyKey, "utf8").digest("hex");
+    delete legacy.owner;
+    delete legacy.integrity;
+    for (const record of Object.values(legacy.sessions)) delete record.principal;
+    await writeFile(store.filePath, `${JSON.stringify(legacy)}\n`, { encoding: "utf8", mode: 0o600 });
 
-    const claimed = await store.claimAccess({ name: "Primary", origin: "https://command.example.test" });
-    assert.match(claimed.accessKey, /^[A-Za-z0-9_-]{43}$/u);
-    assert.equal(store.accessKeyConfigured(), true);
-    const claimedToken = cookieValue(claimed.cookie);
-    const persistedAfterClaim = await readFile(store.filePath, "utf8");
-    assert.equal(persistedAfterClaim.includes(claimed.accessKey), false);
-    assert.equal(persistedAfterClaim.includes(claimedToken), false);
-    assert.match(JSON.parse(persistedAfterClaim).accessKeyHash, /^[a-f0-9]{64}$/u);
-
-    await expectCodeAsync(
-      () => store.login({
-        accessKey: "y".repeat(43),
-        name: "Wrong key",
-        origin: "https://command.example.test"
-      }),
-      "ACCESS_KEY_INVALID"
-    );
-    const second = await store.login({
-      accessKey: claimed.accessKey,
-      name: "Second browser",
+    const restarted = new SessionAuthStore(dataDir);
+    assert.equal((await restarted.initialize()).length, 1);
+    assert.equal((await restarted.authenticateToken(token)).session.id, issued.session.id);
+    assert.equal(restarted.accessKeyConfigured(), true);
+    assert.equal(restarted.ownerConfigured(), false);
+    const additional = await restarted.login({
+      accessKey: legacyKey,
+      name: "Migration browser",
       origin: "https://command.example.test"
     });
-    const secondToken = cookieValue(second.cookie);
-    assert.notEqual(secondToken, claimedToken);
-    assert.equal(store.list().length, 2);
+    assert.equal(additional.session.name, "Migration browser");
 
-    const rotated = await store.rotateAccessKeyAndIssue({
-      name: "Primary after rotation",
-      origin: "https://command.example.test",
-      currentSessionId: second.session.id
+    const migrated = JSON.parse(await readFile(store.filePath, "utf8"));
+    assert.equal(migrated.version, 4);
+    assert.equal(migrated.integrity, null);
+    assert.equal(migrated.owner, null);
+    assert.match(migrated.accessKeyHash, /^[a-f0-9]{64}$/u);
+    assert.equal(Object.values(migrated.sessions).every((record) => record.principal === null), true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("owner enrollment atomically replaces legacy access with one bound Jellyfin session", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "helmsman-owner-enrollment-"));
+  const dataDir = path.join(root, "data");
+  let clock = Date.parse("2026-09-12T12:00:00.000Z");
+  let store = new SessionAuthStore(dataDir, { now: () => clock });
+  const enrolledSessionId = "11111111-1111-4111-8111-111111111111";
+  try {
+    await store.initialize();
+    const legacyKey = "b".repeat(43);
+    const claimed = await store.issue({ name: "Legacy primary", origin: "https://command.example.test" });
+    const legacyState = JSON.parse(await readFile(store.filePath, "utf8"));
+    legacyState.version = 2;
+    legacyState.accessKeyHash = createHash("sha256").update(legacyKey, "utf8").digest("hex");
+    delete legacyState.owner;
+    delete legacyState.integrity;
+    for (const record of Object.values(legacyState.sessions)) delete record.principal;
+    await writeFile(store.filePath, `${JSON.stringify(legacyState)}\n`, { encoding: "utf8", mode: 0o600 });
+    store = new SessionAuthStore(dataDir, { now: () => clock });
+    await store.initialize();
+    const legacySecond = await store.login({
+      accessKey: legacyKey,
+      name: "Legacy second",
+      origin: "https://command.example.test"
     });
-    assert.notEqual(rotated.accessKey, claimed.accessKey);
+    const claimedToken = cookieValue(claimed.cookie);
+    const secondToken = cookieValue(legacySecond.cookie);
+
+    const enrolled = await store.enrollOwnerAndIssue({
+      owner: jellyfinOwner(),
+      principal: jellyfinPrincipal(),
+      sessionId: enrolledSessionId,
+      name: "Captain's browser",
+      origin: "https://command.example.test"
+    });
+    const enrolledToken = cookieValue(enrolled.cookie);
+    assert.equal(enrolled.session.id, enrolledSessionId);
+    assert.equal(enrolled.session.provider, "jellyfin");
+    assert.deepEqual(enrolled.session.user, { provider: "jellyfin", name: "Captain" });
+    assert.equal(enrolled.session.expiresAt, "2026-10-12T12:00:00.000Z");
+    assert.equal(store.ownerConfigured(), true);
+    assert.equal(store.accessKeyConfigured(), false);
+    assert.deepEqual(store.owner(), {
+      provider: "jellyfin",
+      serverId: "server-0123456789abcdef",
+      userId: "user-0123456789abcdef",
+      username: "Captain",
+      jellyfinUrl: "https://jellyfin.example.test",
+      targetRevision: "33333333-3333-4333-8333-333333333333",
+      boundaryHash: "a".repeat(64),
+      enrolledAt: "2026-09-12T12:00:00.000Z"
+    });
+    assert.equal(store.ownerMatches(jellyfinPrincipal({ username: "A later display name" })), true);
+    assert.equal(store.ownerMatches(jellyfinPrincipal({ userId: "somebody-else" })), false);
     assert.equal(store.list().length, 1);
+    assert.equal(store.internalSessions().length, 1);
+    assert.deepEqual(store.getInternalSession(enrolledSessionId)?.principal, jellyfinPrincipal());
+
+    const publicJson = JSON.stringify(enrolled.session);
+    assert.equal(publicJson.includes("server-0123456789abcdef"), false);
+    assert.equal(publicJson.includes("user-0123456789abcdef"), false);
+    assert.equal(publicJson.includes("22222222-2222-4222-8222-222222222222"), false);
+    assert.equal(publicJson.includes("jellyfin.example.test"), false);
+    assert.equal(publicJson.includes("verifiedAt"), false);
+    const persisted = await readFile(store.filePath, "utf8");
+    assert.equal(persisted.includes(enrolledToken), false);
+    assert.equal(persisted.includes(legacyKey), false);
+
     await expectCodeAsync(() => store.authenticateToken(claimedToken), "SESSION_INVALID");
     await expectCodeAsync(() => store.authenticateToken(secondToken), "SESSION_INVALID");
-    await expectCodeAsync(
-      () => store.login({
-        accessKey: claimed.accessKey,
-        name: "Old key",
-        origin: "https://command.example.test"
-      }),
-      "ACCESS_KEY_INVALID"
-    );
-    const replacement = await store.login({
-      accessKey: rotated.accessKey,
-      name: "Replacement browser",
+    await expectCodeAsync(() => store.login({
+      accessKey: legacyKey,
+      name: "Legacy login",
+      origin: "https://command.example.test"
+    }), "ACCESS_KEY_NOT_CONFIGURED");
+    assert.equal((await store.authenticateToken(enrolledToken)).session.id, enrolledSessionId);
+
+    await expectCodeAsync(() => store.enrollOwnerAndIssue({
+      owner: jellyfinOwner(),
+      principal: jellyfinPrincipal({ deviceId: "33333333-3333-4333-8333-333333333333" }),
+      name: "Duplicate enrollment",
+      origin: "https://command.example.test"
+    }), "OWNER_ALREADY_CONFIGURED");
+    assert.equal(store.list().length, 1);
+    await expectCodeAsync(() => store.issue({
+      name: "Unbound session",
+      origin: "https://command.example.test"
+    }), "JELLYFIN_AUTH_REQUIRED");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("owner login checks stable IDs, accepts a renamed owner, and records revalidation", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "helmsman-owner-login-"));
+  const dataDir = path.join(root, "data");
+  let clock = Date.parse("2026-09-12T12:00:00.000Z");
+  const store = new SessionAuthStore(dataDir, { now: () => clock });
+  try {
+    await store.initialize();
+    await store.enrollOwnerAndIssue({
+      owner: jellyfinOwner(),
+      principal: jellyfinPrincipal(),
+      sessionId: "11111111-1111-4111-8111-111111111111",
+      name: "Enrollment browser",
       origin: "https://command.example.test"
     });
-    assert.equal((await store.authenticateToken(cookieValue(replacement.cookie))).session.name, "Replacement browser");
 
-    assert.equal(await store.clearAccess(), 2);
+    await expectCodeAsync(() => store.loginOwner({
+      principal: jellyfinPrincipal({
+        userId: "user-that-is-not-the-owner",
+        deviceId: "33333333-3333-4333-8333-333333333333"
+      }),
+      name: "Wrong Jellyfin user",
+      origin: "https://command.example.test"
+    }), "JELLYFIN_OWNER_MISMATCH");
+    assert.equal(store.list().length, 1);
+
+    const loginSessionId = "44444444-4444-4444-8444-444444444444";
+    const loggedIn = await store.loginOwner({
+      principal: jellyfinPrincipal({
+        username: "Admiral",
+        deviceId: "33333333-3333-4333-8333-333333333333"
+      }),
+      sessionId: loginSessionId,
+      ttlMs: 2 * 60 * 60 * 1_000,
+      name: "Laptop",
+      origin: "https://command.example.test"
+    });
+    assert.equal(loggedIn.session.id, loginSessionId);
+    assert.deepEqual(loggedIn.session.user, { provider: "jellyfin", name: "Admiral" });
+    assert.equal(loggedIn.session.expiresAt, "2026-09-12T14:00:00.000Z");
+    assert.equal(store.owner().username, "Admiral");
+    await expectCodeAsync(() => store.loginOwner({
+      principal: jellyfinPrincipal({
+        username: "Admiral",
+        deviceId: "55555555-5555-4555-8555-555555555555"
+      }),
+      sessionId: loginSessionId,
+      name: "Conflicting ID",
+      origin: "https://command.example.test"
+    }), "SESSION_ID_CONFLICT");
+
+    clock = Date.parse("2026-09-12T12:30:00.000Z");
+    const verified = await store.markVerified(loginSessionId, {
+      provider: "jellyfin",
+      serverId: "server-0123456789abcdef",
+      userId: "user-0123456789abcdef",
+      username: "Commander"
+    });
+    assert.equal(verified.session.user.name, "Commander");
+    assert.equal(verified.principal.verifiedAt, "2026-09-12T12:30:00.000Z");
+    assert.equal(verified.owner.username, "Commander");
+    assert.equal(store.getInternalSession(loginSessionId).principal.verifiedAt, "2026-09-12T12:30:00.000Z");
+    assert.equal(store.list().find((session) => session.id === loginSessionId)?.user.name, "Commander");
+
+    await expectCodeAsync(() => store.markVerified(
+      "11111111-1111-4111-8111-111111111111",
+      {
+        provider: "jellyfin",
+        serverId: "different-server",
+        userId: "user-0123456789abcdef",
+        username: "Commander"
+      }
+    ), "JELLYFIN_OWNER_MISMATCH");
+
+    assert.equal(await store.clearAuthentication(), 2);
+    assert.equal(store.ownerConfigured(), false);
     assert.equal(store.accessKeyConfigured(), false);
     assert.deepEqual(store.list(), []);
-    const cleared = JSON.parse(await readFile(store.filePath, "utf8"));
-    assert.equal(cleared.accessKeyHash, null);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("queued access-key login and rotation cannot preserve a session minted by an old key", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "helmsman-access-key-race-"));
-  const dataDir = path.join(root, "data");
-  const store = new SessionAuthStore(dataDir);
-  try {
-    await store.initialize();
-    const claimed = await store.claimAccess({ name: "Primary", origin: "https://command.example.test" });
-
-    const loginBeforeRotation = store.login({
-      accessKey: claimed.accessKey,
-      name: "Queued before rotation",
-      origin: "https://command.example.test"
-    });
-    const firstRotation = store.rotateAccessKey();
-    const [issuedBeforeRotation, firstReplacementKey] = await Promise.all([loginBeforeRotation, firstRotation]);
-    await expectCodeAsync(
-      () => store.authenticateToken(cookieValue(issuedBeforeRotation.cookie)),
-      "SESSION_INVALID"
-    );
-    assert.deepEqual(store.list(), []);
-
-    const secondRotation = store.rotateAccessKey();
-    const staleLogin = store.login({
-      accessKey: firstReplacementKey,
-      name: "Queued after rotation",
-      origin: "https://command.example.test"
-    });
-    const staleLoginRejected = expectCodeAsync(() => staleLogin, "ACCESS_KEY_INVALID");
-    const secondReplacementKey = await secondRotation;
-    await staleLoginRejected;
-    const current = await store.login({
-      accessKey: secondReplacementKey,
-      name: "Current key",
-      origin: "https://command.example.test"
-    });
-    assert.equal((await store.authenticateToken(cookieValue(current.cookie))).session.name, "Current key");
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("only one concurrent authenticated access-key rotation can succeed", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "helmsman-concurrent-key-rotation-"));
-  const dataDir = path.join(root, "data");
-  const store = new SessionAuthStore(dataDir);
-  try {
-    await store.initialize();
-    const claimed = await store.claimAccess({ name: "Primary", origin: "https://command.example.test" });
-    const options = {
-      name: claimed.session.name,
-      origin: claimed.session.origin,
-      currentSessionId: claimed.session.id
-    };
-    const winnerPromise = store.rotateAccessKeyAndIssue(options);
-    const loserPromise = store.rotateAccessKeyAndIssue(options);
-    const loserRejected = expectCodeAsync(() => loserPromise, "SESSION_INVALID");
-    const winner = await winnerPromise;
-    await loserRejected;
-    assert.equal(store.list().length, 1);
-    assert.equal(store.list()[0].id, winner.session.id);
-    const login = await store.login({
-      accessKey: winner.accessKey,
-      name: "Winner key browser",
-      origin: "https://command.example.test"
-    });
-    assert.equal(login.session.name, "Winner key browser");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -410,6 +530,40 @@ test("session state validation fails closed on plaintext or malformed records", 
     }), { encoding: "utf8" });
     const invalidKeyState = new SessionAuthStore(dataDir);
     await assert.rejects(() => invalidKeyState.initialize(), /Unsupported or malformed session state/u);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("v3 state rejects leaked token fields and sessions bound to a different owner", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "helmsman-session-v3-invalid-"));
+  const dataDir = path.join(root, "data");
+  const store = new SessionAuthStore(dataDir, { now: () => Date.parse("2026-09-12T12:00:00.000Z") });
+  try {
+    await store.initialize();
+    const issued = await store.enrollOwnerAndIssue({
+      owner: jellyfinOwner(),
+      principal: jellyfinPrincipal(),
+      name: "Owner browser",
+      origin: "https://command.example.test"
+    });
+    const valid = JSON.parse(await readFile(store.filePath, "utf8"));
+
+    const leaked = structuredClone(valid);
+    leaked.sessions[issued.session.id].principal.accessToken = "plaintext-jellyfin-token";
+    await writeFile(store.filePath, `${JSON.stringify(leaked)}\n`, { encoding: "utf8", mode: 0o600 });
+    await assert.rejects(
+      () => new SessionAuthStore(dataDir).initialize(),
+      /Malformed browser session state/u
+    );
+
+    const mismatched = structuredClone(valid);
+    mismatched.owner.userId = "a-different-owner";
+    await writeFile(store.filePath, `${JSON.stringify(mismatched)}\n`, { encoding: "utf8", mode: 0o600 });
+    await assert.rejects(
+      () => new SessionAuthStore(dataDir).initialize(),
+      /Malformed browser session state/u
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

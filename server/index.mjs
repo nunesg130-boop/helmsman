@@ -6,8 +6,13 @@ import { isIP } from "node:net";
 import path from "node:path";
 import { createBroker, createHttpServer } from "./broker.mjs";
 import { acquireDataDirLock } from "./lock.mjs";
+import { CredentialStore } from "./secrets.mjs";
 import { SessionAuthStore } from "./session-auth.mjs";
 import { StateStore } from "./state.mjs";
+
+const BROWSER_AUTH_STATE_NAMESPACE = "browser-auth-state";
+const BROWSER_AUTH_STATE_FIELD = "schema";
+const BROWSER_AUTH_STATE_VERSION = "4";
 
 function configuredPort() {
   const raw = process.env.HELMSMAN_PORT || process.env.JELLOFIN_COMMAND_PORT || "8080";
@@ -189,54 +194,74 @@ async function resetAccess() {
   try {
     const store = new StateStore(dataDir, { guard: () => lock.assertHeld() });
     await store.initialize();
-    let sessions = new SessionAuthStore(dataDir, { guard: () => lock.assertHeld() });
-    let recoveredSessionState = false;
+    const credentials = new CredentialStore(dataDir, {
+      instanceId: store.snapshot().instanceId,
+      keyFilePath: process.env.HELMSMAN_MASTER_KEY_FILE
+        ?? process.env.JELLOFIN_COMMAND_MASTER_KEY_FILE,
+      guard: () => lock.assertHeld()
+    });
     try {
-      await sessions.initialize();
-      await sessions.clearAccess();
-    } catch {
-      await lock.assertHeld();
-      await quarantineFiles(dataDir, [{
-        source: sessions.filePath,
-        label: "Browser session state",
-        reason: "corrupt",
-        required: true
-      }]);
-      sessions = new SessionAuthStore(dataDir, { guard: () => lock.assertHeld() });
-      await sessions.initialize();
-      recoveredSessionState = true;
-    }
-    await store.resetAccess();
-    if (recoveredSessionState) {
-      process.stdout.write("Malformed browser session state was quarantined and replaced.\n");
+      await credentials.initialize();
+      const markerPresent = credentials.hasCredential(
+        BROWSER_AUTH_STATE_NAMESPACE,
+        BROWSER_AUTH_STATE_FIELD
+      );
+      if (markerPresent) {
+        const markerValid = await credentials.useCredential(
+          BROWSER_AUTH_STATE_NAMESPACE,
+          BROWSER_AUTH_STATE_FIELD,
+          (value) => value.equals(Buffer.from(BROWSER_AUTH_STATE_VERSION, "utf8"))
+        );
+        if (!markerValid) throw new Error("The browser authorization-state version is not supported.");
+      }
+      const allowLegacySessionMigration = !markerPresent
+        && !credentials.createdDuringInitialization();
+      // Persist the anti-downgrade marker before the one authorized legacy
+      // conversion. If recovery is interrupted, the next reset-access run
+      // quarantines the now-untrusted legacy file instead of reopening it.
+      if (!markerPresent) {
+        await credentials.setCredential(
+          BROWSER_AUTH_STATE_NAMESPACE,
+          BROWSER_AUTH_STATE_FIELD,
+          BROWSER_AUTH_STATE_VERSION
+        );
+      }
+      const sessionOptions = {
+        guard: () => lock.assertHeld(),
+        stateIntegrityTag: (payload) => credentials.sessionStateIntegrityTag(payload),
+        allowLegacyMigration: allowLegacySessionMigration
+      };
+      let sessions = new SessionAuthStore(dataDir, sessionOptions);
+      let recoveredSessionState = false;
+      try {
+        await sessions.initialize();
+        await sessions.clearAccess();
+      } catch {
+        await lock.assertHeld();
+        await quarantineFiles(dataDir, [{
+          source: sessions.filePath,
+          label: "Browser session state",
+          reason: "corrupt",
+          required: true
+        }]);
+        sessions = new SessionAuthStore(dataDir, { ...sessionOptions, allowLegacyMigration: false });
+        await sessions.initialize();
+        recoveredSessionState = true;
+      }
+      const namespaces = Object.keys(credentials.publicSnapshot().credentials || {})
+        .filter((namespace) => /^browser-auth-[a-f0-9-]{36}$/u.test(namespace));
+      for (const namespace of namespaces) await credentials.removeServiceCredentials(namespace);
+      await store.resetAccess();
+      if (recoveredSessionState) {
+        process.stdout.write("Malformed browser session state was quarantined and replaced.\n");
+      }
+    } finally {
+      await credentials.close().catch(() => {});
     }
   } finally {
     await lock.release();
   }
   process.stdout.write("Helmsman access was reset. Saved services and encrypted credentials were preserved. Start the broker to receive a new setup token.\n");
-}
-
-async function rotateAccessKeyCommand() {
-  if (process.argv.length !== 4 || process.argv[3] !== "--confirm") {
-    throw new Error("Access-key rotation refused. Stop the broker, then run: node server/index.mjs rotate-access-key --confirm");
-  }
-  const dataDir = process.env.HELMSMAN_DATA_DIR || process.env.JELLOFIN_COMMAND_DATA_DIR || "/data";
-  const lock = await acquireDataDirLock(dataDir);
-  let accessKey;
-  try {
-    const store = new StateStore(dataDir, { guard: () => lock.assertHeld() });
-    await store.initialize();
-    if (!store.snapshot().claimed) {
-      throw new Error("Access-key rotation requires a claimed Helmsman instance. Complete first-time setup instead.");
-    }
-    const sessions = new SessionAuthStore(dataDir, { guard: () => lock.assertHeld() });
-    await sessions.initialize();
-    accessKey = await sessions.rotateAccessKey();
-  } finally {
-    await lock.release();
-  }
-  process.stdout.write(`Helmsman access key: ${accessKey}\n`);
-  process.stdout.write("All existing browser sessions were revoked. Saved services, network policy, and encrypted credentials were preserved.\n");
 }
 
 async function resetCredentials() {
@@ -267,7 +292,7 @@ async function resetCredentials() {
   } finally {
     await lock.release();
   }
-  process.stdout.write("Encrypted credentials were quarantined. Saved service targets, network policy, and browser sessions were preserved. Start the broker and enter replacement credentials.\n");
+  process.stdout.write("Encrypted credentials were quarantined. The prior browser authorization seal cannot be trusted without the prior key. Before restarting Helmsman, run reset-access --confirm to remove the owner binding and browser sessions, then enroll the Jellyfin owner again.\n");
   if (externalKeyConfigured) {
     process.stdout.write("The externally managed master-key file was not modified.\n");
   }
@@ -278,9 +303,8 @@ try {
   if (command === "serve") await serve();
   else if (command === "healthcheck") await healthcheck();
   else if (command === "reset-access") await resetAccess();
-  else if (command === "rotate-access-key") await rotateAccessKeyCommand();
   else if (command === "reset-credentials") await resetCredentials();
-  else throw new Error("Usage: node server/index.mjs <serve|healthcheck|reset-access --confirm|rotate-access-key --confirm|reset-credentials --confirm>");
+  else throw new Error("Usage: node server/index.mjs <serve|healthcheck|reset-access --confirm|reset-credentials --confirm>");
 } catch (error) {
   process.stderr.write(`Helmsman broker error: ${error?.message || "startup failed"}\n`);
   process.exitCode = 1;

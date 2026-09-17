@@ -4,6 +4,7 @@ import test from "node:test";
 
 import { performUpstreamRequest } from "../server/broker.mjs";
 import {
+  connectionAuthorizationBoundaryHash,
   normalizeApprovedHostCidrs,
   normalizePolicy,
   parseServiceUrl,
@@ -15,6 +16,53 @@ import { authorizeBridgeRoute } from "../server/routes.mjs";
 const PRIVATE_POLICY = Object.freeze({
   allowedCidrs: ["10.0.0.0/8"],
   allowPublicHttps: false
+});
+
+test("authorization boundaries canonicalize CIDR sets instead of their input order", () => {
+  const connection = {
+    url: "http://media.test:8096",
+    targetRevision: "11111111-1111-4111-8111-111111111111",
+    approvedHostCidrs: ["fd12:3456:789a::40/128", "10.20.30.40/32"]
+  };
+  const reorderedConnection = {
+    ...connection,
+    approvedHostCidrs: [...connection.approvedHostCidrs].reverse()
+  };
+  const policy = {
+    allowedCidrs: ["fd00::/64", "10.0.0.0/8"],
+    allowPublicHttps: false
+  };
+  const reorderedPolicy = {
+    ...policy,
+    allowedCidrs: [...policy.allowedCidrs].reverse()
+  };
+  assert.deepEqual(normalizePolicy(policy).allowedCidrs, ["10.0.0.0/8", "fd00::/64"]);
+  assert.deepEqual(normalizeApprovedHostCidrs(connection.approvedHostCidrs), [
+    "10.20.30.40/32",
+    "fd12:3456:789a::40/128"
+  ]);
+  assert.equal(
+    connectionAuthorizationBoundaryHash(connection, policy),
+    connectionAuthorizationBoundaryHash(reorderedConnection, reorderedPolicy)
+  );
+});
+
+test("network policy canonicalizes IPv4 network bases before deduplication", () => {
+  assert.deepEqual(normalizePolicy({
+    allowedCidrs: ["10.20.30.40/16", "10.20.0.0/16", "192.168.50.255/24"],
+    allowPublicHttps: false
+  }).allowedCidrs, ["10.20.0.0/16", "192.168.50.0/24"]);
+});
+
+test("network policy canonicalizes equivalent IPv6 spellings and host bits", () => {
+  assert.deepEqual(normalizePolicy({
+    allowedCidrs: [
+      "fd12:3456:789a:bcde:ffff:0000:0000:0001/65",
+      "fd12:3456:789a:bcde:9abc::beef/65",
+      "FD00:0000:0000:0000:0000:0000:0000:0042/64"
+    ],
+    allowPublicHttps: false
+  }).allowedCidrs, ["fd00::/64", "fd12:3456:789a:bcde:8000::/65"]);
 });
 
 function listen(server) {
@@ -267,7 +315,6 @@ test("service routes remain deny-by-default", () => {
   const denied = [
     ["jellyfin", "DELETE", "/bridge/jellyfin/Items/123"],
     ["jellyfin", "GET", "/bridge/jellyfin/Users"],
-    ["jellyfin", "GET", "/bridge/jellyfin/Users/Me"],
     ["seerr", "POST", "/bridge/seerr/api/v1/request"],
     ["radarr", "POST", "/bridge/radarr/api/v3/command"],
     ["qbit", "POST", "/bridge/qbit/api/v2/torrents/stop"],
@@ -297,14 +344,25 @@ test("service routes remain deny-by-default", () => {
 
   // The broker needs exact internal route metadata for one-time exchanges,
   // while its public HTTP handler continues to deny every /bridge surface.
-  for (const [service, pathname] of [
-    ["jellyfin", "/bridge/jellyfin/Users/AuthenticateByName"],
-    ["seerr", "/bridge/seerr/api/v1/auth/local"]
+  for (const [service, method, pathname, isLogin] of [
+    ["jellyfin", "POST", "/bridge/jellyfin/Users/AuthenticateByName", true],
+    ["jellyfin", "GET", "/bridge/jellyfin/Users/Me", false],
+    ["jellyfin", "POST", "/bridge/jellyfin/Sessions/Logout", false],
+    ["seerr", "POST", "/bridge/seerr/api/v1/auth/local", true]
   ]) {
-    const route = authorizeBridgeRoute(service, "POST", pathname);
+    const route = authorizeBridgeRoute(service, method, pathname);
     assert.equal(route.allowed, true, pathname);
-    assert.equal(route.isLogin, true, pathname);
+    assert.equal(route.isLogin, isLogin, pathname);
+    assert.equal(route.internalOnly, true, pathname);
   }
+  assert.equal(
+    authorizeBridgeRoute("jellyfin", "GET", "/bridge/jellyfin/Users/Me?userId=1").allowed,
+    false
+  );
+  assert.equal(
+    authorizeBridgeRoute("jellyfin", "POST", "/bridge/jellyfin/Sessions/Logout?token=secret").allowed,
+    false
+  );
 });
 
 test("outbound transport pins DNS and strips ambient browser and edge headers", async (t) => {
@@ -364,6 +422,96 @@ test("outbound transport pins DNS and strips ambient browser and edge headers", 
   ]) {
     assert.equal(observed[0].headers[header], undefined, header);
   }
+});
+
+test("outbound transport clears source response chunks and rejected assembled bodies", async (t) => {
+  const jellyfinToken = "browser-auth-token-that-must-not-remain-in-source-chunks";
+  const rejectedSecret = "rejected-login-body-that-must-be-zeroed";
+  const upstream = http.createServer((request, response) => {
+    if (request.url === "/Users/AuthenticateByName") {
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.write(`{"AccessToken":"${jellyfinToken}",`);
+      setImmediate(() => response.end('"ServerId":"server-1","User":{"Id":"owner-1"}}'));
+      return;
+    }
+    response.writeHead(200, {
+      "Content-Type": "application/json",
+      "Set-Cookie": [
+        "connect.sid=s%3Afirst.signature; Path=/; HttpOnly",
+        "connect.sid=s%3Asecond.signature; Path=/; HttpOnly"
+      ]
+    });
+    response.end(`{"secret":"${rejectedSecret}"}`);
+  });
+  const port = await listen(upstream);
+  t.after(() => close(upstream));
+
+  const originalConcat = Buffer.concat;
+  const captures = [];
+  Buffer.concat = function instrumentedConcat(chunks, totalLength) {
+    const result = originalConcat.call(Buffer, chunks, totalLength);
+    if (result.includes(jellyfinToken) || result.includes(rejectedSecret)) {
+      captures.push({ result, chunks: [...chunks] });
+    }
+    return result;
+  };
+  t.after(() => { Buffer.concat = originalConcat; });
+
+  const target = parseServiceUrl(`http://pin.test:${port}`);
+  const common = {
+    request: browserRequest({
+      authorization: 'MediaBrowser Client="Helmsman", Device="Browser", DeviceId="device-1", Version="1.0.1"',
+      "content-type": "application/json"
+    }),
+    targetResolution: {
+      target,
+      addresses: [{ address: "127.0.0.1", family: 4 }],
+      pinned: { address: "127.0.0.1", family: 4 }
+    },
+    deviceOrigin: "https://command.example.test",
+    targetRevision: "12121212-1212-4212-8212-121212121212",
+    limits: {
+      maxApiResponseBytes: 4096,
+      maxImageResponseBytes: 4096,
+      upstreamTimeoutMs: 2_000
+    }
+  };
+
+  const jellyfinBody = Buffer.from('{"Username":"Owner","Pw":"transient"}', "utf8");
+  const jellyfin = await performUpstreamRequest({
+    ...common,
+    body: jellyfinBody,
+    route: authorizeBridgeRoute("jellyfin", "POST", "/bridge/jellyfin/Users/AuthenticateByName")
+  });
+  assert.match(jellyfin.body.toString("utf8"), new RegExp(jellyfinToken, "u"));
+  const jellyfinCapture = captures.find(({ result }) => result === jellyfin.body);
+  assert.ok(jellyfinCapture, "the Jellyfin authentication response should be instrumented");
+  assert.ok(jellyfinCapture.chunks.length >= 1);
+  for (const chunk of jellyfinCapture.chunks) {
+    assert.ok(chunk.equals(Buffer.alloc(chunk.length)), "each copied source chunk must be zeroed");
+  }
+
+  const seerrBody = Buffer.from('{"email":"owner@example.test","password":"transient"}', "utf8");
+  await assert.rejects(
+    performUpstreamRequest({
+      ...common,
+      request: browserRequest({ "content-type": "application/json" }),
+      body: seerrBody,
+      route: authorizeBridgeRoute("seerr", "POST", "/bridge/seerr/api/v1/auth/local")
+    }),
+    (error) => error.code === "LOGIN_EXCHANGE_FAILED"
+  );
+  const rejectedCapture = captures.find(({ result }) => result !== jellyfin.body);
+  assert.ok(rejectedCapture, "the rejected login response should be instrumented");
+  assert.ok(rejectedCapture.result.equals(Buffer.alloc(rejectedCapture.result.length)),
+    "a concatenated body must be zeroed when later validation rejects it");
+  for (const chunk of rejectedCapture.chunks) {
+    assert.ok(chunk.equals(Buffer.alloc(chunk.length)), "rejected source chunks must be zeroed");
+  }
+
+  jellyfinBody.fill(0);
+  seerrBody.fill(0);
+  jellyfin.body.fill(0);
 });
 
 test("outbound transport rejects redirects and oversized responses", async (t) => {

@@ -4,7 +4,7 @@ Helmsman uses GitHub as the release boundary: a versioned source package is
 statically validated, copied into a clean clone, reviewed, and committed to
 `main`. Candidate code runs only on hosted GitHub Actions; the version is
 tagged only after the exact `main` workflow succeeds. The tag workflow publishes Linux
-AMD64 and ARM64 images to GHCR and creates the matching GitHub prerelease.
+AMD64 and ARM64 images to GHCR and creates the matching GitHub release.
 
 This guide is for maintainers of the canonical repository. Normal operators
 should install the checksum-verified assets documented in
@@ -269,10 +269,10 @@ gh release view $Tag `
   --json tagName,isDraft,isPrerelease,url,assets
 ```
 
-The successful tag workflow publishes the exact version tag, the moving
-`beta` tag, and a full commit-SHA tag. It does not publish `latest` for a
-prerelease. The release deployment files are pinned to the multi-architecture
-manifest digest created by that workflow.
+For this stable release, the successful tag workflow publishes the exact
+version tag, the moving `latest` tag, and a full commit-SHA tag. The release
+deployment files are pinned to the multi-architecture manifest digest created
+by that workflow.
 
 ## Deployment remains manual
 
@@ -281,7 +281,7 @@ the GitHub Release passes verification, the script keeps the downloaded assets
 in a local directory such as:
 
 ```text
-%USERPROFILE%\Downloads\helmsman-v1.0.0-beta.2\helmsman-1.0.0-beta.2-deployment-assets
+%USERPROFILE%\Downloads\helmsman-v1.0.1\helmsman-1.0.1-deployment-assets
 ```
 
 It then prints—but does not execute—the exact `ssh` and `scp` commands that
@@ -290,12 +290,12 @@ create the configured release directory and transfer the verified
 printed commands from the same PowerShell window. Their shape is:
 
 ```powershell
-$Assets = "$env:USERPROFILE\Downloads\helmsman-v1.0.0-beta.2\helmsman-1.0.0-beta.2-deployment-assets"
+$Assets = "$env:USERPROFILE\Downloads\helmsman-v1.0.1\helmsman-1.0.1-deployment-assets"
 $DeployHost = "deploy-user@helmsman-host.example"
-ssh $DeployHost "mkdir -p /srv/apps/helmsman/releases/v1.0.0-beta.2"
-scp "$Assets\compose.yaml" "${DeployHost}:/srv/apps/helmsman/releases/v1.0.0-beta.2/"
-scp "$Assets\container.env.example" "${DeployHost}:/srv/apps/helmsman/releases/v1.0.0-beta.2/"
-scp "$Assets\SHA256SUMS" "${DeployHost}:/srv/apps/helmsman/releases/v1.0.0-beta.2/"
+ssh $DeployHost "mkdir -p /srv/apps/helmsman/releases/v1.0.1"
+scp "$Assets\compose.yaml" "${DeployHost}:/srv/apps/helmsman/releases/v1.0.1/"
+scp "$Assets\container.env.example" "${DeployHost}:/srv/apps/helmsman/releases/v1.0.1/"
+scp "$Assets\SHA256SUMS" "${DeployHost}:/srv/apps/helmsman/releases/v1.0.1/"
 ssh $DeployHost
 ```
 
@@ -307,7 +307,7 @@ of running the printed block unchanged. The standard block first executes:
 
 ```sh
 set -euo pipefail
-cd /srv/apps/helmsman/releases/v1.0.0-beta.2
+cd /srv/apps/helmsman/releases/v1.0.1
 sha256sum --strict --check SHA256SUMS
 ```
 
@@ -317,8 +317,8 @@ Only verified assets proceed to installation. The remaining printed commands:
   so a retry cannot overwrite the original rollback point; inspect or resume a
   partially completed attempt manually;
 - back up the configured installation's `compose.yaml` and, when present,
-  `.env` as `compose.yaml.before-1.0.0-beta.2` and
-  `.env.before-1.0.0-beta.2`;
+  `.env` as `compose.yaml.before-1.0.1` and
+  `.env.before-1.0.1`;
 - explicitly unset shell-level image and Compose selector variables so they
   cannot override the verified configuration or the project choice retained
   in `.env`;
@@ -352,9 +352,9 @@ the resolved image before recreating the container:
 ```sh
 set -euo pipefail
 cd /srv/apps/helmsman
-cp -- compose.yaml.before-1.0.0-beta.2 compose.yaml
-if [ -f .env.before-1.0.0-beta.2 ]; then
-  cp -- .env.before-1.0.0-beta.2 .env
+cp -- compose.yaml.before-1.0.1 compose.yaml
+if [ -f .env.before-1.0.1 ]; then
+  cp -- .env.before-1.0.1 .env
   helmsman_env_file=.env
 else
   rm -f -- .env

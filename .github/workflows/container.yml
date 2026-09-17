@@ -482,8 +482,10 @@ jobs:
 
           notes_file="${release_dir}/RELEASE_NOTES.md"
           {
-            printf '%s\n' '> [!WARNING]'
-            printf '%s\n\n' '> This is beta software. Back up the persistent `/data` directory before installing or upgrading, and test the release before relying on it for critical workloads.'
+            if [[ "${RELEASE_PRERELEASE}" == "true" ]]; then
+              printf '%s\n' '> [!WARNING]'
+              printf '%s\n\n' '> This is prerelease software. Back up the persistent `/data` directory before installing or upgrading, and test the release before relying on it for critical workloads.'
+            fi
             printf '%s\n\n' '## Install or upgrade'
             printf '%s\n' "Download the digest-pinned deployment assets from the [${tag} release](https://github.com/${GITHUB_REPOSITORY}/releases/tag/${tag}):"
             printf '%s\n' '- `compose.yaml`'

@@ -1,16 +1,15 @@
-# Helmsman v1.0.0-beta.2
+# Helmsman v1.0.1
 
 Helmsman is a self-hosted operations center for a homelab's media services and infrastructure. It runs as one portable Linux container on Docker Desktop, Linux, macOS, compatible NAS platforms, AMD64, and ARM64.
 
 [Releases](https://github.com/nunesg130-boop/helmsman/releases) · [Container package](https://github.com/users/nunesg130-boop/packages/container/package/helmsman) · [Security policy](SECURITY.md) · [Contributing](CONTRIBUTING.md)
 
 > [!WARNING]
-> This is prerelease beta software. Breaking changes and data migrations are
-> still possible, so back up the `/data` volume before every update and use the
-> newest published release. Helmsman is a single-instance, shared-access-key
-> application: it has no per-user accounts, roles, or audit attribution. Do not
-> scale multiple containers against one data volume or expose the application
-> without its own access key and a trusted HTTPS edge.
+> Back up the `/data` volume before every update and use the newest published
+> release. Helmsman is a single-instance application owned by one exact
+> Jellyfin administrator; it has no separate Helmsman accounts, roles, or audit
+> attribution. Do not scale multiple containers against one data volume, and
+> use a trusted HTTPS edge for remote browser access.
 
 This Helmsman is the media and infrastructure dashboard in this repository. It
 is not affiliated with or derived from the existing Kubernetes project also
@@ -32,7 +31,7 @@ identify the nine supported service integrations, plus original generic
 VM/container workload drawings. See
 [the asset notices](assets/services/THIRD_PARTY_NOTICES.md).
 
-The v1.0 beta combines Portainer monitoring and a small, fixed set of confirmed recovery actions under Infrastructure with targeted media recovery actions and Helmsman's cluster-aware Proxmox model:
+Helmsman v1.0.1 combines Portainer monitoring and a small, fixed set of confirmed recovery actions under Infrastructure with targeted media recovery actions and Helmsman's cluster-aware Proxmox model:
 
 - Media and Infrastructure are separate workspaces inside the same authenticated application, and only the selected workspace's navigation is shown;
 - the desktop sidebar collapses to an icon rail, remembers that preference, keeps its navigation scrollable at high browser zoom, and places its 44 px collapse control on the content-side edge below the shared header rule;
@@ -73,12 +72,12 @@ The v1.0 beta combines Portainer monitoring and a small, fixed set of confirmed 
 - the supplied Helmsman helmet is the sidebar, mobile, browser, and installable-app identity, and the interface uses its charcoal, slate, and muted sea-green palette in a hard-framed retro-web control-room treatment;
 - credentials are encrypted in the container and are write-only through the interface;
 - private-network access defaults to exact per-connection host approvals, with manual CIDR ranges available as an advanced boundary;
-- one reusable 256-bit access key signs any browser into a revocable, one-year, origin-bound HttpOnly session, with no vault or vault passphrase;
+- the exact enrolled Jellyfin administrator signs in with a username and password to receive a revocable, 30-day, origin-bound HttpOnly session; passwords and internal Jellyfin identity IDs never reach browser storage, and each resulting Jellyfin token is encrypted server-side per session;
 - Caddy, Authentik, and any other compatible HTTPS/MFA edge remain optional and do not replace credentials for the upstream systems.
 
 ## Deploy the published container
 
-Helmsman is distributed as the public Linux AMD64/ARM64 image `ghcr.io/nunesg130-boop/helmsman`. The `v1.0.0-beta.2` Git tag runs the contracts and architecture smoke tests, publishes the version, beta, and full-commit image tags, and creates a GitHub Release containing ready-to-use `compose.yaml`, `container.env.example`, and `SHA256SUMS` assets. The release deployment files pin `ghcr.io/nunesg130-boop/helmsman` to the exact multi-architecture manifest digest (`@sha256:...`).
+Helmsman is distributed as the public Linux AMD64/ARM64 image `ghcr.io/nunesg130-boop/helmsman`. The `v1.0.1` Git tag runs the contracts and architecture smoke tests, publishes the version, `latest`, and full-commit image tags, and creates a GitHub Release containing ready-to-use `compose.yaml`, `container.env.example`, and `SHA256SUMS` assets. The release deployment files pin `ghcr.io/nunesg130-boop/helmsman` to the exact multi-architecture manifest digest (`@sha256:...`).
 
 Download those three files from the matching [GitHub Release](https://github.com/nunesg130-boop/helmsman/releases) into one directory, verify the two deployment files against `SHA256SUMS`, open a terminal there, and make sure Docker Desktop or Docker Engine is running. No source checkout, Dockerfile, Node.js installation, or server-side image build is required.
 
@@ -128,13 +127,14 @@ ssh -L 4180:127.0.0.1:4180 user@your-helmsman-host
 Then open `http://127.0.0.1:4180` locally. For permanent remote access, put
 Helmsman behind a trusted HTTPS reverse proxy and firewall the inner port to
 that proxy; the first claim is rejected over untrusted remote HTTP. Paste the
-newest one-time setup token from the container log, name the browser, and
-complete the claim. The claim response displays the generated reusable
-256-bit Helmsman access key once; copy it to a password manager before leaving
-the screen. Any browser can subsequently enter that same key to receive its
-own one-year HttpOnly session for the exact application origin. The access key
-is never accepted from `.env` or a URL, stored in browser storage, or written
-to application logs. The default **Exact service addresses** network mode
+newest one-time setup token from the container log and complete the claim to
+open the setup session; Helmsman derives the browser name automatically. Add
+and verify the Jellyfin connection under Media **Connections**, then enroll its
+exact administrator under Settings by entering only the Jellyfin username and
+password. Helmsman
+obtains the stable server and user IDs itself and never asks for or displays
+them. Subsequent browsers sign in with that same Jellyfin account and receive
+their own 30-day HttpOnly sessions. The default **Exact service addresses** network mode
 needs no CIDR list: when you register a private media service, Proxmox endpoint,
 or Portainer server, Helmsman stores only its currently resolved safe private
 addresses as `/32` or `/128` approvals for that connection. Manual private
@@ -243,10 +243,10 @@ There is no vendor cloud, hosted account, telemetry, analytics, advertising, tra
 
 | Location | Stored data |
 |---|---|
-| Browser | A revocable, one-year, origin-bound HttpOnly session cookie and non-secret presentation state; never the reusable access key |
+| Browser | A revocable, 30-day, origin-bound HttpOnly session cookie, a per-session CSRF value, and non-secret presentation state; never the Jellyfin password or token |
 | `/data/state.json` | Instance, network policy, media connections, Proxmox environments and endpoints, Portainer service records, discovered identities, exact URLs, and per-connection private-host approvals |
-| `/data/sessions.json` | The access-key SHA-256 verifier and browser-session hashes; never the plaintext access key or bearer tokens |
-| `/data/credentials.json` | AES-256-GCM ciphertext and authenticated metadata |
+| `/data/sessions.json` | The enrolled owner's bounded Jellyfin identity binding and browser-session hashes, authenticated with the credential master key; never the password or bearer token. A beta.2 access-key verifier can exist only until owner enrollment finishes |
+| `/data/credentials.json` | AES-256-GCM ciphertext and authenticated metadata, including destination-bound connector credentials and separate per-session Jellyfin login tokens |
 | `/data/credentials.key` | Auto-generated local encryption key, unless the environment-sourced Docker secret is enabled |
 | In-memory operations snapshot | Bounded normalized media records, current activity, states, safe codes, latency, counters, incidents, and recent transitions; never raw responses |
 
@@ -255,6 +255,8 @@ Saved credentials cannot be read back through the API. Each credential is bound 
 An authenticated browser may also receive the current live health reports built only from allowlisted `source`, `type`, and `message` fields in supported structured service health responses. Helmsman bounds their count and length, normalizes and redacts secret-like values, and the interface escapes them again before display. These reports are transient evidence in the current operations snapshot only: they are never copied into incidents, events, history, application logs, or persistent files. Raw response bodies and raw error bodies are never exposed. Service-authored reports can still contain non-secret operational details such as paths or hostnames, so treat access to the authenticated interface as sensitive.
 
 The easy local mode keeps its generated encryption key beside ciphertext in the protected Docker volume. That protects against accidental disclosure and ciphertext-only copies, but it is not a separate trust boundary if an attacker steals the entire volume or controls the host. For encrypted backups or external deployments, use the optional Docker-secret key described below.
+
+Protect backup history like the live volume. Authorization-state integrity detects forged edits but is not a hardware-backed monotonic counter, so replaying an older complete, valid backup rolls access state back to that snapshot. After intentionally restoring a backup that predates an owner or browser-access change, run `reset-access --confirm` and enroll the intended owner again.
 
 ## Security boundary
 
@@ -275,7 +277,7 @@ Monitoring and probes remain fixed read-only GET routes. Actions are separate re
 
 ## Media and Infrastructure workspaces
 
-Use the workspace switcher to keep media activity separate from host, virtualization, and container-platform health. Media navigation contains **Home**, **Discover**, **Library**, **Requests**, **Activity**, **Calendar**, **Health**, and **Connections**. Logs and Settings remain global. Search and filters operate only on the bounded records already returned by configured services; this beta does not send free-form discovery searches or arbitrary management commands upstream.
+Use the workspace switcher to keep media activity separate from host, virtualization, and container-platform health. Media navigation contains **Home**, **Discover**, **Library**, **Requests**, **Activity**, **Calendar**, **Health**, and **Connections**. Logs and Settings remain global. Search and filters operate only on the bounded records already returned by configured services; Helmsman does not send free-form discovery searches or arbitrary management commands upstream.
 
 Home keeps existing data visible while a refresh is in flight and patches volatile progress, speed, ETA, state, counts, and timestamps in place. Its Now Playing signal comes from one fixed, bounded Jellyfin sessions query and omits session identity metadata. Initial loads may use placeholders, but polling does not deliberately replace the whole page or reset stable artwork URLs. Discover presents Seerr's read-only discovery feed; items without a request are labeled **Not requested** rather than exposing an internal unknown state, and only Jellyfin evidence can label a title available in Helmsman's library. Library correlates Jellyfin availability with Radarr/Sonarr monitoring and import state. Requests preserve separate request IDs, approval state, acquisition state, requested seasons, and 4K scope; completed workflow rows become **Available** from Seerr's media availability, an exact Jellyfin movie match, or—when a series request is season-scoped—the matching Seerr media-season availability rather than the request-season workflow status. Activity and Calendar expose current read-only workflow state, while Health contains pipeline/service incidents and Connections owns service enrollment.
 
@@ -332,7 +334,7 @@ Use dedicated, least-privilege credentials where the service supports them:
 | Proxmox VE | Dedicated API token ID and token secret scoped to inventory plus the selected guest power actions |
 | Portainer | Durable access token for a dedicated user scoped to visible environments and allowed container lifecycle actions, sent as `X-API-Key` |
 
-Passwords are not retained. For Jellyfin, enter a Dashboard API key or existing user access token directly, or let Helmsman exchange a username and password once; it discards the password and encrypts only the resulting access token. For Seerr, enter the global API key from Settings > General, or use a native local account email and password for a one-time exchange; Seerr local authentication must be enabled, and Helmsman discards the password and encrypts only the resulting session. Older qBittorrent password/SID mode is deliberately not used for unattended monitoring.
+Passwords are not retained. The Jellyfin credential saved with the Media connection is the monitoring connector credential: enter a Dashboard API key or existing user access token directly, or let Helmsman exchange a username and password once. Browser authentication is deliberately separate. The enrolled Jellyfin administrator enters a username and password for each new browser session; Helmsman discards the password immediately and encrypts the resulting user token server-side for only that session. It never substitutes the monitoring connector credential for the owner login. For Seerr, enter the global API key from Settings > General, or use a native local account email and password for a one-time exchange; Seerr local authentication must be enabled, and Helmsman discards the password and encrypts only the resulting session. Older qBittorrent password/SID mode is deliberately not used for unattended monitoring.
 
 For Proxmox, create a dedicated user and API token with only the inventory privileges needed for the selected resources plus `VM.PowerMgmt` on the specific guests or pool Helmsman may control. Enter the complete token ID in the form `user@realm!token-name` and its generated secret. Helmsman encrypts both fields and never returns either value to the browser. Each approved endpoint keeps destination-bound encrypted credentials, so one endpoint cannot silently reuse another endpoint's credential against a changed host. Do not use `root@pam`, a password, a root API token, or an administrator token, and do not grant power-management privileges outside the intended guests. Proxmox environments are configured in the Infrastructure workspace; do not place their URLs or credentials in `.env`.
 
@@ -340,11 +342,15 @@ For Portainer, generate an access token for a dedicated user whose visible envir
 
 ## Browser access and recovery
 
-The first claim creates a reusable 256-bit Helmsman access key and one browser session. The key is shown once in the claim response; save it in a password manager. On another computer or browser, open the same Helmsman address, enter that universal key on the unlock screen, and give the browser a recognizable name. A changed client or public IP does not require a new key.
+Fresh setup uses the one-time setup token only to claim the instance and open the setup session. Configure and verify one Jellyfin connection, then use Settings to enroll its exact enabled administrator with a username and password. Helmsman learns and binds the stable Jellyfin server ID and user ID internally; neither ID is requested from or displayed to the operator. Another Jellyfin user—including another administrator—cannot sign in as the Helmsman owner.
 
-Each successful unlock creates a one-year HttpOnly session that is bound to the exact scheme, host, and port. The plaintext access key is submitted only in the unlock request: it is never placed in `.env`, a URL, browser storage, or application logs. Helmsman persists only its SHA-256 verifier and revocable session hashes in `/data/sessions.json`.
+Every subsequent browser shows only Jellyfin username and password fields. The unauthenticated status and login screen do not disclose the enrolled username. A successful login creates a revocable 30-day session bound to the exact scheme, host, and port. The browser receives an HttpOnly, `SameSite=Strict` session cookie and a per-session CSRF value, never the Jellyfin token. Helmsman immediately discards the submitted password and stores the resulting Jellyfin access token as server-side AES-256-GCM ciphertext scoped to that session. The ciphertext authentication data binds the token to the browser-cookie verifier and immutable session claims as well as the exact Jellyfin URL, target revision, approved address pins, and network policy. The owner binding and authorization-critical session index are also authenticated with a key derived from the credential master key, so offline edits fail closed. A changed Jellyfin authorization boundary atomically revokes every browser session locally before any old token can be decrypted or sent elsewhere; the initiating browser returns to sign-in. Logout or ordinary session revocation erases that token and makes a best-effort Jellyfin logout request only when the original boundary remains current.
 
-Settings can create the first access key for an upgraded installation or rotate an existing one. The new value is displayed once. Rotation revokes every prior browser session while preserving the instance configuration and encrypted upstream credentials; the browser performing the rotation receives a replacement one-year session, and other browsers unlock again with the new key.
+Helmsman forwards that one-time username/password exchange to the configured Jellyfin URL. Prefer Jellyfin HTTPS. A private `http://` Jellyfin URL remains supported for common homelab deployments, but it does not encrypt the password on the Docker/LAN hop; use it only when every host and network segment on that path is trusted.
+
+The configured Jellyfin connection is required for enrollment, login, and identity validation, but its monitoring credential stays distinct from every browser-authentication token. Helmsman periodically validates the exact owner and requires the account to remain enabled and administrative. Explicit rejection, revocation, identity mismatch, disablement, or administrator demotion revokes the local session. When Jellyfin is unreachable, new logins fail; a recently validated session may retain bounded read-only access during a transient outage, while state-changing actions require fresh validation and fail closed.
+
+Authentik remains an optional external identity and MFA layer. Jellyfin's username/password exchange itself does not perform an Authentik challenge, so externally reachable deployments should keep Authentik or an equivalent MFA-capable edge in front of every Helmsman path and prevent direct access to port 4180.
 
 Recovery must use the same Compose file stack that owns the running installation. If an optional override was used to deploy, add it to **every** `stop`, `run`, `up`, and `logs` command below:
 
@@ -357,27 +363,28 @@ Recovery must use the same Compose file stack that owns the running installation
 
 For either hardened row, export the same `HELMSMAN_MASTER_KEY` before running any command and unset it afterward. Substituting a different key cannot recover the stored credentials.
 
-If the access key is lost, or no browser remains signed in to create one after upgrading, rotate only the Helmsman access key from the Docker host:
+If the enrolled Jellyfin owner can no longer authenticate and no browser session can repair the connection or enrollment, reset browser access from the Docker host:
 
 ```sh
 docker compose stop helmsman
-docker compose run --rm --no-deps helmsman rotate-access-key --confirm
+docker compose run --rm --no-deps helmsman reset-access --confirm
 docker compose up -d
 ```
 
-The CLI explicitly prints the new access key once to its own standard output. Copy it immediately; the key is not repeated in subsequent application logs. Rotation revokes all browser sessions but preserves service URLs, the instance and network policy, registered targets, and encrypted credentials. The main service must stay stopped while the one-off container writes the shared `/data` volume.
+This is the sole break-glass path. It removes the owner binding, revokes every Helmsman browser session, and destroys Helmsman's encrypted copies of the browser-authentication tokens while preserving service URLs, the instance and network policy, registered targets, and encrypted monitoring credentials. Because this recovery command runs with the broker stopped, it cannot send Jellyfin logout requests; if a token may have been copied outside Helmsman's encrypted store, use Jellyfin's administration controls to invalidate that upstream session too. The next start emits a new one-time setup token so the operator can claim the instance and enroll an enabled Jellyfin administrator again. It does not create, print, or restore a reusable access key. The main service must stay stopped while the one-off container writes the shared `/data` volume.
 
-When upgrading from v0.10.0-beta.8, existing browser sessions migrate and remain valid, but no reusable access key exists yet. Use a currently signed-in browser to create one under Settings. If every beta.8 session is already unavailable, use the CLI rotation sequence above; it creates the key without resetting the rest of the installation.
+When upgrading from v1.0.0-beta.2, its reusable access key is accepted only as a temporary migration credential. Use an existing browser session or that legacy key to open Settings, make sure the Jellyfin connection is configured, and enroll the owner. Successful enrollment atomically removes the access-key verifier and revokes every legacy browser session; v1.0.1 cannot create, reveal, or rotate another key. If no beta.2 session or key remains usable, use `reset-access --confirm` as described above.
 
-If the credential encryption key is lost or the configured key no longer matches, the ciphertext cannot be recovered. Stop the service and reset only the credential store, using the same command prefix selected above:
+If the credential encryption key is lost or the configured key no longer matches, the ciphertext cannot be recovered. Stop the service and reset the credential store and browser-access seal, using the same command prefix selected above:
 
 ```sh
 docker compose stop helmsman
 docker compose run --rm --no-deps helmsman reset-credentials --confirm
+docker compose run --rm --no-deps helmsman reset-access --confirm
 docker compose up -d
 ```
 
-This preserves the instance, network policy, registered service targets, and browser sessions. It moves `credentials.json` and, in easy local mode, `credentials.key` to timestamped `*.unrecoverable-*` quarantine files. An externally managed master-key file is never modified. For a hardened deployment, export a valid replacement key and retain `-f deploy/compose.hardened.yaml` on all three commands; otherwise the service could restart in the wrong key mode. Then enter replacement service credentials in the interface and rotate the old credentials at their source. Quarantine files remain sensitive recovery material; keep them private and remove them only after the replacement configuration is verified.
+This preserves the instance, network policy, and registered service targets. It moves `credentials.json` and, in easy local mode, `credentials.key` to timestamped `*.unrecoverable-*` quarantine files. Because the same master key authenticates the owner/session authorization state, the required `reset-access` step removes the no-longer-verifiable owner binding and browser sessions; after restart, claim the instance and enroll the Jellyfin owner again. An externally managed master-key file is never modified. For a hardened deployment, export the valid replacement key and retain `-f deploy/compose.hardened.yaml` on every command; otherwise the service could restart in the wrong key mode. Then enter replacement service credentials in the interface and rotate the old credentials at their source. Quarantine files remain sensitive recovery material; keep them private and remove them only after the replacement configuration is verified.
 
 Do not use `docker compose down -v` unless you intentionally want to erase all configuration and encrypted credentials.
 
@@ -438,11 +445,11 @@ Protect and back up that external key file separately. Export the exact same key
 
 Edge authentication protects browser access only. It does not authenticate Helmsman to Jellyfin, Seerr, Proxmox, Portainer, or another monitored system, so each upstream system still requires its own supported credential.
 
-The reusable Helmsman access key does not change a Cloudflare Tunnel, Caddy, or Authentik deployment. Those layers continue to admit and proxy the browser first; the browser then uses its Helmsman session cookie, or the universal key when it needs to unlock Helmsman. Upstream monitoring continues directly from the container to the saved service URLs.
+Jellyfin-backed browser login does not replace a Cloudflare Tunnel, Caddy, or Authentik deployment. Those layers continue to admit and proxy the browser first; after that, Helmsman authenticates the exact enrolled Jellyfin owner and issues its own origin-bound session. Authentik still owns external MFA, while upstream monitoring continues directly from the container with the separate saved connector credentials.
 
 For external use, publish the container only on an address reachable by the edge, proxy every path unchanged, and firewall port 4180 so clients cannot bypass the HTTPS/Authentik route. Example Caddy configurations are in `deploy/`.
 
-## Upgrade an existing Helmsman beta
+## Upgrade an existing Helmsman installation
 
 Keep the existing Helmsman project directory and Compose file stack so Compose
 reuses the current `helmsman-data` volume. Back up that volume, then use the
@@ -476,7 +483,7 @@ compatibility; restore the matching pre-update volume backup instead.
 
 v0.10 advances the state schema to 4 by adding an empty, bounded Infrastructure-services collection. Existing media connections, destination-bound encrypted credentials, browser sessions, network approvals, and Proxmox environments/endpoints remain in place; nothing is converted into or automatically combined with a Portainer connection. The unified media catalog, artwork cache, and Portainer inventory are rebuilt in memory from current read-only service responses and do not require a data migration. Installations coming directly from an older schema still use the existing in-place migrations, including the rule that separate Proxmox targets are never merged automatically. Back up the volume before upgrading, and do not attempt to run an older image against state after it has been migrated.
 
-For v0.10.0-beta.8 specifically, existing browser sessions migrate and remain valid, but the upgraded instance initially has no reusable access key. Use a current session to create the key under Settings and save the one-time display. If no prior session remains usable, run the `rotate-access-key --confirm` CLI sequence under **Browser access and recovery**; it preserves configuration and encrypted credentials.
+For v0.10.0-beta.8 specifically, an existing browser session can be used to configure Jellyfin and enroll the exact administrator under Settings. If no prior session remains usable, run the `reset-access --confirm` sequence under **Browser access and recovery**; it preserves configuration and encrypted monitoring credentials, and the next start supplies a new one-time setup token.
 
 ## Upgrade from Jellofin Command v0.4 or v0.5
 
@@ -510,7 +517,7 @@ docker compose -f compose.yaml -f deploy/compose.upgrade-v0.5.yaml -f deploy/com
 unset HELMSMAN_MASTER_KEY
 ```
 
-The server also accepts legacy `JELLOFIN_COMMAND_*` runtime variables for this transition release, but new deployments should use `HELMSMAN_*`. Do not change or regenerate an external master key during the rename. If you also change the browser-facing hostname, existing sessions will not follow because they are intentionally bound to the exact scheme, host, and port; create or rotate the reusable access key after confirming the old volume is mounted, then unlock the new origin with that key.
+The server also accepts legacy `JELLOFIN_COMMAND_*` runtime variables for this transition release, but new deployments should use `HELMSMAN_*`. Do not change or regenerate an external master key during the rename. If you also change the browser-facing hostname, existing sessions will not follow because they are intentionally bound to the exact scheme, host, and port; after confirming the old volume is mounted, sign in on the new origin with the enrolled Jellyfin owner's username and password.
 
 Upgrading directly from v0.4 preserves registered service URLs. Its credentials were browser-only, so they must be entered once into the server-side encrypted store. Keep the old archive/browser profile until every connection has been verified.
 

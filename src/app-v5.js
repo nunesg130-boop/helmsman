@@ -253,8 +253,6 @@ const state = {
   fatalError: "",
   pollTimer: null,
   lastMarkup: "",
-  accessKeyReveal: "",
-  accessKeyMutation: false,
   sessions: {
     loaded: false,
     currentSessionId: "",
@@ -788,6 +786,35 @@ function renderGateHeader(kicker, title, copy, titleId) {
     </header>`;
 }
 
+function authenticationState(value = state.status?.authentication) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    provider: source.provider === "jellyfin" ? "jellyfin" : null,
+    configured: source.configured === true,
+    ownerName: safeSessionText(source.ownerName, "", 80) || null,
+    legacyAccessKeyAvailable: source.legacyAccessKeyAvailable === true
+  };
+}
+
+function automaticDeviceName() {
+  const platform = safeSessionText(navigator.userAgentData?.platform || navigator.platform, "", 40);
+  const userAgent = String(navigator.userAgent || "");
+  const browser = /Edg\//u.test(userAgent)
+    ? "Edge"
+    : /Firefox\//u.test(userAgent)
+      ? "Firefox"
+      : /(?:Chrome|CriOS)\//u.test(userAgent)
+        ? "Chrome"
+        : /Safari\//u.test(userAgent) ? "Safari" : "";
+  const name = browser ? [browser, platform ? `on ${platform}` : ""].filter(Boolean).join(" ") : platform;
+  return safeSessionText(name, "Browser", 80);
+}
+
+function configuredJellyfinConnection(config = state.config) {
+  const services = Array.isArray(config?.services) ? config.services : [];
+  return services.some((service) => service?.id === "jellyfin" && service?.configured !== false);
+}
+
 function renderNetworkPolicyFields(policy = {}, idPrefix = "network") {
   const allowedCidrs = Array.isArray(policy.allowedCidrs) ? policy.allowedCidrs : [];
   const manual = allowedCidrs.length > 0;
@@ -821,17 +848,14 @@ function renderNetworkPolicyFields(policy = {}, idPrefix = "network") {
 function renderSetup() {
   return `
     <section class="setup-v5" aria-labelledby="setup-title">
-      ${renderGateHeader("First-time setup", "Claim this container", "Define what the broker may reach, then create the reusable access key that unlocks Helmsman on your browsers.", "setup-title")}
+      ${renderGateHeader("First-time setup", "Claim this container", "Define what the broker may reach. Next, connect Jellyfin and enroll the administrator account that will sign in to Helmsman.", "setup-title")}
       <form class="glass-form" id="setup-form" autocomplete="off" data-form-type="other" data-network-mode="exact">
         <div class="form-section">
           <div class="form-section__number">01</div>
           <div class="form-section__body">
             <h3>Container claim</h3>
             <p>Run <code>docker compose logs helmsman</code> and paste the newest one-time setup token.</p>
-            <div class="form-grid form-grid--two">
-              <label><span>One-time setup token</span><input name="setupToken" type="password" autocomplete="one-time-code" autocapitalize="off" spellcheck="false" data-1p-ignore="true" data-bwignore="true" data-lpignore="true" data-protonpass-ignore="true" data-form-type="other" required placeholder="Paste token from container logs" /></label>
-              <label><span>This browser name</span><input name="deviceName" value="${escapeHtml(navigator.platform || "Browser")}" maxlength="80" required /></label>
-            </div>
+            <label><span>One-time setup token</span><input name="setupToken" type="password" autocomplete="one-time-code" autocapitalize="off" spellcheck="false" data-1p-ignore="true" data-bwignore="true" data-lpignore="true" data-protonpass-ignore="true" data-form-type="other" required placeholder="Paste token from container logs" /></label>
           </div>
         </div>
         <div class="form-section">
@@ -842,42 +866,62 @@ function renderSetup() {
             ${renderNetworkPolicyFields({ allowedCidrs: [], allowPublicHttps: false }, "setup")}
           </div>
         </div>
-        <div class="security-note security-note--good">${icon("lock")}<div><strong>Credentials stay out of the browser</strong><span>Service credentials are encrypted in the container data volume. After setup, save the generated Helmsman access key in your password manager.</span></div></div>
+        <div class="security-note security-note--good">${icon("lock")}<div><strong>Credentials stay out of the browser</strong><span>Service credentials are encrypted in the container data volume. Jellyfin passwords are used only for sign-in or enrollment and are discarded immediately.</span></div></div>
         <p class="form-error" id="setup-error" role="alert"></p>
         <div class="form-actions"><button class="button button--primary" type="submit">Claim and continue</button></div>
       </form>
     </section>`;
 }
 
-function renderAccessLogin() {
+function renderJellyfinLogin() {
+  const ownerCopy = "Sign in with the enrolled Jellyfin administrator account.";
   return `
-    <section class="setup-v5" aria-labelledby="access-title">
-      ${renderGateHeader("Browser access", "Unlock Helmsman", "Enter the reusable access key for this container. This browser receives its own revocable, one-year session on this secure origin.", "access-title")}
-      <form class="glass-form glass-form--compact" id="access-login-form" autocomplete="off" data-form-type="other">
+    <section class="setup-v5" aria-labelledby="jellyfin-login-title">
+      ${renderGateHeader("Browser access", "Sign in with Jellyfin", ownerCopy, "jellyfin-login-title")}
+      <form class="glass-form glass-form--compact" id="jellyfin-login-form" autocomplete="on" data-form-type="login">
         <div class="form-section">
           <div class="form-section__number">01</div>
           <div class="form-section__body">
-            <h3>Sign in to this browser</h3>
+            <h3>Jellyfin credentials</h3>
             <div class="form-grid form-grid--two">
-              <label><span>Helmsman access key</span><input name="accessKey" type="password" autocomplete="current-password" autocapitalize="off" spellcheck="false" data-1p-ignore="true" data-bwignore="true" data-lpignore="true" data-protonpass-ignore="true" data-form-type="other" required /></label>
-              <label><span>This browser name</span><input name="deviceName" value="${escapeHtml(navigator.platform || "Browser")}" maxlength="80" required /></label>
+              <label><span>Username</span><input name="username" type="text" autocomplete="username" autocapitalize="off" spellcheck="false" maxlength="320" required /></label>
+              <label><span>Password</span><input name="password" type="password" autocomplete="current-password" required /></label>
             </div>
           </div>
         </div>
-        <div class="security-note security-note--good">${icon("lock")}<div><strong>The access key is never saved by Helmsman in this browser</strong><span>It is sent once over this HTTPS or localhost origin and exchanged for an HttpOnly session cookie.</span></div></div>
-        <p class="form-error" id="access-login-error" role="alert"></p>
-        <div class="form-actions"><button class="button button--primary" type="submit">Unlock Helmsman</button></div>
+        <div class="security-note security-note--good">${icon("lock")}<div><strong>Your Jellyfin password is never stored by Helmsman</strong><span>It is sent once to the configured Jellyfin server, discarded immediately, and exchanged for a revocable Helmsman browser session.</span></div></div>
+        <div class="security-note">${icon("shield")}<div><strong>Protect the Jellyfin connection</strong><span>Use HTTPS for Jellyfin, or use private HTTP only on a network you trust. HTTP does not encrypt this password between Helmsman and Jellyfin.</span></div></div>
+        <p class="form-error" id="jellyfin-login-error" role="alert"></p>
+        <div class="form-actions"><button class="button button--primary" type="submit">Sign in</button></div>
       </form>
-      <div class="recovery-command"><strong>Lost the access key?</strong><code>docker compose stop helmsman<br>docker compose run --rm --no-deps helmsman rotate-access-key --confirm<br>docker compose up -d</code><span>An existing signed-in browser can rotate it from Settings. If none remain, run this recovery command and save the newly printed key.</span></div>
     </section>`;
 }
 
-function renderAccessRecovery() {
+function renderLegacyAccessLogin() {
   return `
-    <section class="setup-v5" aria-labelledby="access-recovery-title">
-      ${renderGateHeader("Browser access", "Create an access key", "This claimed container does not have a universal access key yet. Create one from an existing signed-in browser or from the Docker console.", "access-recovery-title")}
-      <div class="recovery-command"><strong>If another browser is signed in</strong><span>Open Settings → Security and access, then select Create access key. The new key is shown only once.</span></div>
-      <div class="recovery-command"><strong>If no browser is signed in</strong><code>docker compose stop helmsman<br>docker compose run --rm --no-deps helmsman rotate-access-key --confirm<br>docker compose up -d</code><span>The command prints the new reusable key without changing service connections or encrypted credentials.</span></div>
+    <section class="setup-v5" aria-labelledby="legacy-access-title">
+      ${renderGateHeader("Migration access", "Sign in with the legacy key", "Use the existing Helmsman access key once, then enroll a Jellyfin administrator from Settings.", "legacy-access-title")}
+      <form class="glass-form glass-form--compact" id="legacy-access-login-form" autocomplete="off" data-form-type="other">
+        <div class="form-section">
+          <div class="form-section__number">01</div>
+          <div class="form-section__body">
+            <h3>Legacy access key</h3>
+            <label><span>Helmsman access key</span><input name="accessKey" type="password" autocomplete="current-password" autocapitalize="off" spellcheck="false" data-1p-ignore="true" data-bwignore="true" data-lpignore="true" data-protonpass-ignore="true" data-form-type="other" required /></label>
+          </div>
+        </div>
+        <div class="security-note">${icon("lock")}<div><strong>Temporary migration path</strong><span>The key is exchanged for a browser session and is never stored in this browser. Enrolling Jellyfin removes legacy key access.</span></div></div>
+        <p class="form-error" id="legacy-access-login-error" role="alert"></p>
+        <div class="form-actions"><button class="button button--primary" type="submit">Continue migration</button></div>
+      </form>
+    </section>`;
+}
+
+function renderAuthenticationRecovery() {
+  return `
+    <section class="setup-v5" aria-labelledby="authentication-recovery-title">
+      ${renderGateHeader("Browser access", "Jellyfin enrollment required", "This container has been claimed, but a Jellyfin owner has not been enrolled and no legacy migration key is available.", "authentication-recovery-title")}
+      <div class="recovery-command"><strong>Use an existing setup session</strong><span>Open Settings in the browser that claimed this container, connect Jellyfin, and enroll the Jellyfin administrator account.</span></div>
+      <div class="recovery-command"><strong>No setup session remains?</strong><code>docker compose run --rm --no-deps helmsman reset-access --confirm</code><span>Run this from the deployment host with the main service stopped. Saved connections and monitoring credentials are preserved.</span></div>
     </section>`;
 }
 
@@ -2829,20 +2873,12 @@ function renderBrowserSessions() {
   }).join("")}</div>`;
 }
 
-function renderAccessKeyReveal() {
-  if (!state.accessKeyReveal) return "";
-  return `<div class="invite-token" role="status" aria-live="polite">
-    <span>New Helmsman access key · shown once</span>
-    <code data-access-key-output>${escapeHtml(state.accessKeyReveal)}</code>
-    <small>Copy it now and save it in your password manager. Helmsman stores only its hash and cannot recover it. Rotating the key replaces the previous key and signs out other browsers.</small>
-    <div class="button-row"><button class="button button--primary" type="button" data-action="copy-access-key">Copy access key</button><button class="button" type="button" data-action="dismiss-access-key">I saved it</button></div>
-  </div>`;
-}
-
 function renderSettingsPage() {
   const policy = state.config?.policy || { allowedCidrs: [], allowPublicHttps: false };
   const networkMode = Array.isArray(policy.allowedCidrs) && policy.allowedCidrs.length ? "manual" : "exact";
-  const accessKeyConfigured = Boolean(state.status?.accessKeyConfigured);
+  const authentication = authenticationState();
+  const jellyfinConnected = configuredJellyfinConnection();
+  const ownerName = authentication.ownerName ? escapeHtml(authentication.ownerName) : "Jellyfin owner";
   const appVersion = safeSessionText(state.status?.version, "Version unavailable", 48);
   return `
     <section class="detail-page settings-page-v5">
@@ -2852,11 +2888,18 @@ function renderSettingsPage() {
           ${renderNetworkPolicyFields(policy, "settings")}
           <div class="form-actions"><button class="button button--primary" type="submit">Save network policy</button></div>
         </div></form>
-        <section class="glass-panel settings-card-v5"><header><div><span class="section-kicker">Browser access</span><h3>Universal access key</h3></div>${icon("lock")}</header><div class="settings-card-v5__body">
-          <p>Enter the same reusable key on any HTTPS or localhost browser. Each successful unlock creates a separate revocable session trusted for one year.</p>
-          ${renderAccessKeyReveal()}
-          <div class="security-note security-note--good">${icon("check")}<div><strong>${accessKeyConfigured ? "Access key configured" : "Access key not configured"}</strong><span>${accessKeyConfigured ? "The saved key itself cannot be viewed again. Rotate it to create a replacement and revoke other browser sessions." : "Create the first reusable key now; it will be displayed only once."}</span></div></div>
-          <div class="button-row"><button class="button ${accessKeyConfigured ? "button--danger" : "button--primary"}" type="button" data-action="rotate-access-key" ${state.accessKeyMutation ? "disabled" : ""}>${state.accessKeyMutation ? "Creating…" : accessKeyConfigured ? "Rotate access key" : "Create access key"}</button><button class="button" type="button" data-action="refresh-sessions">Refresh browser list</button></div>
+        <section class="glass-panel settings-card-v5"><header><div><span class="section-kicker">Browser access</span><h3>Jellyfin owner authentication</h3></div>${icon("lock")}</header><div class="settings-card-v5__body">
+          <p>Helmsman signs browsers in through the configured Jellyfin server. The password is used for the one-time authentication exchange and is never saved by Helmsman.</p>
+          <div class="security-note ${authentication.configured ? "security-note--good" : ""}">${icon(authentication.configured ? "check" : "lock")}<div><strong>${authentication.configured ? `${ownerName} enrolled` : "Jellyfin owner not enrolled"}</strong><span>${authentication.configured ? "Only this enabled Jellyfin administrator can create new Helmsman browser sessions." : jellyfinConnected ? "Enter the Jellyfin administrator credentials below to finish browser authentication setup." : "Connect Jellyfin under Media → Connections, then return here to enroll its administrator."}</span></div></div>
+          ${authentication.configured ? `<div class="button-row"><button class="button" type="button" data-action="refresh-sessions">Refresh browser list</button></div>` : `<form class="network-cidr-fields" id="jellyfin-enroll-form" autocomplete="on" data-form-type="login">
+            <div class="form-grid form-grid--two">
+              <label><span>Username</span><input name="username" type="text" autocomplete="username" autocapitalize="off" spellcheck="false" maxlength="320" required /></label>
+              <label><span>Password</span><input name="password" type="password" autocomplete="current-password" required /></label>
+            </div>
+            <div class="security-note">${icon("shield")}<div><strong>Protect the Jellyfin connection</strong><span>Use HTTPS for Jellyfin, or use private HTTP only on a network you trust. HTTP does not encrypt this password between Helmsman and Jellyfin.</span></div></div>
+            <p class="form-error" id="jellyfin-enroll-error" role="alert"></p>
+            <div class="button-row"><button class="button button--primary" type="submit">Enroll Jellyfin owner</button><button class="button" type="button" data-action="refresh-sessions">Refresh browser list</button></div>
+          </form>`}
           <h4>Authorized browsers</h4>
           ${renderBrowserSessions()}
         </div></section>
@@ -3484,7 +3527,12 @@ function renderPage({ force = false, preserveFocus = false } = {}) {
   if (state.starting) markup = renderStarting();
   else if (state.fatalError) markup = renderFatal();
   else if (state.status?.setupRequired) markup = renderSetup();
-  else if (!state.status?.authenticated) markup = state.status?.accessKeyConfigured ? renderAccessLogin() : renderAccessRecovery();
+  else if (!state.status?.authenticated) {
+    const authentication = authenticationState();
+    if (authentication.configured && authentication.provider === "jellyfin") markup = renderJellyfinLogin();
+    else if (authentication.legacyAccessKeyAvailable) markup = renderLegacyAccessLogin();
+    else markup = renderAuthenticationRecovery();
+  }
   else markup = renderAuthenticatedRoute();
   const viewTitle = state.starting
     ? "Starting"
@@ -3493,7 +3541,7 @@ function renderPage({ force = false, preserveFocus = false } = {}) {
       : state.status?.setupRequired
         ? "First-time setup"
         : !state.status?.authenticated
-          ? state.status?.accessKeyConfigured ? "Unlock" : "Access setup"
+          ? authenticationState().configured ? "Jellyfin sign in" : authenticationState().legacyAccessKeyAvailable ? "Migration sign in" : "Authentication setup"
           : routeTitle;
   document.title = `${viewTitle} · Helmsman`;
 
@@ -3510,7 +3558,9 @@ function renderPage({ force = false, preserveFocus = false } = {}) {
   } else if (!preserveFocus && !state.authGateFocusApplied && !state.starting && !state.fatalError) {
     const focusTarget = state.status?.setupRequired
       ? main.querySelector("input[name='setupToken']")
-      : state.status?.accessKeyConfigured ? main.querySelector("input[name='accessKey']") : null;
+      : authenticationState().configured
+        ? main.querySelector("input[name='username']")
+        : authenticationState().legacyAccessKeyAvailable ? main.querySelector("input[name='accessKey']") : null;
     if (focusTarget) {
       focusTarget.focus({ preventScroll: true });
       state.authGateFocusApplied = true;
@@ -4874,6 +4924,31 @@ function endGateSubmission(form, submission) {
   }
 }
 
+function applyAuthenticationResult(result, { jellyfinOwner = "" } = {}) {
+  const returnedStatus = result?.status && typeof result.status === "object" ? result.status : {};
+  const suppliedAuthentication = result?.authentication && typeof result.authentication === "object"
+    ? result.authentication
+    : returnedStatus.authentication;
+  let authentication = authenticationState(suppliedAuthentication || state.status?.authentication);
+  if (jellyfinOwner && (!authentication.configured || authentication.provider !== "jellyfin")) {
+    authentication = {
+      provider: "jellyfin",
+      configured: true,
+      ownerName: safeSessionText(result?.ownerName || jellyfinOwner, "Jellyfin owner", 80),
+      legacyAccessKeyAvailable: false
+    };
+  }
+  state.csrfToken = String(result?.csrfToken || returnedStatus.csrfToken || state.csrfToken || "");
+  state.status = {
+    ...state.status,
+    ...returnedStatus,
+    setupRequired: false,
+    authenticated: true,
+    session: result?.session || returnedStatus.session || state.status?.session || null,
+    authentication
+  };
+}
+
 async function submitSetup(form) {
   const submission = beginGateSubmission(form, "Claiming…");
   if (!submission) return;
@@ -4886,25 +4961,28 @@ async function submitSetup(form) {
       csrf: false,
       body: {
         setupToken: String(data.get("setupToken") || ""),
-        deviceName: String(data.get("deviceName") || "Browser"),
+        deviceName: automaticDeviceName(),
         origin: location.origin,
         allowedCidrs: allowedCidrsForForm(form, data),
         allowPublicHttps: data.get("allowPublicHttps") === "on"
       }
     });
-    const accessKey = typeof result?.accessKey === "string" ? result.accessKey : "";
-    if (!accessKey || accessKey.length > 1024) {
-      throw new ApiError(502, "INVALID_RESPONSE", "The container did not return a valid access key.");
-    }
-    state.csrfToken = result.csrfToken;
-    state.status = { ...state.status, setupRequired: false, authenticated: true, accessKeyConfigured: true, session: result.session };
+    applyAuthenticationResult(result);
     state.config = result.config;
-    state.accessKeyReveal = accessKey;
     state.lastMarkup = "";
     await Promise.all([loadOperations(), loadSessions()]);
-    location.hash = "#/settings";
+    state.workspace = "media";
+    try {
+      globalThis.localStorage?.setItem("helmsman.workspace", "media");
+    } catch {
+      // The setup flow can continue without local preference storage.
+    }
+    const jellyfinConnected = configuredJellyfinConnection(result.config);
+    location.hash = jellyfinConnected ? "#/settings" : "#/connections";
     renderPage({ force: true });
-    showToast("Container claimed. Save the new access key now.", "success");
+    showToast(jellyfinConnected
+      ? "Container claimed. Enroll the Jellyfin owner to finish browser sign-in."
+      : "Container claimed. Connect Jellyfin, then enroll its administrator.", "success");
   } catch (caught) {
     error.textContent = caught.message;
   } finally {
@@ -4912,10 +4990,89 @@ async function submitSetup(form) {
   }
 }
 
-async function submitAccessLogin(form) {
-  const submission = beginGateSubmission(form, "Unlocking…");
+function jellyfinAuthenticationError(error, action = "sign in") {
+  if (error?.status === 401) return "The Jellyfin username or password was not accepted.";
+  if (error?.status === 403) return action === "enroll"
+    ? "This Jellyfin account must be enabled and have administrator access before it can be enrolled."
+    : "This account is not the enrolled Jellyfin owner.";
+  if (error?.status === 409 || error?.code === "JELLYFIN_NOT_CONFIGURED") {
+    return "Connect and verify Jellyfin under Media → Connections before enrolling an owner.";
+  }
+  if (error?.status === 429) return "Too many sign-in attempts. Wait a moment, then try again.";
+  if (error?.status === 0) return "Helmsman could not be reached. Check the connection and try again.";
+  return action === "enroll"
+    ? "The Jellyfin owner could not be enrolled. Check the connection and credentials, then try again."
+    : "Jellyfin sign-in could not be completed. Check the connection and try again.";
+}
+
+async function submitJellyfinLogin(form) {
+  const submission = beginGateSubmission(form, "Signing in…");
   if (!submission) return;
-  const error = form.querySelector("#access-login-error");
+  const error = form.querySelector("#jellyfin-login-error");
+  const data = new FormData(form);
+  const username = String(data.get("username") || "").trim();
+  const passwordInput = form.querySelector("input[name='password']");
+  error.textContent = "";
+  try {
+    const result = await api("/api/v2/auth/jellyfin/login", {
+      method: "POST",
+      csrf: false,
+      body: {
+        username,
+        password: String(data.get("password") || ""),
+        deviceName: automaticDeviceName(),
+        origin: location.origin
+      }
+    });
+    if (passwordInput) passwordInput.value = "";
+    applyAuthenticationResult(result, { jellyfinOwner: username });
+    await loadAuthenticatedData();
+    renderPage({ force: true });
+  } catch (caught) {
+    error.textContent = jellyfinAuthenticationError(caught);
+  } finally {
+    if (passwordInput) passwordInput.value = "";
+    endGateSubmission(form, submission);
+  }
+}
+
+async function submitJellyfinEnrollment(form) {
+  const submission = beginGateSubmission(form, "Enrolling…");
+  if (!submission) return;
+  const error = form.querySelector("#jellyfin-enroll-error");
+  const data = new FormData(form);
+  const username = String(data.get("username") || "").trim();
+  const passwordInput = form.querySelector("input[name='password']");
+  error.textContent = "";
+  try {
+    const result = await api("/api/v2/auth/jellyfin/enroll", {
+      method: "POST",
+      body: {
+        username,
+        password: String(data.get("password") || ""),
+        deviceName: automaticDeviceName(),
+        origin: location.origin
+      }
+    });
+    if (passwordInput) passwordInput.value = "";
+    applyAuthenticationResult(result, { jellyfinOwner: username });
+    state.sessions = { loaded: false, currentSessionId: "", items: [], error: "" };
+    await loadSessions();
+    state.lastMarkup = "";
+    renderPage({ force: true, preserveFocus: true });
+    showToast("Jellyfin owner enrolled. New browsers can now sign in with Jellyfin.", "success");
+  } catch (caught) {
+    error.textContent = jellyfinAuthenticationError(caught, "enroll");
+  } finally {
+    if (passwordInput) passwordInput.value = "";
+    endGateSubmission(form, submission);
+  }
+}
+
+async function submitLegacyAccessLogin(form) {
+  const submission = beginGateSubmission(form, "Signing in…");
+  if (!submission) return;
+  const error = form.querySelector("#legacy-access-login-error");
   const data = new FormData(form);
   const accessKeyInput = form.querySelector("input[name='accessKey']");
   error.textContent = "";
@@ -4925,20 +5082,21 @@ async function submitAccessLogin(form) {
       csrf: false,
       body: {
         accessKey: String(data.get("accessKey") || ""),
-        deviceName: String(data.get("deviceName") || "Browser"),
+        deviceName: automaticDeviceName(),
         origin: location.origin
       }
     });
-    state.csrfToken = result.csrfToken;
-    state.status = { ...state.status, authenticated: true, accessKeyConfigured: true, session: result.session };
-    state.accessKeyReveal = "";
+    if (accessKeyInput) accessKeyInput.value = "";
+    applyAuthenticationResult(result);
     await loadAuthenticatedData();
+    location.hash = "#/settings";
     renderPage({ force: true });
+    showToast("Legacy access accepted. Enroll the Jellyfin owner to complete migration.", "success");
   } catch (caught) {
-    if (caught?.status === 401) error.textContent = "The access key was not accepted. Check the key and try again.";
-    else if (caught?.status === 429) error.textContent = "Too many unlock attempts. Wait a moment, then try again.";
+    if (caught?.status === 401) error.textContent = "The legacy access key was not accepted.";
+    else if (caught?.status === 429) error.textContent = "Too many sign-in attempts. Wait a moment, then try again.";
     else if (caught?.status === 0) error.textContent = "Helmsman could not be reached. Check the connection and try again.";
-    else error.textContent = "This browser could not be unlocked. Use the same HTTPS or localhost origin and try again.";
+    else error.textContent = "Legacy sign-in could not be completed. Check the connection and try again.";
   } finally {
     if (accessKeyInput) accessKeyInput.value = "";
     endGateSubmission(form, submission);
@@ -4952,14 +5110,23 @@ async function submitService(form) {
   if (!form.reportValidity()) return;
   error.textContent = "";
   try {
-    await api(`/api/v2/services/${encodeURIComponent(serviceId)}`, {
+    const result = await api(`/api/v2/services/${encodeURIComponent(serviceId)}`, {
       method: "PUT",
       body: serviceDraftBody(form, { includeMonitoring: true })
     });
     closeModal();
+    if (result?.browserAuthenticationReset === true) {
+      await initialize();
+      showToast("Jellyfin authorization changed. All browsers were signed out; sign in again.", "success");
+      return;
+    }
     await loadAuthenticatedData({ refresh: true });
+    const needsOwnerEnrollment = serviceId === "jellyfin" && !authenticationState().configured;
+    if (needsOwnerEnrollment) location.hash = "#/settings";
     renderPage({ force: true, preserveFocus: true });
-    showToast("Connection saved. Its credential cannot be read back.", "success");
+    showToast(needsOwnerEnrollment
+      ? "Jellyfin connected. Enroll its administrator to finish browser sign-in."
+      : "Connection saved. Its credential cannot be read back.", "success");
   } catch (caught) {
     error.textContent = caught.message;
   }
@@ -5490,13 +5657,19 @@ async function deleteInfrastructureEndpoint(environmentId, endpointId, button) {
 async function submitNetwork(form) {
   const data = new FormData(form);
   try {
-    state.config = await api("/api/v2/config", {
+    const result = await api("/api/v2/config", {
       method: "PUT",
       body: {
         allowedCidrs: allowedCidrsForForm(form, data),
         allowPublicHttps: data.get("allowPublicHttps") === "on"
       }
     });
+    if (result?.browserAuthenticationReset === true) {
+      await initialize();
+      showToast("The Jellyfin network boundary changed. All browsers were signed out; sign in again.", "success");
+      return;
+    }
+    state.config = result;
     state.lastMarkup = "";
     renderPage({ force: true, preserveFocus: true });
     showToast("Outbound network policy updated.", "success");
@@ -6016,12 +6189,18 @@ function clearAuthenticatedState() {
   closeControlConfirmation(false, { restoreFocus: false });
   if (modalLayer?.classList.contains("is-open")) closeModal({ restoreFocus: false });
   if (drawerLayer?.classList.contains("is-open")) closeMediaDrawer({ restoreFocus: false });
-  state.status = { ...state.status, authenticated: false, session: null };
+  state.status = {
+    ...state.status,
+    authenticated: false,
+    session: null,
+    csrfToken: null,
+    authentication: state.status?.authentication
+      ? { ...state.status.authentication, ownerName: null }
+      : state.status?.authentication
+  };
   state.csrfToken = "";
   state.config = null;
   state.snapshot = null;
-  state.accessKeyReveal = "";
-  state.accessKeyMutation = false;
   state.sessions = { loaded: false, currentSessionId: "", items: [], error: "" };
   state.sessionMutation = "";
   state.actionMutation = "";
@@ -6034,41 +6213,6 @@ function clearAuthenticatedState() {
   state.refreshing = false;
   state.infrastructure = emptyInfrastructureState();
   state.lastMarkup = "";
-}
-
-async function rotateAccessKey() {
-  if (state.accessKeyMutation) return;
-  if (state.status?.accessKeyConfigured
-    && !(await confirmControl({
-      title: "Rotate the universal access key?",
-      message: "The current key will stop working and every other browser will be signed out.",
-      confirmLabel: "Rotate access key",
-      tone: "danger"
-    }))) {
-    return;
-  }
-  state.accessKeyMutation = true;
-  state.lastMarkup = "";
-  renderPage({ force: true, preserveFocus: true });
-  try {
-    const result = await api("/api/v2/access/rotate", { method: "POST", body: {} });
-    const accessKey = typeof result?.accessKey === "string" ? result.accessKey : "";
-    if (!accessKey || accessKey.length > 1024) {
-      throw new ApiError(502, "INVALID_RESPONSE", "The container did not return a valid access key.");
-    }
-    state.csrfToken = result.csrfToken;
-    state.status = { ...state.status, authenticated: true, accessKeyConfigured: true, session: result.session };
-    state.accessKeyReveal = accessKey;
-    state.sessions = { loaded: false, currentSessionId: "", items: [], error: "" };
-    await loadSessions();
-    showToast("New access key created. Save it now; the previous key no longer works.", "success");
-  } catch (error) {
-    showToast(error.message, "danger");
-  } finally {
-    state.accessKeyMutation = false;
-    state.lastMarkup = "";
-    renderPage({ force: true, preserveFocus: true });
-  }
 }
 
 async function revokeBrowserSession(sessionId) {
@@ -6133,8 +6277,6 @@ async function initialize() {
     else {
       state.config = null;
       state.snapshot = null;
-      state.accessKeyReveal = "";
-      state.accessKeyMutation = false;
       state.sessions = { loaded: false, currentSessionId: "", items: [], error: "" };
       state.sessionMutation = "";
       state.infrastructure = emptyInfrastructureState();
@@ -6233,20 +6375,6 @@ document.addEventListener("click", async (event) => {
     target.disabled = true;
     await loadInfrastructureTargets({ render: true });
     if (target.isConnected) target.disabled = false;
-  }
-  if (action === "rotate-access-key") await rotateAccessKey();
-  if (action === "copy-access-key" && state.accessKeyReveal) {
-    try {
-      await navigator.clipboard.writeText(state.accessKeyReveal);
-      showToast("Access key copied. Save it in your password manager.", "success");
-    } catch {
-      showToast("Copy failed. Select and copy the displayed access key manually.", "danger");
-    }
-  }
-  if (action === "dismiss-access-key") {
-    state.accessKeyReveal = "";
-    state.lastMarkup = "";
-    renderPage({ force: true, preserveFocus: true });
   }
   if (action === "refresh-sessions") {
     target.disabled = true;
@@ -6375,7 +6503,9 @@ document.addEventListener("submit", (event) => {
     location.hash = "#/library";
   }
   if (event.target.id === "setup-form") submitSetup(event.target);
-  if (event.target.id === "access-login-form") submitAccessLogin(event.target);
+  if (event.target.id === "jellyfin-login-form") submitJellyfinLogin(event.target);
+  if (event.target.id === "jellyfin-enroll-form") submitJellyfinEnrollment(event.target);
+  if (event.target.id === "legacy-access-login-form") submitLegacyAccessLogin(event.target);
   if (event.target.id === "service-form") submitService(event.target);
   if (event.target.id === "portainer-form") submitPortainerService(event.target);
   if (event.target.id === "proxmox-form") submitInfrastructureTarget(event.target);
@@ -6386,7 +6516,6 @@ document.addEventListener("submit", (event) => {
 window.addEventListener("hashchange", () => {
   closeControlConfirmation(false, { restoreFocus: false });
   closeMediaDrawer({ restoreFocus: false });
-  if (rawRoute() !== "settings") state.accessKeyReveal = "";
   state.lastMarkup = "";
   renderPage({ force: true });
   resetRouteScroll();

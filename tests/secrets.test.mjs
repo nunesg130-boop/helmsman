@@ -231,19 +231,19 @@ test("replacement removes stale auth fields and deletion exposes metadata only",
   assert.deepEqual(store.publicSnapshot().credentials, {});
 });
 
-test("credential namespace capacity allows 80-record policy staging with bounded headroom", async (t) => {
+test("credential namespace capacity allows policy staging and 64 isolated browser tokens", async (t) => {
   const directory = await temporaryDirectory(t);
   const store = new CredentialStore(directory, { instanceId: INSTANCE_ID });
   await store.initialize();
 
-  for (let index = 0; index < 96; index += 1) {
+  for (let index = 0; index < 192; index += 1) {
     await store.setCredential(`namespace-${String(index).padStart(2, "0")}`, "token", `secret-${index}`);
   }
-  assert.equal(Object.keys(store.publicSnapshot().credentials).length, 96);
+  assert.equal(Object.keys(store.publicSnapshot().credentials).length, 192);
 
   await assert.rejects(
     store.setCredential("namespace-overflow", "token", "overflow-secret"),
     { code: "CREDENTIAL_STORE_MALFORMED" }
   );
-  assert.equal(Object.keys(store.publicSnapshot().credentials).length, 96);
+  assert.equal(Object.keys(store.publicSnapshot().credentials).length, 192);
 });

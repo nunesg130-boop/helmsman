@@ -244,6 +244,7 @@ const policies = {
       exact: new Set([
         "/System/Info/Public",
         "/System/Info",
+        "/Users/Me",
         "/Items",
         "/Items/Latest",
         "/UserItems/Resume",
@@ -256,7 +257,7 @@ const policies = {
       ]
     },
     POST: {
-      exact: new Set(["/Users/AuthenticateByName"]),
+      exact: new Set(["/Users/AuthenticateByName", "/Sessions/Logout"]),
       patterns: []
     }
   },
@@ -414,6 +415,19 @@ function validateArtworkQuery(service, upstreamPath, url) {
 
 function validateFixedCapabilityQuery(service, upstreamPath, url) {
   const fields = [...url.searchParams];
+  if (service === "jellyfin" && [
+    "/Users/AuthenticateByName",
+    "/Users/Me",
+    "/Sessions/Logout"
+  ].includes(upstreamPath)) {
+    return fields.length === 0
+      ? { allowed: true }
+      : {
+          allowed: false,
+          code: "QUERY_NOT_ALLOWED",
+          message: "The Jellyfin authentication capability does not accept a query."
+        };
+  }
   if (service === "seerr" && /^\/api\/v1\/(?:movie|tv)\/[0-9]+$/u.test(upstreamPath)) {
     return fields.length === 0
       ? { allowed: true }
@@ -511,6 +525,11 @@ export function authorizeBridgeRoute(serviceValue, methodValue, requestUrl) {
 
   const isLogin = (service === "jellyfin" && upstreamPath === "/Users/AuthenticateByName")
     || (service === "seerr" && upstreamPath === "/api/v1/auth/local");
+  const isJellyfinAuthentication = service === "jellyfin" && [
+    "/Users/AuthenticateByName",
+    "/Users/Me",
+    "/Sessions/Logout"
+  ].includes(upstreamPath);
   return {
     allowed: true,
     service,
@@ -519,7 +538,7 @@ export function authorizeBridgeRoute(serviceValue, methodValue, requestUrl) {
     upstreamPathAndQuery: `${upstreamPath}${url.search}`,
     isArtwork,
     isLogin,
-    internalOnly: isLogin
+    internalOnly: isLogin || isJellyfinAuthentication
   };
 }
 
