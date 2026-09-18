@@ -77,6 +77,11 @@ function ruleBody(css, selector, label) {
   return match[1];
 }
 
+function lastCssCustomProperty(css, property) {
+  const escapedProperty = property.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  return [...css.matchAll(new RegExp(`${escapedProperty}\\s*:\\s*([^;]+);`, "gu"))].at(-1)?.[1]?.trim() || "";
+}
+
 for (const [name, css] of [["base", shellCss], ["retro", retroCss]]) {
   assert.match(
     css,
@@ -116,20 +121,60 @@ assert.match(
   /\.main-content\s*>\s*\.media-desktop-page\s*\{[^}]*width:\s*min\(1660px,\s*100%\)[^}]*margin-right:\s*auto[^}]*margin-left:\s*auto/su,
   "wide media pages must center inside the post-sidebar content column without overflowing it"
 );
+const brandMarkup = shellHtml.match(/<a class="brand"[\s\S]*?<\/a>/u)?.[0] || "";
 assert.match(
-  retroCss,
-  /\.main-content\s*>\s*\.media-home-page\s*\{[^}]*width:\s*auto[^}]*max-width:\s*none[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)[^}]*margin-right:\s*0[^}]*margin-left:\s*0/su,
-  "the ultrawide Media Home dashboard must use one constrained full-width post-sidebar track"
+  brandMarkup,
+  /<span class="brand-lockup" aria-hidden="true">[\s\S]*?<img [^>]*>[\s\S]*?<span class="brand-wordmark">HELMSMAN<\/span>[\s\S]*?<\/span>/u,
+  "the sidebar brand must expose the approved HELMSMAN wordmark with the helmet"
+);
+assert.equal((brandMarkup.match(/HELMSMAN/gu) || []).length, 1, "the brand must contain exactly one HELMSMAN wordmark");
+assert.equal(
+  brandMarkup.replace(/<[^>]+>/gu, " ").replace(/\s+/gu, " ").trim(),
+  "HELMSMAN",
+  "HELMSMAN must be the brand lockup's only visible text"
+);
+assert.doesNotMatch(
+  brandMarkup,
+  /media\s*(?:[-·•]|&(?:middot|bull);)?\s*infrastructure|brand-(?:subtitle|tagline)/iu,
+  "the approved brand lockup must not restore the removed Media / Infrastructure subtitle"
+);
+
+for (const [property, expected] of [
+  ["--bg", "#081012"],
+  ["--bg-raised", "#0b1517"],
+  ["--surface-solid", "#142124"],
+  ["--surface-strong", "#1c2c2f"],
+  ["--text", "#f3f7f6"],
+  ["--accent", "#9fc5c2"],
+  ["--success", "#55d98a"],
+  ["--warning", "#ffd166"],
+  ["--danger", "#ff6b78"]
+]) {
+  assert.equal(lastCssCustomProperty(retroCss, property), expected, `${property} must preserve the established Helmsman palette`);
+}
+assert.equal(lastCssCustomProperty(retroCss, "--radius-lg"), "20px", "large dashboard surfaces must use the rounded bento radius");
+assert.equal(lastCssCustomProperty(retroCss, "--radius-xl"), "24px", "lead dashboard surfaces must use the rounded bento radius");
+
+const bentoCss = `${shellCss}\n${operationsCss}\n${controlCss}\n${retroCss}`;
+assert.match(
+  bentoCss,
+  /\.media-home-bento\s*\{[^}]*display:\s*grid[^}]*grid-template-(?:areas|columns):/su,
+  "Media Home must use a multi-card bento grid instead of the legacy single-column hero stack"
 );
 assert.match(
-  retroCss,
-  /\.media-home-page\s*>\s*\*\s*\{[^}]*min-width:\s*0[^}]*max-width:\s*100%/su,
-  "intrinsically wide poster rails must not enlarge the Media Home grid"
+  bentoCss,
+  /\.media-home-card\s*\{[^}]*min-width:\s*0[^}]*border-radius:\s*var\(--radius-lg\)/su,
+  "Media Home cards must be bounded rounded bento surfaces"
 );
 assert.match(
-  retroCss,
-  /\.brand\s*\{[^}]*height:\s*var\(--topbar-height\)[^}]*flex:\s*0\s+0\s+var\(--topbar-height\)[^}]*border-bottom:\s*3px\s+double\s+var\(--retro-rule\)/su,
-  "the sidebar brand cell and topbar must share one height and divider treatment"
+  bentoCss,
+  /\.infrastructure-bento\s*\{[^}]*display:\s*grid[^}]*grid-template-(?:areas|columns):/su,
+  "Infrastructure Overview must use its responsive bento grid"
+);
+assert.match(
+  bentoCss,
+  /\.infrastructure-overview-card\s*\{[^}]*min-width:\s*0[^}]*border-radius:\s*var\(--radius-lg\)/su,
+  "Infrastructure Overview cards must be bounded rounded bento surfaces"
 );
 assert.match(
   retroCss,
@@ -640,6 +685,19 @@ const proxmoxSnapshot = {
         backupFailures24h: 1,
         lastBackupSuccessAgeSeconds: 3_600
       },
+      workloads: [{
+        vmid: 110,
+        type: "qemu",
+        node: "pve-a",
+        name: "media-core",
+        status: "running",
+        cpuPercent: 16,
+        memoryUsedBytes: 4_000,
+        memoryTotalBytes: 8_000,
+        diskUsedBytes: 12_000,
+        diskTotalBytes: 24_000,
+        uptimeSeconds: 7_200
+      }],
       capabilities: [
         { id: "identity", label: "API authorization", state: "healthy", ok: true, latencyMs: 8 },
         { id: "version", label: "Proxmox version", state: "healthy", ok: true, latencyMs: 9 },
@@ -703,14 +761,47 @@ assert.equal(boundedSnapshotOnlyTarget.targets[0].displayName.length, 80, "unmat
 
 const renderedInfrastructure = renderInfrastructureOverview(proxmoxSnapshot, proxmoxConfiguration, { configuredOnly: true });
 assert.match(renderedInfrastructure, /Infrastructure assessment/u);
+assert.match(renderedInfrastructure, /class="page operations-page infrastructure-page infrastructure-bento has-single-provider"/u, "Infrastructure Overview must expose its bento layout state");
+assert.match(renderedInfrastructure, /infrastructure-assessment-card/u);
+assert.match(renderedInfrastructure, /infrastructure-signals-card/u);
+assert.match(renderedInfrastructure, /infrastructure-proxmox-card/u);
+assert.match(renderedInfrastructure, /infrastructure-workloads-card/u);
+assert.match(renderedInfrastructure, /infrastructure-incidents-card/u);
 assert.match(renderedInfrastructure, /Lab Cluster/u);
 assert.match(renderedInfrastructure, /2 \/ 3/u);
 assert.match(renderedInfrastructure, /64\.2%/u);
 assert.match(renderedInfrastructure, /50%/u);
 assert.match(renderedInfrastructure, /1 unavailable storage entry/u);
 assert.match(renderedInfrastructure, /data-action="open-infrastructure-environment-detail"/u);
+assert.match(renderedInfrastructure, /data-action="open-infrastructure-workload"/u, "current workload cards must retain their detail action");
+for (const metric of ["cpu", "memory", "disk", "workloads"]) {
+  assert.match(renderedInfrastructure, new RegExp(`data-infrastructure-target-metric="${metric}"`, "u"), `${metric} must have a stable per-target value hook`);
+  assert.match(renderedInfrastructure, new RegExp(`data-infrastructure-target-detail="${metric}"`, "u"), `${metric} must have a stable per-target detail hook`);
+}
+assert.match(renderedInfrastructure, /data-infrastructure-target-facts/u, "environment summary facts must retain a stable live-update hook");
 assert.doesNotMatch(renderedInfrastructure, /data-action="open-infrastructure-target"|Connect and discover|Connect Portainer/u, "Infrastructure Overview must not expose connector setup actions");
+const configuredOnlyInfrastructure = renderInfrastructureOverview({
+  ...proxmoxSnapshot,
+  infrastructure: {
+    ...proxmoxSnapshot.infrastructure,
+    targets: [
+      ...proxmoxSnapshot.infrastructure.targets,
+      {
+        ...proxmoxSnapshot.infrastructure.targets[0],
+        id: "44444444-4444-4444-8444-444444444444",
+        displayName: 'Unconfigured <img src=x onerror="overview-target-xss">'
+      }
+    ]
+  }
+}, proxmoxConfiguration, { configuredOnly: true });
+assert.doesNotMatch(
+  configuredOnlyInfrastructure,
+  /Unconfigured|overview-target-xss|44444444-4444-4444-8444-444444444444/u,
+  "configured-only Infrastructure Overview must not render snapshot-only targets or their hostile text"
+);
 const emptyInfrastructureOverview = renderInfrastructureOverview({ infrastructure: { targets: [] } }, [], { configuredOnly: true });
+assert.match(emptyInfrastructureOverview, /class="page operations-page infrastructure-page infrastructure-bento has-no-connections"/u);
+assert.match(emptyInfrastructureOverview, /infrastructure-overview-card/u);
 assert.match(emptyInfrastructureOverview, /No infrastructure connections yet/u);
 assert.match(emptyInfrastructureOverview, /href="#\/connectors">Open Connectors/u);
 assert.doesNotMatch(emptyInfrastructureOverview, /Connect and discover|Connect Portainer|Infrastructure signals/u, "an empty Overview must remain provider-neutral");
@@ -805,6 +896,9 @@ const portainerOverview = renderInfrastructureOverview(portainerSnapshot, [], {
   }]
 });
 assert.match(portainerOverview, /Portainer servers/u);
+assert.match(portainerOverview, /class="page operations-page infrastructure-page infrastructure-bento has-single-provider"/u);
+assert.match(portainerOverview, /infrastructure-portainer-card/u);
+assert.match(portainerOverview, /infrastructure-incidents-card/u);
 assert.match(portainerOverview, /data-action="open-portainer-overview" data-portainer-overview-id=/u, "a Portainer Overview row must open its own filtered inventory");
 assert.match(portainerOverview, /Container Control &lt;img src=x onerror=&quot;portainer-overview-xss&quot;&gt;/u);
 assert.match(portainerOverview, /16\/17 containers running/u);
@@ -830,6 +924,11 @@ const mixedInfrastructureOverview = renderInfrastructureOverview({
     credentialConfigured: true
   }]
 });
+assert.match(mixedInfrastructureOverview, /class="page operations-page infrastructure-page infrastructure-bento has-mixed-providers"/u, "mixed configured providers must select the mixed bento layout");
+assert.match(mixedInfrastructureOverview, /infrastructure-proxmox-card/u);
+assert.match(mixedInfrastructureOverview, /infrastructure-portainer-card/u);
+assert.match(mixedInfrastructureOverview, /data-action="open-infrastructure-environment-detail"/u);
+assert.match(mixedInfrastructureOverview, /data-action="open-portainer-overview"/u);
 assert.match(mixedInfrastructureOverview, /An infrastructure connection is unavailable/u, "mixed providers must use copy for their combined health state");
 assert.doesNotMatch(mixedInfrastructureOverview, /Proxmox-specific healthy/u, "healthy Proxmox copy must not contradict a failed Portainer connection");
 

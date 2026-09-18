@@ -329,7 +329,7 @@ function operationalFingerprint(snapshot) {
   const normalized = normalizeOperationsSnapshot(snapshot, state.infrastructure.targets);
   const route = currentRoute();
   const includeOperationsStructure = state.workspace === "media"
-    ? ["health", "connections"].includes(route) || route === "home" && !snapshot.media
+    ? ["home", "health", "connections"].includes(route)
     : ["incidents", "logs"].includes(route);
   const structure = JSON.stringify(includeOperationsStructure ? normalized : { version: normalized.version }, (key, value) => {
     if ([
@@ -466,6 +466,42 @@ function operationalFingerprint(snapshot) {
         version: service.version
       }))
     : null;
+  const visibleInfrastructureServiceIds = new Set([
+    ...infrastructureTargets.flatMap((target) => [target.id, `proxmox-${target.id}`]),
+    ...fingerprintPortainers.flatMap((service) => [service.id, `portainer-${service.id}`])
+  ]);
+  const infrastructureEventsStructure = state.workspace === "infrastructure" && route === "overview"
+    ? {
+        incidents: normalized.incidents
+          .filter((entry) => entry.scope === "infrastructure" && visibleInfrastructureServiceIds.has(entry.service))
+          .map(({ id, service, serviceName, capability, state: incidentState, code, status, summary, occurrenceCount, firstSeen, lastSeen }) => ({
+            id,
+            service,
+            serviceName,
+            capability,
+            state: incidentState,
+            code,
+            status,
+            summary,
+            occurrenceCount,
+            firstSeen,
+            lastSeen
+          })),
+        recoveries: normalized.recentRecoveries
+          .filter((entry) => entry.scope === "infrastructure" && visibleInfrastructureServiceIds.has(entry.service))
+          .map(({ id, service, serviceName, capability, previousState, occurrenceCount, firstSeen, lastSeen, recoveredAt }) => ({
+            id,
+            service,
+            serviceName,
+            capability,
+            previousState,
+            occurrenceCount,
+            firstSeen,
+            lastSeen,
+            recoveredAt
+          }))
+      }
+    : null;
   const logs = route === "logs"
     ? safeLogEntriesForSnapshot(snapshot).map((entry) => ({
         type: entry?.type,
@@ -483,7 +519,7 @@ function operationalFingerprint(snapshot) {
   const mediaStructure = state.workspace === "media" && !["health", "connections", "logs", "settings"].includes(route)
     ? mediaStructuralFingerprint(snapshot?.media)
     : "";
-  return `${structure}\n${JSON.stringify(liveShape)}\n${JSON.stringify(infrastructureStructure)}\n${JSON.stringify(portainerStructure)}\n${JSON.stringify(lokiStructure)}\n${JSON.stringify(logs)}\n${mediaStructure}`;
+  return `${structure}\n${JSON.stringify(liveShape)}\n${JSON.stringify(infrastructureStructure)}\n${JSON.stringify(portainerStructure)}\n${JSON.stringify(lokiStructure)}\n${JSON.stringify(infrastructureEventsStructure)}\n${JSON.stringify(logs)}\n${mediaStructure}`;
 }
 
 function rawRoute() {
@@ -1779,21 +1815,120 @@ function renderHomeActivityRow(item) {
   </button>`;
 }
 
+function mediaHomeHealthTone(value) {
+  const stateValue = statusClass(value);
+  if (stateValue === "healthy") return "success";
+  if (["limited", "degraded"].includes(stateValue)) return "warning";
+  if (["down", "auth-required", "authentication-required"].includes(stateValue)) return "danger";
+  if (stateValue === "checking") return "info";
+  return "neutral";
+}
+
+function mediaHomeHealthIcon(value) {
+  const stateValue = statusClass(value);
+  if (stateValue === "healthy") return "check";
+  if (["limited", "degraded"].includes(stateValue)) return "more";
+  if (stateValue === "down") return "x";
+  if (["auth-required", "authentication-required"].includes(stateValue)) return "lock";
+  if (stateValue === "disabled") return "pause";
+  return "refresh";
+}
+
+function mediaHomeConnectionPresentation(value) {
+  return {
+    connected: { label: "Connected", tone: "success" },
+    auth_required: { label: "Authentication required", tone: "danger" },
+    down: { label: "Unavailable", tone: "danger" },
+    unverified: { label: "Unverified", tone: "neutral" }
+  }[String(value || "unverified")] || { label: "Unverified", tone: "neutral" };
+}
+
+function mediaHomeServiceSummary(service) {
+  if (service.message) return service.message;
+  if (!service.capabilities.length) return service.state === "disabled" ? "Monitoring disabled" : "No capability results yet";
+  if (!service.failedCapabilities.length) return `${service.healthyCapabilityCount} of ${service.capabilities.length} capabilities healthy`;
+  const first = service.failedCapabilities[0];
+  return `${first.name}${service.failedCapabilities.length > 1 ? ` and ${service.failedCapabilities.length - 1} more` : ""} ${first.state === "stale" ? "is stale" : "needs attention"}`;
+}
+
+function renderMediaHomeServiceState(service, heading, presentation) {
+  return `<span class="operations-service__health" aria-label="${escapeHtml(service.name)} ${escapeHtml(heading.toLowerCase())}: ${escapeHtml(presentation.label)}"><small>${escapeHtml(heading)}</small><span class="operations-service__state"><i class="is-${escapeHtml(presentation.tone)}" aria-hidden="true"></i>${escapeHtml(presentation.label)}</span></span>`;
+}
+
+function renderMediaHomeService(service) {
+  const connection = mediaHomeConnectionPresentation(service.connectionState);
+  const serviceHealth = {
+    label: statusLabel(service.state),
+    tone: mediaHomeHealthTone(service.state)
+  };
+  const facts = [];
+  if (service.latencyMs !== null) facts.push(`${service.latencyMs} ms`);
+  if (service.version) facts.push(`v${service.version}`);
+  if (!facts.length && service.lastCheckedAt) facts.push("Checked");
+  const states = `<span class="operations-service__states">${renderMediaHomeServiceState(service, "Connection health", connection)}${renderMediaHomeServiceState(service, "Service health", serviceHealth)}</span>`;
+  const content = `<span class="operations-service__mark">${serviceIconMarkup(service.id, service.name.slice(0, 1))}</span><span class="operations-service__copy"><span class="operations-kicker">${escapeHtml(service.role)}</span><strong>${escapeHtml(service.name)}</strong><small>${escapeHtml(mediaHomeServiceSummary(service))}</small>${facts.length ? `<em>${escapeHtml(facts.join(" · "))}</em>` : ""}</span>${states}${SERVICE_ORDER.includes(service.id) ? icon("chevron") : ""}`;
+  const actionLabel = `Open ${service.name} connection details. Connection health: ${connection.label}. Service health: ${serviceHealth.label}.`;
+  return SERVICE_ORDER.includes(service.id)
+    ? `<li><button class="operations-service" type="button" data-action="open-service" data-service-id="${escapeHtml(service.id)}" aria-label="${escapeHtml(actionLabel)}">${content}</button></li>`
+    : `<li><article class="operations-service">${content}</article></li>`;
+}
+
+function renderMediaHomeServiceHealth(operations) {
+  return `<section class="operations-panel operations-services media-home-card media-home-card--services" aria-labelledby="media-home-services-title" data-home-slot="service-health">
+    <header class="operations-section-heading media-home-card__heading"><div><span class="operations-kicker">Connected stack</span><h2 id="media-home-services-title">Service health</h2><p>Connection and application health remain separate signals.</p></div><a class="operations-text-link" href="#/health">Open health ${icon("chevron")}</a></header>
+    ${operations.services.length ? `<ul class="operations-services__list">${operations.services.map(renderMediaHomeService).join("")}</ul>` : renderMediaEmpty("No monitored services", "Add a media connection to begin collecting health signals.", "shield")}
+  </section>`;
+}
+
+function renderMediaHomePipeline(operations) {
+  return `<section class="operations-panel operations-pipeline media-home-card media-home-card--pipeline" aria-labelledby="media-home-pipeline-title" data-home-slot="media-pipeline">
+    <header class="operations-section-heading media-home-card__heading"><div><span class="operations-kicker">End-to-end signal</span><h2 id="media-home-pipeline-title">Media pipeline</h2><p>Requests moving toward playback.</p></div><a class="operations-text-link" href="#/health">Open pipeline ${icon("chevron")}</a></header>
+    ${operations.pipeline.length ? `<ol class="operations-pipeline__list">${operations.pipeline.map((stage) => {
+      const detail = stage.detail
+        || (stage.failingCheckCount > 0
+          ? `${stage.failingCheckCount} API check${stage.failingCheckCount === 1 ? "" : "s"} need attention`
+          : stage.state === "healthy" && stage.serviceCount > 0
+            ? `${stage.serviceCount} service${stage.serviceCount === 1 ? "" : "s"} reporting normally`
+            : stage.state === "stale" && stage.serviceCount === 0
+              ? "Waiting for a configured service"
+              : statusLabel(stage.state));
+      return `<li class="operations-pipeline__stage is-${escapeHtml(statusClass(stage.state))}"><span class="operations-pipeline__marker">${icon(mediaHomeHealthIcon(stage.state))}</span><div><span>${escapeHtml(stage.hint)}</span><strong>${escapeHtml(stage.label)}</strong><small>${escapeHtml(detail)}</small></div>${stage.count !== null ? `<em aria-label="${stage.count} items">${stage.count}</em>` : ""}</li>`;
+    }).join("")}</ol>` : renderMediaEmpty("Pipeline signals are not available yet", "They will appear after the first complete monitoring cycle.", "refresh")}
+  </section>`;
+}
+
+function renderMediaHomeDownloads(downloads, { promoted = false } = {}) {
+  return `<section class="pipeline-panel media-home-card media-home-card--downloads${promoted ? " is-promoted" : ""}" data-home-slot="downloads"${promoted ? " data-home-promoted=\"true\"" : ""}><header class="panel-heading media-home-card__heading"><div><span class="eyebrow">Activity</span><h2>Downloads and imports</h2><p>qBittorrent progress correlated with Sonarr and Radarr imports.</p></div><a class="text-link" href="#/activity">All activity ${icon("chevron")}</a></header><div class="pipeline-list">${downloads.length ? downloads.map(renderHomeActivityRow).join("") : renderMediaEmpty("No active transfers", "Downloads and blocked imports will appear here.", "download")}</div></section>`;
+}
+
+function renderMediaHomeContinueWatching(feature, configuredCount, generatedAt) {
+  return `<section class="cinema-hero media-home-card media-home-card--continue" data-home-slot="continue-watching" data-media-key="${feature.key}">
+    ${renderArtworkImage(feature, { className: "hero-art-image", eager: true })}<div class="hero-shade"></div>
+    <div class="hero-content"><span class="eyebrow"><i></i>Continue watching</span><h2>${escapeHtml(feature.title)}</h2><div class="hero-meta"><span>${escapeHtml(mediaTypeLabel(feature.mediaType))}</span>${feature.year ? `<span>${escapeHtml(feature.year)}</span>` : ""}<span>${escapeHtml(mediaStatusLabel(feature))}</span></div><p>${escapeHtml(feature.summary || feature.subtitle || "Playback and availability are correlated across your connected services.")}</p><div class="hero-actions"><button class="primary-button" type="button" data-action="open-media-detail" data-media-id="${escapeHtml(feature.id)}" data-media-key="${feature.key}">${icon("eye")} View details</button><a class="secondary-button" href="#/library">Browse library</a></div>${feature.progress === null ? "" : `<div class="hero-progress"><progress data-media-progress value="${feature.progress}" max="100" aria-label="${escapeHtml(`${feature.title} watched`)}">${feature.progress}%</progress><span data-media-progress-label data-media-progress-suffix=" watched">${feature.progress}% watched</span></div>`}</div>
+    <div class="hero-live"><span class="live-label"><i></i>Read-only view</span><strong>${configuredCount} connected service${configuredCount === 1 ? "" : "s"}</strong><small>Updated ${escapeHtml(formatTime(generatedAt, "when data arrives"))}</small></div>
+  </section>`;
+}
+
 function renderMediaHome() {
   const media = mediaSnapshotForUi();
-  if (!media.present) return renderOperationsOverview(snapshotForUi(), state.infrastructure.targets);
-  const feature = media.home.nowPlaying[0] || media.home.continueWatching[0] || media.home.recentlyAdded[0] || media.discover[0] || null;
+  const continueWatching = media.home.continueWatching;
+  const hasContinueWatching = continueWatching.length > 0;
+  const feature = hasContinueWatching ? continueWatching[0] : null;
   const missingMovies = media.metrics.missingMovies ?? media.home.missing.filter((item) => item.mediaType === "movie").length;
   const missingEpisodes = media.metrics.missingEpisodes ?? media.home.missing.filter((item) => item.mediaType !== "movie").length;
   const configuredCount = (state.config?.services || []).filter((service) => service.configured).length;
-  const hero = feature ? `<section class="cinema-hero" data-media-key="${feature.key}">
-    ${renderArtworkImage(feature, { className: "hero-art-image", eager: true })}<div class="hero-shade"></div>
-    <div class="hero-content"><span class="eyebrow"><i></i>${feature === media.home.nowPlaying[0] ? "Now playing" : "Continue watching"}</span><h2>${escapeHtml(feature.title)}</h2><div class="hero-meta"><span>${escapeHtml(mediaTypeLabel(feature.mediaType))}</span>${feature.year ? `<span>${escapeHtml(feature.year)}</span>` : ""}<span>${escapeHtml(mediaStatusLabel(feature))}</span></div><p>${escapeHtml(feature.summary || feature.subtitle || "Playback and availability are correlated across your connected services.")}</p><div class="hero-actions"><button class="primary-button" type="button" data-action="open-media-detail" data-media-id="${escapeHtml(feature.id)}" data-media-key="${feature.key}">${icon("eye")} View details</button><a class="secondary-button" href="#/library">Browse library</a></div>${feature.progress === null ? "" : `<div class="hero-progress"><progress data-media-progress value="${feature.progress}" max="100">${feature.progress}%</progress><span data-media-progress-label data-media-progress-suffix=" watched">${feature.progress}% watched</span></div>`}</div>
-    <div class="hero-live"><span class="live-label"><i></i>Read-only view</span><strong>${configuredCount} connected service${configuredCount === 1 ? "" : "s"}</strong><small>Updated ${escapeHtml(formatTime(media.generatedAt, "when data arrives"))}</small></div>
-  </section>` : `<section class="media-welcome-panel"><div><span class="eyebrow"><i></i>Desktop media center</span><h2>Your media workflow, in one place</h2><p>${configuredCount ? "Connected services have not returned any media records yet. Helmsman will keep this page stable while the next read-only refresh completes." : "Add Jellyfin, Seerr, Sonarr, Radarr, qBittorrent, and Bazarr connections to build the unified view."}</p></div><a class="primary-button" href="#/connections">Review connections</a></section>`;
   const downloads = [...media.home.blockedImports, ...media.home.activeDownloads].slice(0, 8);
   const attention = [...media.home.pendingRequests, ...media.home.blockedImports].slice(0, 8);
-  return `<div class="page media-desktop-page media-home-page operations-page">${hero}
+  const operations = normalizeOperationsSnapshot(mediaOnlyOperationsSnapshot(), []);
+  const downloadsCard = renderMediaHomeDownloads(downloads, { promoted: !hasContinueWatching });
+  return `<div class="page media-desktop-page media-home-page operations-page">
+    <div class="media-home-bento ${hasContinueWatching ? "has-continue-watching" : "has-promoted-downloads"}">
+      ${hasContinueWatching ? renderMediaHomeContinueWatching(feature, configuredCount, media.generatedAt) : downloadsCard}
+      ${renderMediaHomeServiceHealth(operations)}
+      ${hasContinueWatching ? downloadsCard : ""}
+      <section class="activity-panel media-home-card media-home-card--attention" data-home-slot="requests-and-warnings"><header class="panel-heading media-home-card__heading"><div><span class="eyebrow">Attention</span><h2>Requests and warnings</h2><p>Only current, service-reported conditions are shown.</p></div><a class="text-link" href="#/requests">All requests ${icon("chevron")}</a></header><div class="activity-list">${attention.length ? attention.map((item) => `<button class="activity-event" type="button" data-action="open-media-detail" data-media-id="${escapeHtml(item.id)}" data-media-key="${item.key}"><i class="event-marker ${item.error ? "tone-danger" : "tone-active"}"></i><span><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.error || mediaStatusLabel(item))}</small></span><time>${escapeHtml(formatTime(item.requestedAt || item.releaseAt, "Current"))}</time></button>`).join("") : renderMediaEmpty("Nothing needs attention", "Pending requests and service warnings will appear here.", "check")}</div></section>
+      ${renderMediaHomePipeline(operations)}
+    </div>
     <form class="media-home-search" id="media-search-form" role="search"><label for="media-home-search">${icon("search")}<span><strong>Search your media</strong><small>Search the normalized titles already fetched by Helmsman.</small></span><input id="media-home-search" name="query" type="search" value="${escapeHtml(state.media.filters.homeSearch)}" placeholder="Movie, series, or episode" data-media-filter="homeSearch" autocomplete="off" /></label><button class="secondary-button" type="submit">Search library ${icon("chevron")}</button></form>
     <section class="media-home-metrics" aria-label="Media workload summary">
       <a href="#/library"><strong>${media.metrics.libraryTotal.toLocaleString()}</strong><span>Library items</span><small>${media.metrics.libraryCompleteness === null ? "Availability indexed" : `${media.metrics.libraryCompleteness}% complete`}</small></a>
@@ -1802,9 +1937,8 @@ function renderMediaHome() {
       <a href="#/library"><strong>${media.metrics.missingTotal.toLocaleString()}</strong><span>Missing media</span><small>${missingMovies} movies · ${missingEpisodes} episodes shown</small></a>
       <a href="#/health"><strong>${media.metrics.subtitleBacklog.toLocaleString()}</strong><span>Subtitle backlog</span><small>Bazarr-reported items</small></a>
     </section>
-    ${renderPosterSection("Continue watching", "Resume items reported by Jellyfin", media.home.continueWatching, "Nothing is waiting to be resumed.", { eagerCount: MEDIA_EAGER_CARD_COUNT })}
-    <div class="focus-layout"><section class="pipeline-panel"><header class="panel-heading"><div><span class="eyebrow">Activity</span><h2>Downloads and imports</h2><p>qBittorrent progress correlated with Sonarr and Radarr imports.</p></div><a class="text-link" href="#/activity">All activity ${icon("chevron")}</a></header><div class="pipeline-list">${downloads.length ? downloads.map(renderHomeActivityRow).join("") : renderMediaEmpty("No active transfers", "Downloads and blocked imports will appear here.", "download")}</div></section>
-      <section class="activity-panel"><header class="panel-heading"><div><span class="eyebrow">Attention</span><h2>Requests and warnings</h2><p>Only current, service-reported conditions are shown.</p></div></header><div class="activity-list">${attention.length ? attention.map((item) => `<button class="activity-event" type="button" data-action="open-media-detail" data-media-id="${escapeHtml(item.id)}" data-media-key="${item.key}"><i class="event-marker ${item.error ? "tone-danger" : "tone-active"}"></i><span><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.error || mediaStatusLabel(item))}</small></span><time>${escapeHtml(formatTime(item.requestedAt || item.releaseAt, "Current"))}</time></button>`).join("") : renderMediaEmpty("Nothing needs attention", "Pending requests and service warnings will appear here.", "check")}</div></section></div>
+    ${media.home.nowPlaying.length ? renderPosterSection("Now playing", "Current playback reported by Jellyfin", media.home.nowPlaying, "", { eagerCount: MEDIA_EAGER_CARD_COUNT }) : ""}
+    ${continueWatching.length > 1 ? renderPosterSection("More to continue", "Additional resume items reported by Jellyfin", continueWatching.slice(1), "", { eagerCount: Math.max(0, MEDIA_EAGER_CARD_COUNT - 1) }) : ""}
     ${renderPosterSection("Recently added", "Latest titles available in Jellyfin", media.home.recentlyAdded, "No recently added titles were reported.")}
     ${renderPosterSection("Upcoming releases", "Monitored releases from Sonarr and Radarr", media.home.upcoming.slice(0, 14), "No upcoming releases were reported.")}
   </div>`;
@@ -4441,9 +4575,7 @@ function mediaConnectionSummary(services) {
 
 function monitorSummaryMarkup({ infrastructureWorkspace, overall, connection, summaryText }) {
   const mobileDot = `<i class="monitor-summary__mobile-dot health-dot is-${escapeHtml(statusClass(overall))}" data-monitor-mobile-dot aria-hidden="true"></i>`;
-  const mediaHidden = infrastructureWorkspace ? " hidden" : "";
-  const infrastructureHidden = infrastructureWorkspace ? "" : " hidden";
-  return `<span class="monitor-summary__metrics" data-monitor-media-summary${mediaHidden}><span class="monitor-summary__metric"><small>Connection health</small><span class="monitor-summary__value"><i class="health-dot is-${escapeHtml(connection.state)}" data-monitor-connection-dot aria-hidden="true"></i><strong data-monitor-connection-state>${escapeHtml(connection.label)}</strong></span></span><span class="monitor-summary__metric"><small>Service health</small><span class="monitor-summary__value"><i class="health-dot is-${escapeHtml(statusClass(overall))}" data-monitor-service-dot aria-hidden="true"></i><strong data-monitor-service-state>${escapeHtml(statusLabel(overall))}</strong></span></span></span><span class="monitor-summary__single" data-monitor-infrastructure-summary${infrastructureHidden}><i class="health-dot is-${escapeHtml(statusClass(overall))}" data-monitor-infrastructure-dot aria-hidden="true"></i><span data-monitor-infrastructure-text>${escapeHtml(summaryText)}</span></span><span class="monitor-summary__checked" data-monitor-checked${mediaHidden}>${escapeHtml(summaryText)}</span>${mobileDot}`;
+  return `<span class="monitor-summary__metrics" data-monitor-media-summary><span class="monitor-summary__metric"><small>Connection health</small><span class="monitor-summary__value"><i class="health-dot is-${escapeHtml(connection.state)}" data-monitor-connection-dot aria-hidden="true"></i><strong data-monitor-connection-state>${escapeHtml(connection.label)}</strong></span></span><span class="monitor-summary__metric"><small>Service health</small><span class="monitor-summary__value"><i class="health-dot is-${escapeHtml(statusClass(overall))}" data-monitor-service-dot aria-hidden="true"></i><strong data-monitor-service-state>${escapeHtml(statusLabel(overall))}</strong></span></span></span><span class="monitor-summary__single" data-monitor-infrastructure-summary hidden><i class="health-dot is-${escapeHtml(statusClass(overall))}" data-monitor-infrastructure-dot aria-hidden="true"></i><span data-monitor-infrastructure-text>${escapeHtml(summaryText)}</span></span><span class="monitor-summary__checked" data-monitor-checked hidden>${escapeHtml(summaryText)}</span>${mobileDot}`;
 }
 
 function updateMonitorSummary({ infrastructureWorkspace, overall, services, summaryText }) {
@@ -4453,7 +4585,7 @@ function updateMonitorSummary({ infrastructureWorkspace, overall, services, summ
   monitorSummary.setAttribute(
     "aria-label",
     infrastructureWorkspace
-      ? "Open infrastructure incidents"
+      ? `Open infrastructure incidents. Connection health: ${connection.label}. Service health: ${serviceLabel}.`
       : `Open media health. Connection health: ${connection.label}. Service health: ${serviceLabel}.`
   );
 
@@ -4475,9 +4607,9 @@ function updateMonitorSummary({ infrastructureWorkspace, overall, services, summ
     return;
   }
 
-  mediaSummary.hidden = infrastructureWorkspace;
-  checkedText.hidden = infrastructureWorkspace;
-  infrastructureSummary.hidden = !infrastructureWorkspace;
+  mediaSummary.hidden = false;
+  checkedText.hidden = true;
+  infrastructureSummary.hidden = true;
   connectionDot.className = `health-dot is-${connection.state}`;
   connectionState.textContent = connection.label;
   serviceDot.className = `health-dot is-${statusClass(overall)}`;
@@ -4504,7 +4636,7 @@ function updateChrome() {
   incidentCount.textContent = String(count);
   incidentCount.hidden = count === 0;
   const overall = infrastructureWorkspace ? combinedInfrastructureState(infrastructure, portainers) : normalized.overall.state;
-  if (pageEyebrow) pageEyebrow.textContent = infrastructureWorkspace ? "Infrastructure" : "Media operations";
+  if (pageEyebrow) pageEyebrow.textContent = infrastructureWorkspace ? "Infrastructure operations" : "Media operations";
   document.documentElement?.setAttribute?.("data-workspace", state.workspace);
   document.querySelectorAll("[data-action='switch-workspace']").forEach((button) => {
     const active = button.dataset.workspace === state.workspace;
@@ -4535,7 +4667,10 @@ function updateChrome() {
   const summaryText = state.refreshing
     ? infrastructureWorkspace ? "Checking infrastructure…" : "Checking services…"
     : `Last ${infrastructureWorkspace ? "infrastructure" : "container"} check ${formatTime(time, "pending")}`;
-  updateMonitorSummary({ infrastructureWorkspace, overall, services: normalized.services, summaryText });
+  const monitoredConnections = infrastructureWorkspace
+    ? [...infrastructure.targets, ...portainers]
+    : normalized.services;
+  updateMonitorSummary({ infrastructureWorkspace, overall, services: monitoredConnections, summaryText });
   const initials = String(state.status?.session?.name || "HM").split(/\s+/u).map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "HM";
   sessionButton.querySelector("span").textContent = initials;
   sessionButton.disabled = !authenticated;
@@ -4745,6 +4880,8 @@ function infrastructureTargetFacts(target) {
   if (target.metrics.guestsRunning !== null) facts.push(`${target.metrics.guestsRunning} guests running`);
   if (target.version) facts.push(`PVE ${target.version}`);
   if (target.latencyMs !== null) facts.push(`${target.latencyMs} ms`);
+  const endpointCount = target.endpoints?.length || 1;
+  facts.push(`${endpointCount} API endpoint${endpointCount === 1 ? "" : "s"}`);
   return facts;
 }
 
@@ -4847,8 +4984,41 @@ function updateInfrastructureVolatile() {
     updateTimeElement(checked, latestInfrastructureCheck(snapshot.targets, portainers), "Waiting for data", formatAssessmentTime);
     for (const element of main.querySelectorAll("[data-infrastructure-target-id]")) {
       const target = snapshot.targets.find((entry) => entry.id === element.dataset.infrastructureTargetId);
+      if (!target) continue;
       const facts = element.querySelector("[data-infrastructure-target-facts]");
-      if (target && facts) facts.textContent = infrastructureTargetFacts(target).join(" · ");
+      if (facts) facts.textContent = infrastructureTargetFacts(target).join(" · ");
+
+      const setTargetValue = (selector, value) => {
+        const targetElement = element.querySelector(selector);
+        if (targetElement) targetElement.textContent = value;
+      };
+      const cpuCores = target.nodes
+        .map((node) => node.cpuCores)
+        .filter((value) => value !== null);
+      const coreTotal = cpuCores.length
+        ? cpuCores.reduce((total, value) => total + value, 0)
+        : null;
+
+      setTargetValue("[data-infrastructure-target-metric='cpu']", target.metrics.nodeCpuPercent === null
+        ? "Waiting"
+        : `${target.metrics.nodeCpuPercent.toLocaleString()}%`);
+      setTargetValue("[data-infrastructure-target-metric='memory']", formatMetricRatio(target.metrics.nodeMemoryUsedBytes, target.metrics.nodeMemoryTotalBytes));
+      setTargetValue("[data-infrastructure-target-metric='disk']", formatMetricRatio(target.metrics.nodeDiskUsedBytes, target.metrics.nodeDiskTotalBytes));
+      setTargetValue("[data-infrastructure-target-metric='workloads']", target.metrics.guestTotal === null
+        ? "Waiting"
+        : target.metrics.guestTotal.toLocaleString());
+      setTargetValue("[data-infrastructure-target-detail='cpu']", coreTotal === null
+        ? "Core count pending"
+        : `${coreTotal.toLocaleString()} cores`);
+      setTargetValue("[data-infrastructure-target-detail='memory']", target.metrics.nodeMemoryUsedBytes === null || target.metrics.nodeMemoryTotalBytes === null
+        ? "Aggregate use pending"
+        : `${formatMetricBytes(target.metrics.nodeMemoryUsedBytes)} / ${formatMetricBytes(target.metrics.nodeMemoryTotalBytes)}`);
+      setTargetValue("[data-infrastructure-target-detail='disk']", target.metrics.nodeDiskUsedBytes === null || target.metrics.nodeDiskTotalBytes === null
+        ? "Aggregate use pending"
+        : `${formatMetricBytes(target.metrics.nodeDiskUsedBytes)} / ${formatMetricBytes(target.metrics.nodeDiskTotalBytes)}`);
+      setTargetValue("[data-infrastructure-target-detail='workloads']", target.metrics.guestTotal === null
+        ? "Inventory pending"
+        : `${target.metrics.virtualMachineTotal ?? 0} VM · ${target.metrics.containerTotal ?? 0} LXC`);
     }
   }
   if (state.workspace === "infrastructure" && ["services", "environments"].includes(state.route)) {
@@ -4928,7 +5098,7 @@ function updatePortainerVolatile() {
 
 function updateVolatileOperationsUi() {
   const snapshot = normalizeOperationsSnapshot(snapshotForUi(), state.infrastructure.targets);
-  if (state.workspace === "media" && (state.route === "health" || state.route === "home" && !state.snapshot?.media)) {
+  if (state.workspace === "media" && ["home", "health"].includes(state.route)) {
     updateOverviewVolatile(normalizeOperationsSnapshot(mediaOnlyOperationsSnapshot(), []));
   }
   if (state.workspace === "infrastructure" && state.route === "incidents") updateIncidentsVolatile(snapshot);

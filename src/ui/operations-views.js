@@ -1514,17 +1514,38 @@ function renderInfrastructureTarget(target) {
   const kind = target.environmentKind === "cluster" ? "Multi-node cluster" : target.environmentKind === "standalone" ? "Standalone server" : "Discovery pending";
   const endpointCount = target.endpoints.length || 1;
   facts.push(`${endpointCount} API endpoint${endpointCount === 1 ? "" : "s"}`);
-  return `<li><article class="infrastructure-target">
+  const cpuCores = target.nodes.map((node) => node.cpuCores).filter((value) => value !== null);
+  const coreTotal = cpuCores.length ? cpuCores.reduce((total, value) => total + value, 0) : null;
+  const memoryDetail = target.metrics.nodeMemoryUsedBytes === null || target.metrics.nodeMemoryTotalBytes === null
+    ? "Aggregate use pending"
+    : `${bytesMetric(target.metrics.nodeMemoryUsedBytes)} / ${bytesMetric(target.metrics.nodeMemoryTotalBytes)}`;
+  const diskDetail = target.metrics.nodeDiskUsedBytes === null || target.metrics.nodeDiskTotalBytes === null
+    ? "Aggregate use pending"
+    : `${bytesMetric(target.metrics.nodeDiskUsedBytes)} / ${bytesMetric(target.metrics.nodeDiskTotalBytes)}`;
+  const workloadDetail = target.metrics.guestTotal === null
+    ? "Inventory pending"
+    : `${target.metrics.virtualMachineTotal ?? 0} VM · ${target.metrics.containerTotal ?? 0} LXC`;
+  return `<li><article class="infrastructure-target infrastructure-overview-environment">
     <span class="infrastructure-target__mark">${proxmoxBrandLinkMarkup()}</span>
     <button class="infrastructure-target__action" type="button" data-action="open-infrastructure-environment-detail" data-infrastructure-target-id="${escapeOperationsHtml(target.id)}" aria-label="Open ${escapeOperationsHtml(target.displayName)} environment details">
-      <span class="infrastructure-target__copy">
-        <span class="operations-kicker">${escapeOperationsHtml(kind)}</span>
-        <strong>${escapeOperationsHtml(target.displayName)}</strong>
-        <small>${escapeOperationsHtml(infrastructureTargetSummary(target))}</small>
-        <code>${escapeOperationsHtml(target.clusterName || target.environmentName || target.url || "Environment details unavailable")}</code>
-        <em data-infrastructure-target-facts>${escapeOperationsHtml(facts.join(" · "))}</em>
+      <span class="infrastructure-target__body">
+        <span class="infrastructure-target__heading">
+          <span class="infrastructure-target__copy">
+            <span class="operations-kicker">${escapeOperationsHtml(kind)}</span>
+            <strong>${escapeOperationsHtml(target.displayName)}</strong>
+            <small>${escapeOperationsHtml(infrastructureTargetSummary(target))}</small>
+            <code>${escapeOperationsHtml(target.clusterName || target.environmentName || target.url || "Environment details unavailable")}</code>
+          </span>
+          <span class="infrastructure-target__state is-${target.state}" data-infrastructure-target-state><i class="is-${meta.tone}"></i>${escapeOperationsHtml(meta.label)}</span>
+        </span>
+        <span class="infrastructure-target__metrics" role="group" aria-label="${escapeOperationsHtml(target.displayName)} current metrics">
+          <span><small class="infrastructure-target__metric-label">CPU</small><strong data-infrastructure-target-metric="cpu">${storageMetric(target.metrics.nodeCpuPercent)}</strong><small data-infrastructure-target-detail="cpu">${coreTotal === null ? "Core count pending" : `${coreTotal.toLocaleString()} cores`}</small></span>
+          <span><small class="infrastructure-target__metric-label">Memory</small><strong data-infrastructure-target-metric="memory">${ratioMetric(target.metrics.nodeMemoryUsedBytes, target.metrics.nodeMemoryTotalBytes)}</strong><small data-infrastructure-target-detail="memory">${escapeOperationsHtml(memoryDetail)}</small></span>
+          <span><small class="infrastructure-target__metric-label">Root disk</small><strong data-infrastructure-target-metric="disk">${ratioMetric(target.metrics.nodeDiskUsedBytes, target.metrics.nodeDiskTotalBytes)}</strong><small data-infrastructure-target-detail="disk">${escapeOperationsHtml(diskDetail)}</small></span>
+          <span><small class="infrastructure-target__metric-label">Workloads</small><strong data-infrastructure-target-metric="workloads">${infrastructureMetric(target.metrics.guestTotal)}</strong><small data-infrastructure-target-detail="workloads">${escapeOperationsHtml(workloadDetail)}</small></span>
+        </span>
+        <em class="infrastructure-target__facts" data-infrastructure-target-facts>${escapeOperationsHtml(facts.join(" · "))}</em>
       </span>
-      <span class="infrastructure-target__state is-${target.state}" data-infrastructure-target-state><i class="is-${meta.tone}"></i>${escapeOperationsHtml(meta.label)}</span>
       ${svgIcon("chevron")}
     </button>
   </article></li>`;
@@ -1571,18 +1592,99 @@ function renderInfrastructurePortainer(service) {
     `${service.metrics.stackTotal} visible stack${service.metrics.stackTotal === 1 ? "" : "s"}`
   ];
   if (service.version) facts.push(`Portainer ${service.version}`);
-  return `<li><a class="infrastructure-target" href="#/portainer" data-action="open-portainer-overview" data-portainer-overview-id="${escapeOperationsHtml(service.id)}" aria-label="Open ${escapeOperationsHtml(service.displayName)} container inventory">
+  return `<li><a class="infrastructure-target infrastructure-overview-portainer" href="#/portainer" data-action="open-portainer-overview" data-portainer-overview-id="${escapeOperationsHtml(service.id)}" aria-label="Open ${escapeOperationsHtml(service.displayName)} container inventory">
     <span class="infrastructure-target__mark">${serviceIconMarkup("portainer", "P")}</span>
-    <span class="infrastructure-target__copy">
-      <span class="operations-kicker">Container platform</span>
-      <strong>${escapeOperationsHtml(service.displayName)}</strong>
-      <small>${escapeOperationsHtml(infrastructurePortainerSummary(service))}</small>
-      <code>${escapeOperationsHtml(service.url || "Connection address unavailable")}</code>
-      <em>${escapeOperationsHtml(facts.join(" · "))}</em>
+    <span class="infrastructure-target__body">
+      <span class="infrastructure-target__heading">
+        <span class="infrastructure-target__copy">
+          <span class="operations-kicker">Container platform</span>
+          <strong>${escapeOperationsHtml(service.displayName)}</strong>
+          <small>${escapeOperationsHtml(infrastructurePortainerSummary(service))}</small>
+        </span>
+        <span class="infrastructure-target__state is-${service.state}"><i class="is-${meta.tone}"></i>${escapeOperationsHtml(meta.label)}</span>
+      </span>
+      <span class="infrastructure-target__metrics infrastructure-target__metrics--portainer" role="group" aria-label="${escapeOperationsHtml(service.displayName)} current metrics">
+        <span><small class="infrastructure-target__metric-label">Containers</small><strong>${service.metrics.containerTotal.toLocaleString()}</strong><small>${service.metrics.containerRunning.toLocaleString()} running</small></span>
+        <span><small class="infrastructure-target__metric-label">Version</small><strong>${escapeOperationsHtml(service.version ? `v${service.version}` : "Waiting")}</strong><small>${service.metrics.environmentOnline}/${service.metrics.environmentTotal} environments online</small></span>
+        <span><small class="infrastructure-target__metric-label">Endpoint</small><strong class="infrastructure-target__endpoint">${escapeOperationsHtml(service.url || "Waiting")}</strong><small>${service.metrics.stackTotal.toLocaleString()} visible stack${service.metrics.stackTotal === 1 ? "" : "s"}</small></span>
+      </span>
+      <em class="infrastructure-target__facts">${escapeOperationsHtml(facts.join(" · "))}</em>
     </span>
-    <span class="infrastructure-target__state is-${service.state}"><i class="is-${meta.tone}"></i>${escapeOperationsHtml(meta.label)}</span>
     ${svgIcon("chevron")}
   </a></li>`;
+}
+
+function renderInfrastructureOverviewHeading({ id, kicker, title, description = "", href = "", actionLabel = "" }) {
+  return `<header class="operations-section-heading infrastructure-overview-heading">
+    <div>${kicker ? `<span class="operations-kicker">${escapeOperationsHtml(kicker)}</span>` : ""}<h2 id="${escapeOperationsHtml(id)}">${escapeOperationsHtml(title)}</h2>${description ? `<p>${escapeOperationsHtml(description)}</p>` : ""}</div>
+    ${href ? `<a class="operations-text-link infrastructure-overview-heading__action" href="${escapeOperationsHtml(href)}" aria-label="${escapeOperationsHtml(actionLabel || `Open ${title}`)}"><span>${escapeOperationsHtml(actionLabel || `Open ${title}`)}</span>${svgIcon("chevron")}</a>` : ""}
+  </header>`;
+}
+
+function renderInfrastructureOverviewWorkload(workload) {
+  const mark = workload.type === "qemu" || workload.type === "lxc"
+    ? workloadIconMarkup(workload.type)
+    : svgIcon("server");
+  const identifier = workload.vmid === null ? workload.kind : `${workload.kind} ${workload.vmid}`;
+  return `<li><button class="infrastructure-overview-workload is-${workload.status}" type="button" data-action="open-infrastructure-workload" data-infrastructure-workload-id="${escapeOperationsHtml(workload.id)}" aria-label="Open ${escapeOperationsHtml(workload.name)} workload details">
+    <span class="infrastructure-overview-workload__mark is-${workload.type}">${mark}</span>
+    <span class="infrastructure-overview-workload__copy"><strong>${escapeOperationsHtml(workload.name)}</strong><small>${escapeOperationsHtml(workload.environmentName)} · ${escapeOperationsHtml(workload.node)}</small></span>
+    <span class="infrastructure-overview-workload__kind">${escapeOperationsHtml(identifier)}${workload.template ? " · Template" : ""}</span>
+    <span class="infrastructure-overview-workload__state is-${workload.status}"><i aria-hidden="true"></i>${escapeOperationsHtml(workload.status)}</span>
+    ${svgIcon("chevron")}
+  </button></li>`;
+}
+
+function renderInfrastructureOverviewIncident(incident) {
+  const meta = healthMeta(incident.state);
+  const evidence = incidentEvidence(incident);
+  return `<li><a class="infrastructure-overview-incident is-${incident.state}" href="#/incidents" aria-label="Open infrastructure incidents for ${escapeOperationsHtml(incident.serviceName)}">
+    <span class="infrastructure-overview-incident__mark is-${meta.tone}">${svgIcon(meta.icon)}</span>
+    <span class="infrastructure-overview-incident__copy"><strong>${escapeOperationsHtml(incident.summary)}</strong><small>${escapeOperationsHtml(incident.serviceName)} · ${escapeOperationsHtml(incident.capability)}${evidence.length ? ` · ${escapeOperationsHtml(evidence.join(" · "))}` : ""}</small></span>
+    <span class="infrastructure-overview-incident__time">${timestampMarkup(incident.lastSeen, "Current")}</span>
+    ${svgIcon("chevron")}
+  </a></li>`;
+}
+
+function renderInfrastructureOverviewRecovery(recovery) {
+  const duration = durationLabel(recovery.firstSeen, recovery.recoveredAt);
+  return `<li class="infrastructure-overview-recovery">
+    <span class="infrastructure-overview-incident__mark is-success">${svgIcon("check")}</span>
+    <span class="infrastructure-overview-incident__copy"><strong>${escapeOperationsHtml(recovery.serviceName)} recovered</strong><small>${escapeOperationsHtml(recovery.capability)} is healthy again${duration ? ` · after ${escapeOperationsHtml(duration)}` : ""}</small></span>
+    <span class="infrastructure-overview-incident__time">${timestampMarkup(recovery.recoveredAt, "Recently")}</span>
+  </li>`;
+}
+
+function renderInfrastructureOverviewWorkloads(workloads) {
+  const visible = workloads.slice(0, 5);
+  return `<section class="operations-panel infrastructure-overview-card infrastructure-workloads-card" aria-labelledby="infrastructure-workloads-title">
+    ${renderInfrastructureOverviewHeading({
+      id: "infrastructure-workloads-title",
+      kicker: "Virtual layer",
+      title: "Current workloads",
+      description: "Current Proxmox VM and container state.",
+      href: "#/workloads",
+      actionLabel: "Open all workloads"
+    })}
+    ${visible.length ? `<ul class="infrastructure-overview-workloads">${visible.map(renderInfrastructureOverviewWorkload).join("")}</ul>` : `<div class="operations-empty is-compact"><span>${svgIcon("server")}</span><strong>No workload inventory yet</strong><p>VM and container records appear after a successful Proxmox inventory cycle.</p></div>`}
+  </section>`;
+}
+
+function renderInfrastructureOverviewIncidents(incidents, recoveries) {
+  const active = incidents.slice(0, 4);
+  const resolved = recoveries.slice(0, 3);
+  return `<section class="operations-panel infrastructure-overview-card infrastructure-incidents-card" aria-labelledby="infrastructure-overview-incidents-title">
+    ${renderInfrastructureOverviewHeading({
+      id: "infrastructure-overview-incidents-title",
+      kicker: "Operational history",
+      title: "Recent incidents",
+      description: "Active infrastructure failures and recent recoveries.",
+      href: "#/incidents",
+      actionLabel: "Open all incidents"
+    })}
+    ${active.length ? `<ul class="infrastructure-overview-incidents">${active.map(renderInfrastructureOverviewIncident).join("")}</ul>` : `<div class="infrastructure-overview-all-clear"><span>${svgIcon("check")}</span><strong>All clear</strong><p>No active incidents. Your monitored infrastructure is operating without a current alert.</p></div>`}
+    ${resolved.length ? `<div class="infrastructure-overview-recoveries"><span class="operations-kicker">Recent recoveries</span><ul>${resolved.map(renderInfrastructureOverviewRecovery).join("")}</ul></div>` : ""}
+  </section>`;
 }
 
 export function infrastructureSnapshotForTargets(snapshot, targets) {
@@ -1671,46 +1773,86 @@ export function renderInfrastructureOverview(value = {}, configuredTargets = [],
   const backupDetail = snapshot.metrics.lastBackupSuccessAgeSeconds === null
     ? "No successful-backup age reported"
     : `Last success ${durationMetric(snapshot.metrics.lastBackupSuccessAgeSeconds)} ago`;
+  const normalizedOperations = normalizeOperationsSnapshot(value, configuredTargets);
+  const configuredOnly = options?.configuredOnly === true;
+  const visibleInfrastructureServiceIds = new Set([
+    ...snapshot.targets.flatMap((target) => [target.id, `proxmox-${target.id}`]),
+    ...portainerServices.flatMap((service) => [service.id, `portainer-${service.id}`])
+  ]);
+  const isVisibleInfrastructureEvent = (entry) => entry.scope === "infrastructure"
+    && (!configuredOnly || visibleInfrastructureServiceIds.has(entry.service));
+  const infrastructureIncidents = normalizedOperations.incidents.filter(isVisibleInfrastructureEvent);
+  const infrastructureRecoveries = normalizedOperations.recentRecoveries.filter(isVisibleInfrastructureEvent);
+  const pageStateClass = connectionCount === 0
+    ? "has-no-connections"
+    : snapshot.targets.length && portainerServices.length
+      ? "has-mixed-providers"
+      : "has-single-provider";
   return `
-    <div class="page operations-page infrastructure-page" id="infrastructure-overview">
-      <section class="operations-overall infrastructure-overall is-${state}" aria-labelledby="infrastructure-overall-title">
-        <div class="operations-overall__status"><span class="operations-overall__icon is-${meta.tone}">${svgIcon("server")}</span><div><span class="operations-kicker">Infrastructure assessment</span><span class="operations-overall__label" data-infrastructure-overall-label>${escapeOperationsHtml(meta.label)}</span></div></div>
-        <div class="operations-overall__copy"><h2 id="infrastructure-overall-title">${escapeOperationsHtml(copy.headline)}</h2><p>${escapeOperationsHtml(copy.summary)}</p></div>
+    <div class="page operations-page infrastructure-page infrastructure-bento ${pageStateClass}" id="infrastructure-overview">
+      <section class="operations-overall infrastructure-overall infrastructure-overview-card infrastructure-assessment-card is-${state}" aria-labelledby="infrastructure-overall-title">
+        <header class="infrastructure-assessment-card__heading">
+          <div><span class="operations-kicker">Infrastructure assessment</span><h2 id="infrastructure-overall-title">Stack assessment</h2></div>
+          <button class="operations-refresh infrastructure-overview-heading__action" type="button" data-action="refresh-live" aria-label="Refresh infrastructure now"><span>Refresh now</span>${svgIcon("refresh")}</button>
+        </header>
+        <div class="infrastructure-assessment-card__body">
+          <span class="operations-overall__icon is-${meta.tone}">${svgIcon(meta.icon)}</span>
+          <div class="operations-overall__copy"><span class="operations-overall__label" data-infrastructure-overall-label>${escapeOperationsHtml(meta.label)}</span><h3>${escapeOperationsHtml(copy.headline)}</h3><p>${escapeOperationsHtml(copy.summary)}</p></div>
+        </div>
         <dl class="operations-overall__facts">
           <div><dt>Connections</dt><dd data-infrastructure-metric="connections">${connectionCount}</dd></div>
           <div><dt>Needs attention</dt><dd data-infrastructure-metric="attention">${affectedConnections}</dd></div>
           <div><dt>Last assessment</dt><dd><span data-infrastructure-checked>${timestampMarkup(options?.lastCheckedAt || snapshot.generatedAt, "Waiting for data")}</span></dd></div>
         </dl>
-        <button class="operations-refresh" type="button" data-action="refresh-live">${svgIcon("refresh")}<span>Refresh now</span></button>
       </section>
 
-      ${snapshot.targets.length ? `<section class="operations-panel infrastructure-targets" aria-labelledby="infrastructure-targets-title">
-        <header class="operations-section-heading">
-          <div><span class="operations-kicker">Virtualization topology</span><h2 id="infrastructure-targets-title">Proxmox environments</h2><p>Each standalone server or cluster has independent nodes, workloads, and explicitly trusted API endpoints.</p></div>
-        </header>
+      ${snapshot.targets.length ? `<section class="operations-panel infrastructure-overview-card infrastructure-signals infrastructure-signals-card" aria-labelledby="infrastructure-signals-title">
+        ${renderInfrastructureOverviewHeading({
+          id: "infrastructure-signals-title",
+          kicker: "Read-only telemetry",
+          title: "Infrastructure signals",
+          description: "Current node, guest, storage, task, and backup evidence from Proxmox.",
+          href: "#/proxmox",
+          actionLabel: "Open Proxmox"
+        })}
+        <dl class="infrastructure-signals__grid">
+          <div class="infrastructure-signal-row is-neutral"><dt><span class="infrastructure-signal-row__mark">${svgIcon("server")}</span><span class="infrastructure-signal-row__label">Nodes online</span></dt><dd><strong class="infrastructure-signal-row__value" data-infrastructure-metric="nodes">${escapeOperationsHtml(nodes)}</strong><small>Across discovered environments</small>${svgIcon("chevron")}</dd></div>
+          <div class="infrastructure-signal-row is-neutral"><dt><span class="infrastructure-signal-row__mark">${svgIcon("server")}</span><span class="infrastructure-signal-row__label">Guests running</span></dt><dd><strong class="infrastructure-signal-row__value" data-infrastructure-metric="guests-running-signal">${infrastructureMetric(snapshot.metrics.guestsRunning)}</strong><small data-infrastructure-detail="guests">${escapeOperationsHtml(guestDetail)}</small>${svgIcon("chevron")}</dd></div>
+          <div class="infrastructure-signal-row is-neutral"><dt><span class="infrastructure-signal-row__mark">${svgIcon("refresh")}</span><span class="infrastructure-signal-row__label">Average node CPU</span></dt><dd><strong class="infrastructure-signal-row__value" data-infrastructure-metric="node-cpu">${storageMetric(snapshot.metrics.nodeCpuPercent)}</strong><small>Weighted across reporting nodes</small>${svgIcon("chevron")}</dd></div>
+          <div class="infrastructure-signal-row is-neutral"><dt><span class="infrastructure-signal-row__mark">${svgIcon("server")}</span><span class="infrastructure-signal-row__label">Node memory</span></dt><dd><strong class="infrastructure-signal-row__value" data-infrastructure-metric="node-memory">${ratioMetric(snapshot.metrics.nodeMemoryUsedBytes, snapshot.metrics.nodeMemoryTotalBytes)}</strong><small data-infrastructure-detail="node-memory">${snapshot.metrics.nodeMemoryUsedBytes === null ? "Aggregate use" : `${bytesMetric(snapshot.metrics.nodeMemoryUsedBytes)} used`}</small>${svgIcon("chevron")}</dd></div>
+          <div class="infrastructure-signal-row is-${storageTone}"><dt><span class="infrastructure-signal-row__mark">${svgIcon("server")}</span><span class="infrastructure-signal-row__label">Aggregate storage use</span></dt><dd><strong class="infrastructure-signal-row__value" data-infrastructure-metric="storage">${storageMetric(snapshot.metrics.storagePercent)}</strong><small data-infrastructure-detail="storage">${escapeOperationsHtml(storageDetail)}</small>${svgIcon("chevron")}</dd></div>
+          <div class="infrastructure-signal-row ${snapshot.metrics.failedTasks ? "is-danger" : "is-neutral"}"><dt><span class="infrastructure-signal-row__mark">${svgIcon(snapshot.metrics.failedTasks ? "x" : "check")}</span><span class="infrastructure-signal-row__label">Failed tasks</span></dt><dd><strong class="infrastructure-signal-row__value" data-infrastructure-metric="failed-tasks">${infrastructureMetric(snapshot.metrics.failedTasks)}</strong><small>Current bounded window</small>${svgIcon("chevron")}</dd></div>
+          <div class="infrastructure-signal-row ${snapshot.metrics.backupIssues ? "is-warning" : "is-neutral"}"><dt><span class="infrastructure-signal-row__mark">${svgIcon(snapshot.metrics.backupIssues ? "more" : "check")}</span><span class="infrastructure-signal-row__label">Backup issues</span></dt><dd><strong class="infrastructure-signal-row__value" data-infrastructure-metric="backup-issues">${infrastructureMetric(snapshot.metrics.backupIssues)}</strong><small data-infrastructure-detail="backups">${escapeOperationsHtml(backupDetail)}</small>${svgIcon("chevron")}</dd></div>
+        </dl>
+      </section>` : ""}
+
+      ${snapshot.targets.length ? `<section class="operations-panel infrastructure-targets infrastructure-overview-card infrastructure-proxmox-card" aria-labelledby="infrastructure-targets-title">
+        ${renderInfrastructureOverviewHeading({
+          id: "infrastructure-targets-title",
+          kicker: "Virtualization topology",
+          title: "Proxmox environments",
+          description: "Standalone servers and clusters with their current aggregate node and workload state.",
+          href: "#/proxmox",
+          actionLabel: "Open Proxmox"
+        })}
         <ul class="infrastructure-targets__list">${snapshot.targets.map(renderInfrastructureTarget).join("")}</ul>
       </section>` : ""}
 
-      ${portainerServices.length ? `<section class="operations-panel infrastructure-targets infrastructure-portainer-connections" aria-labelledby="portainer-connections-title">
-        <header class="operations-section-heading">
-          <div><span class="operations-kicker">Container inventory</span><h2 id="portainer-connections-title">Portainer servers</h2><p>Configured servers expose only the environments, containers, and stacks permitted by their protected access token.</p></div>
-        </header>
+      ${portainerServices.length ? `<section class="operations-panel infrastructure-targets infrastructure-portainer-connections infrastructure-overview-card infrastructure-portainer-card" aria-labelledby="portainer-connections-title">
+        ${renderInfrastructureOverviewHeading({
+          id: "portainer-connections-title",
+          kicker: "Container inventory",
+          title: "Portainer servers",
+          description: "Configured servers and the inventory permitted by their protected access token.",
+          href: "#/portainer",
+          actionLabel: "Open Portainer"
+        })}
         <ul class="infrastructure-targets__list">${portainerServices.map(renderInfrastructurePortainer).join("")}</ul>
       </section>` : ""}
 
-      ${connectionCount ? "" : `<section class="operations-panel infrastructure-connections-empty" aria-labelledby="infrastructure-connections-empty-title"><div class="operations-empty"><span>${svgIcon("server")}</span><strong id="infrastructure-connections-empty-title">No infrastructure connections yet</strong><p>Connections you configure appear here with their current read-only status and inventory.</p><a class="button" href="#/connectors">Open Connectors</a></div></section>`}
+      ${connectionCount ? "" : `<section class="operations-panel infrastructure-connections-empty infrastructure-overview-card" aria-labelledby="infrastructure-connections-empty-title"><div class="operations-empty"><span>${svgIcon("server")}</span><strong id="infrastructure-connections-empty-title">No infrastructure connections yet</strong><p>Connections you configure appear here with their current read-only status and inventory.</p><a class="button" href="#/connectors">Open Connectors</a></div></section>`}
 
-      ${snapshot.targets.length ? `<section class="operations-panel infrastructure-signals" aria-labelledby="infrastructure-signals-title">
-        <header class="operations-section-heading"><div><span class="operations-kicker">Read-only telemetry</span><h2 id="infrastructure-signals-title">Infrastructure signals</h2><p>Current node, guest, storage, task, and backup evidence from Proxmox.</p></div></header>
-        <dl class="infrastructure-signals__grid">
-          <div class="is-neutral"><dt>Nodes online</dt><dd data-infrastructure-metric="nodes">${escapeOperationsHtml(nodes)}</dd><small>Across discovered environments</small></div>
-          <div class="is-neutral"><dt>Guests running</dt><dd data-infrastructure-metric="guests-running-signal">${infrastructureMetric(snapshot.metrics.guestsRunning)}</dd><small data-infrastructure-detail="guests">${escapeOperationsHtml(guestDetail)}</small></div>
-          <div class="is-neutral"><dt>Average node CPU</dt><dd data-infrastructure-metric="node-cpu">${storageMetric(snapshot.metrics.nodeCpuPercent)}</dd><small>Weighted across reporting nodes</small></div>
-          <div class="is-neutral"><dt>Node memory</dt><dd data-infrastructure-metric="node-memory">${ratioMetric(snapshot.metrics.nodeMemoryUsedBytes, snapshot.metrics.nodeMemoryTotalBytes)}</dd><small data-infrastructure-detail="node-memory">${snapshot.metrics.nodeMemoryUsedBytes === null ? "Aggregate use" : `${bytesMetric(snapshot.metrics.nodeMemoryUsedBytes)} used`}</small></div>
-          <div class="is-${storageTone}"><dt>Aggregate storage use</dt><dd data-infrastructure-metric="storage">${storageMetric(snapshot.metrics.storagePercent)}</dd><small data-infrastructure-detail="storage">${escapeOperationsHtml(storageDetail)}</small></div>
-          <div class="${snapshot.metrics.failedTasks ? "is-danger" : "is-neutral"}"><dt>Failed tasks</dt><dd data-infrastructure-metric="failed-tasks">${infrastructureMetric(snapshot.metrics.failedTasks)}</dd><small>Current bounded window</small></div>
-          <div class="${snapshot.metrics.backupIssues ? "is-warning" : "is-neutral"}"><dt>Backup issues</dt><dd data-infrastructure-metric="backup-issues">${infrastructureMetric(snapshot.metrics.backupIssues)}</dd><small data-infrastructure-detail="backups">${escapeOperationsHtml(backupDetail)}</small></div>
-        </dl>
-      </section>` : ""}
+      ${snapshot.targets.length ? renderInfrastructureOverviewWorkloads(snapshot.workloads) : ""}
+      ${connectionCount ? renderInfrastructureOverviewIncidents(infrastructureIncidents, infrastructureRecoveries) : ""}
     </div>`;
 }

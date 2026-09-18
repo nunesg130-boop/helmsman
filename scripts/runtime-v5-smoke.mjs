@@ -1254,15 +1254,26 @@ async function mediaArtworkLoadingContract() {
   const hero = environment.main.innerHTML.match(/<img class="hero-art-image"[^>]+>/u)?.[0] || "";
   assert.match(hero, /width="342" height="513"/u, "hero artwork must publish its intrinsic poster dimensions");
   assert.match(hero, /loading="eager" fetchpriority="high"/u, "the visible hero artwork must load eagerly at high priority");
-  assert.match(hero, new RegExp(`data-artwork-src="${artworkUrl(1)}"`, "u"), "the hero retry source must stay on the same-origin artwork route");
+  assert.match(hero, new RegExp(`data-artwork-src="${artworkUrl(2)}"`, "u"), "the Home lead must come from the first Continue Watching item");
+  const continueWatchingLead = environment.main.innerHTML.match(/<section class="cinema-hero[^>]+data-home-slot="continue-watching"[\s\S]*?<\/section>/u)?.[0] || "";
+  assert.match(continueWatchingLead, /<h2>Media title 2<\/h2>/u, "Continue Watching must own the lead card when resume data exists");
+  assert.doesNotMatch(continueWatchingLead, /Featured title/u, "Now Playing must not replace the Continue Watching lead");
+  assert.match(environment.main.innerHTML, /<h2>Now playing<\/h2>[\s\S]*?Featured title/u, "Now Playing remains a separate poster section");
+  assert.match(environment.main.innerHTML, /<h2>More to continue<\/h2>/u, "additional resume items must remain available below the lead card");
+  assert.equal((environment.main.innerHTML.match(/data-home-slot="downloads"/gu) || []).length, 1, "Downloads and imports must render exactly once beside Continue Watching");
+  assert.doesNotMatch(environment.main.innerHTML, /data-home-promoted="true"/u, "Downloads must not be promoted while Continue Watching has data");
 
   const homePosters = [...environment.main.innerHTML.matchAll(/<img class="media-art-image"[^>]+>/gu)].map(([markup]) => markup);
-  assert.equal(homePosters.length, cards.length, "the Continue Watching rail must render each available poster");
-  for (const poster of homePosters.slice(0, 4)) {
+  assert.equal(homePosters.length, cards.length, "Now Playing plus the remaining resume items must render without duplicating the lead poster");
+  const homePosterBySource = new Map(homePosters.map((markup) => [markup.match(/data-artwork-src="([^"]+)"/u)?.[1] || "", markup]));
+  assert.equal(homePosterBySource.has(artworkUrl(2)), false, "the Continue Watching lead must not be duplicated in the poster rails");
+  for (const index of [1, 3, 4, 5]) {
+    const poster = homePosterBySource.get(artworkUrl(index)) || "";
     assert.match(poster, /width="342" height="513"/u);
-    assert.match(poster, /loading="eager" fetchpriority="high"/u, "only the initial visible rail cards should be promoted");
+    assert.match(poster, /loading="eager" fetchpriority="high"/u, "only visible Now Playing and resume rail cards should be promoted");
   }
-  for (const poster of homePosters.slice(4)) {
+  for (const index of [6, 7]) {
+    const poster = homePosterBySource.get(artworkUrl(index)) || "";
     assert.match(poster, /loading="lazy" fetchpriority="low"/u, "posters outside the initial viewport must remain lazy and low priority");
   }
 
@@ -1320,8 +1331,22 @@ async function mediaSemanticsContract() {
     generatedAt: today,
     overall: { state: "healthy", headline: "Ready", summary: "Ready." },
     services: [
-      { id: "seerr", targetRevision: seerrRevision, connectionState: "connected", checkedAt: today },
-      { id: "radarr", targetRevision: radarrRevision, connectionState: "connected", checkedAt: today }
+      {
+        id: "seerr",
+        targetRevision: seerrRevision,
+        state: "healthy",
+        connectionState: "connected",
+        checkedAt: today,
+        capabilities: [{ id: "requests", label: "Requests", state: "healthy", ok: true }]
+      },
+      {
+        id: "radarr",
+        targetRevision: radarrRevision,
+        state: "limited",
+        connectionState: "connected",
+        checkedAt: today,
+        capabilities: [{ id: "health", label: "Application health", state: "limited", ok: false }]
+      }
     ],
     pipeline: { state: "healthy", stages: [] },
     incidents: { open: [], recent: [] },
@@ -1367,7 +1392,15 @@ async function mediaSemanticsContract() {
         }
       ],
       home: {
-        nowPlaying: [],
+        nowPlaying: [{
+          id: "jellyfin-session:now-playing-only",
+          title: "Now Playing Only",
+          mediaType: "movie",
+          year: "2026",
+          progress: 22,
+          available: true,
+          lifecycle: { stage: "available" }
+        }],
         continueWatching: [],
         recentlyAdded: [],
         pendingRequests: [],
@@ -1891,6 +1924,24 @@ async function mediaSemanticsContract() {
 
   environment.location.hash = "#/home";
   await environment.dispatchWindow("hashchange", { type: "hashchange" });
+  assert.match(environment.main.innerHTML, /class="media-home-bento has-promoted-downloads"/u, "an empty Continue Watching collection must select the promoted-downloads bento layout");
+  assert.doesNotMatch(environment.main.innerHTML, /data-home-slot="continue-watching"/u, "Now Playing must never masquerade as Continue Watching");
+  assert.match(environment.main.innerHTML, /<h2>Now playing<\/h2>[\s\S]*?Now Playing Only/u, "Now Playing must remain its own poster section when resume data is empty");
+  assert.equal((environment.main.innerHTML.match(/data-home-slot="downloads"/gu) || []).length, 1, "promoting Downloads must not duplicate the card");
+  assert.match(environment.main.innerHTML, /data-home-slot="downloads" data-home-promoted="true"/u, "Downloads and imports must explicitly mark the Continue Watching fallback slot");
+  assert.ok(
+    environment.main.innerHTML.indexOf('data-home-slot="downloads"') < environment.main.innerHTML.indexOf('data-home-slot="service-health"'),
+    "promoted Downloads and imports must occupy the bento lead position"
+  );
+  assert.match(environment.main.innerHTML, /data-home-slot="downloads"[\s\S]*?<strong>Blocked Import<\/strong>/u, "the promoted Downloads card must retain current blocked-import data");
+  assert.match(environment.main.innerHTML, /data-home-slot="service-health"/u);
+  assert.match(environment.main.innerHTML, /Connection and application health remain separate signals\./u);
+  assert.match(environment.main.innerHTML, /aria-label="Seerr connection health: Connected"/u);
+  assert.match(environment.main.innerHTML, /aria-label="Seerr service health: Healthy"/u);
+  assert.match(environment.main.innerHTML, /aria-label="Radarr connection health: Connected"/u);
+  assert.match(environment.main.innerHTML, /aria-label="Radarr service health: Limited"/u, "a reachable service warning must not degrade its connection signal");
+  assert.match(environment.main.innerHTML, /data-home-slot="requests-and-warnings"/u);
+  assert.match(environment.main.innerHTML, /data-home-slot="media-pipeline"/u);
   assert.match(environment.main.innerHTML, /Future Signal[\s\S]{0,180}2027 · Upcoming/u);
   assert.doesNotMatch(environment.main.innerHTML, /Future Signal[\s\S]{0,180}(?:Unknown|Available)/u);
   assert.match(
@@ -3372,7 +3423,7 @@ async function infrastructureWorkspaceContract() {
   await environment.dispatchDocument("click", { target: infrastructureSwitch });
   await waitFor(() => environment.main.innerHTML.includes("infrastructure-overview"), "Infrastructure workspace");
   assert.equal(environment.localStorageValues.get("helmsman.workspace"), "infrastructure");
-  assert.equal(environment.elements.get("#page-eyebrow").textContent, "Infrastructure");
+  assert.equal(environment.elements.get("#page-eyebrow").textContent, "Infrastructure operations");
   assert.equal(infrastructureSwitch.attributes.get("aria-pressed"), "true");
   assert.ok(environment.workspaceButtons.filter((button) => button.dataset.workspace === "media")
     .every((button) => button.attributes.get("aria-pressed") === "false"));
@@ -3381,11 +3432,18 @@ async function infrastructureWorkspaceContract() {
   assert.ok(environment.proxmoxNav.every((element) => element.hidden), "Proxmox and Workloads navigation must stay hidden until Proxmox is connected");
   assert.ok(environment.portainerNav.every((element) => element.hidden), "Portainer navigation must stay hidden until Portainer is connected");
   assert.equal(environment.elements.get("#monitor-summary").attributes.get("href"), "#/incidents", "Infrastructure monitor summary must link to Incidents");
-  assert.equal(environment.elements.get("#monitor-summary").attributes.get("aria-label"), "Open infrastructure incidents");
-  assert.equal(environment.monitorNodes.mediaSummary.hidden, true);
+  assert.equal(
+    environment.elements.get("#monitor-summary").attributes.get("aria-label"),
+    "Open infrastructure incidents. Connection health: Unverified. Service health: Disabled."
+  );
+  assert.equal(environment.monitorNodes.mediaSummary.hidden, false, "Infrastructure must keep the separate connection and service health signals visible");
+  assert.equal(environment.monitorNodes.connectionState.textContent, "Unverified");
+  assert.equal(environment.monitorNodes.serviceState.textContent, "Disabled");
   assert.equal(environment.monitorNodes.checkedText.hidden, true);
-  assert.equal(environment.monitorNodes.infrastructureSummary.hidden, false);
+  assert.equal(environment.monitorNodes.infrastructureSummary.hidden, true, "the legacy combined Infrastructure signal must stay hidden");
   assert.ok(environment.requestLog.some(({ path }) => path === "/api/v2/infrastructure/environments"), "workspace switch must load environment metadata");
+  assert.match(environment.main.innerHTML, /class="page operations-page infrastructure-page infrastructure-bento has-no-connections"/u, "an empty Infrastructure Overview must keep the bento shell");
+  assert.match(environment.main.innerHTML, /infrastructure-overview-card/u, "the empty state must remain a first-class bento card");
   assert.match(environment.main.innerHTML, /No infrastructure connections yet/u, "Overview must describe only currently configured infrastructure");
   assert.doesNotMatch(environment.main.innerHTML, /Connect and discover|Connect Portainer|data-action="open-infrastructure-target"|data-action="open-portainer-service"/u, "Overview must not act as the connector catalog");
   assert.equal(environment.elements.get("#mode-badge").textContent, "Disabled", "an unmatched removed target must not affect current Infrastructure health");
@@ -3626,7 +3684,20 @@ async function infrastructureWorkspaceContract() {
   environment.location.hash = "#/overview";
   await environment.dispatchWindow("hashchange", { type: "hashchange" });
   assert.match(environment.main.innerHTML, /id="infrastructure-overview"/u);
+  assert.match(environment.main.innerHTML, /class="page operations-page infrastructure-page infrastructure-bento has-single-provider"/u);
+  assert.match(environment.main.innerHTML, /infrastructure-assessment-card/u);
+  assert.match(environment.main.innerHTML, /infrastructure-signals-card/u);
+  assert.match(environment.main.innerHTML, /infrastructure-proxmox-card/u);
+  assert.match(environment.main.innerHTML, /infrastructure-workloads-card/u);
+  assert.match(environment.main.innerHTML, /infrastructure-incidents-card/u);
   assert.match(environment.main.innerHTML, /Example Proxmox/u, "Overview must include the configured Proxmox environment");
+  assert.match(environment.main.innerHTML, /data-action="open-infrastructure-environment-detail"/u, "the Proxmox bento card must retain environment navigation");
+  assert.match(environment.main.innerHTML, /data-action="open-infrastructure-workload"/u, "the workload bento card must retain workload navigation");
+  for (const metric of ["cpu", "memory", "disk", "workloads"]) {
+    assert.match(environment.main.innerHTML, new RegExp(`data-infrastructure-target-metric="${metric}"`, "u"));
+    assert.match(environment.main.innerHTML, new RegExp(`data-infrastructure-target-detail="${metric}"`, "u"));
+  }
+  assert.match(environment.main.innerHTML, /data-infrastructure-target-facts/u);
   assert.doesNotMatch(environment.main.innerHTML, /Connect and discover|Connect Portainer|Portainer servers/u, "Overview must omit unconfigured providers and every setup CTA");
   environment.location.hash = "#/connectors";
   await environment.dispatchWindow("hashchange", { type: "hashchange" });
@@ -4095,7 +4166,10 @@ async function portainerInfrastructureContract() {
   assert.ok(environment.proxmoxNav.every((element) => element.hidden), "Portainer alone must not reveal Proxmox-specific navigation");
   assert.ok(environment.portainerNav.every((element) => !element.hidden), "a saved Portainer connection must reveal Portainer navigation even while its live state is degraded");
   assert.equal(environment.elements.get("#monitor-summary").attributes.get("href"), "#/incidents");
-  assert.equal(environment.elements.get("#monitor-summary").attributes.get("aria-label"), "Open infrastructure incidents");
+  assert.equal(
+    environment.elements.get("#monitor-summary").attributes.get("aria-label"),
+    "Open infrastructure incidents. Connection health: Connected. Service health: Degraded."
+  );
   assert.equal(environment.elements.get("#page-title").textContent, "Portainer");
   assert.match(markup, /<img class="service-brand-icon service-brand-icon--portainer service-brand-icon--light-plate" src="\.\/assets\/services\/portainer\.svg"/u, "Portainer views must use the bundled Portainer mark");
   assert.match(markup, /Container Control/u);
@@ -4213,7 +4287,12 @@ async function portainerInfrastructureContract() {
   environment.location.hash = "#/overview";
   await environment.dispatchWindow("hashchange", { type: "hashchange" });
   assert.match(environment.main.innerHTML, /id="infrastructure-overview"/u);
+  assert.match(environment.main.innerHTML, /class="page operations-page infrastructure-page infrastructure-bento has-single-provider"/u);
+  assert.match(environment.main.innerHTML, /infrastructure-assessment-card/u);
+  assert.match(environment.main.innerHTML, /infrastructure-portainer-card/u);
+  assert.match(environment.main.innerHTML, /infrastructure-incidents-card/u);
   assert.match(environment.main.innerHTML, /Portainer servers[\s\S]*Container Control/u, "Overview must show a configured Portainer server");
+  assert.match(environment.main.innerHTML, /data-action="open-portainer-overview"/u, "the Portainer bento card must retain filtered inventory navigation");
   assert.doesNotMatch(environment.main.innerHTML, /Proxmox environments|Infrastructure signals|Connect and discover|Connect Portainer/u, "Portainer-only Overview must omit unconfigured Proxmox and setup prompts");
   assert.doesNotMatch(environment.main.innerHTML, new RegExp(hiddenToken, "u"));
   const overviewWritesBeforeStateChange = environment.main.markupWrites;
@@ -4498,7 +4577,9 @@ async function authenticatedRuntimeContract() {
   assert.ok(environment.requestLog.some(({ path }) => path === "/api/v2/config"), "authenticated startup must request configuration");
   assert.ok(environment.requestLog.some(({ path }) => path === "/api/v2/operations/snapshot"), "authenticated startup must request the operations snapshot");
   assert.ok(environment.requestLog.some(({ path }) => path === "/api/v2/sessions"), "authenticated startup must request authorized browser sessions");
-  assert.match(environment.main.innerHTML, /operations-overall/u);
+  assert.match(environment.main.innerHTML, /media-home-bento has-promoted-downloads/u, "Home must retain the redesigned bento before the first media payload arrives");
+  assert.doesNotMatch(environment.main.innerHTML, /data-home-slot="continue-watching"/u, "Home must not invent Continue Watching content");
+  assert.equal((environment.main.innerHTML.match(/data-home-promoted="true"/gu) || []).length, 1, "Downloads must occupy the lead slot exactly once when resume data is absent");
   assert.match(environment.main.innerHTML, /aria-label="Jellyfin connection health: Connected"/u);
   assert.match(environment.main.innerHTML, /aria-label="Jellyfin service health: Limited"/u);
   assert.match(environment.main.innerHTML, /Connection health[\s\S]*Connected/u, "the Overview must show verified connection health separately");
@@ -4510,6 +4591,10 @@ async function authenticatedRuntimeContract() {
   assert.equal(environment.monitorNodes.connectionState.textContent, "Unverified");
   assert.equal(environment.monitorNodes.serviceState.textContent, "Limited");
   assert.equal(environment.elements.get("#monitor-summary").markupWrites, 0, "the advisory must update without replacing its DOM");
+
+  environment.location.hash = "#/health";
+  await environment.dispatchWindow("hashchange", { type: "hashchange" });
+  assert.match(environment.main.innerHTML, /operations-overall/u, "Media Health must retain the detailed operations assessment");
   assert.doesNotMatch(environment.main.innerHTML, /<img src=x/u, "hostile API headings must not create elements");
   assert.doesNotMatch(environment.main.innerHTML, /<script>alert\(1\)<\/script>/u, "hostile incident text must not create scripts");
   assert.match(environment.main.innerHTML, /&lt;img src=x onerror=&quot;alert\(1\)&quot;&gt;/u);
@@ -4630,7 +4715,7 @@ async function authenticatedRuntimeContract() {
     () => environment.requestLog.filter(({ path }) => path === "/api/v2/operations/snapshot").length === snapshotsBeforeRestore + 1,
     "restored report snapshot"
   );
-  environment.location.hash = "#/overview";
+  environment.location.hash = "#/health";
   await environment.dispatchWindow("hashchange", { type: "hashchange" });
 
   // The fake DOM does not parse innerHTML, so register the live nodes that the
