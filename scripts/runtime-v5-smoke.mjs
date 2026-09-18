@@ -189,7 +189,7 @@ function installFakeBrowser(fetchHandler, suffix) {
     if (service) element.dataset.serviceNav = service;
     return element;
   });
-  const mediaOnly = ["home", "discover", "library", "requests", "activity", "calendar", "health", "connections"]
+  const mediaOnly = ["overview", "discover", "library", "requests", "activity", "calendar", "health", "connections"]
     .flatMap((route) => routeElements(route, { workspace: "media" }));
   const infrastructureGlobalNav = ["overview", "connectors", "incidents"]
     .flatMap((route) => routeElements(route, { workspace: "infrastructure" }));
@@ -1095,9 +1095,12 @@ async function emptyStateLayoutContract() {
   assert.match(shellStyles, /\[hidden\]\s*\{\s*display:\s*none\s*!important;\s*\}/u, "semantic hidden state must override flex navigation display rules");
   assert.match(shellStyles, /\.media-art-image:not\(\[hidden\]\)\s*\+\s*\.art-fallback-letter/u, "a hidden retrying artwork image must reveal its text fallback");
   assert.match(shellStyles, /:has\(\.hero-art-image:not\(\[hidden\]\)\)/u, "a hidden retrying hero image must reveal its visual fallback");
-  for (const route of ["home", "discover", "library", "requests", "activity", "calendar", "health", "connections"]) {
+  for (const route of ["overview", "discover", "library", "requests", "activity", "calendar", "health", "connections"]) {
     assert.equal((documentMarkup.match(new RegExp(`class="[^"]*workspace-media-only[^"]*"[^>]+data-route="${route}"`, "gu")) || []).length, 2, `${route} must appear only in the desktop and mobile Media navigation`);
   }
+  assert.equal((documentMarkup.match(/data-route="home"/gu) || []).length, 0, "legacy Media Home must remain a route alias rather than a duplicate navigation entry");
+  assert.equal((documentMarkup.match(/data-route="overview"/gu) || []).length, 4, "both workspaces must expose Overview in desktop and mobile navigation");
+  assert.equal((documentMarkup.match(/data-route="overview"[^>]*>[\s\S]*?<span>Overview<\/span>/gu) || []).length, 4, "Overview must use the same visible label in both workspaces");
   for (const route of ["overview", "connectors", "proxmox", "workloads", "portainer", "incidents"]) {
     assert.equal((documentMarkup.match(new RegExp(`class="[^"]*workspace-infrastructure-only[^"]*"[^>]+data-route="${route}"`, "gu")) || []).length, 2, `${route} must appear only in the desktop and mobile Infrastructure navigation`);
   }
@@ -1109,6 +1112,8 @@ async function emptyStateLayoutContract() {
   assert.equal((documentMarkup.match(/data-route="portainer"[^>]+data-service-nav="portainer"/gu) || []).length, 2, "Portainer navigation must use its own connection gate");
   assert.equal((documentMarkup.match(/data-route="connectors"/gu) || []).length, 2, "Connectors must remain available in both Infrastructure navigation surfaces");
   assert.doesNotMatch(documentMarkup, /data-route="connectors"[^>]+data-service-nav=/u, "Connectors must not require an existing provider connection");
+  assert.match(application, /const MEDIA_ROUTE_ALIASES\s*=\s*Object\.freeze\(\{[\s\S]*?home:\s*"overview"/u, "legacy #/home URLs must canonicalize to Media Overview");
+  assert.match(application, /function workspaceLandingRoute\([^)]*\)\s*\{\s*return "overview";\s*\}/u, "both workspaces must use Overview as their landing route");
   assert.match(application, /const INFRASTRUCTURE_ROUTE_ALIASES\s*=\s*Object\.freeze\(\{[\s\S]*?environments:\s*"proxmox"[\s\S]*?nodes:\s*"proxmox"/u, "legacy Infrastructure URLs must canonicalize to the merged Proxmox route");
   for (const [code, copy] of [
     ["FORBIDDEN", "Authenticated user lacks permission for this capability or environment"],
@@ -1249,32 +1254,32 @@ async function mediaArtworkLoadingContract() {
 
   environment.location.hash = "#/home";
   await importShell(environment);
-  await waitFor(() => environment.main.innerHTML.includes("media-home-page"), "media artwork home");
+  await waitFor(() => environment.main.innerHTML.includes("media-home-page"), "media artwork overview");
+  assert.equal(environment.location.hash, "#/overview", "legacy #/home must redirect to the canonical Media Overview route");
 
   const hero = environment.main.innerHTML.match(/<img class="hero-art-image"[^>]+>/u)?.[0] || "";
   assert.match(hero, /width="342" height="513"/u, "hero artwork must publish its intrinsic poster dimensions");
   assert.match(hero, /loading="eager" fetchpriority="high"/u, "the visible hero artwork must load eagerly at high priority");
-  assert.match(hero, new RegExp(`data-artwork-src="${artworkUrl(2)}"`, "u"), "the Home lead must come from the first Continue Watching item");
+  assert.match(hero, new RegExp(`data-artwork-src="${artworkUrl(2)}"`, "u"), "the Overview lead must come from the first Continue Watching item");
   const continueWatchingLead = environment.main.innerHTML.match(/<section class="cinema-hero[^>]+data-home-slot="continue-watching"[\s\S]*?<\/section>/u)?.[0] || "";
-  assert.match(continueWatchingLead, /<h2>Media title 2<\/h2>/u, "Continue Watching must own the lead card when resume data exists");
+  assert.match(continueWatchingLead, /<h2>Continue watching<\/h2>[\s\S]*?<h3>Media title 2<\/h3>/u, "Continue Watching must own the lead card when resume data exists");
+  assert.match(continueWatchingLead, /href="#icon-eye"[\s\S]*?View details/u, "the non-playback Continue Watching action must use a details icon");
+  assert.doesNotMatch(continueWatchingLead, /href="#icon-play"/u, "View details must not imply that Helmsman can resume playback");
   assert.doesNotMatch(continueWatchingLead, /Featured title/u, "Now Playing must not replace the Continue Watching lead");
-  assert.match(environment.main.innerHTML, /<h2>Now playing<\/h2>[\s\S]*?Featured title/u, "Now Playing remains a separate poster section");
-  assert.match(environment.main.innerHTML, /<h2>More to continue<\/h2>/u, "additional resume items must remain available below the lead card");
+  assert.doesNotMatch(environment.main.innerHTML, /Now playing|Featured title/u, "Overview must omit the former Now Playing rail");
+  assert.doesNotMatch(environment.main.innerHTML, /media-home-search|media-home-metrics/u, "Overview must not restore the former search and KPI strips");
+  assert.match(environment.main.innerHTML, /<h2[^>]*>More to continue<\/h2>/u, "additional resume items must remain available below the lead card");
   assert.equal((environment.main.innerHTML.match(/data-home-slot="downloads"/gu) || []).length, 1, "Downloads and imports must render exactly once beside Continue Watching");
   assert.doesNotMatch(environment.main.innerHTML, /data-home-promoted="true"/u, "Downloads must not be promoted while Continue Watching has data");
 
   const homePosters = [...environment.main.innerHTML.matchAll(/<img class="media-art-image"[^>]+>/gu)].map(([markup]) => markup);
-  assert.equal(homePosters.length, cards.length, "Now Playing plus the remaining resume items must render without duplicating the lead poster");
+  assert.equal(homePosters.length, cards.length - 1, "the remaining resume items must render without duplicating the lead poster");
   const homePosterBySource = new Map(homePosters.map((markup) => [markup.match(/data-artwork-src="([^"]+)"/u)?.[1] || "", markup]));
   assert.equal(homePosterBySource.has(artworkUrl(2)), false, "the Continue Watching lead must not be duplicated in the poster rails");
-  for (const index of [1, 3, 4, 5]) {
+  for (const index of [3, 4, 5, 6, 7]) {
     const poster = homePosterBySource.get(artworkUrl(index)) || "";
     assert.match(poster, /width="342" height="513"/u);
-    assert.match(poster, /loading="eager" fetchpriority="high"/u, "only visible Now Playing and resume rail cards should be promoted");
-  }
-  for (const index of [6, 7]) {
-    const poster = homePosterBySource.get(artworkUrl(index)) || "";
-    assert.match(poster, /loading="lazy" fetchpriority="low"/u, "posters outside the initial viewport must remain lazy and low priority");
+    assert.match(poster, /loading="eager" fetchpriority="high"/u, "the bounded continuation rail should promote its visible artwork");
   }
 
   environment.location.hash = "#/library";
@@ -1610,6 +1615,15 @@ async function mediaSemanticsContract() {
         error: "Invalid video file, unsupported extension.",
         queueActionTarget: { service: "radarr", queueId: 501 },
         lifecycle: { stage: "downloading" }
+      }, {
+        id: "sonarr:active-visionquest",
+        mediaId: "series:tvdb:500",
+        service: "sonarr",
+        title: "VisionQuest",
+        mediaType: "series",
+        state: "downloading",
+        progress: 61,
+        lifecycle: { stage: "downloading" }
       }, ...[
         ["zero", 0],
         ["negative", -1],
@@ -1924,9 +1938,10 @@ async function mediaSemanticsContract() {
 
   environment.location.hash = "#/home";
   await environment.dispatchWindow("hashchange", { type: "hashchange" });
+  assert.equal(environment.location.hash, "#/overview", "legacy #/home navigation must redirect to canonical Media Overview");
   assert.match(environment.main.innerHTML, /class="media-home-bento has-promoted-downloads"/u, "an empty Continue Watching collection must select the promoted-downloads bento layout");
   assert.doesNotMatch(environment.main.innerHTML, /data-home-slot="continue-watching"/u, "Now Playing must never masquerade as Continue Watching");
-  assert.match(environment.main.innerHTML, /<h2>Now playing<\/h2>[\s\S]*?Now Playing Only/u, "Now Playing must remain its own poster section when resume data is empty");
+  assert.doesNotMatch(environment.main.innerHTML, /Now playing|Now Playing Only/u, "Media Overview must omit the former Now Playing section");
   assert.equal((environment.main.innerHTML.match(/data-home-slot="downloads"/gu) || []).length, 1, "promoting Downloads must not duplicate the card");
   assert.match(environment.main.innerHTML, /data-home-slot="downloads" data-home-promoted="true"/u, "Downloads and imports must explicitly mark the Continue Watching fallback slot");
   assert.ok(
@@ -1935,33 +1950,19 @@ async function mediaSemanticsContract() {
   );
   assert.match(environment.main.innerHTML, /data-home-slot="downloads"[\s\S]*?<strong>Blocked Import<\/strong>/u, "the promoted Downloads card must retain current blocked-import data");
   assert.match(environment.main.innerHTML, /data-home-slot="service-health"/u);
-  assert.match(environment.main.innerHTML, /Connection and application health remain separate signals\./u);
+  assert.match(environment.main.innerHTML, /media-overview-service-columns[\s\S]*?<span>Connection<\/span><span>Service health<\/span>/u);
   assert.match(environment.main.innerHTML, /aria-label="Seerr connection health: Connected"/u);
   assert.match(environment.main.innerHTML, /aria-label="Seerr service health: Healthy"/u);
   assert.match(environment.main.innerHTML, /aria-label="Radarr connection health: Connected"/u);
   assert.match(environment.main.innerHTML, /aria-label="Radarr service health: Limited"/u, "a reachable service warning must not degrade its connection signal");
   assert.match(environment.main.innerHTML, /data-home-slot="requests-and-warnings"/u);
+  assert.doesNotMatch(environment.main.innerHTML, /(?:Media available|Import completed)[\s\S]*?VisionQuest/u, "an active transfer must not inherit a title-wide completion event");
   assert.match(environment.main.innerHTML, /data-home-slot="media-pipeline"/u);
-  assert.match(environment.main.innerHTML, /Future Signal[\s\S]{0,180}2027 · Upcoming/u);
-  assert.doesNotMatch(environment.main.innerHTML, /Future Signal[\s\S]{0,180}(?:Unknown|Available)/u);
-  assert.match(
-    environment.main.innerHTML,
-    /<img class="media-art-image"[^>]+src="\/api\/v2\/media\/artwork\/0123456789abcdef0123456789abcdef"/u,
-    "a future Radarr title with trusted artwork must render an image instead of a letter-only placeholder"
-  );
-  assert.match(environment.main.innerHTML, /data-action="open-request-filter" data-media-filter-value="pending"[\s\S]*?Awaiting approval/u);
-  const pendingSummary = new FakeElement({ id: "pending-request-summary" });
-  pendingSummary.dataset.action = "open-request-filter";
-  pendingSummary.dataset.mediaFilterValue = "pending";
-  pendingSummary.closest = (selector) => selector === "[data-action]" ? pendingSummary : null;
-  await environment.dispatchDocument("click", { target: pendingSummary });
-  environment.location.hash = "#/requests";
-  await environment.dispatchWindow("hashchange", { type: "hashchange" });
-  assert.match(
-    environment.main.innerHTML,
-    /class="filter-chip is-active"[^>]+data-media-filter-name="requests" data-media-filter-value="pending"[^>]+aria-pressed="true">Awaiting approval/u,
-    "the Home approval summary must open Requests with the exact pending filter selected"
-  );
+  for (const stage of ["requested", "monitored", "downloading", "imported", "available"]) {
+    assert.match(environment.main.innerHTML, new RegExp(`data-overview-lifecycle-id="${stage}"`, "u"), `Overview must retain the ${stage} lifecycle stage`);
+  }
+  assert.doesNotMatch(environment.main.innerHTML, /Future Signal|Upcoming/u, "Media Overview must omit the former Upcoming rail");
+  assert.match(environment.main.innerHTML, /href="#\/requests" aria-label="Open all requests"/u, "Requests & warnings must link to the complete request workflow");
 }
 
 async function seriesSeasonControlsContract() {
@@ -4007,7 +4008,7 @@ async function infrastructureWorkspaceContract() {
   environment.location.hash = "#/workloads";
   await environment.dispatchWindow("hashchange", { type: "hashchange" });
   await environment.dispatchDocument("click", { target: mediaSwitch });
-  assert.equal(environment.location.hash, "#/home", "switching from an Infrastructure-only route must use the Media landing route");
+  assert.equal(environment.location.hash, "#/overview", "switching from an Infrastructure-only route must use the Media Overview landing route");
 }
 
 async function portainerInfrastructureContract() {
@@ -4383,7 +4384,7 @@ async function portainerInfrastructureContract() {
   assert.doesNotMatch(environment.main.innerHTML, /Container Control|CONTAINERS_UNHEALTHY|reverse-proxy is unhealthy/u, "Media Health must not render Portainer incidents");
   environment.location.hash = "#/portainer";
   await environment.dispatchWindow("hashchange", { type: "hashchange" });
-  assert.equal(environment.location.hash, "#/home", "Media must canonicalize an Infrastructure-only Portainer route to Home");
+  assert.equal(environment.location.hash, "#/overview", "Media must canonicalize an Infrastructure-only Portainer route to Overview");
 
   snapshot.infrastructure.services[0].inventory.containers[0].state = "running";
   snapshot.infrastructure.services[0].inventory.containers[0].status = "Up 3 hours (healthy)";
@@ -4577,9 +4578,17 @@ async function authenticatedRuntimeContract() {
   assert.ok(environment.requestLog.some(({ path }) => path === "/api/v2/config"), "authenticated startup must request configuration");
   assert.ok(environment.requestLog.some(({ path }) => path === "/api/v2/operations/snapshot"), "authenticated startup must request the operations snapshot");
   assert.ok(environment.requestLog.some(({ path }) => path === "/api/v2/sessions"), "authenticated startup must request authorized browser sessions");
-  assert.match(environment.main.innerHTML, /media-home-bento has-promoted-downloads/u, "Home must retain the redesigned bento before the first media payload arrives");
-  assert.doesNotMatch(environment.main.innerHTML, /data-home-slot="continue-watching"/u, "Home must not invent Continue Watching content");
+  assert.match(environment.main.innerHTML, /media-home-bento has-promoted-downloads/u, "Overview must retain the redesigned bento before the first media payload arrives");
+  assert.doesNotMatch(environment.main.innerHTML, /data-home-slot="continue-watching"/u, "Overview must not invent Continue Watching content");
   assert.equal((environment.main.innerHTML.match(/data-home-promoted="true"/gu) || []).length, 1, "Downloads must occupy the lead slot exactly once when resume data is absent");
+  assert.doesNotMatch(environment.main.innerHTML, /media-home-search|media-home-metrics|Now playing|Upcoming/u, "Overview must omit the former search, KPI, Now Playing, and Upcoming surfaces");
+  assert.match(environment.main.innerHTML, /data-home-slot="requests-and-warnings"[\s\S]*?data-overview-incident-id=/u, "Requests & warnings must include current Media incidents");
+  assert.match(environment.main.innerHTML, /Service warning[\s\S]*?Seerr/u, "an upstream warning must remain visible in the Overview feed");
+  assert.doesNotMatch(environment.main.innerHTML, /<script>alert\(1\)<\/script>/u, "Overview incidents must escape hostile upstream text");
+  for (const stage of ["requested", "monitored", "downloading", "imported", "available"]) {
+    assert.match(environment.main.innerHTML, new RegExp(`data-overview-lifecycle-id="${stage}"`, "u"), `Overview must render the ${stage} lifecycle stage without a media payload`);
+  }
+  assert.match(environment.main.innerHTML, /data-home-slot="recently-added"[\s\S]*?<h2[^>]*>Recently added<\/h2>/u, "Overview must retain the Recently added shelf and its empty state");
   assert.match(environment.main.innerHTML, /aria-label="Jellyfin connection health: Connected"/u);
   assert.match(environment.main.innerHTML, /aria-label="Jellyfin service health: Limited"/u);
   assert.match(environment.main.innerHTML, /Connection health[\s\S]*Connected/u, "the Overview must show verified connection health separately");

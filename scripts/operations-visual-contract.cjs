@@ -185,7 +185,7 @@ async function assertNoPageErrors(page, errors, viewport, label) {
   const { renderInfrastructureOverview, renderOperationsOverview } = await import(pathToFileURL(path.join(root, "src/ui/operations-views.js")).href);
   const cssFiles = ["styles.css", "src/ui/operations.css", "src/ui/control.css", "src/ui/logging.css", "src/ui/retro.css"];
   const css = cssFiles.map((file) => readFileSync(path.join(root, file), "utf8")).join("\n");
-  const mediaMarkup = renderOperationsOverview(mediaSnapshot);
+  const mediaHealthMarkup = renderOperationsOverview(mediaSnapshot);
   const infrastructureMarkup = renderInfrastructureOverview(infrastructureSnapshot, infrastructureConfiguration, {
     configuredOnly: true,
     overallState: "limited",
@@ -202,10 +202,10 @@ async function assertNoPageErrors(page, errors, viewport, label) {
       const mediaPage = await browser.newPage({ viewport, colorScheme: "dark", reducedMotion: "reduce" });
       const mediaErrors = [];
       mediaPage.on("pageerror", (error) => mediaErrors.push(error.message));
-      await mediaPage.setContent(documentMarkup(css, mediaMarkup), { waitUntil: "load" });
-      await assertNoPageErrors(mediaPage, mediaErrors, viewport, "Media Operations overview");
-      assert.equal(await mediaPage.locator("#operations-overall-title").isVisible(), true, `${viewport.width}px Media Operations assessment must remain visible`);
-      assert.equal(await mediaPage.locator("#operations-incidents-title").isVisible(), true, `${viewport.width}px Media Operations incidents must remain visible`);
+      await mediaPage.setContent(documentMarkup(css, mediaHealthMarkup), { waitUntil: "load" });
+      await assertNoPageErrors(mediaPage, mediaErrors, viewport, "Media Health");
+      assert.equal(await mediaPage.locator("#operations-overall-title").isVisible(), true, `${viewport.width}px Media Health assessment must remain visible`);
+      assert.equal(await mediaPage.locator("#operations-incidents-title").isVisible(), true, `${viewport.width}px Media Health incidents must remain visible`);
       await mediaPage.close();
 
       const page = await browser.newPage({ viewport, colorScheme: "dark", reducedMotion: "reduce" });
@@ -319,7 +319,7 @@ async function assertNoPageErrors(page, errors, viewport, label) {
       assert.ok(durations.every((duration) => duration <= 0.00001), `${viewport.width}px reduced-motion preferences must suppress long control motion`);
       await page.close();
     }
-    console.log("Operations visual contract passed for Media Operations and the responsive Infrastructure bento at desktop, laptop, tablet, and mobile widths.");
+    console.log("Operations visual contract passed for Media Health and the responsive Infrastructure Overview at desktop, laptop, tablet, and mobile widths.");
   } finally {
     await browser.close();
   }

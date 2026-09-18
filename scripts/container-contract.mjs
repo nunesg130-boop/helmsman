@@ -24,9 +24,9 @@ const serviceIconAssets = Object.freeze([
   Object.freeze({ service: "Prowlarr", path: "assets/services/prowlarr.png", width: 460, height: 460, hash: "fe75eafc608e288c9736b740afe1c30c715eaf56dc284fec1926491d245fea52", format: "png" }),
   Object.freeze({ service: "Proxmox", path: "assets/services/proxmox.png", width: 595, height: 516, hash: "c8dca83af2f6519f025aad6325cc702ad491b19727bae42b9b87b6d20fa13440", format: "png" }),
   Object.freeze({ service: "qBittorrent", path: "assets/services/qbittorrent.svg", width: 1024, height: 1024, hash: "f96f40f70830e245cc184291d1173aa705b68b0865970b44aa1ee63350bcb9c2", format: "svg", viewBox: "0 0 1024 1024" }),
-  Object.freeze({ service: "Radarr", path: "assets/services/radarr.png", width: 256, height: 256, hash: "d06702d34fcc05888239e553fab68f01c5f3f9b4fd64f8a7c407f4f9bfb8cf1e", format: "png" }),
-  Object.freeze({ service: "Seerr", path: "assets/services/seerr.jpg", width: 554, height: 554, hash: "0e0aa1aa038915e519b6b23e00565406b04f4974a1d33ba86ae3088aba41989b", format: "jpeg" }),
-  Object.freeze({ service: "Sonarr", path: "assets/services/sonarr.png", width: 554, height: 554, hash: "3922f07d78c566446945bbca3bf6e5e012607d65e9f35ba63c297136da778418", format: "png" })
+  Object.freeze({ service: "Radarr", path: "assets/services/radarr.svg", width: 512, height: 512, hash: "4767088c158c5507957232782f491ad1c3a048c013ce04d58da81148158a89b3", format: "svg", viewBox: "0 0 512 512", auditedInlineStyle: true }),
+  Object.freeze({ service: "Seerr", path: "assets/services/seerr.svg", width: 96, height: 96, hash: "b12e5dfd641d961cfb68360da33fe28873b95ea9b64c23233d5b87a37cbfa4c4", format: "svg", viewBox: "0 0 96 96", auditedStyleElement: true }),
+  Object.freeze({ service: "Sonarr", path: "assets/services/sonarr.svg", width: 512, height: 512, hash: "a5debe565281eb16b746d75b9ce72e22f2fb15c19b4f55428fdf62b84be79306", format: "svg", viewBox: "0 0 512 512", auditedInlineStyle: true })
 ]);
 
 function jpegDimensions(contents) {
@@ -144,9 +144,9 @@ const requiredFiles = [
   "assets/services/prowlarr.png",
   "assets/services/proxmox.png",
   "assets/services/qbittorrent.svg",
-  "assets/services/radarr.png",
-  "assets/services/seerr.jpg",
-  "assets/services/sonarr.png",
+  "assets/services/radarr.svg",
+  "assets/services/seerr.svg",
+  "assets/services/sonarr.svg",
   "assets/services/licenses/GPL-2.0.txt",
   "assets/services/licenses/GPL-3.0.txt",
   "assets/services/licenses/MIT-Seerr.txt",
@@ -165,7 +165,7 @@ const requiredFiles = [
 const missing = requiredFiles.filter((path) => !existsSync(join(root, path)));
 record(
   missing.length === 0,
-  "Helmsman v1.1.0 includes its unified media model, bounded fixed actions, Proxmox and Portainer infrastructure monitors, encrypted store, modern rounded bento operations UI, logging, and deployment contracts",
+  "Helmsman v1.1.1 includes its unified media model, bounded fixed actions, Proxmox and Portainer infrastructure monitors, encrypted store, modern rounded bento operations UI, logging, and deployment contracts",
   missing.join(", ")
 );
 
@@ -186,12 +186,12 @@ if (existsSync(join(root, "Dockerfile"))) {
   );
 
   record(
-    /^ARG HELMSMAN_VERSION=1\.1\.0$/mu.test(dockerfile)
+    /^ARG HELMSMAN_VERSION=1\.1\.1$/mu.test(dockerfile)
       && /^ARG HELMSMAN_REVISION=unknown$/mu.test(dockerfile)
       && /org\.opencontainers\.image\.title="Helmsman"/u.test(dockerfile)
       && /org\.opencontainers\.image\.licenses="AGPL-3\.0-only"/u.test(dockerfile)
       && !/org\.opencontainers\.image\.title="Jellofin Command"/u.test(dockerfile),
-    "image metadata carries the Helmsman v1.1.0 identity and license"
+    "image metadata carries the Helmsman v1.1.1 identity and license"
   );
 
   record(
@@ -209,7 +209,7 @@ if (existsSync(join(root, "Dockerfile"))) {
   const expectedCopies = [
     "COPY --chown=0:0 index.html styles.css manifest.webmanifest sw.js ./",
     "COPY --chown=0:0 assets/helmsman-logo.png assets/icon-192.png assets/icon-512.png assets/icon-maskable-512.png ./assets/",
-    "COPY --chown=0:0 assets/services/THIRD_PARTY_NOTICES.md assets/services/bazarr.png assets/services/jellyfin.svg assets/services/portainer.svg assets/services/prowlarr.png assets/services/proxmox.png assets/services/qbittorrent.svg assets/services/radarr.png assets/services/seerr.jpg assets/services/sonarr.png ./assets/services/",
+    "COPY --chown=0:0 assets/services/THIRD_PARTY_NOTICES.md assets/services/bazarr.png assets/services/jellyfin.svg assets/services/portainer.svg assets/services/prowlarr.png assets/services/proxmox.png assets/services/qbittorrent.svg assets/services/radarr.svg assets/services/seerr.svg assets/services/sonarr.svg ./assets/services/",
     "COPY --chown=0:0 assets/services/licenses/ ./assets/services/licenses/",
     "COPY --chown=0:0 assets/workloads/vm.svg assets/workloads/container.svg ./assets/workloads/",
     "COPY --chown=0:0 src/app-v5.js ./src/app-v5.js",
@@ -252,10 +252,10 @@ if (existsSync(join(root, "Dockerfile"))) {
 if (existsSync(join(root, "server/broker.mjs"))) {
   const broker = read("server/broker.mjs");
   record(
-    /const DEFAULT_VERSION = "1\.1\.0"/u.test(broker)
+    /const DEFAULT_VERSION = "1\.1\.1"/u.test(broker)
       && /process\.env\.HELMSMAN_VERSION/u.test(broker)
       && /\^\[0-9A-Za-z\]\[0-9A-Za-z\.\+-\]\{0,63\}\$/u.test(broker),
-    "runtime version follows the validated immutable v1.1.0 image metadata"
+    "runtime version follows the validated immutable v1.1.1 image metadata"
   );
 }
 
@@ -326,7 +326,7 @@ if (existsSync(join(root, "server/index.mjs"))
       && !/url[.]pathname === "\/api\/v2\/access\/rotate"/u.test(controlPlane)
       && !/command === "rotate-access-key"/u.test(index)
       && !/rotate-access-key --confirm/u.test(index),
-    "the beta.2 access-key route is migration-only and v1.1.0 exposes no access-key rotation route or CLI"
+    "the beta.2 access-key route is migration-only and v1.1.1 exposes no access-key rotation route or CLI"
   );
   record(
     /command === "reset-access"/u.test(index)
@@ -373,7 +373,7 @@ if (existsSync(join(root, "compose.yaml"))) {
   record(
     /^name:\s*helmsman\s*$/mu.test(compose)
       && /^services:\s*\n\s{2}helmsman:\s*$/mu.test(compose)
-      && compose.includes('${HELMSMAN_IMAGE:-ghcr.io/OWNER/REPOSITORY:1.1.0}')
+      && compose.includes('${HELMSMAN_IMAGE:-ghcr.io/OWNER/REPOSITORY:1.1.1}')
       && !/^\s{4}build:/mu.test(compose),
     "production Compose has a stable project name and pulls the versioned GHCR image without a local build"
   );
@@ -432,9 +432,9 @@ if (existsSync(join(root, "compose.dev.yaml"))) {
       && /^\s{4}build:\s*$/mu.test(developmentCompose)
       && /^\s{6}context:\s*[.]\s*$/mu.test(developmentCompose)
       && /^\s{6}dockerfile:\s*Dockerfile\s*$/mu.test(developmentCompose)
-      && /HELMSMAN_VERSION:\s*["']1\.1\.0["']/u.test(developmentCompose)
+      && /HELMSMAN_VERSION:\s*["']1\.1\.1["']/u.test(developmentCompose)
       && /HELMSMAN_REVISION:\s*["']local["']/u.test(developmentCompose)
-      && /image:\s*["']helmsman:1\.1\.0["']/u.test(developmentCompose),
+      && /image:\s*["']helmsman:1\.1\.1["']/u.test(developmentCompose),
     "developer Compose override keeps source builds separate from the production pull contract"
   );
 }
@@ -641,7 +641,7 @@ if (existsSync(join(root, "container.env.example"))) {
   const allowed = new Set(["HELMSMAN_IMAGE", "HELMSMAN_BIND_IP", "HELMSMAN_PORT"]);
   const unexpected = keys.filter((key) => !allowed.has(key));
   record(
-    assignments.includes("HELMSMAN_IMAGE=ghcr.io/OWNER/REPOSITORY:1.1.0")
+    assignments.includes("HELMSMAN_IMAGE=ghcr.io/OWNER/REPOSITORY:1.1.1")
       && assignments.includes("HELMSMAN_BIND_IP=127.0.0.1")
       && assignments.includes("HELMSMAN_PORT=4180")
       && !assignments.some((line) => line.startsWith("HELMSMAN_DATA_VOLUME="))
@@ -692,9 +692,9 @@ if (existsSync(join(root, ".dockerignore"))) {
     "!assets/services/prowlarr.png",
     "!assets/services/proxmox.png",
     "!assets/services/qbittorrent.svg",
-    "!assets/services/radarr.png",
-    "!assets/services/seerr.jpg",
-    "!assets/services/sonarr.png",
+    "!assets/services/radarr.svg",
+    "!assets/services/seerr.svg",
+    "!assets/services/sonarr.svg",
     "!assets/services/licenses",
     "!assets/services/licenses/GPL-2.0.txt",
     "!assets/services/licenses/GPL-3.0.txt",
@@ -749,16 +749,16 @@ if (existsSync(join(root, "manifest.webmanifest"))) {
     const manifest = JSON.parse(read("manifest.webmanifest"));
     record(
       manifest.name === "Helmsman"
-        && manifest.start_url === "./#/home"
+        && manifest.start_url === "./#/overview"
         && manifest.display === "standalone"
         && Array.isArray(manifest.icons)
         && manifest.icons.some(({ src, sizes }) => src === "./assets/icon-192.png" && sizes === "192x192")
         && manifest.icons.some(({ src, sizes, purpose }) => src === "./assets/icon-512.png" && sizes === "512x512" && purpose === "any")
         && manifest.icons.some(({ src, sizes, purpose }) => src === "./assets/icon-maskable-512.png" && sizes === "512x512" && purpose === "maskable"),
-      "the v1.1.0 installed-app manifest opens Media Home and retains dedicated local application icons"
+      "the v1.1.1 installed-app manifest opens canonical Media Overview and retains dedicated local application icons"
     );
   } catch (error) {
-    record(false, "the v1.1.0 installed-app manifest opens Media Home and retains dedicated local application icons", error.message);
+    record(false, "the v1.1.1 installed-app manifest opens canonical Media Overview and retains dedicated local application icons", error.message);
   }
 }
 
@@ -802,11 +802,14 @@ if (localMarkPaths.every((iconPath) => existsSync(join(root, iconPath)))) {
     } else {
       const svg = contents.toString("utf8");
       const expectedViewBox = `viewBox="${asset.viewBox}"`;
-      if (!/^<svg\b/iu.test(svg) || !svg.includes(expectedViewBox)) invalidIcons.push(`${asset.path}: format/viewBox`);
+      if (!/^\s*(?:<\?xml[^>]*>\s*)?<svg\b/iu.test(svg) || !svg.includes(expectedViewBox)) invalidIcons.push(`${asset.path}: format/viewBox`);
       if (unsafeSvg.test(svg)) invalidIcons.push(`${asset.path}: active or external content`);
       const hasInlineStyle = /\sstyle\s*=/iu.test(svg);
       if (hasInlineStyle && !(asset.auditedInlineStyle && digest === asset.hash)) invalidIcons.push(`${asset.path}: inline style`);
       if (asset.auditedInlineStyle && !hasInlineStyle) invalidIcons.push(`${asset.path}: audited style unexpectedly removed`);
+      const hasStyleElement = /<style\b/iu.test(svg);
+      if (hasStyleElement && !(asset.auditedStyleElement && digest === asset.hash)) invalidIcons.push(`${asset.path}: style element`);
+      if (asset.auditedStyleElement && !hasStyleElement) invalidIcons.push(`${asset.path}: audited style element unexpectedly removed`);
     }
   }
   for (const iconPath of ["assets/workloads/vm.svg", "assets/workloads/container.svg"]) {
@@ -860,9 +863,10 @@ if (existsSync(join(root, "index.html"))) {
       && /<link\s+rel="stylesheet"\s+href="[.]\/src\/ui\/operations[.]css"\s*\/?>/u.test(shell)
       && /<link\s+rel="stylesheet"\s+href="[.]\/src\/ui\/control[.]css"\s*\/?>/u.test(shell)
       && /<link\s+rel="stylesheet"\s+href="[.]\/src\/ui\/retro[.]css"\s*\/?>/u.test(shell)
-      && /href="#\/home"\s+data-route="home"/u.test(shell)
+      && /href="#\/overview"\s+data-route="overview"[^>]*aria-label="Media overview"/u.test(shell)
+      && !/data-route="home"/u.test(shell)
       && !/<script[^>]+src="[.]\/app[.]js"/u.test(shell),
-    "container shell loads the Helmsman session client and operations styles instead of the legacy browser client"
+    "container shell loads the Helmsman session client, canonical Media Overview, and operations styles instead of the legacy browser client"
   );
   record(
     (shell.match(/[.]\/assets\/helmsman-logo[.]png/gu) || []).length === 2
@@ -887,7 +891,7 @@ if (existsSync(join(root, "index.html"))) {
     shell.match(new RegExp(`<a(?=[^>]*data-route="${route}")(?=[^>]*data-service-nav="${service}")[^>]*>`, "gu")) || []
   ).length;
   record(
-    ["home", "discover", "library", "requests", "activity", "calendar", "health", "connections"]
+    ["overview", "discover", "library", "requests", "activity", "calendar", "health", "connections"]
       .every((route) => workspaceRouteCount("media", route) === 2)
       && ["overview", "connectors", "proxmox", "workloads", "portainer", "incidents"]
         .every((route) => workspaceRouteCount("infrastructure", route) === 2)
@@ -897,7 +901,7 @@ if (existsSync(join(root, "index.html"))) {
       && serviceRouteCount("portainer", "portainer") === 2
       && ["logs", "settings"].every((route) => sharedRouteCount(route) === 2)
       && /\[hidden\]\s*\{\s*display:\s*none\s*!important;\s*\}/u.test(shellStyles),
-    "desktop and mobile navigation expose one gated Proxmox route while retaining legacy-free service navigation and shared routes"
+    "desktop and mobile navigation expose canonical Overview in both workspaces, one gated Proxmox route, and shared routes"
   );
   record(
     /data-action="toggle-sidebar"[^>]+aria-controls="sidebar-navigation"[^>]+aria-expanded="true"/u.test(shell)
@@ -967,7 +971,7 @@ if (existsSync(join(root, "package.json"))) {
     const packageJson = JSON.parse(read("package.json"));
     record(
       packageJson.name === "helmsman"
-        && packageJson.version === "1.1.0"
+        && packageJson.version === "1.1.1"
         && packageJson.scripts?.serve === "node server/index.mjs serve"
         && packageJson.scripts?.["check:broker"] === "node --test tests/control-plane.test.mjs"
         && /tests\/secrets[.]test[.]mjs/u.test(packageJson.scripts?.["check:security"] || "")
@@ -1081,7 +1085,7 @@ if (existsSync(join(root, "README.md")) && existsSync(join(root, "deploy/DOCKER.
     "operator guides limit user-confirmed recovery to fixed action templates and reject generic upstream mutations"
   );
   record(
-    keyGuides.every((guide) => ["Home", "Discover", "Library", "Requests", "Activity", "Calendar", "Health", "Connections"]
+    keyGuides.every((guide) => ["Overview", "Discover", "Library", "Requests", "Activity", "Calendar", "Health", "Connections"]
       .every((section) => new RegExp(`\\b${section}\\b`, "iu").test(guide)))
       && keyGuides.every((guide) => /Requested[^\n]{0,40}Monitored[^\n]{0,40}Downloading[^\n]{0,40}Imported[^\n]{0,40}Available/iu.test(guide))
       && keyGuides.every((guide) => /opaque[^.\n]*(?:artwork|Helmsman URL)|artwork[^.\n]*opaque/iu.test(guide))

@@ -30,28 +30,25 @@ function installedBrowserPath(chromium) {
 
 function homeFixture({ continueWatching = true } = {}) {
   const cards = Array.from({ length: 16 }, (_, index) => `
-    <button class="poster-card" type="button">
-      <span class="poster-art"></span>
-      <span class="poster-copy"><strong>Title ${index + 1}</strong><span>2026 · Available</span></span>
+    <button class="media-overview-poster" type="button">
+      <span class="media-overview-poster__art"><span class="poster-monogram">${index + 1}</span><span class="media-overview-poster__shade"></span><span class="media-overview-poster__copy"><strong>Title ${index + 1}</strong><small>2026 · Movie</small></span></span>
     </button>`).join("");
-  const metric = (label) => `<a href="#"><strong>1</strong><span>${label}</span><small>Fixture metric</small></a>`;
   const downloadRows = Array.from({ length: 2 }, (_, index) => `<button class="pipeline-row" type="button">
-    <span class="pipeline-art"></span><span class="pipeline-main"><span class="pipeline-title"><strong>Download ${index + 1}</strong><em class="status-pill status-active"><i></i>Downloading</em></span><span class="pipeline-subtitle">Fixture transfer via qBittorrent</span><progress value="${64 + index * 12}" max="100">${64 + index * 12}%</progress></span><span class="pipeline-aside"><strong>42 MB/s</strong><small>12m</small></span><svg></svg>
+    <span class="pipeline-art"></span><span class="pipeline-main"><span class="pipeline-title"><strong>Download ${index + 1}</strong><em class="status-pill status-active"><i></i>Downloading</em></span><span class="pipeline-subtitle">Fixture transfer via qBittorrent</span><span class="media-overview-download__progress"><progress value="${64 + index * 12}" max="100">${64 + index * 12}%</progress><small>${64 + index * 12}%</small></span></span><span class="pipeline-aside"><strong>42 MB/s</strong><small>12m</small></span><svg></svg>
   </button>`).join("");
   const downloads = `<section class="pipeline-panel media-home-card media-home-card--downloads${continueWatching ? "" : " is-promoted"}" data-home-slot="downloads"${continueWatching ? "" : " data-home-promoted=\"true\""}>
-    <header class="panel-heading media-home-card__heading"><div><span class="eyebrow">Activity</span><h2>Downloads and imports</h2><p>Fixture activity summary.</p></div><a class="text-link" href="#/activity">All activity <svg></svg></a></header><div class="pipeline-list">${downloadRows}</div>
+    <header class="panel-heading media-home-card__heading"><div><h2>Downloads &amp; imports</h2></div><a class="media-overview-card-link" href="#/activity" aria-label="Open all activity"><svg></svg></a></header><div class="pipeline-list">${downloadRows}</div>
   </section>`;
   const continueCard = `<section class="cinema-hero media-home-card media-home-card--continue" data-home-slot="continue-watching">
-    <div class="hero-shade"></div><div class="hero-content"><span class="eyebrow"><i></i>Continue watching</span><h2>The Expanse</h2><div class="hero-meta"><span>Series</span><span>2026</span><span>Available</span></div><p>A deliberately long fixture summary verifies that the featured card can wrap without widening its grid track.</p><div class="hero-actions"><button class="primary-button" type="button">View details</button><a class="secondary-button" href="#/library">Browse library</a></div><div class="hero-progress"><progress value="64" max="100" aria-label="The Expanse watched">64%</progress><span>64% watched</span></div></div>
+    <header class="media-home-card__heading"><div><h2>Continue watching</h2></div><a class="media-overview-card-link" href="#/library" aria-label="Open media library"><svg></svg></a></header>
+    <div class="media-overview-resume"><span class="hero-art-image"></span><div class="hero-shade"></div><div class="hero-content"><h3>The Expanse</h3><p>S3 E5 · Unknown Angels</p><div class="hero-progress"><progress value="64" max="100" aria-label="The Expanse watched">64%</progress><span>64% watched</span></div><div class="hero-actions"><button class="primary-button" type="button">View details</button></div></div></div>
   </section>`;
-  const serviceRows = ["Jellyfin", "Sonarr", "Radarr", "Seerr", "Prowlarr", "qBittorrent"].map((name) => `<li><button class="operations-service" type="button" aria-label="Open ${name} connection details"><span class="operations-service__mark">${name.slice(0, 1)}</span><span class="operations-service__copy"><strong>${name}</strong><small>Fixture capability summary</small></span><span class="operations-service__states"><span class="operations-service__health"><small>Connection health</small><span class="operations-service__state"><i class="is-success"></i>Connected</span></span><span class="operations-service__health"><small>Service health</small><span class="operations-service__state"><i class="is-success"></i>Healthy</span></span></span><svg></svg></button></li>`).join("");
-  const serviceHealth = `<section class="operations-panel operations-services media-home-card media-home-card--services" data-home-slot="service-health" aria-labelledby="fixture-services-title"><header class="operations-section-heading media-home-card__heading"><div><span class="operations-kicker">Connected stack</span><h2 id="fixture-services-title">Service health</h2><p>Connection and application health remain separate signals.</p></div><a class="operations-text-link" href="#/health">Open health <svg></svg></a></header><ul class="operations-services__list">${serviceRows}</ul></section>`;
-  const attention = `<section class="activity-panel media-home-card media-home-card--attention" data-home-slot="requests-and-warnings"><header class="panel-heading media-home-card__heading"><div><span class="eyebrow">Attention</span><h2>Requests and warnings</h2><p>Current service-reported conditions.</p></div><a class="text-link" href="#/requests">All requests <svg></svg></a></header><div class="activity-list"><button class="activity-event" type="button"><i class="event-marker tone-danger"></i><span><strong>Import failed</strong><small>Fixture warning</small></span><time>Current</time></button></div></section>`;
-  const pipelineStages = ["Requested", "Monitored", "Downloading", "Imported", "Available"].map((label, index) => `<li class="operations-pipeline__stage is-${index === 2 ? "limited" : "healthy"}"><span class="operations-pipeline__marker"><svg></svg></span><div><span>Fixture</span><strong>${label}</strong><small>Current pipeline evidence</small></div><em aria-label="${index + 1} items">${index + 1}</em></li>`).join("");
-  const pipeline = `<section class="operations-panel operations-pipeline media-home-card media-home-card--pipeline" data-home-slot="media-pipeline" aria-labelledby="fixture-pipeline-title"><header class="operations-section-heading media-home-card__heading"><div><span class="operations-kicker">End-to-end signal</span><h2 id="fixture-pipeline-title">Media pipeline</h2><p>Requests moving toward playback.</p></div><a class="operations-text-link" href="#/health">Open pipeline <svg></svg></a></header><ol class="operations-pipeline__list">${pipelineStages}</ol></section>`;
+  const serviceRows = ["Jellyfin", "Sonarr", "Radarr", "Seerr", "Prowlarr", "qBittorrent"].map((name) => `<li><button class="operations-service" type="button" aria-label="Open ${name} connection details"><span class="operations-service__mark">${name.slice(0, 1)}</span><span class="operations-service__copy"><strong>${name}</strong><small>Fixture capability summary</small></span><span class="operations-service__states"><span class="operations-service__health"><span class="operations-service__state"><i class="is-success"></i>Connected</span></span><span class="operations-service__health"><span class="operations-service__state"><i class="is-success"></i>Healthy</span></span></span><svg></svg></button></li>`).join("");
+  const serviceHealth = `<section class="operations-panel operations-services media-home-card media-home-card--services" data-home-slot="service-health" aria-labelledby="fixture-services-title"><header class="operations-section-heading media-home-card__heading"><div><h2 id="fixture-services-title">Service health</h2></div><a class="media-overview-card-link" href="#/health" aria-label="Open service health"><svg></svg></a></header><div class="media-overview-service-columns"><span>Service</span><span>Connection</span><span>Service health</span></div><ul class="operations-services__list">${serviceRows}</ul></section>`;
+  const attention = `<section class="activity-panel media-home-card media-home-card--attention" data-home-slot="requests-and-warnings"><header class="panel-heading media-home-card__heading"><div><h2>Requests &amp; warnings</h2></div><a class="media-overview-card-link" href="#/requests" aria-label="Open all requests"><svg></svg></a></header><ul class="media-overview-events"><li><button class="media-overview-event" type="button"><span class="media-overview-event__mark is-danger"><svg></svg></span><span class="media-overview-event__copy"><strong>Import failed</strong><small>Fixture warning</small></span><time>Current</time></button></li></ul></section>`;
+  const pipelineStages = ["Requested", "Monitored", "Downloading", "Imported", "Available"].map((label, index) => `<li class="operations-pipeline__stage is-${index === 2 ? "stale" : "healthy"}" data-overview-lifecycle-id="${label.toLowerCase()}"><span class="operations-pipeline__marker"><svg></svg></span><div><strong>${label}</strong><small>Current pipeline evidence</small></div><em aria-label="${index + 1} items">${index + 1}</em></li>`).join("");
+  const pipeline = `<section class="operations-panel operations-pipeline media-home-card media-home-card--pipeline" data-home-slot="media-pipeline" aria-labelledby="fixture-pipeline-title"><header class="operations-section-heading media-home-card__heading"><div><h2 id="fixture-pipeline-title">Media pipeline</h2></div><a class="media-overview-card-link" href="#/activity" aria-label="Open media activity"><svg></svg></a></header><ol class="operations-pipeline__list">${pipelineStages}</ol></section>`;
   return `<div class="page media-desktop-page media-home-page operations-page">
-    <form class="media-home-search" role="search"><label><svg></svg><span><strong>Search</strong><small>Fixture</small></span><input type="search" aria-label="Search media"></label><button type="button">Search</button></form>
-    <section class="media-home-metrics" aria-label="Media workload summary">${["Library", "Requests", "Downloads", "Missing", "Subtitles"].map(metric).join("")}</section>
     <div class="media-home-bento ${continueWatching ? "has-continue-watching" : "has-promoted-downloads"}">
       ${continueWatching ? continueCard : downloads}
       ${serviceHealth}
@@ -59,7 +56,7 @@ function homeFixture({ continueWatching = true } = {}) {
       ${attention}
       ${pipeline}
     </div>
-    <section class="media-section"><header class="section-heading"><div><h2>Recently added</h2></div></header><div class="poster-rail">${cards}</div></section>
+    <section class="media-home-card media-overview-recent" data-home-slot="recently-added"><header class="media-home-card__heading"><div><h2>Recently added</h2></div><a class="media-overview-card-link" href="#/library" aria-label="Open media library"><svg></svg></a></header><div class="media-overview-recent__rail">${cards}</div></section>
   </div>`;
 }
 
@@ -128,7 +125,7 @@ async function readHomeGeometry(page) {
     const home = document.querySelector(".media-home-page");
     const bento = home.querySelector(".media-home-bento");
     const homeStyle = getComputedStyle(home);
-    const topLevelBlocks = [...home.querySelectorAll(":scope > .media-home-search, :scope > .media-home-metrics, :scope > .media-home-bento, :scope > .media-section")]
+    const topLevelBlocks = [...home.querySelectorAll(":scope > .media-home-bento, :scope > .media-overview-recent")]
       .map((element) => ({ className: element.className, ...rectFor(element) }));
     const cards = [...bento.querySelectorAll(":scope > .media-home-card")].map((element) => ({
       slot: element.dataset.homeSlot || "",
@@ -137,8 +134,8 @@ async function readHomeGeometry(page) {
       scrollWidth: element.scrollWidth,
       ...rectFor(element)
     }));
-    const rail = home.querySelector(".poster-rail");
-    const activityLink = home.querySelector('[data-home-slot="downloads"] .text-link');
+    const rail = home.querySelector(".media-overview-recent__rail");
+    const activityLink = home.querySelector('[data-home-slot="downloads"] .media-overview-card-link');
     const activityHeader = activityLink.closest(".media-home-card__heading");
     const activityLinkStyle = getComputedStyle(activityLink);
     const sidebarToggle = document.querySelector(".sidebar-toggle");
@@ -174,16 +171,14 @@ async function readHomeGeometry(page) {
         clientWidth: rail.clientWidth,
         scrollWidth: rail.scrollWidth,
         overflowX: getComputedStyle(rail).overflowX,
-        posterWidths: [...rail.querySelectorAll(".poster-card")].map((card) => card.getBoundingClientRect().width)
+        posterWidths: [...rail.querySelectorAll(".media-overview-poster")].map((card) => card.getBoundingClientRect().width)
       },
       activityHeader: rectFor(activityHeader),
       activityLink: {
         ...rectFor(activityLink),
         alignItems: activityLinkStyle.alignItems,
-        justifyContent: activityLinkStyle.justifyContent,
-        paddingLeft: parseFloat(activityLinkStyle.paddingLeft),
-        paddingRight: parseFloat(activityLinkStyle.paddingRight),
-        whiteSpace: activityLinkStyle.whiteSpace
+        justifyItems: activityLinkStyle.justifyItems,
+        borderRadius: activityLinkStyle.borderRadius
       },
       mobileNav: { ...rectFor(mobileNav), display: getComputedStyle(mobileNav).display },
       mainTabIndex: document.querySelector("#main-content").getAttribute("tabindex"),
@@ -209,6 +204,8 @@ async function readHomeGeometry(page) {
       { width: 390, height: 844 },
       { width: 768, height: 1024 },
       { width: 1024, height: 768 },
+      { width: 1280, height: 800 },
+      { width: 1366, height: 768 },
       { width: 1440, height: 900 },
       { width: 2048, height: 1125 },
       { width: 2560, height: 1406 }
@@ -228,8 +225,8 @@ async function readHomeGeometry(page) {
         assert.ok(geometry.documentWidth <= geometry.viewport + 1, `${viewport.width}px ${variant.label} shell overflows horizontally by ${geometry.documentWidth - geometry.viewport}px`);
         assert.equal(geometry.mainTabIndex, "-1", `${viewport.width}px ${variant.label} main content must remain programmatically focusable`);
         assert.equal(geometry.skipLinkTarget, "#main-content", `${viewport.width}px ${variant.label} skip link must retain its main-content target`);
-        assert.ok(geometry.home.left >= geometry.main.left - 1, `${viewport.width}px ${variant.label} Home starts outside main`);
-        assert.ok(geometry.home.right <= geometry.main.right + 1, `${viewport.width}px ${variant.label} Home ends outside main`);
+        assert.ok(geometry.home.left >= geometry.main.left - 1, `${viewport.width}px ${variant.label} Overview starts outside main`);
+        assert.ok(geometry.home.right <= geometry.main.right + 1, `${viewport.width}px ${variant.label} Overview ends outside main`);
 
         const expectedLeft = geometry.home.left + geometry.paddingLeft;
         const expectedRight = geometry.home.right - geometry.paddingRight;
@@ -259,17 +256,19 @@ async function readHomeGeometry(page) {
           geometry.cards.slice(1).forEach((card, index) => {
             assert.ok(card.top >= geometry.cards[index].bottom - 1, `${viewport.width}px ${variant.label} cards must follow one vertical mobile reading order`);
           });
-        } else if (viewport.width <= 1320) {
+        } else if (viewport.width <= 1240) {
           assert.equal(geometry.bento.gridColumns, 2, `${viewport.width}px ${variant.label} bento must use the two-column tablet layout`);
           assert.ok(geometry.cards[1].top >= geometry.cards[0].bottom - 1, `${viewport.width}px ${variant.label} primary card must occupy the full first tablet row`);
-          near(geometry.cards[1].top, geometry.cards[2].top, `${viewport.width}px ${variant.label} second-row card pair must align on tablet`, 2);
           if (variant.continueWatching) {
-            near(geometry.cards[3].top, geometry.cards[4].top, `${viewport.width}px Continue Watching attention and pipeline cards must align on the third tablet row`, 2);
+            assert.ok(geometry.cards[2].top >= geometry.cards[1].bottom - 1, `${viewport.width}px Continue Watching downloads must follow full-width service health`);
+            near(geometry.cards[2].top, geometry.cards[3].top, `${viewport.width}px Continue Watching downloads and attention must align on the third tablet row`, 2);
+            assert.ok(geometry.cards[4].top >= Math.max(geometry.cards[2].bottom, geometry.cards[3].bottom) - 1, `${viewport.width}px Continue Watching pipeline must occupy the final full tablet row`);
           } else {
-            assert.ok(geometry.cards[3].top >= Math.max(geometry.cards[1].bottom, geometry.cards[2].bottom) - 1, `${viewport.width}px promoted Downloads pipeline must occupy the final full tablet row`);
+            assert.ok(geometry.cards[2].top >= geometry.cards[1].bottom - 1, `${viewport.width}px promoted Downloads attention must follow full-width service health`);
+            assert.ok(geometry.cards[3].top >= geometry.cards[2].bottom - 1, `${viewport.width}px promoted Downloads pipeline must follow attention in reading order`);
           }
         } else {
-          assert.equal(geometry.bento.gridColumns, 12, `${viewport.width}px ${variant.label} bento must retain its 12-track desktop grid`);
+          assert.equal(geometry.bento.gridColumns, 21, `${viewport.width}px ${variant.label} bento must retain its reference-aligned 21-track desktop grid`);
           near(geometry.cards[0].top, geometry.cards[1].top, `${viewport.width}px ${variant.label} primary and service-health cards must align on the first desktop row`, 2);
           if (variant.continueWatching) {
             near(geometry.cards[2].top, geometry.cards[3].top, `${viewport.width}px Continue Watching Downloads and attention cards must align on the second desktop row`, 2);
@@ -284,18 +283,19 @@ async function readHomeGeometry(page) {
         assert.equal(geometry.rail.overflowX, "auto");
         assert.ok(geometry.rail.scrollWidth > geometry.rail.clientWidth, `${viewport.width}px ${variant.label} fixture must exercise internal poster scrolling`);
         const expectedPosterWidth = viewport.width <= 760
-          ? 132
-          : viewport.width >= 1500 ? 176 : Math.min(176, Math.max(140, viewport.width * 0.11));
+          ? 112
+          : Math.min(132, Math.max(108, viewport.width * 0.087));
         assert.ok(geometry.rail.posterWidths.length > 1, `${viewport.width}px ${variant.label} fixture must render multiple poster cards`);
         near(geometry.rail.posterWidths[0], expectedPosterWidth, `${viewport.width}px ${variant.label} standardized poster width`);
         assert.ok(geometry.rail.posterWidths.every((width) => Math.abs(width - geometry.rail.posterWidths[0]) <= 0.5), `${viewport.width}px ${variant.label} poster cards must use one consistent rail width`);
-        assert.ok(geometry.rail.posterWidths.every((width) => width <= 176.5), `${viewport.width}px ${variant.label} poster cards must not grow into oversized fluid columns`);
+        assert.ok(geometry.rail.posterWidths.every((width) => width <= 132.5), `${viewport.width}px ${variant.label} poster cards must not grow into oversized fluid columns`);
 
-        assert.ok(geometry.activityLink.left >= geometry.activityHeader.left - 1 && geometry.activityLink.right <= geometry.activityHeader.right + 1, `${viewport.width}px ${variant.label} All activity link must stay inside its card heading`);
-        assert.ok(geometry.activityLink.paddingLeft >= 13.5 && geometry.activityLink.paddingRight >= 13.5, `${viewport.width}px ${variant.label} All activity text must have balanced horizontal inset`);
-        assert.equal(geometry.activityLink.alignItems, "center", `${viewport.width}px ${variant.label} All activity content must be vertically centered`);
-        assert.equal(geometry.activityLink.justifyContent, "center", `${viewport.width}px ${variant.label} All activity content must be horizontally centered`);
-        assert.equal(geometry.activityLink.whiteSpace, "nowrap", `${viewport.width}px ${variant.label} All activity label must remain on one line`);
+        assert.ok(geometry.activityLink.left >= geometry.activityHeader.left - 1 && geometry.activityLink.right <= geometry.activityHeader.right + 1, `${viewport.width}px ${variant.label} activity action must stay inside its card heading`);
+        near(geometry.activityLink.width, 36, `${viewport.width}px ${variant.label} activity action width`);
+        near(geometry.activityLink.height, 36, `${viewport.width}px ${variant.label} activity action height`);
+        assert.equal(geometry.activityLink.alignItems, "center", `${viewport.width}px ${variant.label} activity icon must be vertically centered`);
+        assert.equal(geometry.activityLink.justifyItems, "center", `${viewport.width}px ${variant.label} activity icon must be horizontally centered`);
+        assert.ok(parseFloat(geometry.activityLink.borderRadius) >= 17.5, `${viewport.width}px ${variant.label} activity action must retain its circular treatment`);
 
         await page.locator('.media-home-bento :is(a, button)').first().focus();
         const focusedControl = await page.evaluate(() => {
@@ -307,7 +307,7 @@ async function readHomeGeometry(page) {
         assert.match(focusedControl.tagName, /^(?:A|BUTTON)$/u, `${viewport.width}px ${variant.label} first bento action must use native interactive semantics`);
         assert.notEqual(focusedControl.outlineStyle, "none", `${viewport.width}px ${variant.label} focused bento action must retain a visible outline`);
         assert.ok(focusedControl.outlineWidth >= 2, `${viewport.width}px ${variant.label} focus outline must remain at least 2px`);
-        assert.ok(focusedControl.height >= 44, `${viewport.width}px ${variant.label} first bento action must retain a 44px target`);
+        assert.ok(focusedControl.width >= 36 && focusedControl.height >= 36, `${viewport.width}px ${variant.label} first bento action must retain its compact circular target`);
 
         if (viewport.width <= 760) {
           assert.equal(geometry.sidebar.display, "none", `${viewport.width}px ${variant.label} desktop sidebar must be hidden on mobile`);
@@ -556,7 +556,7 @@ async function readHomeGeometry(page) {
       near(sidebarOverflow.toggle.left, sidebarOverflow.sidebar.right, `${viewport.width}x${viewport.height} sidebar toggle edge placement`, 3);
       await page.close();
     }
-    console.log("Shell geometry contract passed for both Home bento states, responsive containment, fixed poster rails, compact requests and downloads, collapsed navigation, and short-height sidebar scrolling.");
+    console.log("Shell geometry contract passed for both Media Overview bento states, the 21-column reference layout, responsive containment, compact requests and downloads, collapsed navigation, and short-height sidebar scrolling.");
   } finally {
     await browser.close();
   }

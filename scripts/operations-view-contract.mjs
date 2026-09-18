@@ -16,10 +16,10 @@ import {
 } from "../src/ui/operations-views.js";
 
 const serviceIconAssets = Object.freeze({
-  jellyfin: Object.freeze({ file: "jellyfin.svg", width: 512, height: 512, hash: "7f53cf083dbb3119ec8c5acbd8049c5033227617e461540f70591ac109124306", format: "svg", viewBox: "0 0 512 512" }),
-  seerr: Object.freeze({ file: "seerr.jpg", width: 554, height: 554, hash: "0e0aa1aa038915e519b6b23e00565406b04f4974a1d33ba86ae3088aba41989b", format: "jpeg" }),
-  radarr: Object.freeze({ file: "radarr.png", width: 256, height: 256, hash: "d06702d34fcc05888239e553fab68f01c5f3f9b4fd64f8a7c407f4f9bfb8cf1e", format: "png" }),
-  sonarr: Object.freeze({ file: "sonarr.png", width: 554, height: 554, hash: "3922f07d78c566446945bbca3bf6e5e012607d65e9f35ba63c297136da778418", format: "png" }),
+  jellyfin: Object.freeze({ file: "jellyfin.svg", width: 512, height: 512, hash: "7f53cf083dbb3119ec8c5acbd8049c5033227617e461540f70591ac109124306", format: "svg", viewBox: "0 0 512 512", auditedInlineStyle: true }),
+  seerr: Object.freeze({ file: "seerr.svg", width: 96, height: 96, hash: "b12e5dfd641d961cfb68360da33fe28873b95ea9b64c23233d5b87a37cbfa4c4", format: "svg", viewBox: "0 0 96 96", auditedStyleElement: true }),
+  radarr: Object.freeze({ file: "radarr.svg", width: 512, height: 512, hash: "4767088c158c5507957232782f491ad1c3a048c013ce04d58da81148158a89b3", format: "svg", viewBox: "0 0 512 512", auditedInlineStyle: true }),
+  sonarr: Object.freeze({ file: "sonarr.svg", width: 512, height: 512, hash: "a5debe565281eb16b746d75b9ce72e22f2fb15c19b4f55428fdf62b84be79306", format: "svg", viewBox: "0 0 512 512", auditedInlineStyle: true }),
   prowlarr: Object.freeze({ file: "prowlarr.png", width: 460, height: 460, hash: "fe75eafc608e288c9736b740afe1c30c715eaf56dc284fec1926491d245fea52", format: "png" }),
   qbittorrent: Object.freeze({ file: "qbittorrent.svg", width: 1024, height: 1024, hash: "f96f40f70830e245cc184291d1173aa705b68b0865970b44aa1ee63350bcb9c2", format: "svg", viewBox: "0 0 1024 1024" }),
   bazarr: Object.freeze({ file: "bazarr.png", width: 200, height: 200, hash: "aefd3aac28d67fd4d48b24dd2ae33b3b0a9f26e7950c2e1d34bef98cecf18876", format: "png", lightPlate: true }),
@@ -159,12 +159,17 @@ const bentoCss = `${shellCss}\n${operationsCss}\n${controlCss}\n${retroCss}`;
 assert.match(
   bentoCss,
   /\.media-home-bento\s*\{[^}]*display:\s*grid[^}]*grid-template-(?:areas|columns):/su,
-  "Media Home must use a multi-card bento grid instead of the legacy single-column hero stack"
+  "Media Overview must use a multi-card bento grid instead of the legacy single-column hero stack"
+);
+assert.match(
+  retroCss,
+  /Reference-aligned application shell and Media Overview[\s\S]*?\.media-home-bento\s*\{[^}]*grid-template-columns:\s*repeat\(21,\s*minmax\(0,\s*1fr\)\)/u,
+  "the wide Media Overview must use the reference-aligned 21-column bento grid"
 );
 assert.match(
   bentoCss,
   /\.media-home-card\s*\{[^}]*min-width:\s*0[^}]*border-radius:\s*var\(--radius-lg\)/su,
-  "Media Home cards must be bounded rounded bento surfaces"
+  "Media Overview cards must be bounded rounded bento surfaces"
 );
 assert.match(
   bentoCss,
@@ -231,6 +236,26 @@ assert.match(
 assert.match(shellHtml, /<meta name="theme-color" content="#0d1719"\s*\/>/u);
 assert.equal(manifest.background_color, "#081012");
 assert.equal(manifest.theme_color, "#0d1719");
+assert.equal(manifest.start_url, "./#/overview", "the installed application must open canonical Media Overview");
+
+const mediaOverviewSourceStart = application.indexOf("function renderMediaHomeServiceHealth(");
+const mediaOverviewSourceEnd = application.indexOf("\nfunction renderMediaToolbar(", mediaOverviewSourceStart);
+assert.ok(mediaOverviewSourceStart >= 0 && mediaOverviewSourceEnd > mediaOverviewSourceStart, "the Media Overview renderer must remain inspectable");
+const mediaOverviewSource = application.slice(mediaOverviewSourceStart, mediaOverviewSourceEnd);
+assert.match(application, /const MEDIA_ROUTES = new Set\(\["overview",\s*"discover"/u, "Media Overview must be a canonical Media route");
+assert.match(application, /const MEDIA_ROUTE_ALIASES = Object\.freeze\(\{\s*home:\s*"overview"/u, "legacy #/home must remain a compatibility alias");
+assert.match(application, /function workspaceLandingRoute\([^)]*\)\s*\{\s*return "overview";\s*\}/u, "both workspaces must land on Overview");
+for (const slot of ["continue-watching", "downloads", "service-health", "requests-and-warnings", "media-pipeline", "recently-added", "continue-queue"]) {
+  assert.match(mediaOverviewSource, new RegExp(`(?:data-home-slot="${slot}"|slot:\\s*"${slot}")`, "u"), `Media Overview must retain its ${slot} surface`);
+}
+for (const stage of ["requested", "monitored", "downloading", "imported", "available"]) {
+  assert.match(mediaOverviewSource, new RegExp(`id:\\s*"${stage}"`, "u"), `Media Overview must retain the ${stage} lifecycle stage`);
+}
+assert.match(mediaOverviewSource, /operations\.incidents\.filter\(\(\{ scope \}\) => scope !== "infrastructure"\)/u, "Requests & warnings must merge current Media incidents");
+assert.match(mediaOverviewSource, /new Map\(\[\.\.\.media\.home\.blockedImports, \.\.\.media\.home\.activeDownloads\]/u, "Downloads & imports must deduplicate blocked and active rows by media key");
+assert.match(mediaOverviewSource, /data-home-promoted/u, "the Downloads card must expose its promoted state");
+assert.match(mediaOverviewSource, /renderMediaHomeDownloads\(downloads, \{ promoted: !hasContinueWatching \}\)[\s\S]*?has-promoted-downloads/u, "Downloads must occupy the lead slot when Continue Watching is empty");
+assert.doesNotMatch(mediaOverviewSource, /home\.nowPlaying|home\.upcoming|media-home-search|media-home-metrics/u, "Media Overview must omit the former Now Playing, Upcoming, search, and KPI surfaces");
 
 for (const [label, href, accessibleName] of [
   ["Source", "https://github.com/nunesg130-boop/helmsman", "Source code"],
@@ -265,18 +290,17 @@ for (const [id, asset] of Object.entries(serviceIconAssets)) {
     assert.deepEqual(jpegDimensions(contents), { width: asset.width, height: asset.height }, `${asset.file} must remain the pinned JPEG`);
   } else {
     const svg = contents.toString("utf8");
-    assert.match(svg, /^<svg\b/u, `${asset.file} must remain an SVG document`);
+    assert.match(svg, /^\s*(?:<\?xml[^>]*>\s*)?<svg\b/u, `${asset.file} must remain an SVG document`);
     assert.match(svg, new RegExp(`viewBox="${asset.viewBox.replaceAll(".", "[.]")}"`, "u"), `${asset.file} viewBox must remain pinned`);
     assert.doesNotMatch(
       svg,
       /<!DOCTYPE|<!ENTITY|<(?:script|foreignObject|iframe|object|embed|image|audio|video)\b|\son[a-z][a-z0-9_-]*\s*=|(?:href|src)\s*=\s*["'](?!#)|@import\b|url\(\s*["']?(?!#)/iu,
       `${asset.file} must remain inert and self-contained`
     );
-    if (id === "jellyfin") {
-      assert.match(svg, /\sstyle\s*=/u, "only the hash-pinned Jellyfin artwork may retain its audited presentation-only inline styles");
-    } else {
-      assert.doesNotMatch(svg, /\sstyle\s*=/iu, `${asset.file} must not gain inline styles`);
-    }
+    const hasInlineStyle = /\sstyle\s*=/iu.test(svg);
+    assert.equal(hasInlineStyle, Boolean(asset.auditedInlineStyle), `${asset.file} inline-style policy must remain pinned`);
+    const hasStyleElement = /<style\b/iu.test(svg);
+    assert.equal(hasStyleElement, Boolean(asset.auditedStyleElement), `${asset.file} style-element policy must remain pinned`);
   }
 }
 
@@ -932,4 +956,4 @@ assert.match(mixedInfrastructureOverview, /data-action="open-portainer-overview"
 assert.match(mixedInfrastructureOverview, /An infrastructure connection is unavailable/u, "mixed providers must use copy for their combined health state");
 assert.doesNotMatch(mixedInfrastructureOverview, /Proxmox-specific healthy/u, "healthy Proxmox copy must not contradict a failed Portainer connection");
 
-console.log("Operations view contract passed: media and configured-only infrastructure health, incidents, reports, actions, and escaping.");
+console.log("Operations view contract passed: canonical Media Overview, health detail, configured-only Infrastructure Overview, incidents, reports, actions, and escaping.");

@@ -26,8 +26,9 @@ repository to public and recheck it before the first public release.
 - [ ] Revoke and rotate any secret that ever entered Git history or another
   published surface; deleting a file from the latest commit is not enough.
 - [ ] Confirm the release bundles only the nine reviewed, hash-pinned local
-  service icons and original generic workload SVGs, and includes `LICENSE`
-  plus the complete asset notice and preserved Prowlarr/Freepik attribution.
+  service icons—including the user-supplied Radarr, Seerr, and Sonarr SVG
+  refreshes—and original generic workload SVGs, and includes `LICENSE` plus
+  the complete asset notice and preserved Prowlarr/Freepik attribution.
 - [ ] Choose and document either a clean public history or a verified rewritten
   history; record the reviewed commit hash before changing repository visibility.
 

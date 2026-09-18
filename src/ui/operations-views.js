@@ -69,19 +69,19 @@ const SERVICE_ICON_ASSETS = Object.freeze({
     height: 512
   }),
   seerr: Object.freeze({
-    path: "./assets/services/seerr.jpg",
-    width: 554,
-    height: 554
+    path: "./assets/services/seerr.svg",
+    width: 96,
+    height: 96
   }),
   radarr: Object.freeze({
-    path: "./assets/services/radarr.png",
-    width: 256,
-    height: 256
+    path: "./assets/services/radarr.svg",
+    width: 512,
+    height: 512
   }),
   sonarr: Object.freeze({
-    path: "./assets/services/sonarr.png",
-    width: 554,
-    height: 554
+    path: "./assets/services/sonarr.svg",
+    width: 512,
+    height: 512
   }),
   prowlarr: Object.freeze({
     path: "./assets/services/prowlarr.png",
@@ -542,7 +542,7 @@ function pipelineValues(value) {
 
 function safeInternalHref(value, fallback) {
   const candidate = boundedText(value, "", 100);
-  return /^#\/(?:home|operations|incidents|pipeline|services|logs|settings|requests|downloads|library)(?:\?[a-z0-9=&._-]+)?$/iu.test(candidate)
+  return /^#\/(?:overview|home|operations|incidents|pipeline|services|logs|settings|requests|downloads|library)(?:\?[a-z0-9=&._-]+)?$/iu.test(candidate)
     ? candidate
     : fallback;
 }

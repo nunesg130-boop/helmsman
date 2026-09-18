@@ -1,4 +1,4 @@
-# Helmsman v1.1.0
+# Helmsman v1.1.1
 
 Helmsman is a self-hosted operations center for a homelab's media services and infrastructure. It runs as one portable Linux container on Docker Desktop, Linux, macOS, compatible NAS platforms, AMD64, and ARM64.
 
@@ -14,6 +14,24 @@ Helmsman is a self-hosted operations center for a homelab's media services and i
 This Helmsman is the media and infrastructure dashboard in this repository. It
 is not affiliated with or derived from the existing Kubernetes project also
 named [Helmsman](https://github.com/mkubaczyk/helmsman).
+
+## v1.1.1
+
+This interface refinement makes **Overview** the canonical Media landing page;
+the legacy `#/home` route now redirects to `#/overview`. Its layout, labels,
+supporting copy, spacing, and card hierarchy are aligned more closely with the
+approved dashboard reference while retaining Helmsman's established palette,
+real service data, and existing action boundaries.
+
+Overview keeps connection health compact and separate from upstream service
+health, combines requests and service warnings in one attention card, and
+shows the evidence-backed five-stage **Requested → Monitored → Downloading →
+Imported → Available** lifecycle. Continue Watching remains the lead card when current
+Jellyfin data exists; otherwise Downloads & Imports moves into that position
+without leaving an empty panel. The bundled local Radarr, Seerr, and Sonarr SVG
+marks have also been refreshed from the user-supplied artwork. The reference
+informs presentation only; Helmsman continues to show live normalized data
+rather than the mockup's illustrative metrics.
 
 ## v1.1.0
 
@@ -86,24 +104,24 @@ Helmsman's project-owned logging mark. Original generic VM/container workload
 drawings are also bundled. See
 [the asset notices](assets/services/THIRD_PARTY_NOTICES.md).
 
-Helmsman v1.1.0 combines built-in logging, optional Loki search, Portainer monitoring, and a small, fixed set of confirmed recovery actions under Infrastructure with targeted media recovery actions and Helmsman's cluster-aware Proxmox model:
+Helmsman v1.1.1 combines built-in logging, optional Loki search, Portainer monitoring, and a small, fixed set of confirmed recovery actions under Infrastructure with targeted media recovery actions and Helmsman's cluster-aware Proxmox model:
 
 - Media and Infrastructure are separate workspaces inside the same authenticated application, and only the selected workspace's navigation is shown;
 - the desktop sidebar collapses to an icon rail, remembers that preference, keeps its navigation scrollable at high browser zoom, and places its 44 px collapse control on the content-side edge below the shared header rule;
 - Infrastructure **Overview** contains only already-configured Proxmox and Portainer connections plus their current read-only signals, while the always-available categorized **Connectors** view owns supported-provider discovery, setup, and editing;
-- the Media workspace has dedicated **Home**, **Discover**, **Library**, **Requests**, **Activity**, **Calendar**, **Health**, and **Connections** views;
+- the Media workspace has dedicated **Overview**, **Discover**, **Library**, **Requests**, **Activity**, **Calendar**, **Health**, and **Connections** views; the legacy `#/home` URL redirects to canonical `#/overview`;
 - Media **Connections** groups every supported integration by purpose: media server, requests, media management, indexers, download clients, and subtitles;
 - Jellyfin, Seerr, Radarr, Sonarr, qBittorrent, and Bazarr records are correlated by TMDb, TVDb, IMDb, download, and service identifiers rather than title matching;
-- Home combines current Jellyfin playback, continue-watching items, pending requests, active downloads, blocked imports, upcoming releases, recently added titles, missing media, and subtitle backlog; episode resumes use their series poster rather than an episode frame, and short poster rails retain the same bounded card size as full rails;
+- Overview combines Continue Watching, service health, active downloads and imports, requests and warnings, an evidence-backed media lifecycle, and recently added titles; Continue Watching yields its lead position to Downloads & Imports when empty, episode resumes use their series poster rather than an episode frame, and additional resume items remain available in a compact poster rail;
 - Activity combines qBittorrent transfer progress, speed, and ETA with Sonarr/Radarr queue and import state, including the current bounded service-reported error when one is available;
 - Requests keep Seerr approval separate from acquisition state, use exact **Awaiting approval**, **In progress**, **Available**, **Needs attention**, and **Closed** buckets, preserve the exact season/4K scope, and never treat older episodes from the same series as proof that a new request is available;
 - request rows missing presentation metadata are enriched through Seerr's fixed movie/TV detail routes with revision-scoped caching and a fair three-worker background queue; the short dashboard wait no longer cancels slow TV lookups, and visible unresolved rows can resolve their cover through the same typed route on demand;
 - series and parent-resolved episode drawers load current season state on demand, warn when Seerr reports no TVDB mapping for an auto-approved Sonarr handoff, and can submit one confirmed, standard-quality Seerr request for the exact selected requestable seasons;
-- normalized media detail retains the read-only lifecycle **Requested → Monitored → Downloading → Imported → Available** only when those stages are actually observed;
+- normalized media detail and the Overview pipeline retain the read-only lifecycle **Requested → Monitored → Downloading → Imported → Available** and report only stages supported by current service evidence;
 - artwork is served only through an authenticated opaque Helmsman URL, uses revisioned 342 px Jellyfin/Seerr thumbnails and fixed 250 px, 500 px, then original Radarr/Sonarr covers, safely resolves Sonarr's TV metadata through a typed Seerr lookup when its local cover is unavailable, coalesces duplicate misses, and bounds cold artwork to three concurrent upstream fetches with 64 queued requests;
 - unreleased Radarr movies remain **Upcoming** and are not counted as missing, Sonarr calendar episodes inherit their parent-series poster, and calendar-only episode rows are excluded from Library;
 - unchanged artwork keeps a stable browser URL with a one-day private cache, while image revisions produce a new opaque URL, cold proxy fetches receive an eight-second artwork-only budget, and temporary failures receive two bounded browser retries without cache-busting;
-- reviewed, hash-pinned icons for the nine existing media and infrastructure integrations are bundled locally without a runtime icon CDN, Loki uses Helmsman's own logging mark, and original generic VM and container SVGs identify workloads;
+- reviewed, hash-pinned icons for the nine existing media and infrastructure integrations are bundled locally without a runtime icon CDN; v1.1.1 refreshes the Radarr, Seerr, and Sonarr marks from user-supplied SVG artwork, Loki uses Helmsman's own logging mark, and original generic VM and container SVGs identify workloads;
 - media monitoring remains read-only by default; the only media writes are a Seerr failed-request retry, a selected standard-season request for one exact current series through Seerr, a targeted Radarr/Sonarr search when Helmsman can resolve one exact current record, and a fixed blocked-queue recovery for one exact current errored Sonarr/Radarr queue item, and each opens Helmsman's own confirmation dialog before it runs;
 - each standalone Proxmox server or multi-node cluster is one environment, separate from its physical nodes and VM/LXC workloads;
 - **Connect and discover** verifies authentication, certificate trust, environment identity, cluster name, and visible nodes before an environment can be saved;
@@ -132,7 +150,7 @@ Helmsman v1.1.0 combines built-in logging, optional Loki search, Portainer monit
 
 ## Deploy the published container
 
-Helmsman is distributed as the public Linux AMD64/ARM64 image `ghcr.io/nunesg130-boop/helmsman`. The `v1.1.0` Git tag runs the contracts and architecture smoke tests, publishes the version, `latest`, and full-commit image tags, and creates a GitHub Release containing ready-to-use `compose.yaml`, `container.env.example`, and `SHA256SUMS` assets. The release deployment files pin `ghcr.io/nunesg130-boop/helmsman` to the exact multi-architecture manifest digest (`@sha256:...`).
+Helmsman is distributed as the public Linux AMD64/ARM64 image `ghcr.io/nunesg130-boop/helmsman`. The `v1.1.1` Git tag runs the contracts and architecture smoke tests, publishes the version, `latest`, and full-commit image tags, and creates a GitHub Release containing ready-to-use `compose.yaml`, `container.env.example`, and `SHA256SUMS` assets. The release deployment files pin `ghcr.io/nunesg130-boop/helmsman` to the exact multi-architecture manifest digest (`@sha256:...`).
 
 Download those three files from the matching [GitHub Release](https://github.com/nunesg130-boop/helmsman/releases) into one directory, verify the two deployment files against `SHA256SUMS`, open a terminal there, and make sure Docker Desktop or Docker Engine is running. No source checkout, Dockerfile, Node.js installation, or server-side image build is required.
 
@@ -341,13 +359,13 @@ Monitoring and probes remain fixed read-only GET routes. Actions are separate re
 
 ## Media and Infrastructure workspaces
 
-Use the workspace switcher to keep media activity separate from host, virtualization, and container-platform health. Media navigation contains **Home**, **Discover**, **Library**, **Requests**, **Activity**, **Calendar**, **Health**, and **Connections**. Logs and Settings remain global. Search and filters operate only on the bounded records already returned by configured services; Helmsman does not send free-form discovery searches or arbitrary management commands upstream.
+Use the workspace switcher to keep media activity separate from host, virtualization, and container-platform health. Media navigation contains **Overview**, **Discover**, **Library**, **Requests**, **Activity**, **Calendar**, **Health**, and **Connections**. Logs and Settings remain global. Search and filters operate only on the bounded records already returned by configured services; Helmsman does not send free-form discovery searches or arbitrary management commands upstream.
 
-Home keeps existing data visible while a refresh is in flight and patches volatile progress, speed, ETA, state, counts, and timestamps in place. Its Now Playing signal comes from one fixed, bounded Jellyfin sessions query and omits session identity metadata. Initial loads may use placeholders, but polling does not deliberately replace the whole page or reset stable artwork URLs. Discover presents Seerr's read-only discovery feed; items without a request are labeled **Not requested** rather than exposing an internal unknown state, and only Jellyfin evidence can label a title available in Helmsman's library. Library correlates Jellyfin availability with Radarr/Sonarr monitoring and import state. Requests preserve separate request IDs, approval state, acquisition state, requested seasons, and 4K scope; completed workflow rows become **Available** from Seerr's media availability, an exact Jellyfin movie match, or—when a series request is season-scoped—the matching Seerr media-season availability rather than the request-season workflow status. Activity and Calendar expose current read-only workflow state, while Health contains pipeline/service incidents and Connections owns service enrollment.
+Overview keeps existing data visible while a refresh is in flight and patches volatile progress, speed, ETA, state, counts, and timestamps in place. Its Now Playing signal comes from one fixed, bounded Jellyfin sessions query and omits session identity metadata. Continue Watching leads only when Jellyfin supplies current resume data; otherwise Downloads & Imports is promoted into that position. Requests and service warnings share the attention card, while compact columns continue to distinguish connection health from service health. Initial loads may use placeholders, but polling does not deliberately replace the whole page or reset stable artwork URLs. Discover presents Seerr's read-only discovery feed; items without a request are labeled **Not requested** rather than exposing an internal unknown state, and only Jellyfin evidence can label a title available in Helmsman's library. Library correlates Jellyfin availability with Radarr/Sonarr monitoring and import state. Requests preserve separate request IDs, approval state, acquisition state, requested seasons, and 4K scope; completed workflow rows become **Available** from Seerr's media availability, an exact Jellyfin movie match, or—when a series request is season-scoped—the matching Seerr media-season availability rather than the request-season workflow status. Activity and Calendar expose current read-only workflow state, while Health contains pipeline/service incidents and Connections owns service enrollment.
 
 The only Media writes are a Helmsman-confirmed Seerr failed-request retry, a selected standard-season request for one exact current series through Seerr, a targeted Radarr/Sonarr search when Helmsman can resolve one exact current record, and **Block release & search again** for one exact current errored Sonarr/Radarr queue item. The blocked-queue action warns that it removes the download and its data from the download client, blocklists that release, and allows Sonarr/Radarr to seek a replacement according to its settings. It appears only from fresh, connected, revision-matched error evidence and is revalidated after its explicit danger confirmation. Series and parent-resolved episode drawers load a bounded current season catalog from Seerr on demand. The operator can select requestable standard seasons, review the exact selection in Helmsman's confirmation dialog, and submit one standard-quality request. Specials, 4K selection, arbitrary Seerr users, servers, profiles, root folders, and request bodies are not exposed. Helmsman revalidates the current record, target revision, and action-specific detail immediately before dispatch. Each action uses a Helmsman-styled confirmation dialog; browser-native confirmation prompts are not used. Helmsman cannot approve requests or delete requests, request movies or 4K/Specials, choose Seerr routing/profile fields, change monitoring, pause downloads, remove healthy or arbitrary downloads, alter any other files, or run a free-form search.
 
-Each media record uses provider and service identifiers to join evidence from multiple systems. Its lifecycle indicates which of Requested, Monitored, Downloading, Imported, and Available have been observed. qBittorrent transfers are correlated to Sonarr/Radarr queue rows by download identifiers; a bounded sanitized queue error is displayed when the service supplies one. Titles, identifiers, progress, and errors exist only in the current in-memory snapshot.
+Each media record uses provider and service identifiers to join evidence from multiple systems. Its five-stage lifecycle indicates which of **Requested**, **Monitored**, **Downloading**, **Imported**, and **Available** have actually been observed rather than inferring progress from position alone. qBittorrent transfers are correlated to Sonarr/Radarr queue rows by download identifiers; a bounded sanitized queue error is displayed when the service supplies one. Titles, identifiers, progress, and errors exist only in the current in-memory snapshot.
 
 Artwork descriptors never reach the browser. The browser receives an opaque same-origin `/api/v2/media/artwork/<key>` URL, and the authenticated broker tries only fixed service-owned artwork routes in this order: Jellyfin, Radarr/Sonarr, then Seerr. Grid requests use a revisioned 342 px Jellyfin or Seerr thumbnail and try fixed 250 px, 500 px, then original Radarr/Sonarr covers. When Sonarr exposes only TVDB remote artwork, Helmsman uses the series' validated TMDb identifier for a typed Seerr metadata lookup and then requests only Seerr's fixed TMDb image-proxy route; it never follows the remote artwork URL. Duplicate misses are coalesced, and a bounded scheduler permits at most three upstream artwork fetches at once with 64 pending requests. Successful images are cached in memory for up to 24 hours. General failures are cached for 15 minutes, versioned Arr cover misses for 30 seconds, and unrevisioned Arr misses are not negative-cached, allowing newly generated covers to appear promptly without continuous retry. The cache is limited to 512 entries, 64 MiB total, and 4 MiB per accepted image, and accepts only bounded raster image types. Browser responses use an ETag, a one-day private cache lifetime, and one-week stale revalidation/error windows; media artwork is never written to the data volume.
 

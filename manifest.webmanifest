@@ -2,7 +2,7 @@
   "name": "Helmsman",
   "short_name": "Helmsman",
   "description": "A private, local-first operations center for media and infrastructure.",
-  "start_url": "./#/home",
+  "start_url": "./#/overview",
   "display": "standalone",
   "background_color": "#081012",
   "theme_color": "#0d1719",

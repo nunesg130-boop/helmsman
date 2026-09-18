@@ -118,10 +118,10 @@ const MEDIA_CONNECTION_CATEGORIES = Object.freeze([
   Object.freeze({ id: "subtitles", kicker: "Accessibility", title: "Subtitles", description: "Subtitle health and wanted-item backlog.", services: Object.freeze(["bazarr"]) })
 ]);
 const SHARED_ROUTES = new Set(["logs", "settings"]);
-const MEDIA_ROUTES = new Set(["home", "discover", "library", "requests", "activity", "calendar", "health", "connections", ...SHARED_ROUTES]);
+const MEDIA_ROUTES = new Set(["overview", "discover", "library", "requests", "activity", "calendar", "health", "connections", ...SHARED_ROUTES]);
 const INFRASTRUCTURE_ROUTES = new Set(["overview", "connectors", "proxmox", "workloads", "portainer", "incidents", ...SHARED_ROUTES]);
-const ROUTES = new Set([...MEDIA_ROUTES, ...INFRASTRUCTURE_ROUTES, "pipeline", "services", "environments", "nodes"]);
-const MEDIA_ROUTE_ALIASES = Object.freeze({ overview: "home", pipeline: "health", incidents: "health", services: "connections" });
+const ROUTES = new Set([...MEDIA_ROUTES, ...INFRASTRUCTURE_ROUTES, "home", "pipeline", "services", "environments", "nodes"]);
+const MEDIA_ROUTE_ALIASES = Object.freeze({ home: "overview", pipeline: "health", incidents: "health", services: "connections" });
 const INFRASTRUCTURE_ROUTE_ALIASES = Object.freeze({
   environments: "proxmox",
   nodes: "proxmox",
@@ -235,7 +235,7 @@ const CONNECTION_CODE_COPY = Object.freeze({
   NOT_CHECKED: "Not checked"
 });
 const ROUTE_TITLES = Object.freeze({
-  home: "Home",
+  home: "Overview",
   discover: "Discover",
   library: "Library",
   requests: "Requests",
@@ -274,7 +274,7 @@ function savedSidebarCollapsed() {
 }
 
 const state = {
-  route: "home",
+  route: "overview",
   workspace: savedWorkspace(),
   sidebarCollapsed: savedSidebarCollapsed(),
   status: null,
@@ -329,7 +329,7 @@ function operationalFingerprint(snapshot) {
   const normalized = normalizeOperationsSnapshot(snapshot, state.infrastructure.targets);
   const route = currentRoute();
   const includeOperationsStructure = state.workspace === "media"
-    ? ["home", "health", "connections"].includes(route)
+    ? ["overview", "health", "connections"].includes(route)
     : ["incidents", "logs"].includes(route);
   const structure = JSON.stringify(includeOperationsStructure ? normalized : { version: normalized.version }, (key, value) => {
     if ([
@@ -523,7 +523,7 @@ function operationalFingerprint(snapshot) {
 }
 
 function rawRoute() {
-  return String(location.hash || (state.workspace === "infrastructure" ? "#/overview" : "#/home"))
+  return String(location.hash || "#/overview")
     .replace(/^#\//u, "")
     .split("?", 1)[0];
 }
@@ -607,14 +607,14 @@ function currentRoute() {
   const candidate = rawRoute();
   if (state.workspace === "media") {
     const aliased = MEDIA_ROUTE_ALIASES[candidate] || candidate;
-    return MEDIA_ROUTES.has(aliased) ? aliased : "home";
+    return MEDIA_ROUTES.has(aliased) ? aliased : "overview";
   }
   const aliased = INFRASTRUCTURE_ROUTE_ALIASES[candidate] || candidate;
   return INFRASTRUCTURE_ROUTES.has(aliased) ? aliased : "overview";
 }
 
-function workspaceLandingRoute(workspace) {
-  return workspace === "infrastructure" ? "overview" : "home";
+function workspaceLandingRoute(_workspace) {
+  return "overview";
 }
 
 function applySidebarState({ persist = false } = {}) {
@@ -1810,8 +1810,11 @@ function renderPosterSection(title, detail, items, emptyCopy, { eagerCount = 0 }
 }
 
 function renderHomeActivityRow(item) {
-  return `<button class="pipeline-row" type="button" data-action="open-media-detail" data-media-id="${escapeHtml(item.id)}" data-media-key="${item.key}">
-    ${renderMediaArt(item, "pipeline-art")}<span class="pipeline-main"><span class="pipeline-title"><strong>${escapeHtml(item.title)}</strong><em class="status-pill status-${mediaStatusTone(item)}"><i></i>${escapeHtml(mediaStatusLabel(item))}</em></span><span class="pipeline-subtitle">${escapeHtml(item.error || item.subtitle || mediaTypeLabel(item.mediaType))}</span>${item.progress === null ? "" : `<progress data-media-progress value="${item.progress}" max="100">${item.progress}%</progress>`}</span><span class="pipeline-aside"><strong data-media-speed>${escapeHtml(formatMediaSpeed(item.downloadSpeedBps))}</strong><small data-media-eta>${escapeHtml(formatMediaEta(item.etaSeconds))}</small></span>${icon("chevron")}
+  const detail = item.error
+    || item.subtitle
+    || (item.service ? `${mediaStatusLabel(item)} via ${item.service}` : mediaTypeLabel(item.mediaType));
+  return `<button class="pipeline-row media-overview-download" type="button" data-action="open-media-detail" data-media-id="${escapeHtml(item.id)}" data-media-key="${item.key}">
+    ${renderMediaArt(item, "pipeline-art")}<span class="pipeline-main"><span class="pipeline-title"><strong>${escapeHtml(item.title)}</strong><em class="status-pill status-${mediaStatusTone(item)}"><i></i>${escapeHtml(mediaStatusLabel(item))}</em></span><span class="pipeline-subtitle">${escapeHtml(detail)}</span>${item.progress === null ? "" : `<span class="media-overview-download__progress"><progress data-media-progress value="${item.progress}" max="100">${item.progress}%</progress><small data-media-progress-label>${item.progress}%</small></span>`}</span><span class="pipeline-aside"><strong data-media-speed>${escapeHtml(formatMediaSpeed(item.downloadSpeedBps))}</strong><small data-media-eta>${escapeHtml(formatMediaEta(item.etaSeconds))}</small></span>${icon("chevron")}
   </button>`;
 }
 
@@ -1852,7 +1855,7 @@ function mediaHomeServiceSummary(service) {
 }
 
 function renderMediaHomeServiceState(service, heading, presentation) {
-  return `<span class="operations-service__health" aria-label="${escapeHtml(service.name)} ${escapeHtml(heading.toLowerCase())}: ${escapeHtml(presentation.label)}"><small>${escapeHtml(heading)}</small><span class="operations-service__state"><i class="is-${escapeHtml(presentation.tone)}" aria-hidden="true"></i>${escapeHtml(presentation.label)}</span></span>`;
+  return `<span class="operations-service__health" aria-label="${escapeHtml(service.name)} ${escapeHtml(heading.toLowerCase())}: ${escapeHtml(presentation.label)}"><span class="operations-service__state"><i class="is-${escapeHtml(presentation.tone)}" aria-hidden="true"></i>${escapeHtml(presentation.label)}</span></span>`;
 }
 
 function renderMediaHomeService(service) {
@@ -1861,12 +1864,8 @@ function renderMediaHomeService(service) {
     label: statusLabel(service.state),
     tone: mediaHomeHealthTone(service.state)
   };
-  const facts = [];
-  if (service.latencyMs !== null) facts.push(`${service.latencyMs} ms`);
-  if (service.version) facts.push(`v${service.version}`);
-  if (!facts.length && service.lastCheckedAt) facts.push("Checked");
   const states = `<span class="operations-service__states">${renderMediaHomeServiceState(service, "Connection health", connection)}${renderMediaHomeServiceState(service, "Service health", serviceHealth)}</span>`;
-  const content = `<span class="operations-service__mark">${serviceIconMarkup(service.id, service.name.slice(0, 1))}</span><span class="operations-service__copy"><span class="operations-kicker">${escapeHtml(service.role)}</span><strong>${escapeHtml(service.name)}</strong><small>${escapeHtml(mediaHomeServiceSummary(service))}</small>${facts.length ? `<em>${escapeHtml(facts.join(" · "))}</em>` : ""}</span>${states}${SERVICE_ORDER.includes(service.id) ? icon("chevron") : ""}`;
+  const content = `<span class="operations-service__mark">${serviceIconMarkup(service.id, service.name.slice(0, 1))}</span><span class="operations-service__copy"><strong>${escapeHtml(service.name)}</strong><small>${escapeHtml(mediaHomeServiceSummary(service))}</small></span>${states}${SERVICE_ORDER.includes(service.id) ? icon("chevron") : ""}`;
   const actionLabel = `Open ${service.name} connection details. Connection health: ${connection.label}. Service health: ${serviceHealth.label}.`;
   return SERVICE_ORDER.includes(service.id)
     ? `<li><button class="operations-service" type="button" data-action="open-service" data-service-id="${escapeHtml(service.id)}" aria-label="${escapeHtml(actionLabel)}">${content}</button></li>`
@@ -1875,38 +1874,113 @@ function renderMediaHomeService(service) {
 
 function renderMediaHomeServiceHealth(operations) {
   return `<section class="operations-panel operations-services media-home-card media-home-card--services" aria-labelledby="media-home-services-title" data-home-slot="service-health">
-    <header class="operations-section-heading media-home-card__heading"><div><span class="operations-kicker">Connected stack</span><h2 id="media-home-services-title">Service health</h2><p>Connection and application health remain separate signals.</p></div><a class="operations-text-link" href="#/health">Open health ${icon("chevron")}</a></header>
+    <header class="operations-section-heading media-home-card__heading"><div><h2 id="media-home-services-title">Service health</h2></div><a class="media-overview-card-link" href="#/health" aria-label="Open service health">${icon("more")}</a></header>
+    <div class="media-overview-service-columns" aria-hidden="true"><span>Service</span><span>Connection</span><span>Service health</span></div>
     ${operations.services.length ? `<ul class="operations-services__list">${operations.services.map(renderMediaHomeService).join("")}</ul>` : renderMediaEmpty("No monitored services", "Add a media connection to begin collecting health signals.", "shield")}
   </section>`;
 }
 
-function renderMediaHomePipeline(operations) {
+function mediaOverviewLifecycle(media) {
+  const monitored = media.metrics.monitoredTotal
+    ?? media.records.filter((item) => item.monitored).length;
+  const imported = media.records.filter((item) => item.imported).length;
+  const requested = media.requests.length || media.metrics.pendingRequestTotal;
+  return [
+    { id: "requested", label: "Requested", detail: "Known requests in Seerr", count: requested, icon: "inbox" },
+    { id: "monitored", label: "Monitored", detail: "Tracked by Sonarr or Radarr", count: monitored, icon: "search" },
+    { id: "downloading", label: "Downloading", detail: "Active qBittorrent transfers", count: media.metrics.activeDownloadTotal, icon: "download" },
+    { id: "imported", label: "Imported", detail: "Imported records in view", count: imported, icon: "settings" },
+    { id: "available", label: "Available", detail: "Titles in your Jellyfin library", count: media.metrics.libraryTotal, icon: "check" }
+  ];
+}
+
+function renderMediaHomePipeline(media) {
+  const stages = mediaOverviewLifecycle(media);
   return `<section class="operations-panel operations-pipeline media-home-card media-home-card--pipeline" aria-labelledby="media-home-pipeline-title" data-home-slot="media-pipeline">
-    <header class="operations-section-heading media-home-card__heading"><div><span class="operations-kicker">End-to-end signal</span><h2 id="media-home-pipeline-title">Media pipeline</h2><p>Requests moving toward playback.</p></div><a class="operations-text-link" href="#/health">Open pipeline ${icon("chevron")}</a></header>
-    ${operations.pipeline.length ? `<ol class="operations-pipeline__list">${operations.pipeline.map((stage) => {
-      const detail = stage.detail
-        || (stage.failingCheckCount > 0
-          ? `${stage.failingCheckCount} API check${stage.failingCheckCount === 1 ? "" : "s"} need attention`
-          : stage.state === "healthy" && stage.serviceCount > 0
-            ? `${stage.serviceCount} service${stage.serviceCount === 1 ? "" : "s"} reporting normally`
-            : stage.state === "stale" && stage.serviceCount === 0
-              ? "Waiting for a configured service"
-              : statusLabel(stage.state));
-      return `<li class="operations-pipeline__stage is-${escapeHtml(statusClass(stage.state))}"><span class="operations-pipeline__marker">${icon(mediaHomeHealthIcon(stage.state))}</span><div><span>${escapeHtml(stage.hint)}</span><strong>${escapeHtml(stage.label)}</strong><small>${escapeHtml(detail)}</small></div>${stage.count !== null ? `<em aria-label="${stage.count} items">${stage.count}</em>` : ""}</li>`;
-    }).join("")}</ol>` : renderMediaEmpty("Pipeline signals are not available yet", "They will appear after the first complete monitoring cycle.", "refresh")}
+    <header class="operations-section-heading media-home-card__heading"><div><h2 id="media-home-pipeline-title">Media pipeline</h2></div><a class="media-overview-card-link" href="#/activity" aria-label="Open media activity">${icon("chevron")}</a></header>
+    <ol class="operations-pipeline__list">${stages.map((stage) => `<li class="operations-pipeline__stage ${stage.count > 0 ? "is-healthy" : "is-stale"}" data-overview-lifecycle-id="${stage.id}"><span class="operations-pipeline__marker">${icon(stage.icon)}</span><div><strong>${escapeHtml(stage.label)}</strong><small>${escapeHtml(stage.detail)}</small></div><em aria-label="${stage.count} items">${stage.count.toLocaleString()}</em></li>`).join("")}</ol>
   </section>`;
 }
 
 function renderMediaHomeDownloads(downloads, { promoted = false } = {}) {
-  return `<section class="pipeline-panel media-home-card media-home-card--downloads${promoted ? " is-promoted" : ""}" data-home-slot="downloads"${promoted ? " data-home-promoted=\"true\"" : ""}><header class="panel-heading media-home-card__heading"><div><span class="eyebrow">Activity</span><h2>Downloads and imports</h2><p>qBittorrent progress correlated with Sonarr and Radarr imports.</p></div><a class="text-link" href="#/activity">All activity ${icon("chevron")}</a></header><div class="pipeline-list">${downloads.length ? downloads.map(renderHomeActivityRow).join("") : renderMediaEmpty("No active transfers", "Downloads and blocked imports will appear here.", "download")}</div></section>`;
+  return `<section class="pipeline-panel media-home-card media-home-card--downloads${promoted ? " is-promoted" : ""}" data-home-slot="downloads"${promoted ? " data-home-promoted=\"true\"" : ""}><header class="panel-heading media-home-card__heading"><div><h2>Downloads &amp; imports</h2></div><a class="media-overview-card-link" href="#/activity" aria-label="Open all activity">${icon("chevron")}</a></header><div class="pipeline-list">${downloads.length ? downloads.map(renderHomeActivityRow).join("") : renderMediaEmpty("No active transfers", "Downloads and blocked imports will appear here.", "download")}</div></section>`;
 }
 
-function renderMediaHomeContinueWatching(feature, configuredCount, generatedAt) {
+function mediaOverviewEpisodeLabel(feature) {
+  const parts = [];
+  if (feature.seasonNumber !== null && feature.episodeNumber !== null) {
+    parts.push(`S${feature.seasonNumber} E${feature.episodeNumber}`);
+  }
+  if (feature.subtitle && feature.subtitle !== feature.title) parts.push(feature.subtitle);
+  if (!parts.length) parts.push([mediaTypeLabel(feature.mediaType), feature.year].filter(Boolean).join(" · "));
+  return parts.filter(Boolean).join(" · ");
+}
+
+function renderMediaHomeContinueWatching(feature) {
   return `<section class="cinema-hero media-home-card media-home-card--continue" data-home-slot="continue-watching" data-media-key="${feature.key}">
-    ${renderArtworkImage(feature, { className: "hero-art-image", eager: true })}<div class="hero-shade"></div>
-    <div class="hero-content"><span class="eyebrow"><i></i>Continue watching</span><h2>${escapeHtml(feature.title)}</h2><div class="hero-meta"><span>${escapeHtml(mediaTypeLabel(feature.mediaType))}</span>${feature.year ? `<span>${escapeHtml(feature.year)}</span>` : ""}<span>${escapeHtml(mediaStatusLabel(feature))}</span></div><p>${escapeHtml(feature.summary || feature.subtitle || "Playback and availability are correlated across your connected services.")}</p><div class="hero-actions"><button class="primary-button" type="button" data-action="open-media-detail" data-media-id="${escapeHtml(feature.id)}" data-media-key="${feature.key}">${icon("eye")} View details</button><a class="secondary-button" href="#/library">Browse library</a></div>${feature.progress === null ? "" : `<div class="hero-progress"><progress data-media-progress value="${feature.progress}" max="100" aria-label="${escapeHtml(`${feature.title} watched`)}">${feature.progress}%</progress><span data-media-progress-label data-media-progress-suffix=" watched">${feature.progress}% watched</span></div>`}</div>
-    <div class="hero-live"><span class="live-label"><i></i>Read-only view</span><strong>${configuredCount} connected service${configuredCount === 1 ? "" : "s"}</strong><small>Updated ${escapeHtml(formatTime(generatedAt, "when data arrives"))}</small></div>
+    <header class="media-home-card__heading"><div><h2>Continue watching</h2></div><a class="media-overview-card-link" href="#/library" aria-label="Open media library">${icon("chevron")}</a></header>
+    <div class="media-overview-resume">${renderArtworkImage(feature, { className: "hero-art-image", eager: true })}<div class="hero-shade"></div>
+      <div class="hero-content"><h3>${escapeHtml(feature.title)}</h3><p>${escapeHtml(mediaOverviewEpisodeLabel(feature))}</p>${feature.progress === null ? "" : `<div class="hero-progress"><progress data-media-progress value="${feature.progress}" max="100" aria-label="${escapeHtml(`${feature.title} watched`)}">${feature.progress}%</progress><span data-media-progress-label data-media-progress-suffix=" watched">${feature.progress}% watched</span></div>`}<div class="hero-actions"><button class="primary-button" type="button" data-action="open-media-detail" data-media-id="${escapeHtml(feature.id)}" data-media-key="${feature.key}">${icon("eye")} View details</button></div></div>
+    </div>
   </section>`;
+}
+
+function mediaOverviewEventTime(item) {
+  return item.requestedAt || item.addedAt || item.releaseAt || "";
+}
+
+function mediaOverviewAttention(media, operations) {
+  const entries = [];
+  const seen = new Set();
+  const addMedia = (item, kind, detail, tone, iconName) => {
+    const id = `${kind}:${item.key}`;
+    if (seen.has(id)) return;
+    seen.add(id);
+    entries.push({ id, kind, detail, tone, iconName, at: mediaOverviewEventTime(item), item });
+  };
+  media.home.pendingRequests.forEach((item) => addMedia(item, "New request", item.title, "info", "inbox"));
+  media.home.blockedImports.forEach((item) => addMedia(item, "Import failed", `${item.title}${item.error ? ` · ${item.error}` : ""}`, "danger", "x"));
+  media.activity.forEach((item) => {
+    const activityState = normalizedMediaToken(item.state);
+    if (item.error) addMedia(item, "Import failed", `${item.title} · ${item.error}`, "danger", "x");
+    else if (activityState === "imported") addMedia(item, "Import completed", item.title, "success", "check");
+    else if (activityState === "completed") addMedia(item, "Download completed", item.title, "success", "check");
+  });
+  operations.incidents.filter(({ scope }) => scope !== "infrastructure").forEach((incident) => {
+    entries.push({
+      id: `incident:${incident.id}`,
+      incidentId: incident.id,
+      kind: incident.state === "down" ? "Service unavailable" : "Service warning",
+      detail: `${incident.serviceName} · ${incident.summary}`,
+      tone: incident.state === "down" ? "danger" : "warning",
+      iconName: incident.state === "down" ? "x" : "more",
+      at: incident.lastSeen || incident.firstSeen || "",
+      href: "#/health"
+    });
+  });
+  return entries
+    .map((entry, index) => ({ ...entry, index, stamp: Number.isFinite(Date.parse(entry.at)) ? Date.parse(entry.at) : 0 }))
+    .sort((left, right) => right.stamp - left.stamp || left.index - right.index)
+    .slice(0, 6);
+}
+
+function renderMediaOverviewEvent(entry) {
+  const timestamp = entry.stamp > 0 ? new Date(entry.stamp).toISOString() : "";
+  const content = `<span class="media-overview-event__mark is-${escapeHtml(entry.tone)}">${icon(entry.iconName)}</span><span class="media-overview-event__copy"><strong>${escapeHtml(entry.kind)}</strong><small>${escapeHtml(entry.detail)}</small></span><time${timestamp ? ` datetime="${timestamp}"` : ""} data-overview-event-time>${escapeHtml(formatTime(entry.at, "Current"))}</time>`;
+  if (entry.item) {
+    return `<li><button class="media-overview-event" type="button" data-action="open-media-detail" data-media-id="${escapeHtml(entry.item.id)}" data-media-key="${entry.item.key}">${content}</button></li>`;
+  }
+  return `<li><a class="media-overview-event" href="${entry.href}" data-overview-incident-id="${escapeHtml(entry.incidentId)}">${content}</a></li>`;
+}
+
+function renderMediaOverviewShelf(items, {
+  title,
+  titleId,
+  slot,
+  emptyTitle = "Nothing here yet",
+  emptyCopy = "Media will appear here after the next refresh."
+}) {
+  return `<section class="media-home-card media-overview-recent" data-home-slot="${escapeHtml(slot)}" aria-labelledby="${escapeHtml(titleId)}"><header class="media-home-card__heading"><div><h2 id="${escapeHtml(titleId)}">${escapeHtml(title)}</h2></div><a class="media-overview-card-link" href="#/library" aria-label="Open media library">${icon("chevron")}</a></header>${items.length ? `<div class="media-overview-recent__rail">${items.slice(0, 12).map((item, index) => `<button class="media-overview-poster" type="button" data-action="open-media-detail" data-media-id="${escapeHtml(item.id)}" data-media-key="${item.key}" aria-label="Open ${escapeHtml(item.title)} details"><span class="media-overview-poster__art">${renderArtworkImage(item, { eager: index < 6 })}<span class="poster-monogram" aria-hidden="true">${escapeHtml(item.title.slice(0, 1).toUpperCase())}</span><span class="media-overview-poster__shade"></span><span class="media-overview-poster__copy"><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml([item.year, mediaTypeLabel(item.mediaType)].filter(Boolean).join(" · "))}</small></span></span></button>`).join("")}</div>` : renderMediaEmpty(emptyTitle, emptyCopy, "library")}</section>`;
 }
 
 function renderMediaHome() {
@@ -1914,33 +1988,20 @@ function renderMediaHome() {
   const continueWatching = media.home.continueWatching;
   const hasContinueWatching = continueWatching.length > 0;
   const feature = hasContinueWatching ? continueWatching[0] : null;
-  const missingMovies = media.metrics.missingMovies ?? media.home.missing.filter((item) => item.mediaType === "movie").length;
-  const missingEpisodes = media.metrics.missingEpisodes ?? media.home.missing.filter((item) => item.mediaType !== "movie").length;
-  const configuredCount = (state.config?.services || []).filter((service) => service.configured).length;
-  const downloads = [...media.home.blockedImports, ...media.home.activeDownloads].slice(0, 8);
-  const attention = [...media.home.pendingRequests, ...media.home.blockedImports].slice(0, 8);
+  const downloads = [...new Map([...media.home.blockedImports, ...media.home.activeDownloads].map((item) => [item.key, item])).values()].slice(0, 8);
   const operations = normalizeOperationsSnapshot(mediaOnlyOperationsSnapshot(), []);
+  const attention = mediaOverviewAttention(media, operations);
   const downloadsCard = renderMediaHomeDownloads(downloads, { promoted: !hasContinueWatching });
   return `<div class="page media-desktop-page media-home-page operations-page">
     <div class="media-home-bento ${hasContinueWatching ? "has-continue-watching" : "has-promoted-downloads"}">
-      ${hasContinueWatching ? renderMediaHomeContinueWatching(feature, configuredCount, media.generatedAt) : downloadsCard}
+      ${hasContinueWatching ? renderMediaHomeContinueWatching(feature) : downloadsCard}
       ${renderMediaHomeServiceHealth(operations)}
       ${hasContinueWatching ? downloadsCard : ""}
-      <section class="activity-panel media-home-card media-home-card--attention" data-home-slot="requests-and-warnings"><header class="panel-heading media-home-card__heading"><div><span class="eyebrow">Attention</span><h2>Requests and warnings</h2><p>Only current, service-reported conditions are shown.</p></div><a class="text-link" href="#/requests">All requests ${icon("chevron")}</a></header><div class="activity-list">${attention.length ? attention.map((item) => `<button class="activity-event" type="button" data-action="open-media-detail" data-media-id="${escapeHtml(item.id)}" data-media-key="${item.key}"><i class="event-marker ${item.error ? "tone-danger" : "tone-active"}"></i><span><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.error || mediaStatusLabel(item))}</small></span><time>${escapeHtml(formatTime(item.requestedAt || item.releaseAt, "Current"))}</time></button>`).join("") : renderMediaEmpty("Nothing needs attention", "Pending requests and service warnings will appear here.", "check")}</div></section>
-      ${renderMediaHomePipeline(operations)}
+      <section class="activity-panel media-home-card media-home-card--attention" data-home-slot="requests-and-warnings"><header class="panel-heading media-home-card__heading"><div><h2>Requests &amp; warnings</h2></div><a class="media-overview-card-link" href="#/requests" aria-label="Open all requests">${icon("chevron")}</a></header>${attention.length ? `<ul class="media-overview-events">${attention.map(renderMediaOverviewEvent).join("")}</ul>` : renderMediaEmpty("All clear", "New requests and service warnings will appear here.", "check")}</section>
+      ${renderMediaHomePipeline(media)}
     </div>
-    <form class="media-home-search" id="media-search-form" role="search"><label for="media-home-search">${icon("search")}<span><strong>Search your media</strong><small>Search the normalized titles already fetched by Helmsman.</small></span><input id="media-home-search" name="query" type="search" value="${escapeHtml(state.media.filters.homeSearch)}" placeholder="Movie, series, or episode" data-media-filter="homeSearch" autocomplete="off" /></label><button class="secondary-button" type="submit">Search library ${icon("chevron")}</button></form>
-    <section class="media-home-metrics" aria-label="Media workload summary">
-      <a href="#/library"><strong>${media.metrics.libraryTotal.toLocaleString()}</strong><span>Library items</span><small>${media.metrics.libraryCompleteness === null ? "Availability indexed" : `${media.metrics.libraryCompleteness}% complete`}</small></a>
-      <a href="#/requests" data-action="open-request-filter" data-media-filter-value="pending"><strong>${media.metrics.pendingRequestTotal.toLocaleString()}</strong><span>Awaiting approval</span><small>Seerr requests needing a decision</small></a>
-      <a href="#/activity"><strong>${media.metrics.activeDownloadTotal.toLocaleString()}</strong><span>Active downloads</span><small>${media.metrics.blockedImportTotal} blocked import${media.metrics.blockedImportTotal === 1 ? "" : "s"}</small></a>
-      <a href="#/library"><strong>${media.metrics.missingTotal.toLocaleString()}</strong><span>Missing media</span><small>${missingMovies} movies · ${missingEpisodes} episodes shown</small></a>
-      <a href="#/health"><strong>${media.metrics.subtitleBacklog.toLocaleString()}</strong><span>Subtitle backlog</span><small>Bazarr-reported items</small></a>
-    </section>
-    ${media.home.nowPlaying.length ? renderPosterSection("Now playing", "Current playback reported by Jellyfin", media.home.nowPlaying, "", { eagerCount: MEDIA_EAGER_CARD_COUNT }) : ""}
-    ${continueWatching.length > 1 ? renderPosterSection("More to continue", "Additional resume items reported by Jellyfin", continueWatching.slice(1), "", { eagerCount: Math.max(0, MEDIA_EAGER_CARD_COUNT - 1) }) : ""}
-    ${renderPosterSection("Recently added", "Latest titles available in Jellyfin", media.home.recentlyAdded, "No recently added titles were reported.")}
-    ${renderPosterSection("Upcoming releases", "Monitored releases from Sonarr and Radarr", media.home.upcoming.slice(0, 14), "No upcoming releases were reported.")}
+    ${renderMediaOverviewShelf(media.home.recentlyAdded, { title: "Recently added", titleId: "media-overview-recent-title", slot: "recently-added", emptyTitle: "Nothing new yet", emptyCopy: "Recently added Jellyfin titles will appear here." })}
+    ${continueWatching.length > 1 ? renderMediaOverviewShelf(continueWatching.slice(1), { title: "More to continue", titleId: "media-overview-more-title", slot: "continue-queue" }) : ""}
   </div>`;
 }
 
@@ -4396,7 +4457,7 @@ function announcePortainerFilterResults() {
 
 function renderAuthenticatedRoute() {
   if (state.workspace === "media") {
-    if (state.route === "home") return renderMediaHome();
+    if (state.route === "overview") return renderMediaHome();
     if (state.route === "discover") return renderDiscoverPage();
     if (state.route === "library") return renderLibraryPage();
     if (state.route === "requests") return renderRequestsPage();
@@ -4427,7 +4488,7 @@ function renderAuthenticatedRoute() {
 }
 
 function applyContextualLoggingLinks() {
-  if (state.workspace !== "media" || !["home", "health"].includes(state.route)) return;
+  if (state.workspace !== "media" || !["overview", "health"].includes(state.route)) return;
   const incidents = normalizeOperationsSnapshot(mediaOnlyOperationsSnapshot(), []).incidents
     .filter(({ scope }) => scope !== "infrastructure");
   const links = [...(main.querySelectorAll?.(".operations-incidents__list .operations-incident .operations-text-link[href='#/logs']") || [])];
@@ -4575,7 +4636,7 @@ function mediaConnectionSummary(services) {
 
 function monitorSummaryMarkup({ infrastructureWorkspace, overall, connection, summaryText }) {
   const mobileDot = `<i class="monitor-summary__mobile-dot health-dot is-${escapeHtml(statusClass(overall))}" data-monitor-mobile-dot aria-hidden="true"></i>`;
-  return `<span class="monitor-summary__metrics" data-monitor-media-summary><span class="monitor-summary__metric"><small>Connection health</small><span class="monitor-summary__value"><i class="health-dot is-${escapeHtml(connection.state)}" data-monitor-connection-dot aria-hidden="true"></i><strong data-monitor-connection-state>${escapeHtml(connection.label)}</strong></span></span><span class="monitor-summary__metric"><small>Service health</small><span class="monitor-summary__value"><i class="health-dot is-${escapeHtml(statusClass(overall))}" data-monitor-service-dot aria-hidden="true"></i><strong data-monitor-service-state>${escapeHtml(statusLabel(overall))}</strong></span></span></span><span class="monitor-summary__single" data-monitor-infrastructure-summary hidden><i class="health-dot is-${escapeHtml(statusClass(overall))}" data-monitor-infrastructure-dot aria-hidden="true"></i><span data-monitor-infrastructure-text>${escapeHtml(summaryText)}</span></span><span class="monitor-summary__checked" data-monitor-checked hidden>${escapeHtml(summaryText)}</span>${mobileDot}`;
+  return `<span class="monitor-summary__metrics" data-monitor-media-summary><span class="monitor-summary__metric"><small>Connection health</small><span class="monitor-summary__value"><i class="health-dot is-${escapeHtml(connection.state)}" data-monitor-connection-dot aria-hidden="true"></i><strong data-monitor-connection-state>${escapeHtml(connection.label)}</strong></span>${icon("chevron")}</span><span class="monitor-summary__metric"><small>Service health</small><span class="monitor-summary__value"><i class="health-dot is-${escapeHtml(statusClass(overall))}" data-monitor-service-dot aria-hidden="true"></i><strong data-monitor-service-state>${escapeHtml(statusLabel(overall))}</strong></span>${icon("chevron")}</span></span><span class="monitor-summary__single" data-monitor-infrastructure-summary hidden><i class="health-dot is-${escapeHtml(statusClass(overall))}" data-monitor-infrastructure-dot aria-hidden="true"></i><span data-monitor-infrastructure-text>${escapeHtml(summaryText)}</span></span><span class="monitor-summary__checked" data-monitor-checked hidden>${escapeHtml(summaryText)}</span>${mobileDot}`;
 }
 
 function updateMonitorSummary({ infrastructureWorkspace, overall, services, summaryText }) {
@@ -4654,7 +4715,7 @@ function updateChrome() {
   const workspaceHome = `#/${workspaceLandingRoute(state.workspace)}`;
   document.querySelectorAll(".brand, .mobile-brand").forEach((link) => {
     link.setAttribute("href", workspaceHome);
-    link.setAttribute("aria-label", infrastructureWorkspace ? "Helmsman infrastructure overview" : "Helmsman media home");
+    link.setAttribute("aria-label", infrastructureWorkspace ? "Helmsman infrastructure overview" : "Helmsman media overview");
   });
   document.querySelectorAll("[data-infrastructure-incident-count]").forEach((element) => {
     element.textContent = String(infrastructureCount);
@@ -4678,8 +4739,14 @@ function updateChrome() {
   sessionButton.setAttribute("aria-label", authenticated ? "Open browser session settings" : "Browser session unavailable until signed in");
   sessionButton.setAttribute("title", authenticated ? "Browser session settings" : "Sign in to manage browser sessions");
   if (privacyButton) {
-    privacyButton.setAttribute("aria-label", authenticated ? "Open privacy and security settings" : "Privacy and security information");
-    privacyButton.setAttribute("title", authenticated ? "Privacy and security settings" : "Sign in to review privacy and security settings");
+    const alertCount = infrastructureWorkspace ? infrastructureCount : count;
+    const alertDot = privacyButton.querySelector(".secure-indicator");
+    if (alertDot) alertDot.hidden = !authenticated || alertCount === 0;
+    const alertDestination = infrastructureWorkspace ? "infrastructure incidents" : "media health alerts";
+    privacyButton.setAttribute("aria-label", authenticated
+      ? `Open ${alertDestination}${alertCount ? `, ${alertCount} active` : ", no active alerts"}`
+      : "Health alerts are available after sign in");
+    privacyButton.setAttribute("title", authenticated ? `Open ${alertDestination}` : "Sign in to review health alerts");
   }
   applySidebarState();
 }
@@ -4743,13 +4810,32 @@ function updateOverviewVolatile(snapshot) {
     if (workloadValues[index]) workloadValues[index].textContent = metric.value.toLocaleString();
   });
 
-  const pipelineCounts = [...main.querySelectorAll(".operations-pipeline__stage > em")];
-  snapshot.pipeline.filter((stage) => stage.count !== null).forEach((stage, index) => {
-    const element = pipelineCounts[index];
-    if (!element) return;
-    element.textContent = String(stage.count);
-    element.setAttribute("aria-label", `${stage.count} items`);
-  });
+  const lifecycleRows = [...main.querySelectorAll("[data-overview-lifecycle-id]")];
+  if (lifecycleRows.length) {
+    const lifecycle = new Map(mediaOverviewLifecycle(mediaSnapshotForUi()).map((stage) => [stage.id, stage]));
+    lifecycleRows.forEach((row) => {
+      const stage = lifecycle.get(row.dataset.overviewLifecycleId);
+      const element = row.querySelector("em");
+      if (!stage || !element) return;
+      element.textContent = stage.count.toLocaleString();
+      element.setAttribute("aria-label", `${stage.count} items`);
+      row.classList.toggle("is-healthy", stage.count > 0);
+      row.classList.toggle("is-stale", stage.count === 0);
+    });
+  } else {
+    const pipelineCounts = [...main.querySelectorAll(".operations-pipeline__stage > em")];
+    snapshot.pipeline.filter((stage) => stage.count !== null).forEach((stage, index) => {
+      const element = pipelineCounts[index];
+      if (!element) return;
+      element.textContent = String(stage.count);
+      element.setAttribute("aria-label", `${stage.count} items`);
+    });
+  }
+
+  for (const link of main.querySelectorAll("[data-overview-incident-id]")) {
+    const incident = snapshot.incidents.find(({ id }) => id === link.dataset.overviewIncidentId);
+    if (incident) updateTimeElement(link.querySelector("[data-overview-event-time]"), incident.lastSeen || incident.firstSeen, "Current");
+  }
 }
 
 function updateIncidentsVolatile(snapshot) {
@@ -5098,7 +5184,7 @@ function updatePortainerVolatile() {
 
 function updateVolatileOperationsUi() {
   const snapshot = normalizeOperationsSnapshot(snapshotForUi(), state.infrastructure.targets);
-  if (state.workspace === "media" && ["home", "health"].includes(state.route)) {
+  if (state.workspace === "media" && ["overview", "health"].includes(state.route)) {
     updateOverviewVolatile(normalizeOperationsSnapshot(mediaOnlyOperationsSnapshot(), []));
   }
   if (state.workspace === "infrastructure" && state.route === "incidents") updateIncidentsVolatile(snapshot);
@@ -8011,10 +8097,10 @@ sessionButton.addEventListener("click", () => {
 
 privacyButton?.addEventListener("click", () => {
   if (state.status?.authenticated) {
-    location.hash = "#/settings";
+    location.hash = state.workspace === "infrastructure" ? "#/incidents" : "#/health";
     return;
   }
-  showToast("Complete setup or sign in to review privacy and security settings.");
+  showToast("Complete setup or sign in to review health alerts.");
 });
 
 skipLink?.addEventListener("click", (event) => {
@@ -8022,7 +8108,7 @@ skipLink?.addEventListener("click", (event) => {
   main.focus({ preventScroll: false });
 });
 
-if (!location.hash || !ROUTES.has(rawRoute())) location.replace(state.workspace === "infrastructure" ? "#/overview" : "#/home");
+if (!location.hash || !ROUTES.has(rawRoute())) location.replace("#/overview");
 initialize();
 
 if ("serviceWorker" in navigator) {

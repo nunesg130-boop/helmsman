@@ -221,9 +221,6 @@ const expectedAllowedBinaryPaths = [
   "assets/services/bazarr.png",
   "assets/services/prowlarr.png",
   "assets/services/proxmox.png",
-  "assets/services/radarr.png",
-  "assets/services/seerr.jpg",
-  "assets/services/sonarr.png"
 ].sort();
 record(
   [".git", ".idea", ".nyc_output", ".vscode", "backup", "backups", "coverage", "data", "node_modules", ".helmsman-data"]

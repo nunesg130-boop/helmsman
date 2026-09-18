@@ -571,10 +571,7 @@ function Assert-NoEmbeddedSecrets {
         'assets/icon-maskable-512.png',
         'assets/services/bazarr.png',
         'assets/services/prowlarr.png',
-        'assets/services/proxmox.png',
-        'assets/services/radarr.png',
-        'assets/services/seerr.jpg',
-        'assets/services/sonarr.png'
+        'assets/services/proxmox.png'
     )
     $patterns = @(
         [PSCustomObject]@{ Label = 'private key material'; Pattern = '-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?' + 'PRIVATE KEY-----' },

@@ -19,8 +19,9 @@ local edit.
 For the public launch, verify the canonical repository and GHCR package are
 both public; GitHub controls their visibility separately. Source code is
 released under AGPL-3.0-only. The interface uses reviewed, hash-pinned local
-icons only to identify its nine supported service integrations, plus original
-generic workload SVGs; compatible-service names and trademarks remain their
+icons only to identify its nine supported service integrations, including the
+user-supplied Radarr, Seerr, and Sonarr SVG refreshes in v1.1.1, plus
+original generic workload SVGs; compatible-service names and trademarks remain their
 owners' property as documented in
 `assets/services/THIRD_PARTY_NOTICES.md`. Complete
 [PUBLIC_RELEASE_CHECKLIST.md](PUBLIC_RELEASE_CHECKLIST.md) before the first
@@ -281,7 +282,7 @@ the GitHub Release passes verification, the script keeps the downloaded assets
 in a local directory such as:
 
 ```text
-%USERPROFILE%\Downloads\helmsman-v1.1.0\helmsman-1.1.0-deployment-assets
+%USERPROFILE%\Downloads\helmsman-v1.1.1\helmsman-1.1.1-deployment-assets
 ```
 
 It then prints—but does not execute—the exact `ssh` and `scp` commands that
@@ -290,12 +291,12 @@ create the configured release directory and transfer the verified
 printed commands from the same PowerShell window. Their shape is:
 
 ```powershell
-$Assets = "$env:USERPROFILE\Downloads\helmsman-v1.1.0\helmsman-1.1.0-deployment-assets"
+$Assets = "$env:USERPROFILE\Downloads\helmsman-v1.1.1\helmsman-1.1.1-deployment-assets"
 $DeployHost = "deploy-user@helmsman-host.example"
-ssh $DeployHost "mkdir -p /srv/apps/helmsman/releases/v1.1.0"
-scp "$Assets\compose.yaml" "${DeployHost}:/srv/apps/helmsman/releases/v1.1.0/"
-scp "$Assets\container.env.example" "${DeployHost}:/srv/apps/helmsman/releases/v1.1.0/"
-scp "$Assets\SHA256SUMS" "${DeployHost}:/srv/apps/helmsman/releases/v1.1.0/"
+ssh $DeployHost "mkdir -p /srv/apps/helmsman/releases/v1.1.1"
+scp "$Assets\compose.yaml" "${DeployHost}:/srv/apps/helmsman/releases/v1.1.1/"
+scp "$Assets\container.env.example" "${DeployHost}:/srv/apps/helmsman/releases/v1.1.1/"
+scp "$Assets\SHA256SUMS" "${DeployHost}:/srv/apps/helmsman/releases/v1.1.1/"
 ssh $DeployHost
 ```
 
@@ -307,7 +308,7 @@ of running the printed block unchanged. The standard block first executes:
 
 ```sh
 set -euo pipefail
-cd /srv/apps/helmsman/releases/v1.1.0
+cd /srv/apps/helmsman/releases/v1.1.1
 sha256sum --strict --check SHA256SUMS
 ```
 
@@ -317,8 +318,8 @@ Only verified assets proceed to installation. The remaining printed commands:
   so a retry cannot overwrite the original rollback point; inspect or resume a
   partially completed attempt manually;
 - back up the configured installation's `compose.yaml` and, when present,
-  `.env` as `compose.yaml.before-1.1.0` and
-  `.env.before-1.1.0`;
+  `.env` as `compose.yaml.before-1.1.1` and
+  `.env.before-1.1.1`;
 - explicitly unset shell-level image and Compose selector variables so they
   cannot override the verified configuration or the project choice retained
   in `.env`;
@@ -352,9 +353,9 @@ the resolved image before recreating the container:
 ```sh
 set -euo pipefail
 cd /srv/apps/helmsman
-cp -- compose.yaml.before-1.1.0 compose.yaml
-if [ -f .env.before-1.1.0 ]; then
-  cp -- .env.before-1.1.0 .env
+cp -- compose.yaml.before-1.1.1 compose.yaml
+if [ -f .env.before-1.1.1 ]; then
+  cp -- .env.before-1.1.1 .env
   helmsman_env_file=.env
 else
   rm -f -- .env

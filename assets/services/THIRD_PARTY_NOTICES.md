@@ -25,9 +25,9 @@ described separately and is not represented as an upstream-original file.
 | Prowlarr | `assets/services/prowlarr.png` | 460 x 460 px | `fe75eafc608e288c9736b740afe1c30c715eaf56dc284fec1926491d245fea52` |
 | Proxmox | `assets/services/proxmox.png` | 595 x 516 px | `c8dca83af2f6519f025aad6325cc702ad491b19727bae42b9b87b6d20fa13440` |
 | qBittorrent | `assets/services/qbittorrent.svg` | 1024 x 1024; SVG viewBox `0 0 1024 1024` | `f96f40f70830e245cc184291d1173aa705b68b0865970b44aa1ee63350bcb9c2` |
-| Radarr | `assets/services/radarr.png` | 256 x 256 px | `d06702d34fcc05888239e553fab68f01c5f3f9b4fd64f8a7c407f4f9bfb8cf1e` |
-| Seerr | `assets/services/seerr.jpg` | 554 x 554 px | `0e0aa1aa038915e519b6b23e00565406b04f4974a1d33ba86ae3088aba41989b` |
-| Sonarr | `assets/services/sonarr.png` | 554 x 554 px | `3922f07d78c566446945bbca3bf6e5e012607d65e9f35ba63c297136da778418` |
+| Radarr | `assets/services/radarr.svg` | SVG viewBox `0 0 512 512` | `4767088c158c5507957232782f491ad1c3a048c013ce04d58da81148158a89b3` |
+| Seerr | `assets/services/seerr.svg` | SVG viewBox `0 0 96 96` | `b12e5dfd641d961cfb68360da33fe28873b95ea9b64c23233d5b87a37cbfa4c4` |
+| Sonarr | `assets/services/sonarr.svg` | SVG viewBox `0 0 512 512` | `a5debe565281eb16b746d75b9ce72e22f2fb15c19b4f55428fdf62b84be79306` |
 
 ## Jellyfin
 
@@ -52,10 +52,11 @@ file byte-for-byte and uses it only to identify the Jellyfin connector.
 - License: MIT, <https://github.com/seerr-team/seerr/blob/develop/LICENSE>
 - Bundled license notice: [`licenses/MIT-Seerr.txt`](licenses/MIT-Seerr.txt)
 
-The bundled JPEG is a raster representation of the official Seerr mark on a
-light background. Its exact pre-submission conversion history is not asserted;
-Helmsman preserves the supplied JPEG byte-for-byte. The complete upstream MIT
-copyright and permission notice is bundled locally.
+The bundled SVG is the user-supplied vector representation of the Seerr mark.
+Its exact pre-submission export history is not asserted; Helmsman preserves the
+supplied SVG byte-for-byte. Its embedded style rules contain only local fills,
+opacity, and gradients. The complete upstream MIT copyright and permission
+notice is bundled locally.
 
 ## Radarr
 
@@ -65,9 +66,10 @@ copyright and permission notice is bundled locally.
   <https://github.com/Radarr/Radarr/blob/develop/LICENSE>
 - Bundled license: [`licenses/GPL-3.0.txt`](licenses/GPL-3.0.txt)
 
-The bundled PNG is a raster representation of the Radarr vector mark. Its exact
-pre-submission rasterization history is not asserted; Helmsman preserves the
-supplied PNG byte-for-byte and uses it only to identify the Radarr connector.
+The bundled SVG is the user-supplied light hybrid representation of the Radarr
+vector mark. Its exact pre-submission styling history is not asserted; Helmsman
+preserves the supplied SVG byte-for-byte and uses it only to identify the
+Radarr connector. Its inline styles contain only local fill colors.
 
 ## Sonarr
 
@@ -83,9 +85,10 @@ Sonarr's published copyright notice identifies:
 > 2010-2014 Mark McDowall, Keivan Beigi and contributors
 
 Sonarr is distributed under GPL version 3 or, at the recipient's option, any
-later version. The bundled PNG is a raster representation of the Sonarr vector
-mark. Its exact pre-submission rasterization history is not asserted; Helmsman
-preserves the supplied PNG byte-for-byte.
+later version. The bundled SVG is the user-supplied vector representation of
+the Sonarr mark. Its exact pre-submission styling history is not asserted;
+Helmsman preserves the supplied SVG byte-for-byte. Its inline styles contain
+only local fill and stroke presentation values.
 
 ## Prowlarr connector icon and attribution
 

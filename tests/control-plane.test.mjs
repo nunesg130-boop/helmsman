@@ -379,7 +379,9 @@ test("local service images support cacheable GET, HEAD, and conditional requests
     const assets = [
       ["/assets/services/prowlarr.png", "image/png"],
       ["/assets/services/jellyfin.svg", "image/svg+xml; charset=utf-8"],
-      ["/assets/services/seerr.jpg", "image/jpeg"]
+      ["/assets/services/seerr.svg", "image/svg+xml; charset=utf-8"],
+      ["/assets/services/radarr.svg", "image/svg+xml; charset=utf-8"],
+      ["/assets/services/sonarr.svg", "image/svg+xml; charset=utf-8"]
     ];
 
     for (const [pathname, contentType] of assets) {

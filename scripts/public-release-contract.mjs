@@ -9,14 +9,14 @@ const read = (path) => readFileSync(join(root, path), "utf8");
 
 const serviceIconAssets = Object.freeze([
   Object.freeze({ service: "Bazarr", file: "bazarr.png", width: 200, height: 200, hash: "aefd3aac28d67fd4d48b24dd2ae33b3b0a9f26e7950c2e1d34bef98cecf18876", format: "png" }),
-  Object.freeze({ service: "Jellyfin", file: "jellyfin.svg", width: 512, height: 512, hash: "7f53cf083dbb3119ec8c5acbd8049c5033227617e461540f70591ac109124306", format: "svg", viewBox: "0 0 512 512" }),
+  Object.freeze({ service: "Jellyfin", file: "jellyfin.svg", width: 512, height: 512, hash: "7f53cf083dbb3119ec8c5acbd8049c5033227617e461540f70591ac109124306", format: "svg", viewBox: "0 0 512 512", auditedInlineStyle: true }),
   Object.freeze({ service: "Portainer", file: "portainer.svg", width: 168.18, height: 218.62, hash: "5d1e07021683d15ea67225c60975729f4ee0ed380f3a0fb21ffb2ad00eb6e85b", format: "svg", viewBox: "0.72 0 168.18 218.62" }),
   Object.freeze({ service: "Prowlarr", file: "prowlarr.png", width: 460, height: 460, hash: "fe75eafc608e288c9736b740afe1c30c715eaf56dc284fec1926491d245fea52", format: "png" }),
   Object.freeze({ service: "Proxmox", file: "proxmox.png", width: 595, height: 516, hash: "c8dca83af2f6519f025aad6325cc702ad491b19727bae42b9b87b6d20fa13440", format: "png" }),
   Object.freeze({ service: "qBittorrent", file: "qbittorrent.svg", width: 1024, height: 1024, hash: "f96f40f70830e245cc184291d1173aa705b68b0865970b44aa1ee63350bcb9c2", format: "svg", viewBox: "0 0 1024 1024" }),
-  Object.freeze({ service: "Radarr", file: "radarr.png", width: 256, height: 256, hash: "d06702d34fcc05888239e553fab68f01c5f3f9b4fd64f8a7c407f4f9bfb8cf1e", format: "png" }),
-  Object.freeze({ service: "Seerr", file: "seerr.jpg", width: 554, height: 554, hash: "0e0aa1aa038915e519b6b23e00565406b04f4974a1d33ba86ae3088aba41989b", format: "jpeg" }),
-  Object.freeze({ service: "Sonarr", file: "sonarr.png", width: 554, height: 554, hash: "3922f07d78c566446945bbca3bf6e5e012607d65e9f35ba63c297136da778418", format: "png" })
+  Object.freeze({ service: "Radarr", file: "radarr.svg", width: 512, height: 512, hash: "4767088c158c5507957232782f491ad1c3a048c013ce04d58da81148158a89b3", format: "svg", viewBox: "0 0 512 512", auditedInlineStyle: true }),
+  Object.freeze({ service: "Seerr", file: "seerr.svg", width: 96, height: 96, hash: "b12e5dfd641d961cfb68360da33fe28873b95ea9b64c23233d5b87a37cbfa4c4", format: "svg", viewBox: "0 0 96 96", auditedStyleElement: true }),
+  Object.freeze({ service: "Sonarr", file: "sonarr.svg", width: 512, height: 512, hash: "a5debe565281eb16b746d75b9ce72e22f2fb15c19b4f55428fdf62b84be79306", format: "svg", viewBox: "0 0 512 512", auditedInlineStyle: true })
 ]);
 const pngSignature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 
@@ -45,7 +45,7 @@ function jpegDimensions(contents) {
 }
 
 const packageJson = JSON.parse(read("package.json"));
-assert.equal(packageJson.version, "1.1.0", "the public release must use the selected SemVer");
+assert.equal(packageJson.version, "1.1.1", "the public release must use the selected SemVer");
 assert.equal(packageJson.license, "AGPL-3.0-only", "package metadata must declare the source license");
 assert.equal(packageJson.private, true, "the package must remain protected from accidental npm publication");
 assert.equal(packageJson.repository?.url, "https://github.com/nunesg130-boop/helmsman.git");
@@ -54,8 +54,8 @@ const readme = read("README.md");
 const securityPolicy = read("SECURITY.md");
 const deploymentGuide = read("deploy/DOCKER.md");
 const browserAccessDocumentation = `${readme}\n${securityPolicy}\n${deploymentGuide}`;
-assert.match(readme, /^# Helmsman v1[.]1[.]0$/mu, "the public README must identify the stable release");
-assert.match(readme, /`v1[.]1[.]0` Git tag[\s\S]*?version, `latest`, and full-commit image tags/iu);
+assert.match(readme, /^# Helmsman v1[.]1[.]1$/mu, "the public README must identify the stable release");
+assert.match(readme, /`v1[.]1[.]1` Git tag[\s\S]*?version, `latest`, and full-commit image tags/iu);
 assert.match(readme, /## v1[.]1[.]0[\s\S]*?built-in Helmsman journal[\s\S]*?Loki Explorer/iu);
 assert.doesNotMatch(readme, /unreleased logging preview|Logging development preview/iu);
 assert.match(browserAccessDocumentation, /exact (?:enabled )?Jellyfin administrator/iu);
@@ -83,9 +83,9 @@ for (const required of [
   "assets/services/prowlarr.png",
   "assets/services/proxmox.png",
   "assets/services/qbittorrent.svg",
-  "assets/services/radarr.png",
-  "assets/services/seerr.jpg",
-  "assets/services/sonarr.png",
+  "assets/services/radarr.svg",
+  "assets/services/seerr.svg",
+  "assets/services/sonarr.svg",
   "assets/services/licenses/GPL-2.0.txt",
   "assets/services/licenses/GPL-3.0.txt",
   "assets/services/licenses/MIT-Seerr.txt",
@@ -150,9 +150,6 @@ const permittedBinaryFiles = new Set([
   "assets/services/bazarr.png",
   "assets/services/prowlarr.png",
   "assets/services/proxmox.png",
-  "assets/services/radarr.png",
-  "assets/services/seerr.jpg",
-  "assets/services/sonarr.png"
 ]);
 function inspectPublicFiles(directory) {
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
@@ -185,9 +182,9 @@ assert.deepEqual(
     "prowlarr.png",
     "proxmox.png",
     "qbittorrent.svg",
-    "radarr.png",
-    "seerr.jpg",
-    "sonarr.png"
+    "radarr.svg",
+    "seerr.svg",
+    "sonarr.svg"
   ],
   "public source must contain exactly the reviewed nine-icon service inventory and its notices"
 );
@@ -213,18 +210,17 @@ for (const asset of serviceIconAssets) {
     assert.deepEqual(jpegDimensions(contents), { width: asset.width, height: asset.height }, `${asset.file} must remain the pinned JPEG`);
   } else {
     const svg = contents.toString("utf8");
-    assert.match(svg, /^<svg\b/u, `${asset.file} must remain an SVG document`);
+    assert.match(svg, /^\s*(?:<\?xml[^>]*>\s*)?<svg\b/u, `${asset.file} must remain an SVG document`);
     assert.match(svg, new RegExp(`viewBox="${asset.viewBox.replaceAll(".", "[.]")}"`, "u"), `${asset.file} viewBox must remain pinned`);
     assert.doesNotMatch(
       svg,
       /<!DOCTYPE|<!ENTITY|<(?:script|foreignObject|iframe|object|embed|image|audio|video)\b|\son[a-z][a-z0-9_-]*\s*=|(?:href|src)\s*=\s*["'](?!#)|@import\b|url\(\s*["']?(?!#)/iu,
       `${asset.file} must remain inert and self-contained`
     );
-    if (asset.service === "Jellyfin") {
-      assert.match(svg, /\sstyle\s*=/u, "the hash-pinned Jellyfin file may retain only its audited local presentation styles");
-    } else {
-      assert.doesNotMatch(svg, /\sstyle\s*=/iu, `${asset.file} must not gain inline styles`);
-    }
+    const hasInlineStyle = /\sstyle\s*=/iu.test(svg);
+    assert.equal(hasInlineStyle, Boolean(asset.auditedInlineStyle), `${asset.file} inline-style policy must remain pinned`);
+    const hasStyleElement = /<style\b/iu.test(svg);
+    assert.equal(hasStyleElement, Boolean(asset.auditedStyleElement), `${asset.file} style-element policy must remain pinned`);
   }
 }
 const artworkNotices = read("assets/services/THIRD_PARTY_NOTICES.md");
