@@ -14,6 +14,8 @@ const PROXMOX_NODE_NAME = /^(?=.{1,63}$)[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])
 const PORTAINER_ENDPOINT_ID = /^[1-9][0-9]{0,9}$/u;
 const PORTAINER_CONTAINER_ID = /^[a-f0-9]{64}$/u;
 const POSITIVE_RESOURCE_ID = /^[1-9][0-9]{0,9}$/u;
+const CALENDAR_DATE = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/u;
+const MAX_CALENDAR_WINDOW_DAYS = 40;
 
 // Proxmox monitoring is intentionally not exposed through the browser bridge.
 // Internal callers select one of these opaque identifiers; no request path or
@@ -468,10 +470,34 @@ function validateFixedCapabilityQuery(service, upstreamPath, url) {
       ? { allowed: true }
       : { allowed: false, code: "QUERY_NOT_ALLOWED", message: "The Sonarr catalog query is fixed by Helmsman." };
   }
-  if (service === "sonarr" && upstreamPath === "/api/v3/calendar") {
-    return fields.length === 1 && fields[0][0] === "includeSeries" && fields[0][1] === "true"
+  if (["radarr", "sonarr"].includes(service) && upstreamPath === "/api/v3/calendar") {
+    const expected = new Map([
+      ["start", null],
+      ["end", null],
+      ...(service === "sonarr" ? [["includeSeries", "true"]] : [])
+    ]);
+    if (fields.length !== expected.size) {
+      return { allowed: false, code: "QUERY_NOT_ALLOWED", message: "The calendar query is bounded by Helmsman." };
+    }
+    for (const [key, value] of fields) {
+      if (!expected.has(key) || (expected.get(key) !== null && expected.get(key) !== value)) {
+        return { allowed: false, code: "QUERY_NOT_ALLOWED", message: "The calendar query is bounded by Helmsman." };
+      }
+      if (key === "start" || key === "end") expected.set(key, value);
+    }
+    const parseDate = (value) => {
+      if (!CALENDAR_DATE.test(value || "")) return null;
+      const timestamp = Date.parse(`${value}T00:00:00.000Z`);
+      return Number.isFinite(timestamp) && new Date(timestamp).toISOString().slice(0, 10) === value
+        ? timestamp
+        : null;
+    };
+    const start = parseDate(expected.get("start"));
+    const end = parseDate(expected.get("end"));
+    const durationDays = start === null || end === null ? null : (end - start) / 86_400_000;
+    return durationDays !== null && durationDays > 0 && durationDays <= MAX_CALENDAR_WINDOW_DAYS
       ? { allowed: true }
-      : { allowed: false, code: "QUERY_NOT_ALLOWED", message: "The Sonarr calendar query is fixed by Helmsman." };
+      : { allowed: false, code: "QUERY_NOT_ALLOWED", message: "The calendar query is bounded by Helmsman." };
   }
   return { allowed: true };
 }

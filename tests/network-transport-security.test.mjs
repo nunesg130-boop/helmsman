@@ -307,7 +307,8 @@ test("service routes remain deny-by-default", () => {
     ["radarr", "GET", "/bridge/radarr/MediaCover/42/poster.jpg?lastWrite=638934912000000000"],
     ["sonarr", "GET", "/bridge/sonarr/MediaCover/73/poster-500.jpg?lastWrite=638934912000000073"],
     ["sonarr", "GET", "/bridge/sonarr/api/v3/health"],
-    ["sonarr", "GET", "/bridge/sonarr/api/v3/calendar?includeSeries=true"],
+    ["radarr", "GET", "/bridge/radarr/api/v3/calendar?start=2026-09-12&end=2026-10-18"],
+    ["sonarr", "GET", "/bridge/sonarr/api/v3/calendar?start=2026-09-12&end=2026-10-18&includeSeries=true"],
     ["prowlarr", "GET", "/bridge/prowlarr/api/v1/indexerstatus"],
     ["bazarr", "GET", "/bridge/bazarr/api/system/status"],
     ["qbit", "GET", "/bridge/qbit/api/v2/app/version"]
@@ -326,9 +327,12 @@ test("service routes remain deny-by-default", () => {
     ["jellyfin", "GET", "/bridge/jellyfin/Items/movie-1/Images/Primary?maxWidth=342&quality=85&tag=abcdef&extra=1"],
     ["jellyfin", "GET", "/bridge/jellyfin/Items/movie-1/Images/Primary?maxWidth=342&quality=85&tag=unsafe%20tag"],
     ["radarr", "GET", "/bridge/radarr/api/v3/movie"],
+    ["radarr", "GET", "/bridge/radarr/api/v3/calendar"],
+    ["radarr", "GET", "/bridge/radarr/api/v3/calendar?start=2026-09-12&end=2026-11-18"],
     ["radarr", "GET", "/bridge/radarr/MediaCover/42/poster-250.jpg?lastWrite=not-a-revision"],
     ["sonarr", "GET", "/bridge/sonarr/api/v3/calendar"],
     ["sonarr", "GET", "/bridge/sonarr/api/v3/calendar?includeSeries=false"],
+    ["sonarr", "GET", "/bridge/sonarr/api/v3/calendar?start=2026-09-12&end=2026-11-18&includeSeries=true"],
     ["sonarr", "GET", "/bridge/sonarr/api/v3/series?includeSeasonImages=true"],
     ["seerr", "GET", "/bridge/seerr/imageproxy/tmdb/t/p/w500/poster-1.jpg"],
     ["radarr", "GET", "/bridge/radarr/MediaCover/42/poster.jpg?url=https%3A%2F%2Fevil.test"],
@@ -460,7 +464,7 @@ test("outbound transport clears source response chunks and rejected assembled bo
   const target = parseServiceUrl(`http://pin.test:${port}`);
   const common = {
     request: browserRequest({
-      authorization: 'MediaBrowser Client="Helmsman", Device="Browser", DeviceId="device-1", Version="1.1.1"',
+      authorization: 'MediaBrowser Client="Helmsman", Device="Browser", DeviceId="device-1", Version="1.1.2"',
       "content-type": "application/json"
     }),
     targetResolution: {

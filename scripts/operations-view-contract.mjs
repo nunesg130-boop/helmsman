@@ -183,6 +183,26 @@ assert.match(
 );
 assert.match(
   retroCss,
+  /\.infrastructure-signal-row dt\s*\{[^}]*display:\s*grid[^}]*grid-template-columns:\s*38px\s+minmax\(0,\s*1fr\)/su,
+  "Infrastructure signal labels and helper text must use a real nested grid"
+);
+assert.match(
+  retroCss,
+  /\.infrastructure-signal-row dd\s*\{[^}]*display:\s*grid[^}]*grid-template-columns:\s*auto\s+16px/su,
+  "Infrastructure signal values must occupy a separate grid from their copy"
+);
+assert.doesNotMatch(
+  retroCss,
+  /\.infrastructure-signal-row\s*>\s*:is\(dt,\s*dd\)\s*\{[^}]*display:\s*contents/su,
+  "Infrastructure signal layout must not depend on Safari's display: contents handling for description-list children"
+);
+assert.match(
+  retroCss,
+  /@media\s*\(max-width:\s*760px\)[\s\S]*?\.infrastructure-assessment-card__heading\s*\{[^}]*display:\s*grid[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/u,
+  "the mobile infrastructure assessment heading must stack its copy and refresh action"
+);
+assert.match(
+  retroCss,
   /\.infrastructure-node-card[\s\S]*?:is\(:hover,\s*:focus-visible,\s*:focus-within\)[^{]*\{[^}]*color:\s*var\(--text\)/u,
   "whole-card node and service hover/focus states must retain readable light text"
 );
@@ -788,6 +808,12 @@ assert.match(renderedInfrastructure, /Infrastructure assessment/u);
 assert.match(renderedInfrastructure, /class="page operations-page infrastructure-page infrastructure-bento has-single-provider"/u, "Infrastructure Overview must expose its bento layout state");
 assert.match(renderedInfrastructure, /infrastructure-assessment-card/u);
 assert.match(renderedInfrastructure, /infrastructure-signals-card/u);
+assert.match(renderedInfrastructure, /infrastructure-signal-row__copy/u, "signal helper text must stay grouped with its label");
+assert.match(
+  renderedInfrastructure,
+  /infrastructure-signal-row__copy[^>]*><span class="infrastructure-signal-row__label">Nodes online<\/span><small>Across discovered environments<\/small><\/span><\/dt><dd><strong/u,
+  "signal values must render separately from stacked label copy"
+);
 assert.match(renderedInfrastructure, /infrastructure-proxmox-card/u);
 assert.match(renderedInfrastructure, /infrastructure-workloads-card/u);
 assert.match(renderedInfrastructure, /infrastructure-incidents-card/u);

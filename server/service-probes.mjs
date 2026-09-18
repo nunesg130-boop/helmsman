@@ -15,6 +15,8 @@ const MAX_REPORTS_PER_CHECK = 12;
 const MAX_REPORT_SOURCE_CODEPOINTS = 96;
 const MAX_REPORT_MESSAGE_CODEPOINTS = 600;
 const REPORT_REDACTION = "[REDACTED]";
+const CALENDAR_PAST_DAYS = 1;
+const CALENDAR_FUTURE_DAYS = 35;
 
 function deepFreeze(value) {
   if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
@@ -183,9 +185,25 @@ export function buildProbePlan(service, options = {}) {
   const id = serviceId(service);
   const includeOptional = options.includeOptional !== false;
   const timeoutMs = boundedInteger(options.timeoutMs, DEFAULT_TIMEOUT_MS, MIN_TIMEOUT_MS, MAX_TIMEOUT_MS);
+  const referenceTime = options.checkedAt
+    ?? (typeof options.now === "function" ? options.now() : Date.now());
+  const calendarDate = (offsetDays) => {
+    const value = new Date(referenceTime);
+    const date = Number.isFinite(value.getTime()) ? value : new Date();
+    date.setUTCHours(0, 0, 0, 0);
+    date.setUTCDate(date.getUTCDate() + offsetDays);
+    return date.toISOString().slice(0, 10);
+  };
+  const calendarPath = id === "radarr" || id === "sonarr"
+    ? `/api/v3/calendar?start=${calendarDate(-CALENDAR_PAST_DAYS)}&end=${calendarDate(CALENDAR_FUTURE_DAYS)}${id === "sonarr" ? "&includeSeries=true" : ""}`
+    : null;
   return PROBE_PLANS[id]
     .filter((entry) => includeOptional || entry.importance !== "optional")
-    .map((entry) => Object.freeze({ ...entry, timeoutMs }));
+    .map((entry) => Object.freeze({
+      ...entry,
+      ...(entry.id === "calendar" && calendarPath ? { path: calendarPath } : {}),
+      timeoutMs
+    }));
 }
 
 function own(value, key) {

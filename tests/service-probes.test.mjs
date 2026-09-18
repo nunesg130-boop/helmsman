@@ -147,7 +147,14 @@ test("builds bounded GET-only plans containing only already allowlisted routes",
   assert.doesNotMatch(buildProbePlan("jellyfin").find(({ id }) => id === "library").path, /Fields=[^&]*ImageTags/u);
   assert.equal(buildProbePlan("radarr").find(({ id }) => id === "catalog").path, "/api/v3/movie?excludeLocalCovers=true");
   assert.equal(buildProbePlan("sonarr").find(({ id }) => id === "catalog").path, "/api/v3/series?includeSeasonImages=false");
-  assert.equal(buildProbePlan("sonarr").find(({ id }) => id === "calendar").path, "/api/v3/calendar?includeSeries=true");
+  assert.equal(
+    buildProbePlan("radarr", { checkedAt: CHECKED_AT }).find(({ id }) => id === "calendar").path,
+    "/api/v3/calendar?start=2026-09-12&end=2026-10-18"
+  );
+  assert.equal(
+    buildProbePlan("sonarr", { checkedAt: CHECKED_AT }).find(({ id }) => id === "calendar").path,
+    "/api/v3/calendar?start=2026-09-12&end=2026-10-18&includeSeries=true"
+  );
   assert.equal(
     authorizeBridgeRoute("jellyfin", "GET", "/bridge/jellyfin/Sessions?ActiveWithinSeconds=900").allowed,
     true
@@ -157,15 +164,24 @@ test("builds bounded GET-only plans containing only already allowlisted routes",
     "/bridge/jellyfin/Sessions?ActiveWithinSeconds=901",
     "/bridge/jellyfin/Sessions?ActiveWithinSeconds=900&UserId=7"
   ]) assert.equal(authorizeBridgeRoute("jellyfin", "GET", unsafe).allowed, false, unsafe);
-  assert.equal(
-    authorizeBridgeRoute("sonarr", "GET", "/bridge/sonarr/api/v3/calendar?includeSeries=true").allowed,
-    true
-  );
+  for (const route of [
+    ["radarr", "/bridge/radarr/api/v3/calendar?start=2026-09-12&end=2026-10-18"],
+    ["sonarr", "/bridge/sonarr/api/v3/calendar?start=2026-09-12&end=2026-10-18&includeSeries=true"]
+  ]) assert.equal(authorizeBridgeRoute(route[0], "GET", route[1]).allowed, true, route[1]);
   for (const unsafe of [
     "/bridge/sonarr/api/v3/calendar",
     "/bridge/sonarr/api/v3/calendar?includeSeries=false",
-    "/bridge/sonarr/api/v3/calendar?includeSeries=true&includeEpisodeImages=true"
+    "/bridge/sonarr/api/v3/calendar?start=2026-09-12&end=2026-10-18&includeSeries=false",
+    "/bridge/sonarr/api/v3/calendar?start=2026-09-12&end=2026-11-18&includeSeries=true",
+    "/bridge/sonarr/api/v3/calendar?start=2026-02-31&end=2026-03-05&includeSeries=true",
+    "/bridge/sonarr/api/v3/calendar?start=2026-09-12&end=2026-10-18&includeSeries=true&includeEpisodeImages=true"
   ]) assert.equal(authorizeBridgeRoute("sonarr", "GET", unsafe).allowed, false, unsafe);
+  for (const unsafe of [
+    "/bridge/radarr/api/v3/calendar",
+    "/bridge/radarr/api/v3/calendar?start=2026-09-12",
+    "/bridge/radarr/api/v3/calendar?start=2026-10-18&end=2026-09-12",
+    "/bridge/radarr/api/v3/calendar?start=2026-09-12&end=2026-11-18"
+  ]) assert.equal(authorizeBridgeRoute("radarr", "GET", unsafe).allowed, false, unsafe);
   assert.equal(buildProbePlan("seerr").find(({ id }) => id === "status").path, "/api/v1/status");
   assert.equal(buildProbePlan("seerr").find(({ id }) => id === "status").credentialRequired, false);
   assert.equal(buildProbePlan("seerr").find(({ id }) => id === "requestCounts").credentialRequired, true);

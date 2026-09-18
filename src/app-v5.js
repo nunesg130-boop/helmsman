@@ -2136,11 +2136,12 @@ function renderCalendarPage() {
     return date;
   });
   const grouped = new Map(days.map((date) => [localDateKey(date), []]));
+  const finalVisibleDay = localDateKey(days.at(-1));
   const later = [];
   media.calendar.forEach((item) => {
     const key = localDateKey(item.releaseAt);
     if (grouped.has(key)) grouped.get(key).push(item);
-    else later.push(item);
+    else if (key && key > finalVisibleDay) later.push(item);
   });
   return `<div class="page media-desktop-page"><section class="page-intro"><div><span class="eyebrow">Release schedule</span><h2>Calendar</h2><p>Upcoming monitored movies and episodes from Sonarr and Radarr.</p></div><div class="calendar-legend"><span><i class="available"></i>Available</span><span><i class="searching"></i>Downloading</span><span><i></i>Upcoming</span></div></section>
     <section class="week-grid" aria-label="Seven day media calendar">${days.map((date, index) => { const entries = grouped.get(localDateKey(date)); return `<article class="calendar-day ${index === 0 ? "is-today" : ""}"><header><span>${escapeHtml(date.toLocaleDateString([], { weekday: "short" }).toUpperCase())}</span><strong>${date.getDate()}</strong></header>${entries.length ? entries.map(renderCalendarEntry).join("") : `<p class="calendar-day-empty">No releases</p>`}</article>`; }).join("")}</section>

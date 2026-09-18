@@ -2,7 +2,7 @@ name: helmsman
 
 services:
   helmsman:
-    image: "${HELMSMAN_IMAGE:-ghcr.io/OWNER/REPOSITORY:1.1.1}"
+    image: "${HELMSMAN_IMAGE:-ghcr.io/OWNER/REPOSITORY:1.1.2}"
     restart: unless-stopped
     user: "10001:10001"
     ports:

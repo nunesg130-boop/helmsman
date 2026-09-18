@@ -626,6 +626,37 @@ test("deduplicates calendar resources while preserving distinct episodes and exp
   assert.equal(movie.episodeNumber, undefined);
 });
 
+test("keeps calendar entries when arr responses provide date-only fallbacks", () => {
+  const media = buildMediaSnapshot([
+    service("sonarr", {
+      calendar: [{
+        id: 501,
+        title: "Fallback Episode",
+        airDate: "2026-09-19",
+        seasonNumber: 1,
+        episodeNumber: 4,
+        monitored: true,
+        series: { id: 91, title: "Fallback Series", tvdbId: 901, monitored: true }
+      }]
+    }),
+    service("radarr", {
+      calendar: [{
+        id: 502,
+        title: "Fallback Movie",
+        tmdbId: 5_002,
+        releaseDate: "2026-09-20",
+        monitored: true
+      }]
+    })
+  ], GENERATED_AT, TARGETS);
+
+  assert.deepEqual(media.calendar.map(({ title }) => title), ["Fallback Series", "Fallback Movie"]);
+  assert.deepEqual(media.calendar.map(({ releaseAt }) => releaseAt), [
+    "2026-09-19T00:00:00.000Z",
+    "2026-09-20T00:00:00.000Z"
+  ]);
+});
+
 test("never title-matches records without a shared provider identifier", () => {
   const media = buildMediaSnapshot([
     service("radarr", {

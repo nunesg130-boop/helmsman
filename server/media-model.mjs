@@ -688,7 +688,14 @@ function arrCalendar(service, body) {
       providerSource: media
     });
     if (!common) return [];
-    const releaseAt = isoDate(own(item, "airDateUtc") ?? own(item, "digitalRelease") ?? own(item, "physicalRelease") ?? own(item, "inCinemas"));
+    const releaseAt = isoDate(
+      own(item, "airDateUtc")
+      ?? own(item, "airDate")
+      ?? own(item, "digitalRelease")
+      ?? own(item, "physicalRelease")
+      ?? own(item, "inCinemas")
+      ?? own(item, "releaseDate")
+    );
     if (!releaseAt) return [];
     const seriesSourceId = service === "sonarr"
       ? sourceIdFor("sonarr", own(series, "id") ?? own(item, "seriesId"))

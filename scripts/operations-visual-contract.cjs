@@ -243,6 +243,15 @@ async function assertNoPageErrors(page, errors, viewport, label) {
           scrollWidth: element.scrollWidth,
           ...rectFor(element)
         }));
+        const assessmentHeading = bento.querySelector(".infrastructure-assessment-card__heading");
+        const assessmentCopy = assessmentHeading?.querySelector(":scope > div");
+        const assessmentAction = assessmentHeading?.querySelector(".infrastructure-overview-heading__action");
+        const signalCopy = [...bento.querySelectorAll(".infrastructure-signal-row")].map((element) => ({
+          label: rectFor(element.querySelector(".infrastructure-signal-row__label")),
+          detail: rectFor(element.querySelector(".infrastructure-signal-row__copy small")),
+          copy: rectFor(element.querySelector(".infrastructure-signal-row__copy")),
+          value: rectFor(element.querySelector(".infrastructure-signal-row__value"))
+        }));
         return {
           bento: {
             ...rectFor(bento),
@@ -251,7 +260,11 @@ async function assertNoPageErrors(page, errors, viewport, label) {
             gridColumns: getComputedStyle(bento).gridTemplateColumns.trim().split(/\s+/u).filter(Boolean).length
           },
           cards,
-          nestedSurfaces
+          nestedSurfaces,
+          assessmentHeading: rectFor(assessmentHeading),
+          assessmentCopy: rectFor(assessmentCopy),
+          assessmentAction: rectFor(assessmentAction),
+          signalCopy
         };
       });
 
@@ -263,6 +276,10 @@ async function assertNoPageErrors(page, errors, viewport, label) {
       for (const surface of geometry.nestedSurfaces) {
         assert.ok(surface.left >= geometry.bento.left - 1 && surface.right <= geometry.bento.right + 1, `${viewport.width}px ${surface.classes} must stay inside the Infrastructure bento`);
         assert.ok(surface.scrollWidth <= surface.clientWidth + 1, `${viewport.width}px ${surface.classes} must not clip horizontal content`);
+      }
+      for (const signal of geometry.signalCopy) {
+        assert.ok(signal.label.bottom <= signal.detail.top + 1, `${viewport.width}px signal labels and helper text must not overlap`);
+        assert.ok(signal.copy.right <= signal.value.left + 1, `${viewport.width}px signal copy and values must remain in separate columns`);
       }
 
       const card = (token) => geometry.cards.find(({ classes }) => classes.split(/\s+/u).includes(token));
@@ -289,6 +306,10 @@ async function assertNoPageErrors(page, errors, viewport, label) {
         near(proxmox.width, portainer.width, `${viewport.width}px provider cards must use equal desktop tracks`);
         near(workloads.top, incidents.top, `${viewport.width}px workload and incident cards must align on one desktop row`);
         near(workloads.width, incidents.width, `${viewport.width}px workload and incident cards must use equal desktop tracks`);
+      }
+      if (viewport.width <= 760) {
+        assert.ok(geometry.assessmentAction.top >= geometry.assessmentCopy.bottom - 1, `${viewport.width}px mobile refresh action must sit below assessment copy`);
+        assert.ok(geometry.assessmentAction.left >= geometry.assessmentHeading.left - 1 && geometry.assessmentAction.right <= geometry.assessmentHeading.right + 1, `${viewport.width}px mobile refresh action must stay inside its heading`);
       }
 
       const action = page.locator(".infrastructure-overview-heading__action").first();
