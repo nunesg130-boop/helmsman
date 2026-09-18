@@ -747,9 +747,10 @@ function publicInfrastructureTarget(result) {
   };
 }
 
-function normalizePortainerServiceResult(service, result, checkedAt, measuredLatency) {
+function normalizeInfrastructureServiceResult(service, result, checkedAt, measuredLatency) {
   const serviceId = String(service.id || "").toLowerCase();
-  const monitorId = `portainer-${serviceId}`;
+  const type = service?.type === "loki" ? "loki" : "portainer";
+  const monitorId = `${type}-${serviceId}`;
   const normalized = normalizeProbeResult(monitorId, result, checkedAt, measuredLatency);
   const sourceChecks = Array.isArray(result?.checks) ? result.checks.slice(0, MAX_CHECKS_PER_SERVICE) : [];
   const sourceLabels = new Map();
@@ -771,11 +772,11 @@ function normalizePortainerServiceResult(service, result, checkedAt, measuredLat
     targetRevision: typeof service?.targetRevision === "string" && UUID.test(service.targetRevision)
       ? service.targetRevision
       : null,
-    type: "portainer",
-    displayName: safeDisplayText(service.displayName, "Portainer", 80),
+    type,
+    displayName: safeDisplayText(service.displayName, type === "loki" ? "Loki" : "Portainer", 80),
     capabilities,
     reports,
-    inventory: normalizePortainerInventory(result?.inventory)
+    inventory: type === "portainer" ? normalizePortainerInventory(result?.inventory) : {}
   };
 }
 
@@ -1124,7 +1125,8 @@ function emptySnapshot(definitions) {
       environments: [],
       targets: [],
       services: [],
-      portainer: []
+      portainer: [],
+      loki: []
     },
     incidents: { open: [], recent: [] },
     media,
@@ -1432,7 +1434,11 @@ export class OperationsMonitor {
       const selectedTargets = [];
       const seenTargets = new Set();
       for (const candidate of loadedInfrastructure.slice(0, MAX_INFRASTRUCTURE_TARGETS)) {
-        if (!candidate || typeof candidate !== "object" || Array.isArray(candidate) || candidate.enabled === false) continue;
+        if (!candidate
+          || typeof candidate !== "object"
+          || Array.isArray(candidate)
+          || candidate.enabled === false
+          || candidate.monitoringEnabled === false) continue;
         const id = typeof candidate.id === "string" ? candidate.id.toLowerCase() : "";
         if (!UUID.test(id)
           || candidate.type !== "proxmox"
@@ -1599,20 +1605,29 @@ export class OperationsMonitor {
     if (!infrastructureServiceLoadCode) {
       const selectedServices = [];
       const seenServices = new Set();
+      const seenServiceIds = new Set();
       for (const candidate of loadedInfrastructureServices.slice(0, MAX_INFRASTRUCTURE_SERVICES)) {
-        if (!candidate || typeof candidate !== "object" || Array.isArray(candidate) || candidate.enabled === false) continue;
+        if (!candidate
+          || typeof candidate !== "object"
+          || Array.isArray(candidate)
+          || candidate.enabled === false
+          || candidate.monitoringEnabled === false) continue;
         const id = typeof candidate.id === "string" ? candidate.id.toLowerCase() : "";
         if (!UUID.test(id)
-          || candidate.type !== "portainer"
-          || seenServices.has(id)
+          || !["portainer", "loki"].includes(candidate.type)
+          || seenServiceIds.has(id)
           || typeof candidate.displayName !== "string") continue;
-        seenServices.add(id);
+        seenServiceIds.add(id);
+        seenServices.add(`${candidate.type}:${id}`);
         selectedServices.push({ id, source: candidate });
       }
-      for (const id of this.#monitoredInfrastructureServiceIds) {
-        if (seenServices.has(id)) continue;
+      for (const key of this.#monitoredInfrastructureServiceIds) {
+        if (seenServices.has(key)) continue;
+        const separator = key.indexOf(":");
+        const type = separator > 0 ? key.slice(0, separator) : "portainer";
+        const id = separator > 0 ? key.slice(separator + 1) : key;
         try {
-          this.#retireIncident(`portainer-${id}`, loadedAt);
+          this.#retireIncident(`${type}-${id}`, loadedAt);
         } catch {
           // Incident adapters cannot make a monitoring cycle unavailable.
         }
@@ -1635,7 +1650,7 @@ export class OperationsMonitor {
               checkedAt: iso(startedAt)
             });
             const completedAt = nowMs(this.#clock);
-            result = normalizePortainerServiceResult(
+            result = normalizeInfrastructureServiceResult(
               source,
               probed,
               iso(completedAt),
@@ -1644,7 +1659,7 @@ export class OperationsMonitor {
           } catch (error) {
             if (["TARGET_CHANGED", "INFRASTRUCTURE_SERVICE_NOT_FOUND"].includes(error?.code)) {
               try {
-                this.#retireIncident(`portainer-${id}`, iso(nowMs(this.#clock)));
+                this.#retireIncident(`${source.type}-${id}`, iso(nowMs(this.#clock)));
               } catch {
                 // Configuration races retire old evidence best-effort. The
                 // queued refresh will probe the current destination.
@@ -1653,12 +1668,12 @@ export class OperationsMonitor {
             }
             const completedAt = nowMs(this.#clock);
             const failed = failedProbeResult(
-              `portainer-${id}`,
+              `${source.type}-${id}`,
               error,
               iso(completedAt),
               latency(completedAt - startedAt)
             );
-            result = normalizePortainerServiceResult(
+            result = normalizeInfrastructureServiceResult(
               source,
               failed,
               iso(completedAt),
@@ -1719,7 +1734,12 @@ export class OperationsMonitor {
       // Retained for v0.7 clients during the v0.8 environment-model migration.
       targets: infrastructureResults.map(publicInfrastructureTarget),
       services: infrastructureServiceResults.map(publicInfrastructureService),
-      portainer: infrastructureServiceResults.map(publicInfrastructureService)
+      portainer: infrastructureServiceResults
+        .filter(({ type }) => type === "portainer")
+        .map(publicInfrastructureService),
+      loki: infrastructureServiceResults
+        .filter(({ type }) => type === "loki")
+        .map(publicInfrastructureService)
     };
     const generatedAt = iso(nowMs(this.#clock));
     const pipeline = pipelineSnapshot(this.#pipelineDefinitions, services);

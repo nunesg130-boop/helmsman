@@ -246,7 +246,8 @@ test("isolates infrastructure loader failure from a healthy media pipeline", asy
     environments: [],
     targets: [],
     services: [],
-    portainer: []
+    portainer: [],
+    loki: []
   });
   assert.equal(snapshot.overall.state, "healthy", "infrastructure loader failure must not degrade Media");
   assert.equal(JSON.stringify(snapshot).includes("raw loader error"), false);

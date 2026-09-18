@@ -320,3 +320,44 @@ test("TARGET_CHANGED during Portainer credential use publishes no false failure 
   assert.equal(serialized.includes("TARGET_CHANGED"), false);
   assert.equal(serialized.includes("credential revision changed"), false);
 });
+
+test("infrastructure services with monitoring disabled are not probed and retire prior incidents", async () => {
+  let monitoringEnabled = true;
+  let probeCalls = 0;
+  const incidentEngine = createHealthIncidentEngine({
+    now: () => START,
+    failureThreshold: 1,
+    idFactory: () => "disabled-monitoring-incident"
+  });
+  const monitor = createOperationsMonitor({
+    now: () => START,
+    incidentEngine,
+    loadServices: () => [],
+    probe: () => { throw new Error("Media probes must not run."); },
+    loadInfrastructureServices: () => [{
+      id: FIRST_ID,
+      type: "loki",
+      displayName: "Optional Loki monitoring",
+      enabled: true,
+      monitoringEnabled
+    }],
+    probeInfrastructureService: (_service, context) => {
+      probeCalls += 1;
+      return deniedPortainer(context.checkedAt);
+    }
+  });
+
+  const failing = await monitor.refresh();
+  assert.equal(probeCalls, 1);
+  assert.equal(failing.infrastructure.serviceCount, 1);
+  assert.equal(failing.incidents.open.length, 1);
+  assert.equal(failing.incidents.open[0].service, `loki-${FIRST_ID}`);
+
+  monitoringEnabled = false;
+  const disabled = await monitor.refresh();
+  assert.equal(probeCalls, 1, "a service with monitoring disabled must not be probed");
+  assert.equal(disabled.infrastructure.serviceCount, 0);
+  assert.deepEqual(disabled.infrastructure.services, []);
+  assert.deepEqual(disabled.infrastructure.loki, []);
+  assert.equal(disabled.incidents.open.length, 0, "disabling monitoring must retire its active incident");
+});

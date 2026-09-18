@@ -58,6 +58,13 @@ async function serve() {
     throw error;
   }
   process.stdout.write(`Helmsman broker ${broker.version} listening on port ${port}.\n`);
+  await broker.recordEvent({
+    level: "info",
+    category: "application",
+    event: "application.started",
+    outcome: "started",
+    service: "helmsman"
+  });
 
   let stopping = null;
   const stop = (failed = false) => {
@@ -75,7 +82,17 @@ async function serve() {
       forceClose.unref();
       await closed;
       clearTimeout(forceClose);
-      await broker.drain();
+      const shutdownFailed = failed || Boolean(closeError);
+      await broker.drain({
+        finalEvent: {
+          level: shutdownFailed ? "error" : "info",
+          category: "application",
+          event: "application.stopped",
+          outcome: shutdownFailed ? "failed" : "succeeded",
+          service: "helmsman",
+          ...(shutdownFailed ? { code: "APPLICATION_STOP_FAILED" } : {})
+        }
+      });
       try {
         await lock.release();
       } catch {
@@ -90,6 +107,9 @@ async function serve() {
   };
   server.on("error", () => void stop(true));
   lock.onLost(() => {
+    // The journal shares the same lock guard, so writing after lock loss would
+    // be unsafe and is deliberately refused. stderr is the durable container
+    // runtime signal for this exceptional condition.
     process.stderr.write("Helmsman broker error: the data-directory lock was lost.\n");
     void stop(true);
   });

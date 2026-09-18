@@ -30,6 +30,7 @@ const privacyButton = document.querySelector("#privacy-button");
 const skipLink = document.querySelector("#skip-link");
 let infrastructureFilterTimer = null;
 let mediaFilterTimer = null;
+let loggingFilterTimer = null;
 let filterAnnouncementRevision = 0;
 
 function emptyInfrastructureState() {
@@ -50,6 +51,42 @@ function emptyInfrastructureState() {
       environment: "all",
       state: "all",
       search: ""
+    }
+  };
+}
+
+function emptyLoggingState() {
+  return {
+    journal: {
+      loaded: false,
+      loading: false,
+      error: "",
+      storage: null,
+      entries: [],
+      nextCursor: "",
+      filters: {
+        search: "",
+        level: "all",
+        source: "all",
+        range: "24h"
+      },
+      requestGeneration: 0
+    },
+    loki: {
+      loading: false,
+      error: "",
+      entries: [],
+      truncated: false,
+      stats: null,
+      connectorId: "",
+      range: "1h",
+      service: "",
+      contextService: "",
+      query: "{job=~\".+\"}",
+      search: "",
+      requestGeneration: 0,
+      lastRunAt: "",
+      resultRouteHash: ""
     }
   };
 }
@@ -261,6 +298,7 @@ const state = {
   },
   sessionMutation: "",
   infrastructure: emptyInfrastructureState(),
+  logging: emptyLoggingState(),
   media: {
     filters: {
       homeSearch: "",
@@ -416,6 +454,18 @@ function operationalFingerprint(snapshot) {
         inventory: service.inventory
       })
     : null;
+  const lokiStructure = state.workspace === "infrastructure" && ["overview", "connectors", "logs"].includes(route)
+    ? (Array.isArray(snapshot?.infrastructure?.services) ? snapshot.infrastructure.services : [])
+      .filter((service) => service?.type === "loki")
+      .map((service) => ({
+        id: service.id,
+        state: service.state,
+        connectionState: service.connectionState,
+        checkedAt: service.checkedAt || service.lastCheckedAt,
+        latencyMs: service.latencyMs,
+        version: service.version
+      }))
+    : null;
   const logs = route === "logs"
     ? safeLogEntriesForSnapshot(snapshot).map((entry) => ({
         type: entry?.type,
@@ -433,13 +483,88 @@ function operationalFingerprint(snapshot) {
   const mediaStructure = state.workspace === "media" && !["health", "connections", "logs", "settings"].includes(route)
     ? mediaStructuralFingerprint(snapshot?.media)
     : "";
-  return `${structure}\n${JSON.stringify(liveShape)}\n${JSON.stringify(infrastructureStructure)}\n${JSON.stringify(portainerStructure)}\n${JSON.stringify(logs)}\n${mediaStructure}`;
+  return `${structure}\n${JSON.stringify(liveShape)}\n${JSON.stringify(infrastructureStructure)}\n${JSON.stringify(portainerStructure)}\n${JSON.stringify(lokiStructure)}\n${JSON.stringify(logs)}\n${mediaStructure}`;
 }
 
 function rawRoute() {
   return String(location.hash || (state.workspace === "infrastructure" ? "#/overview" : "#/home"))
     .replace(/^#\//u, "")
     .split("?", 1)[0];
+}
+
+const LOGGING_VIEWS = new Set(["overview", "helmsman", "loki"]);
+const LOGGING_CONTEXT_IDENTIFIER = /^[a-z0-9][a-z0-9_.:-]{0,99}$/u;
+const LOGGING_CONTEXT_CODE = /^[A-Z][A-Z0-9_]{0,63}$/u;
+
+function validLoggingTimestamp(value) {
+  if (typeof value !== "string" || value.length > 40) return "";
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : "";
+}
+
+function loggingRouteContext(hash = location.hash) {
+  const query = String(hash || "").split("?", 2)[1] || "";
+  const params = new URLSearchParams(query);
+  const viewCandidate = String(params.get("view") || "overview").toLowerCase();
+  const context = {
+    view: LOGGING_VIEWS.has(viewCandidate) ? viewCandidate : "overview",
+    service: "",
+    code: "",
+    from: validLoggingTimestamp(params.get("from")),
+    to: validLoggingTimestamp(params.get("to")),
+    connectorId: "",
+    containerId: "",
+    node: "",
+    workloadId: ""
+  };
+  for (const [parameter, property] of [
+    ["service", "service"],
+    ["connector", "connectorId"],
+    ["container", "containerId"],
+    ["node", "node"],
+    ["workload", "workloadId"]
+  ]) {
+    const candidate = String(params.get(parameter) || "").toLowerCase();
+    if (LOGGING_CONTEXT_IDENTIFIER.test(candidate)) context[property] = candidate;
+  }
+  const code = String(params.get("code") || "").toUpperCase();
+  if (LOGGING_CONTEXT_CODE.test(code)) context.code = code;
+  return context;
+}
+
+function loggingContextHref(values = {}) {
+  const params = new URLSearchParams();
+  const view = LOGGING_VIEWS.has(values.view) ? values.view : "loki";
+  if (view !== "overview") params.set("view", view);
+  for (const [parameter, raw] of [
+    ["service", values.service],
+    ["connector", values.connectorId],
+    ["container", values.containerId],
+    ["node", values.node],
+    ["workload", values.workloadId]
+  ]) {
+    const candidate = String(raw || "").toLowerCase();
+    if (LOGGING_CONTEXT_IDENTIFIER.test(candidate)) params.set(parameter, candidate);
+  }
+  const code = String(values.code || "").toUpperCase();
+  if (LOGGING_CONTEXT_CODE.test(code)) params.set("code", code);
+  const from = validLoggingTimestamp(values.from);
+  const to = validLoggingTimestamp(values.to);
+  if (from) params.set("from", from);
+  if (to) params.set("to", to);
+  const query = params.toString();
+  return `#/logs${query ? `?${query}` : ""}`;
+}
+
+function lokiConnectorIdForMonitorService(value) {
+  const serviceId = String(value || "").toLowerCase();
+  if (!serviceId.startsWith("loki-")) return "";
+  const connectorId = serviceId.slice("loki-".length);
+  return normalizedLokiConfigurations().some(({ id }) => id === connectorId) ? connectorId : "";
+}
+
+function canonicalLoggingHash() {
+  return loggingContextHref(loggingRouteContext());
 }
 
 function currentRoute() {
@@ -492,7 +617,7 @@ async function switchWorkspace(value) {
   }
   const candidate = rawRoute();
   const destination = SHARED_ROUTES.has(candidate) ? candidate : workspaceLandingRoute(workspace);
-  location.hash = `#/${destination}`;
+  location.hash = destination === "logs" ? canonicalLoggingHash() : `#/${destination}`;
   state.lastMarkup = "";
   renderPage({ force: true, preserveFocus: true });
   if (workspace === "infrastructure" && state.status?.authenticated) {
@@ -2263,7 +2388,7 @@ function renderIncidentsPage() {
             <article class="incident-row">
               <span class="health-dot is-${statusClass(entry.state)}"></span>
               <div class="incident-row__copy"><strong>${escapeHtml(entry.serviceName)} · ${escapeHtml(entry.capability)}</strong><p>${escapeHtml(entry.summary)}</p><small>${escapeHtml(entry.code || statusLabel(entry.state))}${entry.status ? ` · HTTP ${entry.status}` : ""} · ${entry.occurrenceCount} occurrence${entry.occurrenceCount === 1 ? "" : "s"}</small>${renderOperationsReports(entry.reports, entry.serviceName)}<p class="operations-next-step"><strong>Next step</strong><span>${escapeHtml(incidentNextStep(entry))}</span></p></div>
-              <time>${escapeHtml(formatTime(entry.lastSeen))}</time>
+              <div class="logging-incident-actions"><time>${escapeHtml(formatTime(entry.lastSeen))}</time><a class="button button--compact" href="${escapeHtml(loggingContextHref({ view: "loki", service: entry.service, connectorId: lokiConnectorIdForMonitorService(entry.service), code: entry.code, from: entry.firstSeen }))}">View logs ${icon("chevron")}</a></div>
             </article>`).join("") : `<div class="empty-state">${icon("check")}<strong>Everything is clear</strong><span>The two-check debounce has not confirmed any active failures.</span></div>`}</div>
         </section>
         <section class="glass-panel"><header><div><span class="section-kicker">Recovered</span><h3>Recent recoveries</h3></div><span class="count-pill">${recovered.length}</span></header>
@@ -2372,10 +2497,6 @@ function safeLogEntriesForSnapshot(value) {
   return [...events, ...transitions].slice(0, 200);
 }
 
-function safeLogEntries() {
-  return safeLogEntriesForSnapshot(state.snapshot);
-}
-
 function safeLogCode(value) {
   const candidate = typeof value === "string" ? value.trim().toUpperCase() : "";
   return /^[A-Z][A-Z0-9_]{0,63}$/u.test(candidate) ? candidate : "";
@@ -2395,30 +2516,520 @@ function logServiceDisplayName(value) {
   const portainerId = serviceId.startsWith("portainer-") ? serviceId.slice("portainer-".length) : serviceId;
   const portainer = normalizedPortainerConfigurations().find((service) => service.id === portainerId);
   if (portainer) return portainer.displayName;
+  const lokiId = serviceId.startsWith("loki-") ? serviceId.slice("loki-".length) : serviceId;
+  const loki = normalizedLokiConfigurations().find((service) => service.id === lokiId);
+  if (loki) return loki.displayName;
   const media = state.config?.services?.find((service) => service.id === serviceId);
   return safeSessionText(media?.name || value, "Service", 100);
 }
 
-function renderLogsPage() {
-  const entries = safeLogEntries();
-  return `
-    <section class="detail-page">
-      <header class="detail-hero"><div><span class="section-kicker">Sanitized event stream</span><h2>Application logs</h2><p>Only bounded operational metadata is retained here—never credentials, authorization headers, or upstream response bodies.</p></div></header>
-      <section class="glass-panel log-panel-v5"><header><div><span class="section-kicker">Newest first</span><h3>Container events</h3></div><span class="count-pill">${entries.length}</span></header>
-        <div class="log-list-v5">${entries.length ? entries.map((entry) => {
-          const candidateLevel = String(entry.level || (entry.type === "recovered" ? "info" : "warn")).toLowerCase();
-          const level = ["debug", "info", "warn", "warning", "error"].includes(candidateLevel) ? candidateLevel : "warn";
-          const status = safeLogHttpStatus(entry.httpStatus ?? entry.status);
-          const evidence = [
-            logServiceDisplayName(entry.service),
-            mediaText(entry.capability, "", 80),
-            safeLogCode(entry.code),
-            status === null ? "" : `HTTP ${status}`
-          ].filter(Boolean).join(" · ");
-          return `<article><time>${escapeHtml(formatTime(entry.at || entry.createdAt || entry.lastSeen || state.snapshot?.generatedAt))}</time><span class="log-level is-${escapeHtml(level)}">${escapeHtml(level)}</span><div><strong>${escapeHtml(mediaText(entry.summary || entry.type || entry.code, "Monitor event", 240))}</strong><small>${escapeHtml(evidence)}</small></div></article>`;
-        }).join("") : `<div class="empty-state"><span>No monitor events have been recorded yet.</span></div>`}</div>
+function safeLogTimestamp(value) {
+  const parsed = Date.parse(value);
+  return value && Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
+}
+
+function safeLogLevel(value) {
+  const candidate = String(value || "info").toLowerCase();
+  if (candidate === "warning") return "warn";
+  return ["debug", "info", "warn", "error"].includes(candidate) ? candidate : "info";
+}
+
+function safeLogDetails(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "";
+  try {
+    return JSON.stringify(value, null, 2).slice(0, 12_000);
+  } catch {
+    return "";
+  }
+}
+
+function normalizeJournalEntry(value, index) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const status = safeLogHttpStatus(source.httpStatus ?? source.status);
+  const service = source.service
+    ? logServiceDisplayName(source.service)
+    : safeSessionText(source.component || source.source, "Helmsman", 100);
+  const code = safeLogCode(source.code);
+  const event = safeSessionText(source.event || source.type, "", 80).replaceAll("_", " ");
+  const outcome = safeSessionText(source.outcome, "", 40).replaceAll("_", " ");
+  return {
+    id: safeSessionText(source.id || source.sequence, `entry-${index + 1}`, 120),
+    at: safeLogTimestamp(source.at || source.createdAt || source.timestamp) || new Date(0).toISOString(),
+    level: safeLogLevel(source.level || source.severity),
+    source: service,
+    scope: mediaText(source.capability, "", 80),
+    category: safeSessionText(source.category || source.event || source.type, "application", 80),
+    message: mediaText(source.message || source.summary || [event, outcome].filter(Boolean).join(" · ") || source.code, "Application event", 1_000),
+    evidence: [
+      mediaText(source.capability, "", 80),
+      mediaText(source.operation, "", 80),
+      code,
+      status === null ? "" : `HTTP ${status}`,
+      safeSessionText(source.correlationId, "", 120)
+    ].filter(Boolean).join(" · "),
+    details: safeLogDetails(source.details || source.metadata || source.context)
+  };
+}
+
+function journalEntriesForUi() {
+  if (state.logging.journal.loaded || state.logging.journal.error || state.logging.journal.entries.length) {
+    return state.logging.journal.entries;
+  }
+  return safeLogEntriesForSnapshot(state.snapshot)
+    .map(normalizeJournalEntry)
+    .sort((left, right) => right.at.localeCompare(left.at));
+}
+
+function normalizeJournalStorage(value) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const bytes = Number(source.bytes ?? source.usedBytes ?? source.sizeBytes ?? source.totalBytes);
+  const maximum = Number(source.maxBytes ?? source.maximumBytes ?? source.limitBytes);
+  const count = Number(source.entryCount ?? source.entries ?? source.count);
+  const retention = Number(source.retentionDays ?? source.days);
+  const rawState = String(source.state || "healthy").toLowerCase();
+  const issueCodes = (Array.isArray(source.issueCodes) ? source.issueCodes : [])
+    .map(safeLogCode)
+    .filter(Boolean)
+    .slice(0, 12);
+  const stateName = rawState === "unavailable"
+    ? "down"
+    : ["healthy", "degraded", "limited", "down", "stale"].includes(rawState) ? rawState : "healthy";
+  return {
+    state: stateName,
+    persistent: source.persistent !== false,
+    writable: source.writable !== false,
+    bytes: Number.isSafeInteger(bytes) && bytes >= 0 ? bytes : null,
+    maximum: Number.isSafeInteger(maximum) && maximum > 0 ? maximum : null,
+    count: Number.isSafeInteger(count) && count >= 0 ? count : null,
+    retentionDays: Number.isSafeInteger(retention) && retention > 0 ? retention : null,
+    lastWriteAt: safeLogTimestamp(source.lastWriteAt || source.updatedAt),
+    issueCodes,
+    message: safeSessionText(source.message, issueCodes.length
+      ? `Journal needs attention · ${issueCodes.join(" · ")}`
+      : source.persistent === false ? "Persistent journal unavailable" : "Persistent journal available", 240)
+  };
+}
+
+function normalizeJournalPayload(payload) {
+  const entries = (Array.isArray(payload?.entries) ? payload.entries : [])
+    .slice(0, 500)
+    .map(normalizeJournalEntry)
+    .sort((left, right) => right.at.localeCompare(left.at));
+  return {
+    storage: normalizeJournalStorage(payload?.storage),
+    entries,
+    nextCursor: safeSessionText(payload?.nextCursor, "", 500)
+  };
+}
+
+function journalEntryKey(entry) {
+  return `${entry.id}\u0000${entry.at}\u0000${entry.message}`;
+}
+
+async function loadJournalLogs({ append = false, render = true } = {}) {
+  if (!state.status?.authenticated || state.logging.journal.loading) return false;
+  const journal = state.logging.journal;
+  const generation = ++journal.requestGeneration;
+  journal.loading = true;
+  journal.error = "";
+  if (render) {
+    state.lastMarkup = "";
+    renderPage({ force: true, preserveFocus: true });
+  }
+  try {
+    const cursor = append && journal.nextCursor ? `&cursor=${encodeURIComponent(journal.nextCursor)}` : "";
+    const payload = normalizeJournalPayload(await api(`/api/v2/logs?limit=200${cursor}`));
+    if (generation !== journal.requestGeneration) return false;
+    if (append) {
+      const seen = new Set(journal.entries.map(journalEntryKey));
+      journal.entries = [...journal.entries, ...payload.entries.filter((entry) => !seen.has(journalEntryKey(entry)))]
+        .sort((left, right) => right.at.localeCompare(left.at))
+        .slice(0, 1_000);
+    } else {
+      journal.entries = payload.entries;
+    }
+    journal.storage = payload.storage;
+    journal.nextCursor = payload.nextCursor;
+    journal.loaded = true;
+    return true;
+  } catch (error) {
+    if (generation === journal.requestGeneration) journal.error = error.message;
+    return false;
+  } finally {
+    if (generation === journal.requestGeneration) journal.loading = false;
+    if (render && generation === journal.requestGeneration) {
+      state.lastMarkup = "";
+      renderPage({ force: true, preserveFocus: true });
+    }
+  }
+}
+
+function loggingSubnavigation(view) {
+  return `<nav class="logging-subnav" aria-label="Logging sections">
+    <a href="#/logs" ${view === "overview" ? "aria-current=\"page\" class=\"is-active\"" : ""}>Overview</a>
+    <a href="#/logs?view=helmsman" ${view === "helmsman" ? "aria-current=\"page\" class=\"is-active\"" : ""}>Helmsman logs</a>
+    <a href="#/logs?view=loki" ${view === "loki" ? "aria-current=\"page\" class=\"is-active\"" : ""}>Loki Explorer</a>
+  </nav>`;
+}
+
+function storageFact(storage) {
+  if (!storage) return "Loading persistent journal status…";
+  const usage = storage.bytes === null ? "Usage pending" : storage.maximum === null
+    ? formatMetricBytes(storage.bytes)
+    : `${formatMetricBytes(storage.bytes)} of ${formatMetricBytes(storage.maximum)}`;
+  const retention = storage.retentionDays === null ? "bounded retention" : `${storage.retentionDays} day retention`;
+  return `${usage} · ${retention}`;
+}
+
+function renderLoggingOverview() {
+  const journal = state.logging.journal;
+  const storage = journal.storage;
+  const loki = normalizedLokiConfigurations();
+  const enabledLoki = loki.filter(({ enabled }) => enabled);
+  const monitoredLoki = enabledLoki.filter(({ monitoringEnabled }) => monitoringEnabled);
+  const monitoredHealth = monitoredLoki.map(({ id }) => lokiHealthById(id)).filter(Boolean);
+  const unhealthyLokiState = ["down", "auth-required", "degraded", "limited"]
+    .find((candidate) => monitoredHealth.some(({ state }) => state === candidate));
+  const lokiState = !loki.length
+    ? "stale"
+    : !enabledLoki.length
+      ? "disabled"
+      : unhealthyLokiState
+        ? unhealthyLokiState
+        : monitoredLoki.length && monitoredHealth.length === monitoredLoki.length
+          ? "healthy"
+          : "stale";
+  const lokiStatusLabel = !loki.length
+    ? "Not connected"
+    : !enabledLoki.length
+      ? "Saved · disabled"
+      : monitoredLoki.length
+        ? `${enabledLoki.length} enabled · ${statusLabel(lokiState)}`
+        : `${enabledLoki.length} query-ready · monitoring off`;
+  const recentEntries = journalEntriesForUi();
+  const counts = Object.fromEntries(["debug", "info", "warn", "error"].map((level) => [
+    level,
+    recentEntries.filter((entry) => entry.level === level).length
+  ]));
+  const journalState = journal.error ? "down" : journal.loaded ? storage?.state || "healthy" : "stale";
+  const journalStatusLabel = journal.error
+    ? "Unavailable"
+    : !journal.loaded ? "Loading" : journalState === "healthy" ? "Available" : statusLabel(journalState);
+  return `${loggingSubnavigation("overview")}
+    <div class="logging-overview-grid">
+      <section class="logging-source-card is-${escapeHtml(journalState)}" aria-labelledby="helmsman-log-source-title">
+        <header><span class="logging-source-card__mark">${icon("logs")}</span><div><span class="section-kicker">Built in</span><h3 id="helmsman-log-source-title">Helmsman logs</h3></div><span class="logging-health"><i class="health-dot is-${statusClass(journalState)}"></i>${escapeHtml(journalStatusLabel)}</span></header>
+        <p>${escapeHtml(journal.error || storage?.message || "Persistent, sanitized application events remain available without an external logging system.")}</p>
+        <dl><div><dt>Events loaded</dt><dd>${recentEntries.length.toLocaleString()}</dd></div><div><dt>Storage</dt><dd>${escapeHtml(storageFact(storage))}</dd></div><div><dt>Last write</dt><dd>${escapeHtml(formatTime(storage?.lastWriteAt, "Waiting for the first event"))}</dd></div></dl>
+        <footer><a class="button button--primary" href="#/logs?view=helmsman">Open Helmsman logs</a><button class="button" type="button" data-action="refresh-journal">${icon("refresh")} Refresh</button></footer>
       </section>
-    </section>`;
+      <section class="logging-source-card is-${escapeHtml(lokiState)}" aria-labelledby="loki-log-source-title">
+        <header><span class="logging-source-card__mark">${icon("server")}</span><div><span class="section-kicker">External source</span><h3 id="loki-log-source-title">Loki</h3></div><span class="logging-health"><i class="health-dot is-${statusClass(lokiState)}"></i>${escapeHtml(lokiStatusLabel)}</span></header>
+        <p>${loki.length ? "Query the log streams already collected by Loki without leaving Helmsman." : "Connect Loki as an Infrastructure observability service to search host, container, and application logs."}</p>
+        <dl><div><dt>Connections</dt><dd>${loki.length}</dd></div><div><dt>Authentication</dt><dd>${escapeHtml(loki.length ? [...new Set(loki.map(({ authMode }) => authModeLabel(authMode)))].join(", ") : "Not configured")}</dd></div><div><dt>Results</dt><dd>${state.logging.loki.entries.length.toLocaleString()} from last query</dd></div></dl>
+        <footer>${loki.length ? `<a class="button button--primary" href="#/logs?view=loki">Open Loki Explorer</a>` : `<button class="button button--primary" type="button" data-action="open-loki-service">${icon("plus")} Connect Loki</button>`}</footer>
+      </section>
+    </div>
+    <section class="logging-stat-grid" aria-label="Loaded Helmsman event counts">
+      ${[["info", "Info"], ["warn", "Warnings"], ["error", "Errors"], ["debug", "Debug"]].map(([level, label]) => `<div class="logging-stat is-${level}"><span>${label}</span><strong>${counts[level]}</strong></div>`).join("")}
+    </section>
+    ${recentEntries.length ? `<section class="logging-results" aria-labelledby="logging-recent-title"><header><div><span class="section-kicker">Latest persistent evidence</span><h3 id="logging-recent-title">Recent Helmsman events</h3></div><a class="button button--compact" href="#/logs?view=helmsman">View all</a></header><div class="logging-entry-list">${recentEntries.slice(0, 6).map(renderJournalEntry).join("")}</div></section>` : ""}
+    <div class="logging-privacy">${icon("shield")}<div><strong>Two separate log sources</strong><p>Helmsman logs are sanitized before they are stored. Loki results are displayed transiently and may contain sensitive text collected from other systems; Helmsman does not copy those results into its journal.</p></div></div>`;
+}
+
+function journalRangeStart(range) {
+  const milliseconds = { "1h": 3_600_000, "6h": 21_600_000, "24h": 86_400_000, "7d": 604_800_000 }[range];
+  return milliseconds ? Date.now() - milliseconds : 0;
+}
+
+function filteredJournalEntries() {
+  const filters = state.logging.journal.filters;
+  const search = filters.search.trim().toLowerCase();
+  const cutoff = journalRangeStart(filters.range);
+  return journalEntriesForUi().filter((entry) => (
+    (filters.level === "all" || entry.level === filters.level)
+    && (filters.source === "all" || entry.source === filters.source)
+    && (!cutoff || Date.parse(entry.at) >= cutoff)
+    && (!search || `${entry.message} ${entry.source} ${entry.category} ${entry.evidence}`.toLowerCase().includes(search))
+  ));
+}
+
+function renderJournalEntry(entry) {
+  const sourceLabel = [entry.source, entry.scope].filter(Boolean).join(" · ");
+  return `<article class="logging-entry is-${escapeHtml(entry.level)}">
+    <time datetime="${escapeHtml(entry.at)}">${escapeHtml(formatTime(entry.at, "Unknown time"))}</time>
+    <span class="log-level is-${escapeHtml(entry.level)}">${escapeHtml(entry.level)}</span>
+    <span class="logging-entry__source">${escapeHtml(sourceLabel)}</span>
+    <div class="logging-entry__content"><strong>${escapeHtml(entry.message)}</strong><small>${escapeHtml([entry.category, entry.evidence].filter(Boolean).join(" · "))}</small>${entry.details ? `<details><summary>Structured details</summary><pre>${escapeHtml(entry.details)}</pre></details>` : ""}</div>
+  </article>`;
+}
+
+function renderHelmsmanLogs() {
+  const journal = state.logging.journal;
+  const entries = filteredJournalEntries();
+  const sources = [...new Set(journalEntriesForUi().map(({ source }) => source))].sort((left, right) => left.localeCompare(right));
+  const filters = journal.filters;
+  const journalState = journal.error ? "down" : journal.loaded ? journal.storage?.state || "healthy" : "stale";
+  return `${loggingSubnavigation("helmsman")}
+    <section class="logging-status-strip is-${escapeHtml(journalState)}"><span class="health-dot is-${statusClass(journalState)}"></span><div><strong>${escapeHtml(journal.error || (journal.loaded ? journal.storage?.message || "Persistent Helmsman journal available" : "Loading the persistent journal"))}</strong><small>${escapeHtml(storageFact(journal.storage))}</small></div><button class="button button--compact" type="button" data-action="refresh-journal" ${journal.loading ? "disabled aria-busy=\"true\"" : ""}>${icon("refresh")} ${journal.loading ? "Loading…" : "Refresh"}</button></section>
+    <div class="logging-toolbar">
+      <label class="logging-search" for="journal-search">${icon("search")}<span class="sr-only">Search Helmsman logs</span><input id="journal-search" type="search" value="${escapeHtml(filters.search)}" placeholder="Search messages, services, or codes" data-journal-filter="search" autocomplete="off" /></label>
+      <label><span>Level</span><select data-journal-filter="level"><option value="all">All levels</option>${["error", "warn", "info", "debug"].map((level) => `<option value="${level}" ${filters.level === level ? "selected" : ""}>${level === "warn" ? "Warnings" : `${level[0].toUpperCase()}${level.slice(1)}`}</option>`).join("")}</select></label>
+      <label><span>Source</span><select data-journal-filter="source"><option value="all">All sources</option>${sources.map((source) => `<option value="${escapeHtml(source)}" ${filters.source === source ? "selected" : ""}>${escapeHtml(source)}</option>`).join("")}</select></label>
+      <label><span>Time</span><select data-journal-filter="range">${[["1h", "Last hour"], ["6h", "Last 6 hours"], ["24h", "Last 24 hours"], ["7d", "Last 7 days"], ["all", "All loaded"]].map(([value, label]) => `<option value="${value}" ${filters.range === value ? "selected" : ""}>${label}</option>`).join("")}</select></label>
+    </div>
+    <section class="logging-results" aria-labelledby="helmsman-log-results-title"><header><div><span class="section-kicker">Newest first</span><h3 id="helmsman-log-results-title">Helmsman events</h3></div><span class="count-pill">${entries.length}</span></header>
+      <div class="logging-entry-list">${journal.loading && !journal.loaded ? `<div class="logging-empty">${icon("refresh")}<strong>Loading journal</strong><span>Reading bounded events from Helmsman's protected data volume.</span></div>` : journal.error ? `<div class="logging-empty is-error">${icon("x")}<strong>Journal unavailable</strong><span>${escapeHtml(journal.error)}</span></div>` : entries.length ? entries.map(renderJournalEntry).join("") : `<div class="logging-empty">${icon("logs")}<strong>No matching events</strong><span>Adjust the filters or wait for Helmsman to record an application event.</span></div>`}</div>
+      ${journal.nextCursor ? `<footer class="logging-pagination"><button class="button" type="button" data-action="load-more-journal" ${journal.loading ? "disabled" : ""}>Load older events</button></footer>` : ""}
+    </section>
+    <div class="logging-privacy">${icon("shield")}<div><strong>Sanitized before storage</strong><p>Credentials, authorization headers, request bodies, and upstream response bodies are excluded from this journal.</p></div></div>`;
+}
+
+function authModeLabel(value) {
+  return { none: "No authentication", basic: "Basic authentication", bearer: "Bearer token" }[value] || "No authentication";
+}
+
+function normalizeLokiEntry(value, index) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const rawLabels = source.labels && typeof source.labels === "object" && !Array.isArray(source.labels) ? source.labels : {};
+  const labels = Object.entries(rawLabels).slice(0, 32).flatMap(([key, rawValue]) => {
+    const safeKey = String(key || "");
+    if (!/^[A-Za-z_][A-Za-z0-9_]{0,127}$/u.test(safeKey)) return [];
+    return [[safeKey, safeSessionText(rawValue, "", 512)]];
+  });
+  return {
+    id: safeSessionText(source.id, `loki-${index + 1}`, 120),
+    at: safeLogTimestamp(source.at || source.timestamp || source.createdAt) || new Date(0).toISOString(),
+    line: mediaText(source.line || source.message, "Empty log line", 4_000),
+    labels
+  };
+}
+
+function lokiRangeMilliseconds(value) {
+  return { "15m": 900_000, "1h": 3_600_000, "6h": 21_600_000, "24h": 86_400_000 }[value] || 3_600_000;
+}
+
+function boundedLokiWindow(context, range) {
+  const maximumRange = 86_400_000;
+  const selectedRange = Math.min(maximumRange, lokiRangeMilliseconds(range));
+  const contextualEnd = Date.parse(context.to);
+  const endMilliseconds = Number.isFinite(contextualEnd) ? contextualEnd : Date.now();
+  const contextualStart = Date.parse(context.from);
+  let startMilliseconds = Number.isFinite(contextualStart)
+    ? contextualStart
+    : endMilliseconds - selectedRange;
+  if (startMilliseconds >= endMilliseconds) startMilliseconds = endMilliseconds - selectedRange;
+  if (endMilliseconds - startMilliseconds > maximumRange) startMilliseconds = endMilliseconds - maximumRange;
+  return {
+    start: new Date(startMilliseconds).toISOString(),
+    end: new Date(endMilliseconds).toISOString()
+  };
+}
+
+function normalizedLokiEntries(result) {
+  if (Array.isArray(result?.entries)) return result.entries;
+  if (!Array.isArray(result?.streams)) return [];
+  return result.streams.flatMap((stream) => {
+    const labels = stream?.labels && typeof stream.labels === "object" ? stream.labels : {};
+    return (Array.isArray(stream?.entries) ? stream.entries : []).map((entry) => ({
+      ...entry,
+      labels
+    }));
+  });
+}
+
+function lokiFilterServiceToken(value) {
+  const service = String(value || "").toLowerCase();
+  if (service.startsWith("loki-") && lokiConnectorIdForMonitorService(service)) return "";
+  if (service.startsWith("portainer-")) return "portainer";
+  if (service.startsWith("proxmox-")) return "proxmox";
+  return service;
+}
+
+function filteredLokiEntriesForUi() {
+  const logging = state.logging.loki;
+  const context = loggingRouteContext();
+  const terms = [
+    lokiFilterServiceToken(logging.service || context.service),
+    context.code,
+    context.containerId,
+    context.node,
+    context.workloadId,
+    logging.search.trim()
+  ].filter((value, index, values) => value && values.indexOf(value) === index)
+    .map((value) => value.toLowerCase());
+  if (!terms.length) return logging.entries;
+  return logging.entries.filter((entry) => {
+    const searchable = `${entry.line} ${entry.labels.map(([key, value]) => `${key}=${value}`).join(" ")}`.toLowerCase();
+    return terms.every((term) => searchable.includes(term));
+  });
+}
+
+function syncLokiQueryControls(form) {
+  if (!form) return;
+  const data = new FormData(form);
+  state.logging.loki.connectorId = String(data.get("connectorId") || "");
+  state.logging.loki.range = ["15m", "1h", "6h", "24h"].includes(data.get("range"))
+    ? String(data.get("range"))
+    : "1h";
+  state.logging.loki.service = String(data.get("service") || "").slice(0, 100);
+  state.logging.loki.query = String(data.get("query") || "").slice(0, 2_000);
+  state.logging.loki.search = String(data.get("search") || "").slice(0, 200);
+}
+
+function invalidateLokiQueryResults({ inPlace = false } = {}) {
+  const logging = state.logging.loki;
+  logging.requestGeneration += 1;
+  logging.loading = false;
+  logging.error = "";
+  logging.entries = [];
+  logging.truncated = false;
+  logging.stats = null;
+  logging.lastRunAt = "";
+  logging.resultRouteHash = "";
+  if (!inPlace) return;
+  const results = main.querySelector?.("#loki-results-title")?.closest?.(".logging-results");
+  if (!results) return;
+  const count = results.querySelector(".count-pill");
+  const summary = results.querySelector("header p");
+  const list = results.querySelector(".logging-entry-list");
+  if (count) count.textContent = "0";
+  if (summary) summary.textContent = "Query controls changed. Run the query to load matching entries.";
+  if (list) setMarkup(list, `<div class="logging-empty">${icon("search")}<strong>Run the updated query</strong><span>Previous results were cleared so they are not shown under different controls.</span></div>`);
+  results.querySelector(".logging-pagination")?.remove();
+  main.querySelector?.(".logging-query-error")?.remove();
+}
+
+function currentLokiConfiguration() {
+  const configurations = queryableLokiConfigurations();
+  return configurations.find(({ id }) => id === state.logging.loki.connectorId) || configurations[0] || null;
+}
+
+async function runLokiQuery({ render = true } = {}) {
+  const logging = state.logging.loki;
+  const connector = currentLokiConfiguration();
+  const generation = ++logging.requestGeneration;
+  logging.entries = [];
+  logging.truncated = false;
+  logging.stats = null;
+  logging.lastRunAt = "";
+  logging.resultRouteHash = "";
+  if (!connector) {
+    logging.loading = false;
+    logging.error = "Enable a Loki connection before running a query.";
+    if (render) {
+      state.lastMarkup = "";
+      renderPage({ force: true, preserveFocus: true });
+    }
+    return false;
+  }
+  logging.loading = true;
+  logging.error = "";
+  if (render) {
+    state.lastMarkup = "";
+    renderPage({ force: true, preserveFocus: true });
+  }
+  let query = logging.query.trim();
+  if (!query || query.length > 2_000) {
+    logging.loading = false;
+    logging.error = query ? "Keep the LogQL query below 2,000 characters." : "Enter a LogQL stream selector.";
+    if (render) {
+      state.lastMarkup = "";
+      renderPage({ force: true, preserveFocus: true });
+    }
+    return false;
+  }
+  const context = loggingRouteContext();
+  const { start, end } = boundedLokiWindow(context, logging.range);
+  try {
+    const result = await api(`/api/v2/logging/loki/${encodeURIComponent(connector.id)}/query`, {
+      method: "POST",
+      body: {
+        targetRevision: connector.targetRevision,
+        query,
+        start,
+        end,
+        direction: "backward",
+        limit: 200
+      }
+    });
+    if (generation !== logging.requestGeneration) return false;
+    logging.entries = normalizedLokiEntries(result).slice(0, 500).map(normalizeLokiEntry);
+    logging.truncated = result?.truncated === true;
+    logging.stats = result?.stats && typeof result.stats === "object" && !Array.isArray(result.stats) ? result.stats : null;
+    logging.lastRunAt = new Date().toISOString();
+    logging.resultRouteHash = canonicalLoggingHash();
+    return true;
+  } catch (error) {
+    if (generation === logging.requestGeneration) {
+      logging.entries = [];
+      logging.truncated = false;
+      logging.stats = null;
+      logging.lastRunAt = "";
+      logging.resultRouteHash = "";
+      logging.error = error.message;
+    }
+    return false;
+  } finally {
+    if (generation === logging.requestGeneration) logging.loading = false;
+    if (render && generation === logging.requestGeneration) {
+      state.lastMarkup = "";
+      renderPage({ force: true, preserveFocus: true });
+    }
+  }
+}
+
+function renderLokiEntry(entry) {
+  return `<article class="logging-entry logging-entry--loki"><time datetime="${escapeHtml(entry.at)}">${escapeHtml(formatTime(entry.at, "Unknown time"))}</time><div class="logging-entry__content"><strong>${escapeHtml(entry.line)}</strong>${entry.labels.length ? `<ul class="logging-labels" aria-label="Loki stream labels">${entry.labels.map(([key, value]) => `<li><span>${escapeHtml(key)}</span>=${escapeHtml(value)}</li>`).join("")}</ul>` : ""}</div></article>`;
+}
+
+function renderLokiExplorer() {
+  const configurations = normalizedLokiConfigurations();
+  const connectors = configurations.filter(({ enabled }) => enabled);
+  const logging = state.logging.loki;
+  const context = loggingRouteContext();
+  const visibleEntries = filteredLokiEntriesForUi();
+  if (!connectors.length) {
+    const saved = configurations[0] || null;
+    return `${loggingSubnavigation("loki")}<section class="logging-empty logging-empty--setup">${icon("server")}<span class="section-kicker">External log source</span><h3>${saved ? "Enable a Loki connection to begin exploring logs" : "Connect Loki to begin exploring logs"}</h3><p>${saved ? "Your Loki connection is saved but disabled. Review it under Infrastructure Connectors and enable it before Helmsman can run queries." : "Configure Loki under Infrastructure Connectors. Helmsman will query it through the protected server-side connection without storing the returned log lines."}</p>${context.service ? `<div class="logging-context"><strong>Pending context</strong><span>${escapeHtml(logServiceDisplayName(context.service))}${context.code ? ` · ${escapeHtml(context.code)}` : ""}</span></div>` : ""}<button class="button button--primary" type="button" data-action="open-loki-service"${saved ? ` data-loki-service-id="${escapeHtml(saved.id)}"` : ""}>${icon(saved ? "settings" : "plus")} ${saved ? "Review Loki connection" : "Connect Loki"}</button><a class="button" href="#/logs?view=helmsman">Open Helmsman logs</a></section>`;
+  }
+  const selectedId = connectors.some(({ id }) => id === logging.connectorId) ? logging.connectorId : connectors[0].id;
+  if (!logging.connectorId) logging.connectorId = selectedId;
+  const services = [...new Set([
+    ...SERVICE_ORDER,
+    "helmsman",
+    "proxmox",
+    "portainer",
+    ...(context.service ? [context.service] : [])
+  ])];
+  const stats = logging.stats || {};
+  const lineCount = stats.totalLinesProcessed ?? stats.lines;
+  const byteCount = stats.totalBytesProcessed ?? stats.bytes;
+  const executionTime = stats.execTimeMs;
+  const summary = [
+    Number.isFinite(Number(stats.streams)) ? `${Number(stats.streams).toLocaleString()} streams` : "",
+    lineCount !== null && lineCount !== undefined && Number.isFinite(Number(lineCount)) ? `${Number(lineCount).toLocaleString()} lines` : "",
+    byteCount !== null && byteCount !== undefined && Number.isFinite(Number(byteCount)) ? formatMetricBytes(Number(byteCount)) : "",
+    executionTime !== null && executionTime !== undefined && Number.isFinite(Number(executionTime)) ? `${Math.max(0, Math.round(Number(executionTime))).toLocaleString()} ms` : "",
+    logging.lastRunAt ? `Queried ${formatTime(logging.lastRunAt)}` : ""
+  ].filter(Boolean).join(" · ");
+  return `${loggingSubnavigation("loki")}
+    ${context.service || context.code || context.containerId || context.node || context.workloadId ? `<div class="logging-context"><strong>Opened with context</strong><span>${escapeHtml([context.service && logServiceDisplayName(context.service), context.code, context.containerId && `container ${context.containerId.slice(0, 12)}`, context.node && `node ${context.node}`, context.workloadId && `workload ${context.workloadId}`].filter(Boolean).join(" · "))}</span><a href="#/logs?view=loki">Clear context</a></div>` : ""}
+    <form class="logging-query" id="loki-query-form">
+      <div class="logging-query__primary"><label><span>Loki connection</span><select name="connectorId">${connectors.map((connector) => `<option value="${escapeHtml(connector.id)}" ${selectedId === connector.id ? "selected" : ""}>${escapeHtml(connector.displayName)}</option>`).join("")}</select></label><label><span>Time range</span><select name="range">${[["15m", "Last 15 minutes"], ["1h", "Last hour"], ["6h", "Last 6 hours"], ["24h", "Last 24 hours"]].map(([value, label]) => `<option value="${value}" ${logging.range === value ? "selected" : ""}>${label}</option>`).join("")}</select></label><label><span>Service text</span><select name="service"><option value="">Any service</option>${services.map((service) => `<option value="${escapeHtml(service)}" ${(logging.service || context.service) === service ? "selected" : ""}>${escapeHtml(logServiceDisplayName(service))}</option>`).join("")}</select></label></div>
+      <label class="logging-query__logql"><span>LogQL stream selector</span><input name="query" type="text" value="${escapeHtml(logging.query)}" maxlength="2000" autocomplete="off" autocapitalize="off" spellcheck="false" required /></label>
+      <label class="logging-query__search"><span>Contains text</span><input name="search" type="search" value="${escapeHtml(logging.search)}" maxlength="200" autocomplete="off" placeholder="Optional exact text filter" /></label>
+      <button class="button button--primary" type="submit" ${logging.loading ? "disabled aria-busy=\"true\"" : ""}>${icon(logging.loading ? "refresh" : "search")} ${logging.loading ? "Querying…" : "Run query"}</button>
+      <p class="logging-query__note">Queries are bounded to 200 newest entries. Context and text filters match both returned lines and stream labels. Returned Loki data remains transient in this browser.</p>
+    </form>
+    ${logging.error ? `<div class="logging-query-error" role="alert">${icon("x")}<span>${escapeHtml(logging.error)}</span></div>` : ""}
+    <section class="logging-results" aria-labelledby="loki-results-title"><header><div><span class="section-kicker">Transient results</span><h3 id="loki-results-title">Loki log entries</h3><p>${escapeHtml(summary || "Run a query to load bounded log entries.")}</p></div><span class="count-pill">${visibleEntries.length}</span></header><div class="logging-entry-list">${logging.loading && !logging.entries.length ? `<div class="logging-empty">${icon("refresh")}<strong>Querying Loki</strong><span>Waiting for the bounded server-side query.</span></div>` : visibleEntries.length ? visibleEntries.map(renderLokiEntry).join("") : logging.entries.length ? `<div class="logging-empty"><strong>No returned entries match this context</strong><span>Adjust the service, context, or text filter and run the query again.</span></div>` : `<div class="logging-empty">${icon("search")}<strong>No Loki results loaded</strong><span>Choose a time range and run a query. Empty results do not affect the persistent Helmsman journal.</span></div>`}</div>${logging.truncated ? `<footer class="logging-pagination"><span>Result limit reached. Narrow the time range or LogQL selector before applying context filters.</span></footer>` : ""}</section>`;
+}
+
+function renderLogsPage() {
+  const view = loggingRouteContext().view;
+  const content = view === "helmsman" ? renderHelmsmanLogs() : view === "loki" ? renderLokiExplorer() : renderLoggingOverview();
+  return `<section class="detail-page logging-page"><header class="detail-hero"><div><span class="section-kicker">Built-in and connected sources</span><h2>Logging</h2><p>Use Helmsman's persistent sanitized journal by default, or query a connected Loki server from the dedicated explorer.</p></div></header>${content}</section>`;
 }
 
 function safeSessionText(value, fallback, maximum = 120) {
@@ -2573,6 +3184,76 @@ function normalizedPortainerConfigurations() {
       credentialUpdatedAt: safeSessionText(raw.credentialUpdatedAt, "", 40)
     }];
   }).sort((left, right) => left.displayName.localeCompare(right.displayName) || left.id.localeCompare(right.id));
+}
+
+function normalizedLokiConfigurations() {
+  const source = Array.isArray(state.config?.infrastructureServices)
+    ? state.config.infrastructureServices
+    : [];
+  const seen = new Set();
+  return source.slice(0, 16).flatMap((raw) => {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
+    const id = String(raw.id || "").toLowerCase();
+    if (!INFRASTRUCTURE_ID_PATTERN.test(id) || seen.has(id) || raw.type !== "loki") return [];
+    seen.add(id);
+    const protocol = (() => {
+      try {
+        return new URL(raw.url).protocol;
+      } catch {
+        return "";
+      }
+    })();
+    const tlsMode = protocol === "http:"
+      ? "none"
+      : protocol === "https:" && raw.tlsMode === "pinned" ? "pinned" : "system";
+    const fingerprint = typeof raw.certificateFingerprint === "string"
+      && /^[a-f0-9]{64}$/u.test(raw.certificateFingerprint.toLowerCase())
+      ? raw.certificateFingerprint.toLowerCase()
+      : "";
+    const authMode = ["none", "basic", "bearer"].includes(raw.authMode) ? raw.authMode : "none";
+    return [{
+      id,
+      type: "loki",
+      typeName: safeSessionText(raw.typeName, "Loki", 80),
+      role: safeSessionText(raw.role, "Log aggregation and search", 80),
+      category: safeSessionText(raw.category, "Observability", 80),
+      displayName: safeSessionText(raw.displayName, "Loki", 80),
+      url: safeSessionText(raw.url, "", 500),
+      enabled: raw.enabled !== false,
+      monitoringEnabled: raw.monitoringEnabled !== false,
+      authMode,
+      tenantId: safeSessionText(raw.tenantId, "", 128),
+      tlsMode,
+      certificateFingerprint: tlsMode === "pinned" ? fingerprint : "",
+      targetRevision: safeSessionText(raw.targetRevision, "", 100),
+      credentialConfigured: raw.credentialConfigured === true,
+      credentialUpdatedAt: safeSessionText(raw.credentialUpdatedAt, "", 40)
+    }];
+  }).sort((left, right) => left.displayName.localeCompare(right.displayName) || left.id.localeCompare(right.id));
+}
+
+function queryableLokiConfigurations() {
+  return normalizedLokiConfigurations().filter(({ enabled, targetRevision }) => enabled && targetRevision);
+}
+
+function lokiConfigurationById(serviceId) {
+  return normalizedLokiConfigurations().find(({ id }) => id === serviceId) || null;
+}
+
+function lokiHealthById(serviceId) {
+  const services = Array.isArray(state.snapshot?.infrastructure?.services)
+    ? state.snapshot.infrastructure.services
+    : [];
+  const raw = services.find((service) => service?.id === serviceId && service?.type === "loki");
+  if (!raw) return null;
+  const connection = String(raw.connectionState || "unverified").toLowerCase().replaceAll("-", "_");
+  return {
+    state: statusClass(raw.state),
+    connectionState: ["connected", "auth_required", "unverified", "down"].includes(connection) ? connection : "unverified",
+    checkedAt: safeLogTimestamp(raw.checkedAt || raw.lastCheckedAt),
+    latencyMs: safeCheckLatency(raw.latencyMs),
+    version: safeSessionText(raw.version, "", 80)
+  };
 }
 
 function normalizedPortainerInventory(value, serverId, serverName) {
@@ -2794,6 +3475,31 @@ function renderPortainerConnectorCard(service) {
   </button>`;
 }
 
+function lokiConnectionLabel(service) {
+  const health = lokiHealthById(service.id);
+  if (!service.enabled) return "Disabled";
+  if (!service.monitoringEnabled) return "Query enabled · Monitoring off";
+  if (!health) return service.authMode === "none" || service.credentialConfigured ? "Waiting for verification" : "Credential required";
+  if (health.connectionState === "connected") return health.state === "healthy" ? "Connected · Healthy" : `Connected · ${statusLabel(health.state)}`;
+  if (health.connectionState === "auth_required") return "Authentication required";
+  if (health.connectionState === "down") return "Connection unavailable";
+  return "Waiting for verification";
+}
+
+function renderLokiConnectorCard(service) {
+  const health = lokiHealthById(service.id);
+  const stateName = !service.enabled ? "disabled" : service.monitoringEnabled ? health?.state || "stale" : "stale";
+  const credential = service.authMode === "none"
+    ? "No authentication"
+    : service.credentialConfigured ? `${authModeLabel(service.authMode)} protected` : "Credential missing";
+  return `<button class="service-card-v5 infrastructure-card" type="button" data-action="open-loki-service" data-loki-service-id="${escapeHtml(service.id)}" data-connector-provider="loki">
+    <span class="service-card-v5__letter service-card-v5__brand logging-connector-mark">${icon("logs")}</span>
+    <span class="service-card-v5__copy"><strong>${escapeHtml(service.displayName)}</strong><small>Loki · Observability</small><code>${escapeHtml(service.url || "Connection address unavailable")}</code></span>
+    <span class="service-card-v5__status"><i class="health-dot is-${statusClass(stateName)}"></i><b>${escapeHtml(lokiConnectionLabel(service))}</b><small>${escapeHtml(credential)}</small></span>
+    ${icon("chevron")}
+  </button>`;
+}
+
 function renderAvailableInfrastructureConnector({ provider, name, role, detail, action, actionLabel }) {
   if (provider === "proxmox") {
     return `<article class="service-card-v5 infrastructure-card connector-card--available service-card-v5--split" data-connector-provider="proxmox">
@@ -2806,7 +3512,7 @@ function renderAvailableInfrastructureConnector({ provider, name, role, detail, 
     </article>`;
   }
   return `<button class="service-card-v5 infrastructure-card connector-card--available" type="button" data-action="${escapeHtml(action)}" data-connector-provider="${escapeHtml(provider)}">
-    <span class="service-card-v5__letter service-card-v5__brand">${serviceIconMarkup(provider, name.slice(0, 1))}</span>
+    <span class="service-card-v5__letter service-card-v5__brand${provider === "loki" ? " logging-connector-mark" : ""}">${provider === "loki" ? icon("logs") : serviceIconMarkup(provider, name.slice(0, 1))}</span>
     <span class="service-card-v5__copy"><strong>${escapeHtml(name)}</strong><small>${escapeHtml(role)}</small><code>${escapeHtml(detail)}</code></span>
     <span class="service-card-v5__status"><i class="health-dot is-disabled"></i><b>Available</b><small>${escapeHtml(actionLabel)}</small></span>
     ${icon("chevron")}
@@ -2816,12 +3522,16 @@ function renderAvailableInfrastructureConnector({ provider, name, role, detail, 
 function renderInfrastructureConnectorsPage() {
   const proxmoxTargets = configuredInfrastructureTargetsForUi();
   const portainerServices = configuredPortainerServicesForUi();
-  const configuredCount = proxmoxTargets.length + portainerServices.length;
+  const lokiServices = normalizedLokiConfigurations();
+  const configuredCount = proxmoxTargets.length + portainerServices.length + lokiServices.length;
   const proxmoxAction = proxmoxTargets.length
     ? `<button class="button button--compact" type="button" data-action="open-infrastructure-target">${icon("plus")} Add environment</button>`
     : "";
   const portainerAction = portainerServices.length
     ? `<button class="button button--compact" type="button" data-action="open-portainer-service">${icon("plus")} Add server</button>`
+    : "";
+  const lokiAction = lokiServices.length
+    ? `<button class="button button--compact" type="button" data-action="open-loki-service">${icon("plus")} Add source</button>`
     : "";
   const proxmoxContent = proxmoxTargets.length
     ? proxmoxTargets.map(renderProxmoxConnectorCard).join("")
@@ -2843,6 +3553,16 @@ function renderInfrastructureConnectorsPage() {
         action: "open-portainer-service",
         actionLabel: "Connect with a scoped access token"
       });
+  const lokiContent = lokiServices.length
+    ? lokiServices.map(renderLokiConnectorCard).join("")
+    : renderAvailableInfrastructureConnector({
+        provider: "loki",
+        name: "Loki",
+        role: "Centralized log aggregation and search",
+        detail: "No log sources configured",
+        action: "open-loki-service",
+        actionLabel: "Connect an existing Loki server"
+      });
   const categories = [
     {
       id: "virtualization",
@@ -2861,6 +3581,15 @@ function renderInfrastructureConnectorsPage() {
       summary: `${portainerServices.length} configured`,
       action: portainerAction,
       content: `<div class="service-grid-v5 infrastructure-target-grid">${portainerContent}</div>`
+    },
+    {
+      id: "observability",
+      kicker: "Observability",
+      title: "Loki",
+      description: "Search logs already collected from hosts, containers, and applications without leaving Helmsman.",
+      summary: `${lokiServices.length} configured`,
+      action: lokiAction,
+      content: `<div class="service-grid-v5 infrastructure-target-grid">${lokiContent}</div>`
     }
   ];
   return `<section class="detail-page connections-page infrastructure-connections-page" id="infrastructure-connectors">
@@ -3450,12 +4179,17 @@ function portainerPortLabels(container) {
 function renderPortainerContainer(container) {
   const tone = portainerContainerTone(container);
   const ports = portainerPortLabels(container);
+  const logsHref = loggingContextHref({
+    view: "loki",
+    service: "portainer",
+    containerId: container.id
+  });
   return `<article class="portainer-container-row is-${tone}" data-portainer-container-key="${escapeHtml(container.key)}" tabindex="-1" aria-label="${escapeHtml(`${container.name}, ${portainerContainerStateLabel(container)}`)}">
     <div class="portainer-container-identity"><span class="portainer-container-mark">${workloadIconMarkup("lxc")}</span><span><strong>${escapeHtml(container.name)}</strong><small>Container ${escapeHtml(container.shortId)}</small><code title="${escapeHtml(container.image)}">${escapeHtml(container.image)}</code></span></div>
     <div class="portainer-container-placement"><span>Stack</span><strong>${escapeHtml(container.stack || "Standalone")}</strong><small>${container.stack ? "Compose-managed container" : "Not assigned to a visible stack"}</small></div>
     <div class="portainer-container-runtime"><span>Runtime</span><span class="portainer-status is-${tone}"><i class="health-dot is-${tone}"></i>${escapeHtml(portainerContainerStateLabel(container))}</span><small>${escapeHtml(container.status)}</small></div>
     <div class="portainer-container-ports"><span>Ports</span>${ports.length ? `<div>${ports.map((port) => `<code>${escapeHtml(port)}</code>`).join("")}</div>` : `<small>No ports reported</small>`}</div>
-    <div class="portainer-container-actions"><span>Actions</span>${renderPortainerContainerControls(container)}</div>
+    <div class="portainer-container-actions"><span>Actions</span><a class="portainer-container-log-link" href="${escapeHtml(logsHref)}">View logs ${icon("chevron")}</a>${renderPortainerContainerControls(container)}</div>
   </article>`;
 }
 
@@ -3558,9 +4292,26 @@ function renderAuthenticatedRoute() {
   return renderSettingsPage();
 }
 
+function applyContextualLoggingLinks() {
+  if (state.workspace !== "media" || !["home", "health"].includes(state.route)) return;
+  const incidents = normalizeOperationsSnapshot(mediaOnlyOperationsSnapshot(), []).incidents
+    .filter(({ scope }) => scope !== "infrastructure");
+  const links = [...(main.querySelectorAll?.(".operations-incidents__list .operations-incident .operations-text-link[href='#/logs']") || [])];
+  links.forEach((link, index) => {
+    const incident = incidents[index];
+    if (!incident) return;
+    link.setAttribute("href", loggingContextHref({
+      view: "loki",
+      service: incident.service,
+      code: incident.code,
+      from: incident.firstSeen
+    }));
+  });
+}
+
 function renderPage({ force = false, preserveFocus = false } = {}) {
   state.route = currentRoute();
-  const canonicalHash = `#/${state.route}`;
+  const canonicalHash = state.route === "logs" ? canonicalLoggingHash() : `#/${state.route}`;
   if (location.hash !== canonicalHash) location.replace(canonicalHash);
   document.querySelectorAll("[data-route]").forEach((link) => {
     const active = link.dataset.route === state.route;
@@ -3600,6 +4351,7 @@ function renderPage({ force = false, preserveFocus = false } = {}) {
     : 0;
   state.lastMarkup = markup;
   setMarkup(main, markup);
+  applyContextualLoggingLinks();
   if (preserveFocus) resolveFocusReference(focusedReference, main)?.focus({ preventScroll: true });
   if (state.status?.authenticated) {
     state.authGateFocusApplied = false;
@@ -4915,6 +5667,184 @@ function openPortainerService(serviceId = "") {
   syncPortainerForm(modalLayer.querySelector("#portainer-form"));
 }
 
+function lokiConnectionUnchanged(form) {
+  if (!form?.dataset?.lokiServiceId) return false;
+  const data = new FormData(form);
+  const url = String(data.get("url") || "").trim();
+  const authMode = String(data.get("authMode") || "none");
+  const tenantId = String(data.get("tenantId") || "").trim();
+  let secure = false;
+  try {
+    secure = new URL(url).protocol === "https:";
+  } catch {
+    secure = false;
+  }
+  const tlsMode = secure
+    ? String(data.get("tlsMode") || "system") === "pinned" ? "pinned" : "system"
+    : "none";
+  const fingerprint = tlsMode === "pinned" ? normalizedFingerprint(data.get("certificateFingerprint")) : "";
+  return url === form.dataset.originalUrl
+    && authMode === form.dataset.originalAuthMode
+    && tenantId === form.dataset.originalTenantId
+    && tlsMode === form.dataset.originalTlsMode
+    && fingerprint === form.dataset.originalFingerprint;
+}
+
+function syncLokiForm(form) {
+  if (!form) return;
+  const url = form.querySelector("input[name='url']");
+  const urlValue = String(url?.value || "").trim();
+  let protocol = "";
+  let urlMessage = "";
+  if (urlValue) {
+    try {
+      protocol = new URL(urlValue).protocol;
+      if (!["http:", "https:"].includes(protocol)) urlMessage = "Use a complete HTTP or HTTPS Loki URL.";
+    } catch {
+      urlMessage = "Enter a complete Loki URL.";
+    }
+  }
+  setFieldValidity(url, urlMessage);
+  const secure = protocol === "https:";
+  const tlsFieldset = form.querySelector("[data-loki-tls-controls]");
+  if (tlsFieldset) tlsFieldset.hidden = !secure;
+  for (const input of form.querySelectorAll("input[name='tlsMode']")) input.disabled = !secure;
+  const tlsMode = secure && form.querySelector("input[name='tlsMode']:checked")?.value === "pinned" ? "pinned" : "system";
+  const fingerprintPanel = form.querySelector("[data-loki-tls-panel='pinned']");
+  const fingerprint = form.querySelector("input[name='certificateFingerprint']");
+  if (fingerprintPanel) fingerprintPanel.hidden = !secure || tlsMode !== "pinned";
+  if (fingerprint) {
+    fingerprint.disabled = !secure || tlsMode !== "pinned";
+    fingerprint.required = secure && tlsMode === "pinned";
+    const compact = normalizedFingerprint(fingerprint.value);
+    setFieldValidity(fingerprint, fingerprint.required && compact && !/^[a-f0-9]{64}$/u.test(compact)
+      ? "Enter a valid SHA-256 certificate fingerprint."
+      : "");
+  }
+  const transportNote = form.querySelector("[data-loki-transport-note]");
+  if (transportNote) {
+    transportNote.classList.toggle("is-warning", protocol === "http:");
+    transportNote.querySelector("strong").textContent = protocol === "http:" ? "Private HTTP connection" : "Protected Loki connection";
+    transportNote.querySelector("span").textContent = protocol === "http:"
+      ? "HTTP is allowed only for unauthenticated Loki on a target that passes Helmsman's private-network policy."
+      : "HTTPS uses either system certificate trust or the exact pinned leaf-certificate fingerprint.";
+  }
+  const authMode = ["none", "basic", "bearer"].includes(form.querySelector("input[name='authMode']:checked")?.value)
+    ? form.querySelector("input[name='authMode']:checked").value
+    : "none";
+  const authSelection = form.querySelector("input[name='authMode']:checked");
+  setFieldValidity(authSelection, protocol === "http:" && authMode !== "none"
+    ? "Basic and bearer authentication require an HTTPS Loki URL."
+    : "");
+  const username = form.querySelector("input[name='username']");
+  const password = form.querySelector("input[name='password']");
+  const bearerToken = form.querySelector("input[name='bearerToken']");
+  const retaining = form.dataset.credentialConfigured === "true" && lokiConnectionUnchanged(form);
+  for (const panel of form.querySelectorAll("[data-loki-auth-panel]")) {
+    const selected = panel.dataset.lokiAuthPanel === authMode;
+    panel.hidden = !selected;
+    for (const input of panel.querySelectorAll("input")) input.disabled = !selected;
+  }
+  if (username && password) {
+    const supplied = Boolean(username.value || password.value);
+    username.required = authMode === "basic" && (!retaining || supplied);
+    password.required = authMode === "basic" && (!retaining || supplied);
+  }
+  if (bearerToken) bearerToken.required = authMode === "bearer" && (!retaining || Boolean(bearerToken.value));
+  const note = form.querySelector("[data-loki-credential-note]");
+  if (note) note.textContent = authMode === "none"
+    ? "No authentication header will be sent to Loki."
+    : retaining
+      ? "Leave the credential fields blank to keep the protected values. Changing the URL, tenant, authentication mode, or certificate trust requires them again."
+      : `${authModeLabel(authMode)} values are write-only and never returned to this browser.`;
+}
+
+function invalidateLokiTest(form) {
+  if (!form) return;
+  advanceServiceTestRevision(form);
+  const panel = form.querySelector("#loki-test-result");
+  if (panel) panel.hidden = true;
+}
+
+function lokiDraftBody(form) {
+  const data = new FormData(form);
+  const authMode = ["none", "basic", "bearer"].includes(data.get("authMode")) ? String(data.get("authMode")) : "none";
+  const url = String(data.get("url") || "").trim();
+  let secure = false;
+  try {
+    secure = new URL(url).protocol === "https:";
+  } catch {
+    secure = false;
+  }
+  const tlsMode = secure ? data.get("tlsMode") === "pinned" ? "pinned" : "system" : "none";
+  const body = {
+    type: "loki",
+    displayName: String(data.get("displayName") || "").trim(),
+    url,
+    enabled: data.get("enabled") === "on",
+    monitoringEnabled: data.get("monitoringEnabled") === "on",
+    authMode,
+    tenantId: String(data.get("tenantId") || "").trim(),
+    tlsMode,
+    certificateFingerprint: tlsMode === "pinned" ? normalizedFingerprint(data.get("certificateFingerprint")) : null
+  };
+  if (authMode === "basic") {
+    const username = String(data.get("username") || "");
+    const password = String(data.get("password") || "");
+    if (username || password) body.credentials = { username, password };
+  } else if (authMode === "bearer") {
+    const bearerToken = String(data.get("bearerToken") || "");
+    if (bearerToken) body.credentials = { token: bearerToken };
+  }
+  return body;
+}
+
+function renderLokiModal(service = null) {
+  const existing = Boolean(service);
+  const authMode = service?.authMode || "none";
+  const secure = service?.url ? (() => {
+    try {
+      return new URL(service.url).protocol === "https:";
+    } catch {
+      return true;
+    }
+  })() : true;
+  const tlsMode = secure ? service?.tlsMode === "pinned" ? "pinned" : "system" : "none";
+  const health = service ? lokiHealthById(service.id) : null;
+  const credentialTitle = authMode === "none"
+    ? "No authentication configured"
+    : service?.credentialConfigured ? "Protected Loki credential saved" : "No Loki credential saved";
+  return `<section class="modal-card modal-card--service modal-card--loki" role="dialog" aria-modal="true" aria-labelledby="loki-modal-title" aria-describedby="loki-modal-description">
+    <header class="modal-card__header"><span class="service-card-v5__letter service-card-v5__brand logging-connector-mark">${icon("logs")}</span><div><span class="section-kicker">Observability</span><h2 id="loki-modal-title" tabindex="-1">${existing ? escapeHtml(service.displayName) : "Connect Loki"}</h2><p id="loki-modal-description">${existing ? "Edit this Loki connection without exposing its saved credential." : "Connect an existing Loki server for transient log search inside Helmsman."}</p></div><button class="icon-button" type="button" data-action="close-modal" aria-label="Close">${icon("x")}</button></header>
+    <form id="loki-form" data-loki-service-id="${escapeHtml(service?.id || "")}" data-original-url="${escapeHtml(service?.url || "")}" data-original-auth-mode="${escapeHtml(authMode)}" data-original-tenant-id="${escapeHtml(service?.tenantId || "")}" data-original-tls-mode="${escapeHtml(tlsMode)}" data-original-fingerprint="${escapeHtml(service?.certificateFingerprint || "")}" data-credential-configured="${service?.credentialConfigured ? "true" : "false"}" autocomplete="off" data-form-type="other">
+      <div class="modal-card__body">
+        <div class="form-grid form-grid--two"><label for="loki-display-name"><span>Display name</span><input id="loki-display-name" name="displayName" type="text" maxlength="80" autocomplete="off" value="${escapeHtml(service?.displayName || "Loki")}" required /></label><label for="loki-url"><span>Full Loki URL</span><input id="loki-url" name="url" type="url" inputmode="url" autocomplete="url" autocapitalize="off" spellcheck="false" value="${escapeHtml(service?.url || "")}" required placeholder="http://loki.internal:3100" /><small>Use an address reachable from inside the Helmsman container.</small></label></div>
+        <div class="security-note ${secure ? "security-note--good" : ""}" data-loki-transport-note>${icon(secure ? "shield" : "lock")}<div><strong>${secure ? "Protected Loki connection" : "Private HTTP connection"}</strong><span>${secure ? "HTTPS uses either system certificate trust or the exact pinned leaf-certificate fingerprint." : "HTTP is allowed only for unauthenticated Loki on a target that passes Helmsman's private-network policy."}</span></div></div>
+        <fieldset class="auth-method-fieldset" data-loki-tls-controls ${secure ? "" : "hidden"}><legend>Certificate trust</legend><div class="auth-mode-grid"><label class="option-card-v5"><input name="tlsMode" type="radio" value="system" ${tlsMode === "system" ? "checked" : ""}/><span><strong>System trust</strong><small>Use a trusted CA and matching hostname.</small></span></label><label class="option-card-v5"><input name="tlsMode" type="radio" value="pinned" ${tlsMode === "pinned" ? "checked" : ""}/><span><strong>Pinned fingerprint</strong><small>Use the exact SHA-256 leaf certificate.</small></span></label></div></fieldset>
+        <div class="service-auth-panel" data-loki-tls-panel="pinned" ${secure && tlsMode === "pinned" ? "" : "hidden"}><label for="loki-certificate-fingerprint"><span>SHA-256 certificate fingerprint</span><input id="loki-certificate-fingerprint" name="certificateFingerprint" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" data-1p-ignore="true" data-bwignore="true" data-lpignore="true" value="${escapeHtml(service?.certificateFingerprint || "")}" ${secure && tlsMode === "pinned" ? "required" : "disabled"} placeholder="64 hexadecimal characters" /></label></div>
+        <fieldset class="auth-method-fieldset"><legend>Loki authentication</legend><div class="auth-mode-grid auth-mode-grid--three"><label class="option-card-v5"><input name="authMode" type="radio" value="none" ${authMode === "none" ? "checked" : ""}/><span><strong>None</strong><small>No authorization header</small></span></label><label class="option-card-v5"><input name="authMode" type="radio" value="basic" ${authMode === "basic" ? "checked" : ""}/><span><strong>Basic</strong><small>Username and password</small></span></label><label class="option-card-v5"><input name="authMode" type="radio" value="bearer" ${authMode === "bearer" ? "checked" : ""}/><span><strong>Bearer</strong><small>Protected access token</small></span></label></div></fieldset>
+        <div class="service-auth-panel" data-loki-auth-panel="basic" ${authMode === "basic" ? "" : "hidden"}><div class="form-grid form-grid--stacked"><label for="loki-username"><span>Username</span><input id="loki-username" name="username" type="text" autocomplete="username" maxlength="180" ${authMode === "basic" ? "" : "disabled"} placeholder="${service?.credentialConfigured && authMode === "basic" ? "Blank keeps the saved username" : "Loki username"}" /></label><label for="loki-password"><span>Password</span><input id="loki-password" name="password" type="password" autocomplete="new-password" maxlength="500" data-1p-ignore="true" data-bwignore="true" data-lpignore="true" ${authMode === "basic" ? "" : "disabled"} placeholder="${service?.credentialConfigured && authMode === "basic" ? "Blank keeps the saved password" : "Loki password"}" /></label></div></div>
+        <div class="service-auth-panel" data-loki-auth-panel="bearer" ${authMode === "bearer" ? "" : "hidden"}><label for="loki-bearer-token"><span>Bearer token</span><input id="loki-bearer-token" name="bearerToken" type="password" autocomplete="new-password" maxlength="2000" data-1p-ignore="true" data-bwignore="true" data-lpignore="true" ${authMode === "bearer" ? "" : "disabled"} placeholder="${service?.credentialConfigured && authMode === "bearer" ? "Blank keeps the saved token" : "Paste bearer token"}" /></label></div>
+        <p class="auth-retention-note" data-loki-credential-note>${authMode === "none" ? "No authentication header will be sent to Loki." : service?.credentialConfigured ? "Leave credential fields blank to keep the protected values." : `${authModeLabel(authMode)} values are write-only and never returned to this browser.`}</p>
+        <label for="loki-tenant-id"><span>Tenant ID <small>Optional</small></span><input id="loki-tenant-id" name="tenantId" type="text" maxlength="128" autocomplete="off" autocapitalize="off" spellcheck="false" value="${escapeHtml(service?.tenantId || "")}" placeholder="X-Scope-OrgID value" /><small>Leave blank for single-tenant Loki.</small></label>
+        <div class="form-grid form-grid--two"><label class="check-row"><input name="enabled" type="checkbox" ${service?.enabled === false ? "" : "checked"}/><span><strong>Enable this connection</strong><small>Disabled connections remain saved but cannot be queried.</small></span></label><label class="check-row"><input name="monitoringEnabled" type="checkbox" ${service?.monitoringEnabled === false ? "" : "checked"}/><span><strong>Monitor Loki</strong><small>Check readiness and bounded query access when Helmsman refreshes.</small></span></label></div>
+        <div class="credential-state ${service?.credentialConfigured || authMode === "none" ? "is-configured" : ""}">${icon(service?.credentialConfigured || authMode === "none" ? "check" : "lock")}<div><strong>${escapeHtml(credentialTitle)}</strong><span>Saved credential values are encrypted, destination-bound, and cannot be displayed by this interface.</span></div></div>
+        ${health ? `<div class="service-health-inline" aria-label="Saved Loki monitor status"><span class="health-dot is-${statusClass(health.state)}"></span><div class="service-health-inline__copy"><small>Saved monitor</small><strong>${escapeHtml(lokiConnectionLabel(service))}</strong></div><span>${escapeHtml([health.version ? `Loki ${health.version}` : "", health.latencyMs === null ? "" : `${health.latencyMs} ms`].filter(Boolean).join(" · "))}</span><span>${escapeHtml(formatTime(health.checkedAt))}</span></div>` : ""}
+        <div class="connection-test-result" id="loki-test-result" role="status" aria-live="polite" hidden><span class="health-dot is-checking" aria-hidden="true"></span><div><span class="connection-test-result__kicker">Current connection test</span><strong data-test-title></strong><small data-test-detail></small><div data-test-capabilities></div><small class="connection-test-result__note" data-test-note></small></div></div>
+        <p class="form-error" id="loki-error" role="alert"></p>
+      </div>
+      <footer class="modal-card__footer">${existing ? `<button class="button button--danger" type="button" data-action="delete-loki-service" data-loki-service-id="${escapeHtml(service.id)}">Remove connection</button>` : "<span></span>"}<div class="modal-card__actions"><button class="button" type="button" data-action="test-loki-service">Test connection</button><button class="button button--primary" type="submit">${existing ? "Save connection" : "Connect Loki"}</button></div></footer>
+    </form>
+  </section>`;
+}
+
+function openLokiService(serviceId = "") {
+  const service = serviceId ? lokiConfigurationById(serviceId) : null;
+  if (serviceId && !service) return showToast("That Loki connection is no longer available.", "danger");
+  openModal(renderLokiModal(service), "#loki-display-name");
+  syncLokiForm(modalLayer.querySelector("#loki-form"));
+}
+
 function proxmoxEndpointDraftBody(form) {
   const data = new FormData(form);
   const tlsMode = String(data.get("tlsMode") || "system") === "pinned" ? "pinned" : "system";
@@ -5507,6 +6437,131 @@ async function deletePortainerService(serviceId, button) {
     applyLocalSuccess: () => {
       if (state.config && Array.isArray(state.config.infrastructureServices)) {
         state.config.infrastructureServices = state.config.infrastructureServices.filter(({ id }) => id !== serviceId);
+      }
+    },
+    onSuccess: async () => {
+      closeModal();
+      await loadAuthenticatedData({ refresh: true });
+    }
+  });
+}
+
+async function testLokiService(form, button) {
+  if (!form) return;
+  syncLokiForm(form);
+  if (!form.reportValidity()) return;
+  const error = form.querySelector("#loki-error");
+  const panel = form.querySelector("#loki-test-result");
+  const serviceId = form.dataset.lokiServiceId;
+  const hasNewCredential = Boolean(
+    form.querySelector("input[name='username']")?.value
+    || form.querySelector("input[name='password']")?.value
+    || form.querySelector("input[name='bearerToken']")?.value
+  );
+  const useSaved = Boolean(serviceId) && lokiConnectionUnchanged(form) && !hasNewCredential;
+  const revision = advanceServiceTestRevision(form);
+  error.textContent = "";
+  panel.hidden = false;
+  panel.dataset.state = "checking";
+  panel.querySelector(".health-dot").className = "health-dot is-checking";
+  panel.querySelector("[data-test-title]").textContent = "Testing Loki connection";
+  panel.querySelector("[data-test-detail]").textContent = "Checking readiness, authorization, labels, and bounded query access…";
+  setMarkup(panel.querySelector("[data-test-capabilities]"), "");
+  panel.querySelector("[data-test-note]").textContent = "Read-only test — nothing is saved.";
+  button.disabled = true;
+  button.setAttribute("aria-busy", "true");
+  try {
+    const result = await api(useSaved
+      ? `/api/v2/infrastructure/services/${encodeURIComponent(serviceId)}/test`
+      : "/api/v2/infrastructure/services/test", {
+      method: "POST",
+      body: useSaved ? {} : lokiDraftBody(form)
+    });
+    if (form.isConnected && form.dataset.testRevision === revision) {
+      showConnectionTestResult(form, { ...result, service: "loki" }, "#loki-test-result");
+      panel.querySelector("[data-test-note]").textContent = `Tested ${formatTime(result?.checkedAt, "just now")}. Read-only test — nothing was saved.`;
+    }
+  } catch (caught) {
+    if (form.isConnected && form.dataset.testRevision === revision) {
+      panel.hidden = true;
+      error.textContent = caught.message;
+    }
+  } finally {
+    if (button.isConnected) {
+      button.disabled = false;
+      button.removeAttribute("aria-busy");
+    }
+  }
+}
+
+async function submitLokiService(form) {
+  syncLokiForm(form);
+  if (!form.reportValidity()) return;
+  const serviceId = form.dataset.lokiServiceId;
+  const error = form.querySelector("#loki-error");
+  const submit = form.querySelector("button[type='submit']");
+  error.textContent = "";
+  submit.disabled = true;
+  submit.setAttribute("aria-busy", "true");
+  try {
+    const selectedBeforeSave = state.logging.loki.connectorId;
+    const saved = await api(serviceId
+      ? `/api/v2/infrastructure/services/${encodeURIComponent(serviceId)}`
+      : "/api/v2/infrastructure/services", {
+      method: serviceId ? "PUT" : "POST",
+      body: lokiDraftBody(form)
+    });
+    closeModal();
+    await loadAuthenticatedData({ refresh: true });
+    const queryable = queryableLokiConfigurations();
+    const savedQueryable = queryable.find(({ id }) => id === saved?.id);
+    if (!selectedBeforeSave || selectedBeforeSave === serviceId) {
+      state.logging.loki.connectorId = savedQueryable?.id || queryable[0]?.id || "";
+      state.logging.loki.entries = [];
+      state.logging.loki.truncated = false;
+      state.logging.loki.stats = null;
+      state.logging.loki.lastRunAt = "";
+      state.logging.loki.resultRouteHash = "";
+    }
+    state.lastMarkup = "";
+    renderPage({ force: true, preserveFocus: true });
+    showToast(serviceId ? "Loki connection updated." : "Loki connected.", "success");
+  } catch (caught) {
+    error.textContent = caught.message;
+  } finally {
+    if (submit?.isConnected) {
+      submit.disabled = false;
+      submit.removeAttribute("aria-busy");
+    }
+  }
+}
+
+async function deleteLokiService(serviceId, button) {
+  if (!INFRASTRUCTURE_ID_PATTERN.test(String(serviceId || ""))) return;
+  const service = lokiConfigurationById(serviceId);
+  if (!service) return;
+  const targetRevision = service.targetRevision;
+  await runConfirmedDeletion(button, {
+    key: `delete:loki:${serviceId}`,
+    title: "Remove Loki connection?",
+    message: `Remove ${service.displayName} and its protected authentication values? Built-in Helmsman logs will remain available.`,
+    confirmLabel: "Remove connection",
+    path: `/api/v2/infrastructure/services/${encodeURIComponent(serviceId)}`,
+    validate: () => lokiConfigurationById(serviceId)?.targetRevision === targetRevision,
+    staleMessage: "That Loki connection changed while confirmation was open. Review it before removing it.",
+    successMessage: "Loki connection and its protected authentication values were removed.",
+    applyLocalSuccess: () => {
+      if (state.config && Array.isArray(state.config.infrastructureServices)) {
+        state.config.infrastructureServices = state.config.infrastructureServices.filter(({ id }) => id !== serviceId);
+      }
+      if (state.logging.loki.connectorId === serviceId) {
+        state.logging.loki.connectorId = "";
+        state.logging.loki.entries = [];
+        state.logging.loki.truncated = false;
+        state.logging.loki.stats = null;
+        state.logging.loki.error = "";
+        state.logging.loki.lastRunAt = "";
+        state.logging.loki.resultRouteHash = "";
       }
     },
     onSuccess: async () => {
@@ -6347,6 +7402,7 @@ function clearAuthenticatedState() {
   state.operationsRefreshPromise = null;
   state.refreshing = false;
   state.infrastructure = emptyInfrastructureState();
+  state.logging = emptyLoggingState();
   state.lastMarkup = "";
 }
 
@@ -6384,6 +7440,36 @@ async function loadAuthenticatedData(options = {}) {
   if (options.refresh) await refreshOperations();
 }
 
+function applyLoggingRouteContext() {
+  const context = loggingRouteContext();
+  if (context.service) {
+    state.logging.loki.service = context.service;
+    state.logging.loki.contextService = context.service;
+  } else if (state.logging.loki.contextService) {
+    if (state.logging.loki.service === state.logging.loki.contextService) state.logging.loki.service = "";
+    state.logging.loki.contextService = "";
+  }
+  if (context.connectorId && queryableLokiConfigurations().some(({ id }) => id === context.connectorId)) {
+    state.logging.loki.connectorId = context.connectorId;
+  } else {
+    const connectorId = lokiConnectorIdForMonitorService(context.service);
+    if (connectorId && queryableLokiConfigurations().some(({ id }) => id === connectorId)) {
+      state.logging.loki.connectorId = connectorId;
+    }
+  }
+}
+
+async function loadLoggingRouteData({ contextualQuery = true } = {}) {
+  if (!state.status?.authenticated || currentRoute() !== "logs") return;
+  applyLoggingRouteContext();
+  if (!state.logging.journal.loaded) await loadJournalLogs({ render: false });
+  const context = loggingRouteContext();
+  const hasContext = Boolean(context.service || context.code || context.from || context.containerId || context.node || context.workloadId);
+  if (contextualQuery && context.view === "loki" && hasContext && queryableLokiConfigurations().length) {
+    await runLokiQuery({ render: false });
+  }
+}
+
 function schedulePolling() {
   clearInterval(state.pollTimer);
   state.pollTimer = setInterval(async () => {
@@ -6408,7 +7494,10 @@ async function initialize() {
   try {
     state.status = await api("/api/v2/status");
     state.csrfToken = state.status.csrfToken || "";
-    if (state.status.authenticated) await loadAuthenticatedData();
+    if (state.status.authenticated) {
+      await loadAuthenticatedData();
+      if (currentRoute() === "logs") await loadLoggingRouteData();
+    }
     else {
       state.config = null;
       state.snapshot = null;
@@ -6472,6 +7561,7 @@ document.addEventListener("click", async (event) => {
   if (action === "open-infrastructure-node") openInfrastructureNode(target.dataset.infrastructureNodeId);
   if (action === "open-infrastructure-workload") openInfrastructureWorkload(target.dataset.infrastructureWorkloadId);
   if (action === "open-portainer-service") openPortainerService(target.dataset.portainerServiceId || "");
+  if (action === "open-loki-service") openLokiService(target.dataset.lokiServiceId || "");
   if (action === "open-portainer-overview") {
     const serviceId = String(target.dataset.portainerOverviewId || "").toLowerCase();
     if (normalizedPortainerConfigurations().some(({ id }) => id === serviceId)) {
@@ -6494,10 +7584,14 @@ document.addEventListener("click", async (event) => {
   if (action === "close-modal") closeModal();
   if (action === "retry-startup") initialize();
   if (action === "refresh-live") refreshOperations({ announce: true });
+  if (action === "refresh-journal") await loadJournalLogs();
+  if (action === "load-more-journal") await loadJournalLogs({ append: true });
   if (action === "test-service") testService(target.closest("#service-form"), target);
   if (action === "delete-service") await deleteService(target.dataset.serviceId, target);
   if (action === "test-portainer-service") testPortainerService(target.closest("#portainer-form"), target);
   if (action === "delete-portainer-service") await deletePortainerService(target.dataset.portainerServiceId, target);
+  if (action === "test-loki-service") testLokiService(target.closest("#loki-form"), target);
+  if (action === "delete-loki-service") await deleteLokiService(target.dataset.lokiServiceId, target);
   if (action === "test-infrastructure-target") testInfrastructureTarget(target.closest("#proxmox-form"), target);
   if (action === "delete-infrastructure-target") await deleteInfrastructureTarget(target.dataset.infrastructureTargetId, target);
   if (action === "test-infrastructure-endpoint") testInfrastructureEndpoint(target.closest("#proxmox-endpoint-form"), target);
@@ -6538,6 +7632,17 @@ document.addEventListener("change", (event) => {
     syncSeasonSelection(event.target.closest?.("[data-season-panel]"), event.target);
   }
   const fieldName = String(event.target?.name || "");
+  const lokiQueryForm = event.target.closest?.("#loki-query-form");
+  if (lokiQueryForm && ["connectorId", "range", "service", "query", "search"].includes(fieldName)) {
+    syncLokiQueryControls(lokiQueryForm);
+    invalidateLokiQueryResults({ inPlace: true });
+  }
+  const journalFilter = event.target?.dataset?.journalFilter;
+  if (journalFilter && journalFilter !== "search" && ["level", "source", "range"].includes(journalFilter)) {
+    state.logging.journal.filters[journalFilter] = String(event.target.value || "all");
+    state.lastMarkup = "";
+    renderPage({ force: true, preserveFocus: true });
+  }
   const portainerFilter = event.target?.dataset?.portainerFilter;
   if (portainerFilter && portainerFilter !== "search") {
     state.infrastructure.portainerFilters[portainerFilter] = String(event.target.value || "all");
@@ -6576,10 +7681,28 @@ document.addEventListener("change", (event) => {
     syncPortainerForm(portainerForm);
     invalidatePortainerTest(portainerForm);
   }
+  const lokiForm = event.target.closest?.("#loki-form");
+  if (lokiForm && ["tlsMode", "authMode", "url", "tenantId", "certificateFingerprint", "username", "password", "bearerToken"].includes(fieldName)) {
+    syncLokiForm(lokiForm);
+    invalidateLokiTest(lokiForm);
+  }
 });
 
 document.addEventListener("input", (event) => {
   const fieldName = String(event.target?.name || "");
+  const lokiQueryForm = event.target.closest?.("#loki-query-form");
+  if (lokiQueryForm && ["query", "search"].includes(fieldName)) {
+    syncLokiQueryControls(lokiQueryForm);
+    invalidateLokiQueryResults({ inPlace: true });
+  }
+  if (event.target?.dataset?.journalFilter === "search") {
+    state.logging.journal.filters.search = String(event.target.value || "").slice(0, 160);
+    clearTimeout(loggingFilterTimer);
+    loggingFilterTimer = setTimeout(() => {
+      state.lastMarkup = "";
+      renderPage({ force: true, preserveFocus: true });
+    }, 120);
+  }
   const mediaFilter = event.target?.dataset?.mediaFilter;
   if (["homeSearch", "discover", "library"].includes(mediaFilter)) {
     state.media.filters[mediaFilter] = String(event.target.value || "").slice(0, 120);
@@ -6623,6 +7746,11 @@ document.addEventListener("input", (event) => {
     syncPortainerForm(portainerForm);
     invalidatePortainerTest(portainerForm);
   }
+  const lokiForm = event.target.closest?.("#loki-form");
+  if (lokiForm && ["url", "tenantId", "certificateFingerprint", "username", "password", "bearerToken"].includes(fieldName)) {
+    syncLokiForm(lokiForm);
+    invalidateLokiTest(lokiForm);
+  }
 });
 
 document.addEventListener("error", (event) => {
@@ -6633,6 +7761,10 @@ document.addEventListener("error", (event) => {
 
 document.addEventListener("submit", (event) => {
   event.preventDefault();
+  if (event.target.id === "loki-query-form") {
+    syncLokiQueryControls(event.target);
+    runLokiQuery();
+  }
   if (event.target.id === "media-search-form") {
     state.media.filters.library = String(new FormData(event.target).get("query") || state.media.filters.homeSearch || "").slice(0, 120);
     location.hash = "#/library";
@@ -6643,16 +7775,27 @@ document.addEventListener("submit", (event) => {
   if (event.target.id === "legacy-access-login-form") submitLegacyAccessLogin(event.target);
   if (event.target.id === "service-form") submitService(event.target);
   if (event.target.id === "portainer-form") submitPortainerService(event.target);
+  if (event.target.id === "loki-form") submitLokiService(event.target);
   if (event.target.id === "proxmox-form") submitInfrastructureTarget(event.target);
   if (event.target.id === "proxmox-endpoint-form") submitInfrastructureEndpoint(event.target);
   if (event.target.id === "network-form") submitNetwork(event.target);
 });
 
-window.addEventListener("hashchange", () => {
+window.addEventListener("hashchange", async () => {
   closeControlConfirmation(false, { restoreFocus: false });
   closeMediaDrawer({ restoreFocus: false });
+  if (currentRoute() === "logs"
+    && state.logging.loki.resultRouteHash
+    && state.logging.loki.resultRouteHash !== canonicalLoggingHash()) {
+    invalidateLokiQueryResults();
+  }
   state.lastMarkup = "";
   renderPage({ force: true });
+  if (currentRoute() === "logs" && state.status?.authenticated) {
+    await loadLoggingRouteData();
+    state.lastMarkup = "";
+    renderPage({ force: true });
+  }
   resetRouteScroll();
   main.focus({ preventScroll: true });
 });

@@ -35,6 +35,31 @@ real media titles, usernames, file paths, container labels, and raw API
 responses. Prefer the smallest reproducible test fixture over screenshots or
 logs from a live installation.
 
+## Logging and Loki data
+
+The built-in operational journal writes private JSONL segments under
+`/data/logs`. It uses an allowlisted event schema and excludes credentials,
+cookies, authorization headers, request bodies, upstream response bodies, raw
+LogQL, and Loki result lines. Its default retention boundaries are 14 days and
+20 MiB total. Sanitization reduces exposure but does not make the journal
+public: timestamps, service names, bounded identifiers, action names, and safe
+failure codes can still reveal deployment details. Protect these files and
+their backups, and sanitize copied entries before reporting an issue.
+
+The journal is an operational history, not a forensic or per-user audit trail.
+Helmsman has one enrolled Jellyfin owner and does not attribute an action to a
+separate Helmsman account. The container's standard-output stream is separate
+from the journal and can include the one-time setup token while the instance is
+unclaimed; protect Docker logs accordingly.
+
+Loki query results are transient and are not copied into `/data/logs`, but
+they originate in other applications and can contain secrets, internal paths,
+hostnames, media names, or personal data despite Helmsman's bounded response
+normalization and secret-pattern redaction. Restrict access to the authenticated
+**Logs** workspace and review results before copying, exporting, or sharing
+screenshots. Grafana is optional and has its own access-control and data-handling
+boundary when deployed.
+
 ## Deployment boundary
 
 Keep the published container port private or restricted to a trusted HTTPS
@@ -44,7 +69,10 @@ Helmsman to perform, and never mount the Docker socket. Authentik or another ide
 protects browser entry only; it does not replace the credentials Helmsman uses
 for upstream services.
 
-Monitoring and probes use fixed read-only GET routes. The only writes are
+Monitoring and probes use fixed read-only GET routes. Loki access is limited
+to fixed readiness/metadata/label checks and bounded `query_range` reads; there
+is no push, delete, administrative, configuration, ruler, live-tail, or general
+Loki proxy route. The only writes are
 Helmsman-confirmed Portainer container start/restart/graceful-stop, Proxmox
 QEMU/LXC start/reboot/graceful-shutdown, Seerr failed-request retry, a selected
 standard-season request for one exact current series through Seerr, and targeted
@@ -57,6 +85,15 @@ record after approval and sends a fixed method, path, query, and request-body
 template. The browser cannot provide an arbitrary upstream path or body.
 Helmsman exposes no general upstream or Docker API proxy, SSH, shell, console,
 host mount, or generic delete/remove, force-stop, reset, kill, or bulk action.
+
+Loki supports unauthenticated access, HTTP Basic authentication, or bearer authentication,
+plus an optional `X-Scope-OrgID` tenant header. Basic and bearer secrets are
+destination-bound encrypted credentials and are sent only over HTTPS. HTTPS
+requires system certificate validation or an explicitly reviewed pinned
+SHA-256 leaf fingerprint; there is no ignore-certificate-errors mode. Plain
+HTTP is allowed only without authentication and only to a destination accepted
+by Helmsman's private-network policy. Public HTTP is always rejected, and
+public HTTPS still requires the deployment's explicit public-HTTPS opt-in.
 
 Browser access belongs to one exact enabled Jellyfin administrator. Enrollment
 and login ask only for that account's username and password; Helmsman obtains

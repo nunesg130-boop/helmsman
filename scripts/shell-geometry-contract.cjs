@@ -77,7 +77,7 @@ function downloadFixture() {
 }
 
 function instrumentedShell(root, fixture = homeFixture()) {
-  const cssFiles = ["styles.css", "src/ui/operations.css", "src/ui/control.css", "src/ui/retro.css"];
+  const cssFiles = ["styles.css", "src/ui/operations.css", "src/ui/control.css", "src/ui/logging.css", "src/ui/retro.css"];
   const css = cssFiles.map((file) => readFileSync(path.join(root, file), "utf8")).join("\n");
   let html = readFileSync(path.join(root, "index.html"), "utf8");
   html = html

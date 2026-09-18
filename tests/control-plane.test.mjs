@@ -350,21 +350,20 @@ function runResetAccess(dataDir) {
 }
 
 async function assertFilesDoNotContain(directory, forbiddenValues) {
-  const names = await readdir(directory);
-  for (const name of names) {
-    const filePath = path.join(directory, name);
-    let bytes;
-    try {
-      bytes = await readFile(filePath);
-    } catch (error) {
-      if (error?.code === "EISDIR") continue;
-      throw error;
+  const entries = await readdir(directory, { withFileTypes: true });
+  for (const entry of entries) {
+    const filePath = path.join(directory, entry.name);
+    if (entry.isDirectory()) {
+      await assertFilesDoNotContain(filePath, forbiddenValues);
+      continue;
     }
+    if (!entry.isFile()) continue;
+    const bytes = await readFile(filePath);
     for (const forbidden of forbiddenValues) {
       assert.equal(
         bytes.includes(Buffer.from(forbidden, "utf8")),
         false,
-        `${name} persisted a forbidden plaintext value`
+        `${filePath} persisted a forbidden plaintext value`
       );
     }
   }

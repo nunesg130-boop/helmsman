@@ -281,7 +281,7 @@ the GitHub Release passes verification, the script keeps the downloaded assets
 in a local directory such as:
 
 ```text
-%USERPROFILE%\Downloads\helmsman-v1.0.5\helmsman-1.0.5-deployment-assets
+%USERPROFILE%\Downloads\helmsman-v1.0.6\helmsman-1.0.6-deployment-assets
 ```
 
 It then prints—but does not execute—the exact `ssh` and `scp` commands that
@@ -290,12 +290,12 @@ create the configured release directory and transfer the verified
 printed commands from the same PowerShell window. Their shape is:
 
 ```powershell
-$Assets = "$env:USERPROFILE\Downloads\helmsman-v1.0.5\helmsman-1.0.5-deployment-assets"
+$Assets = "$env:USERPROFILE\Downloads\helmsman-v1.0.6\helmsman-1.0.6-deployment-assets"
 $DeployHost = "deploy-user@helmsman-host.example"
-ssh $DeployHost "mkdir -p /srv/apps/helmsman/releases/v1.0.5"
-scp "$Assets\compose.yaml" "${DeployHost}:/srv/apps/helmsman/releases/v1.0.5/"
-scp "$Assets\container.env.example" "${DeployHost}:/srv/apps/helmsman/releases/v1.0.5/"
-scp "$Assets\SHA256SUMS" "${DeployHost}:/srv/apps/helmsman/releases/v1.0.5/"
+ssh $DeployHost "mkdir -p /srv/apps/helmsman/releases/v1.0.6"
+scp "$Assets\compose.yaml" "${DeployHost}:/srv/apps/helmsman/releases/v1.0.6/"
+scp "$Assets\container.env.example" "${DeployHost}:/srv/apps/helmsman/releases/v1.0.6/"
+scp "$Assets\SHA256SUMS" "${DeployHost}:/srv/apps/helmsman/releases/v1.0.6/"
 ssh $DeployHost
 ```
 
@@ -307,7 +307,7 @@ of running the printed block unchanged. The standard block first executes:
 
 ```sh
 set -euo pipefail
-cd /srv/apps/helmsman/releases/v1.0.5
+cd /srv/apps/helmsman/releases/v1.0.6
 sha256sum --strict --check SHA256SUMS
 ```
 
@@ -317,8 +317,8 @@ Only verified assets proceed to installation. The remaining printed commands:
   so a retry cannot overwrite the original rollback point; inspect or resume a
   partially completed attempt manually;
 - back up the configured installation's `compose.yaml` and, when present,
-  `.env` as `compose.yaml.before-1.0.5` and
-  `.env.before-1.0.5`;
+  `.env` as `compose.yaml.before-1.0.6` and
+  `.env.before-1.0.6`;
 - explicitly unset shell-level image and Compose selector variables so they
   cannot override the verified configuration or the project choice retained
   in `.env`;
@@ -352,9 +352,9 @@ the resolved image before recreating the container:
 ```sh
 set -euo pipefail
 cd /srv/apps/helmsman
-cp -- compose.yaml.before-1.0.5 compose.yaml
-if [ -f .env.before-1.0.5 ]; then
-  cp -- .env.before-1.0.5 .env
+cp -- compose.yaml.before-1.0.6 compose.yaml
+if [ -f .env.before-1.0.6 ]; then
+  cp -- .env.before-1.0.6 .env
   helmsman_env_file=.env
 else
   rm -f -- .env

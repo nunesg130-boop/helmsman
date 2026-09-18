@@ -53,6 +53,13 @@ const ACTION_COOLDOWN_MS = 30 * 1000;
 const MAX_RECENT_ACTIONS = 2_048;
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u;
 const PROXMOX_TOKEN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}@[A-Za-z0-9][A-Za-z0-9._-]{0,63}![A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
+const LOKI_TENANT_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
+const LOKI_BASIC_USERNAME = /^[^:\u0000-\u001f\u007f-\u009f\u2028\u2029]{1,320}$/u;
+const LOKI_BEARER_TOKEN = /^[A-Za-z0-9\-._~+/]+=*$/u;
+const MAX_LOKI_QUERY_CODE_POINTS = 4_096;
+const MAX_LOKI_QUERY_RANGE_MS = 24 * 60 * 60 * 1_000;
+const MAX_LOKI_QUERY_LIMIT = 500;
+const LOG_QUERY_KEYS = new Set(["limit", "cursor", "level", "category", "service", "from", "to", "q"]);
 const MEDIA_ARTWORK_TOKEN = /^[a-f0-9]{16,64}$/u;
 const MEDIA_ARTWORK_TYPE = /^image\/(?:avif|gif|jpeg|png|webp)$/u;
 const MEDIA_DETAIL_REVISION = /^[a-f0-9]{64}$/u;
@@ -177,12 +184,54 @@ export const INFRASTRUCTURE_SERVICE_DEFINITIONS = Object.freeze({
   portainer: Object.freeze({
     name: "Portainer",
     role: "Container inventory and controls",
+    category: "containers",
+    authMode: "accessToken",
     credentialFields: Object.freeze(["accessToken"]),
     credentials: Object.freeze([
       Object.freeze({
         id: "accessToken",
         label: "Access token",
         hint: "Use a dedicated least-privilege user allowed to inspect and start, restart, or stop managed containers."
+      })
+    ]),
+    authOptions: Object.freeze([
+      Object.freeze({
+        id: "accessToken",
+        label: "Access token",
+        credentialFields: Object.freeze(["accessToken"])
+      })
+    ])
+  }),
+  loki: Object.freeze({
+    name: "Grafana Loki",
+    role: "Central log search",
+    category: "observability",
+    authMode: "none",
+    credentialFields: Object.freeze([]),
+    credentials: Object.freeze([]),
+    authOptions: Object.freeze([
+      Object.freeze({
+        id: "none",
+        label: "No authentication",
+        credentialFields: Object.freeze([]),
+        credentials: Object.freeze([])
+      }),
+      Object.freeze({
+        id: "basic",
+        label: "Basic authentication",
+        credentialFields: Object.freeze(["username", "password"]),
+        credentials: Object.freeze([
+          Object.freeze({ id: "username", label: "Username", hint: "Username accepted by the reverse proxy in front of Loki." }),
+          Object.freeze({ id: "password", label: "Password or access token", hint: "Stored encrypted and sent only to this Loki destination." })
+        ])
+      }),
+      Object.freeze({
+        id: "bearer",
+        label: "Bearer token",
+        credentialFields: Object.freeze(["token"]),
+        credentials: Object.freeze([
+          Object.freeze({ id: "token", label: "Bearer token", hint: "Stored encrypted and sent only to this Loki destination." })
+        ])
       })
     ])
   })
@@ -433,16 +482,92 @@ function normalizeCertificateFingerprint(value) {
   return compact;
 }
 
-function normalizeInfrastructureServiceCredentials(type, value) {
+function infrastructureServiceAuthOptions(type) {
+  return INFRASTRUCTURE_SERVICE_DEFINITIONS[type]?.authOptions || [];
+}
+
+function infrastructureServiceAuthOption(type, authMode) {
+  return infrastructureServiceAuthOptions(type).find((option) => option.id === authMode) || null;
+}
+
+function normalizeInfrastructureServiceAuthMode(type, value, previous = null) {
   const definition = INFRASTRUCTURE_SERVICE_DEFINITIONS[type];
-  const submitted = requirePlainObject(value, "Enter the Portainer access token.");
-  requireExactKeys(submitted, definition.credentialFields);
-  const accessToken = submitted.accessToken;
-  if (typeof accessToken !== "string" || !SAFE_SECRET.test(accessToken)) {
-    fail(400, "INVALID_CREDENTIAL", "Enter a valid Portainer access token.");
+  const fallback = previous?.type === type
+    ? previous.authMode || definition.authMode
+    : definition.authMode;
+  const authMode = value === undefined ? fallback : String(value);
+  if (!infrastructureServiceAuthOption(type, authMode)) {
+    fail(400, "AUTH_MODE_NOT_SUPPORTED", "That infrastructure service authentication mode is not supported.");
   }
-  const credentials = { accessToken: Buffer.from(accessToken, "utf8") };
-  submitted.accessToken = undefined;
+  return authMode;
+}
+
+function infrastructureServiceCredentialFields(type, authMode) {
+  return [...(infrastructureServiceAuthOption(type, authMode)?.credentialFields || [])];
+}
+
+function infrastructureServiceCredentialDefinitions(type, authMode) {
+  const option = infrastructureServiceAuthOption(type, authMode);
+  if (Array.isArray(option?.credentials)) return option.credentials;
+  return INFRASTRUCTURE_SERVICE_DEFINITIONS[type]?.credentials || [];
+}
+
+function normalizeInfrastructureServiceTenant(type, value, previous = null) {
+  if (type !== "loki") {
+    if (value !== undefined && value !== null && value !== "") {
+      fail(400, "TENANT_NOT_SUPPORTED", "Tenant IDs are only supported for Loki connections.");
+    }
+    return null;
+  }
+  const candidate = value === undefined ? previous?.tenantId ?? null : value;
+  if (candidate === null || candidate === "") return null;
+  if (typeof candidate !== "string" || !LOKI_TENANT_ID.test(candidate)) {
+    fail(400, "INVALID_TENANT_ID", "Enter one Loki tenant ID using letters, numbers, dots, underscores, or hyphens.");
+  }
+  return candidate;
+}
+
+function normalizeInfrastructureServiceCredentials(type, authMode, value) {
+  const fields = infrastructureServiceCredentialFields(type, authMode);
+  const submitted = requirePlainObject(
+    value,
+    type === "portainer" ? "Enter the Portainer access token." : "Enter the Loki authentication credential."
+  );
+  requireExactKeys(submitted, fields);
+  if (fields.length === 0) return {};
+  if (type === "portainer") {
+    const accessToken = submitted.accessToken;
+    if (typeof accessToken !== "string" || !SAFE_SECRET.test(accessToken)) {
+      fail(400, "INVALID_CREDENTIAL", "Enter a valid Portainer access token.");
+    }
+    const credentials = { accessToken: Buffer.from(accessToken, "utf8") };
+    submitted.accessToken = undefined;
+    return credentials;
+  }
+  if (authMode === "basic") {
+    const { username, password } = submitted;
+    if (typeof username !== "string" || !LOKI_BASIC_USERNAME.test(username)
+      || Buffer.byteLength(username, "utf8") > 320
+      || typeof password !== "string" || !SAFE_SECRET.test(password)
+      || Buffer.byteLength(password, "utf8") > 4_096) {
+      fail(400, "INVALID_CREDENTIAL", "Enter a valid Loki username and password.");
+    }
+    const credentials = {
+      username: Buffer.from(username, "utf8"),
+      password: Buffer.from(password, "utf8")
+    };
+    submitted.username = undefined;
+    submitted.password = undefined;
+    return credentials;
+  }
+  const token = submitted.token;
+  if (typeof token !== "string"
+    || Buffer.byteLength(token, "utf8") > 4_096
+    || !LOKI_BEARER_TOKEN.test(token)) {
+    fail(400, "INVALID_CREDENTIAL", "Enter a valid Loki bearer token.");
+  }
+  const credentials = { token: Buffer.from(token, "utf8") };
+  submitted.token = undefined;
   return credentials;
 }
 
@@ -465,6 +590,29 @@ function normalizeInfrastructureTls(body, previous = null) {
     fail(400, "CERTIFICATE_FINGERPRINT_NOT_ALLOWED", "A fingerprint is only used with pinned certificate trust.");
   }
   return { tlsMode, certificateFingerprint: null };
+}
+
+function normalizeInfrastructureServiceTls(type, target, authMode, body, previous = null) {
+  if (type === "portainer") return normalizeInfrastructureTls(body, previous);
+  if (target.protocol === "http:") {
+    if (authMode !== "none") {
+      fail(400, "HTTPS_REQUIRED", "Loki basic and bearer authentication require HTTPS.");
+    }
+    if (body.tlsMode !== undefined && body.tlsMode !== "none") {
+      fail(400, "INVALID_TLS_MODE", "Private HTTP Loki connections use no TLS trust mode.");
+    }
+    if (body.certificateFingerprint !== undefined
+      && body.certificateFingerprint !== null
+      && body.certificateFingerprint !== "") {
+      fail(400, "CERTIFICATE_FINGERPRINT_NOT_ALLOWED", "HTTP Loki connections cannot use a certificate fingerprint.");
+    }
+    return { tlsMode: "none", certificateFingerprint: null };
+  }
+  const tlsPrevious = previous?.tlsMode === "none" ? null : previous;
+  if (body.tlsMode === "none") {
+    fail(400, "INVALID_TLS_MODE", "HTTPS Loki connections require system trust or a pinned certificate fingerprint.");
+  }
+  return normalizeInfrastructureTls(body, tlsPrevious);
 }
 
 function normalizeInfrastructureCredentials(type, value) {
@@ -688,7 +836,13 @@ function infrastructureServiceCredentialNamespace(service, policy) {
     certificateFingerprint: service.certificateFingerprint,
     allowedCidrs: [...(policy.allowedCidrs || [])].sort(),
     allowPublicHttps: policy.allowPublicHttps === true,
-    approvedHostCidrs: [...(service.approvedHostCidrs || [])].sort()
+    approvedHostCidrs: [...(service.approvedHostCidrs || [])].sort(),
+    // Preserve the exact legacy Portainer namespace while binding Loki
+    // credentials to the tenant and authentication boundary they authorize.
+    ...(service.type === "loki" ? {
+        authMode: service.authMode,
+        tenantId: service.tenantId
+      } : {})
   });
   const digest = createHash("sha256").update(binding, "utf8").digest("hex").slice(0, 16);
   // This prefix is intentionally distinct from Proxmox's `infra-` namespace.
@@ -704,10 +858,20 @@ function infrastructureServiceCredentialNamespaces(credentials, serviceId) {
 
 function infrastructureServiceCredentialMetadata(credentials, service, policy) {
   const namespace = infrastructureServiceCredentialNamespace(service, policy);
-  const record = namespace ? credentials.credentials?.[namespace]?.accessToken : null;
+  const fields = infrastructureServiceCredentialFields(
+    service.type,
+    service.authMode || INFRASTRUCTURE_SERVICE_DEFINITIONS[service.type]?.authMode
+  );
+  const records = namespace ? credentials.credentials?.[namespace] : null;
+  const configured = fields.length === 0
+    || fields.every((field) => records?.[field]?.configured === true);
+  const timestamps = fields
+    .map((field) => records?.[field]?.updatedAt)
+    .filter((value) => typeof value === "string")
+    .sort();
   return {
-    configured: record?.configured === true,
-    updatedAt: record?.configured === true ? record.updatedAt || null : null
+    configured,
+    updatedAt: fields.length && configured ? timestamps.at(-1) || null : null
   };
 }
 
@@ -786,14 +950,18 @@ function infrastructureTargetMetadata(state, credentials, target) {
 
 function infrastructureServiceMetadata(state, credentials, service) {
   const definition = INFRASTRUCTURE_SERVICE_DEFINITIONS[service.type];
+  const authMode = service.authMode || definition.authMode;
   const credential = infrastructureServiceCredentialMetadata(credentials, service, state.policy);
   return {
     id: service.id,
     type: service.type,
     typeName: definition.name,
     role: definition.role,
+    category: definition.category,
     displayName: service.displayName,
     url: service.url,
+    authMode,
+    tenantId: service.type === "loki" ? service.tenantId : null,
     enabled: service.enabled,
     monitoringEnabled: service.monitoringEnabled,
     tlsMode: service.tlsMode,
@@ -803,7 +971,14 @@ function infrastructureServiceMetadata(state, credentials, service) {
     updatedAt: service.updatedAt,
     credentialConfigured: credential.configured,
     credentialUpdatedAt: credential.updatedAt,
-    credentialFields: definition.credentials.map(({ id, label, hint }) => ({ id, label, hint }))
+    credentialFields: infrastructureServiceCredentialDefinitions(service.type, authMode)
+      .map(({ id, label, hint }) => ({ id, label, hint })),
+    authOptions: infrastructureServiceAuthOptions(service.type).map((option) => ({
+      id: option.id,
+      label: option.label,
+      credentialFields: infrastructureServiceCredentialDefinitions(service.type, option.id)
+        .map(({ id, label, hint }) => ({ id, label, hint }))
+    }))
   };
 }
 
@@ -825,10 +1000,18 @@ function publicInfrastructureServiceDefinitions() {
     id,
     name: definition.name,
     role: definition.role,
+    category: definition.category,
+    authMode: definition.authMode,
     credentialFields: definition.credentials.map(({ id: fieldId, label, hint }) => ({
       id: fieldId,
       label,
       hint
+    })),
+    authOptions: infrastructureServiceAuthOptions(id).map((option) => ({
+      id: option.id,
+      label: option.label,
+      credentialFields: infrastructureServiceCredentialDefinitions(id, option.id)
+        .map(({ id: fieldId, label, hint }) => ({ id: fieldId, label, hint }))
     }))
   }));
 }
@@ -927,6 +1110,14 @@ export async function createControlPlane(options) {
   const testInfrastructureServiceConnection = typeof options.testInfrastructureServiceConnection === "function"
     ? options.testInfrastructureServiceConnection
     : null;
+  const executeLokiRead = typeof options.executeLokiRead === "function"
+    ? options.executeLokiRead
+    : null;
+  const eventJournal = options.eventJournal
+    && typeof options.eventJournal.query === "function"
+    && typeof options.eventJournal.record === "function"
+      ? options.eventJournal
+      : null;
   const fetchMediaArtwork = typeof options.fetchMediaArtwork === "function"
     ? options.fetchMediaArtwork
     : null;
@@ -984,6 +1175,16 @@ export async function createControlPlane(options) {
   const browserRevocationQueue = [];
   let activeBrowserRevocation = null;
   let browserRevocationClosing = false;
+
+  function recordEvent(event) {
+    if (!eventJournal) return;
+    try {
+      const pending = eventJournal.record(event);
+      if (pending && typeof pending.catch === "function") pending.catch(() => {});
+    } catch {
+      // Persistent observability must never make an authorized operation fail.
+    }
+  }
 
   // Older records bound ciphertext only to the canonical URL. Upgrade them once
   // so current records also bind authentication mode and the complete outbound
@@ -1637,7 +1838,13 @@ export async function createControlPlane(options) {
     return { session: refreshed.session, csrfToken: authenticated.csrfToken };
   }
 
-  async function authenticate(request, requireCsrf = false) {
+  async function authenticate(request, requirements = false) {
+    const requireCsrf = typeof requirements === "object"
+      ? requirements?.requireCsrf === true
+      : requirements === true;
+    const requireFresh = typeof requirements === "object"
+      ? requirements?.requireFresh !== false
+      : requireCsrf;
     await cleanupExpiredBrowserSessions();
     let authenticated;
     try {
@@ -1649,7 +1856,7 @@ export async function createControlPlane(options) {
       }
       throw translateStoreError(error);
     }
-    return validateJellyfinSession(authenticated, requireCsrf);
+    return validateJellyfinSession(authenticated, requireFresh);
   }
 
   async function useServiceCredential(serviceValue, expectedConnection, consumer) {
@@ -1765,10 +1972,31 @@ export async function createControlPlane(options) {
       fail(500, "INVALID_CREDENTIAL_CONSUMER", "The credential consumer is unavailable.");
     }
     const namespace = infrastructureServiceCredentialNamespace(service, state.policy);
+    const fields = infrastructureServiceCredentialFields(
+      service.type,
+      service.authMode || INFRASTRUCTURE_SERVICE_DEFINITIONS[service.type]?.authMode
+    );
+    const consume = async (index, credentials) => {
+      if (index >= fields.length) {
+        const latestState = stateStore.snapshot();
+        const latestService = latestState.infrastructureServices?.[serviceId];
+        const latestNamespace = infrastructureServiceCredentialNamespace(latestService, latestState.policy);
+        if (!latestService
+          || latestService.url !== service.url
+          || latestService.targetRevision !== service.targetRevision
+          || latestNamespace !== namespace) {
+          fail(409, "TARGET_CHANGED", "The infrastructure service changed before this request could be sent.");
+        }
+        return consumer(credentials);
+      }
+      const field = fields[index];
+      return credentialStore.useCredential(namespace, field, (credential) => {
+        credentials[field] = credential;
+        return consume(index + 1, credentials).finally(() => { delete credentials[field]; });
+      });
+    };
     try {
-      return await credentialStore.useCredential(namespace, "accessToken", (accessToken) => (
-        consumer({ accessToken })
-      ));
+      return await consume(0, {});
     } catch (error) {
       throw translateStoreError(error);
     }
@@ -1913,6 +2141,13 @@ export async function createControlPlane(options) {
     }
     response.setHeader("Set-Cookie", issued.cookie);
     log("First-time setup completed; enroll the Jellyfin owner account to finish browser authentication.");
+    recordEvent({
+      level: "info",
+      category: "security",
+      event: "first_time_setup",
+      outcome: "succeeded",
+      service: "helmsman"
+    });
     sendJson(response, 201, {
       session: issued.session,
       csrfToken: issued.csrfToken,
@@ -2079,6 +2314,13 @@ export async function createControlPlane(options) {
     });
     response.setHeader("Set-Cookie", issued.cookie);
     log("Jellyfin owner authentication was enrolled; legacy browser access was removed.");
+    recordEvent({
+      level: "info",
+      category: "authentication",
+      event: "owner_enrollment",
+      outcome: "succeeded",
+      service: "jellyfin"
+    });
     sendJson(response, 201, {
       session: issued.session,
       csrfToken: issued.csrfToken,
@@ -2113,6 +2355,14 @@ export async function createControlPlane(options) {
       host: binding.host
     });
     response.setHeader("Set-Cookie", issued.cookie);
+    recordEvent({
+      level: "info",
+      category: "authentication",
+      event: "browser_session",
+      outcome: "succeeded",
+      service: "jellyfin",
+      operation: "signed-in"
+    });
     sendJson(response, 201, {
       session: issued.session,
       csrfToken: issued.csrfToken,
@@ -2135,6 +2385,14 @@ export async function createControlPlane(options) {
       }
       await revokeBrowserSession(authenticated.session.id);
       response.setHeader("Set-Cookie", sessionStore.expiredCookie(authenticated.session.origin));
+      recordEvent({
+        level: "info",
+        category: "authentication",
+        event: "browser_session",
+        outcome: "changed",
+        service: "jellyfin",
+        operation: "signed-out"
+      });
       noContent(response);
       return;
     }
@@ -2177,6 +2435,14 @@ export async function createControlPlane(options) {
     }
     accessLoginAttempts.delete(bucket);
     response.setHeader("Set-Cookie", issued.cookie);
+    recordEvent({
+      level: "warn",
+      category: "authentication",
+      event: "legacy_browser_session",
+      outcome: "succeeded",
+      service: "helmsman",
+      operation: "signed-in"
+    });
     sendJson(response, 201, {
       session: issued.session,
       csrfToken: issued.csrfToken,
@@ -2279,6 +2545,11 @@ export async function createControlPlane(options) {
         for (const [id, previous] of Object.entries(state.infrastructureServices || {})) {
           const nextService = infrastructureServices[id];
           if (!nextService) continue;
+          const serviceCredentialFields = infrastructureServiceCredentialFields(
+            previous.type,
+            previous.authMode || INFRASTRUCTURE_SERVICE_DEFINITIONS[previous.type]?.authMode
+          );
+          if (serviceCredentialFields.length === 0) continue;
           const credential = infrastructureServiceCredentialMetadata(
             credentialMetadata,
             previous,
@@ -2288,8 +2559,10 @@ export async function createControlPlane(options) {
           const previousNamespace = infrastructureServiceCredentialNamespace(previous, state.policy);
           const nextNamespace = infrastructureServiceCredentialNamespace(nextService, policy);
           if (previousNamespace === nextNamespace) continue;
-          await credentialStore.useCredential(previousNamespace, "accessToken", (accessToken) => (
-            credentialStore.replaceServiceCredentials(nextNamespace, { accessToken })
+          await useInfrastructureServiceCredentials(id, previous, (serviceCredentials) => (
+            Object.keys(serviceCredentials).length
+              ? credentialStore.replaceServiceCredentials(nextNamespace, serviceCredentials)
+              : undefined
           ));
           staged.push({ previousNamespace, nextNamespace });
         }
@@ -2338,6 +2611,14 @@ export async function createControlPlane(options) {
       response.setHeader("Set-Cookie", sessionStore.expiredCookie(authenticated.session.origin));
       configured.browserAuthenticationReset = true;
     }
+    recordEvent({
+      level: "info",
+      category: "security",
+      event: "network_policy",
+      outcome: "changed",
+      service: "helmsman",
+      operation: "updated"
+    });
     sendJson(response, 200, configured);
   }
 
@@ -2378,6 +2659,16 @@ export async function createControlPlane(options) {
         for (const namespace of namespaces) await credentialStore.removeServiceCredentials(namespace);
       });
       monitor?.requestRefresh?.();
+      recordEvent({
+        level: "info",
+        category: "connector",
+        event: "connector_configuration",
+        outcome: "changed",
+        service,
+        operation: "removed",
+        targetType: "media_service",
+        targetId: service
+      });
       noContent(response);
       return;
     }
@@ -2603,6 +2894,16 @@ export async function createControlPlane(options) {
       response.setHeader("Set-Cookie", sessionStore.expiredCookie(authenticated.session.origin));
       metadata.browserAuthenticationReset = true;
     }
+    recordEvent({
+      level: "info",
+      category: "connector",
+      event: "connector_configuration",
+      outcome: "changed",
+      service,
+      operation: "updated",
+      targetType: "media_service",
+      targetId: service
+    });
     sendJson(response, 200, metadata);
   }
 
@@ -2724,6 +3025,7 @@ export async function createControlPlane(options) {
 
     let submittedCredentials = null;
     let savedTarget;
+    let targetChanged = false;
     try {
       await serializeServiceMutation(async () => {
         const state = stateStore.snapshot();
@@ -2887,6 +3189,7 @@ export async function createControlPlane(options) {
             });
           }
           savedTarget = nextTarget;
+          targetChanged = true;
         } finally {
           clearInfrastructureCredentials(submittedCredentials);
           submittedCredentials = null;
@@ -2897,6 +3200,18 @@ export async function createControlPlane(options) {
     }
     monitor?.requestRefresh?.();
     const state = stateStore.snapshot();
+    if (targetChanged) {
+      recordEvent({
+        level: "info",
+        category: "connector",
+        event: "connector_configuration",
+        outcome: "changed",
+        service: savedTarget.type,
+        operation: id ? "updated" : "created",
+        targetType: "infrastructure_environment",
+        targetId: savedTarget.id
+      });
+    }
     sendJson(
       response,
       id ? 200 : 201,
@@ -3137,6 +3452,16 @@ export async function createControlPlane(options) {
         }
       });
       monitor?.requestRefresh?.();
+      recordEvent({
+        level: "info",
+        category: "connector",
+        event: "connector_configuration",
+        outcome: "changed",
+        service: target.type,
+        operation: "removed",
+        targetType: "infrastructure_environment",
+        targetId: target.id
+      });
       noContent(response);
       return;
     }
@@ -3325,10 +3650,12 @@ export async function createControlPlane(options) {
     }
   }
 
-  function parseInfrastructureServiceUrl(value) {
-    if (typeof value !== "string") fail(400, "INVALID_TARGET", "Enter one Portainer HTTPS URL.");
+  function parseInfrastructureServiceUrl(type, value) {
+    if (typeof value !== "string") {
+      fail(400, "INVALID_TARGET", type === "loki" ? "Enter one Loki HTTP or HTTPS URL." : "Enter one Portainer HTTPS URL.");
+    }
     const target = parseServiceUrl(value);
-    if (target.protocol !== "https:") {
+    if (type === "portainer" && target.protocol !== "https:") {
       fail(400, "HTTPS_REQUIRED", "Portainer infrastructure services must use HTTPS.");
     }
     return target;
@@ -3354,6 +3681,8 @@ export async function createControlPlane(options) {
       "url",
       "enabled",
       "monitoringEnabled",
+      "authMode",
+      "tenantId",
       "tlsMode",
       "certificateFingerprint",
       "credentials"
@@ -3367,6 +3696,7 @@ export async function createControlPlane(options) {
 
     let submittedCredentials = null;
     let savedService;
+    let serviceChanged = false;
     try {
       await serializeServiceMutation(async () => {
         const state = stateStore.snapshot();
@@ -3386,39 +3716,52 @@ export async function createControlPlane(options) {
         const displayName = safeInfrastructureDisplayName(
           body.displayName === undefined ? previous?.displayName : body.displayName
         );
-        const parsedTarget = parseInfrastructureServiceUrl(body.url === undefined ? previous?.url : body.url);
-        const tls = normalizeInfrastructureTls(body, previous);
+        const authMode = normalizeInfrastructureServiceAuthMode(type, body.authMode, previous);
+        const tenantId = normalizeInfrastructureServiceTenant(type, body.tenantId, previous);
+        const parsedTarget = parseInfrastructureServiceUrl(type, body.url === undefined ? previous?.url : body.url);
+        const tls = normalizeInfrastructureServiceTls(type, parsedTarget, authMode, body, previous);
         const enabled = body.enabled === undefined ? previous?.enabled ?? true : body.enabled;
         const monitoringEnabled = body.monitoringEnabled === undefined
           ? previous?.monitoringEnabled ?? true
           : body.monitoringEnabled;
         if (body.credentials !== undefined) {
-          submittedCredentials = normalizeInfrastructureServiceCredentials(type, body.credentials);
+          const normalized = normalizeInfrastructureServiceCredentials(type, authMode, body.credentials);
+          submittedCredentials = Object.keys(normalized).length ? normalized : null;
           body.credentials = undefined;
         }
 
         const metadata = credentialStore.publicSnapshot();
+        const requiredCredentialFields = infrastructureServiceCredentialFields(type, authMode);
         const hadCredential = Boolean(previous
           && infrastructureServiceCredentialMetadata(metadata, previous, state.policy).configured);
         const securityChanged = Boolean(previous && (
           previous.type !== type
           || previous.url !== parsedTarget.url
+          || (previous.authMode || INFRASTRUCTURE_SERVICE_DEFINITIONS[previous.type]?.authMode) !== authMode
+          || (previous.type === "loki" ? previous.tenantId : null) !== tenantId
           || previous.tlsMode !== tls.tlsMode
           || previous.certificateFingerprint !== tls.certificateFingerprint
         ));
-        if ((!previous || securityChanged || !hadCredential) && !submittedCredentials) {
-          fail(400, "CREDENTIAL_REQUIRED", "Enter the Portainer access token.");
+        if (requiredCredentialFields.length > 0
+          && (!previous || securityChanged || !hadCredential)
+          && !submittedCredentials) {
+          fail(400, "CREDENTIAL_REQUIRED", type === "portainer"
+            ? "Enter the Portainer access token."
+            : "Enter the Loki authentication credential.");
         }
 
-        const retainingCredential = Boolean(previous && hadCredential && !securityChanged && !submittedCredentials);
-        const resolution = retainingCredential
+        const retainingDestination = Boolean(previous && !securityChanged && !submittedCredentials);
+        const retainingCredential = Boolean(
+          retainingDestination && requiredCredentialFields.length > 0 && hadCredential
+        );
+        const resolution = retainingDestination
           ? await resolveAndAuthorizeTarget(parsedTarget, state.policy, {
             lookup,
             approvedHostCidrs: previous.approvedHostCidrs || []
           })
           : await resolveAndAuthorizeExplicitTarget(parsedTarget, state.policy, { lookup });
         const approvedHostCidrs = state.policy.allowedCidrs.length === 0
-          ? retainingCredential ? [...(previous.approvedHostCidrs || [])] : resolution.approvedHostCidrs
+          ? retainingDestination ? [...(previous.approvedHostCidrs || [])] : resolution.approvedHostCidrs
           : [];
         const destinationChanged = !previous
           || securityChanged
@@ -3445,6 +3788,7 @@ export async function createControlPlane(options) {
           monitoringEnabled,
           tlsMode: tls.tlsMode,
           certificateFingerprint: tls.certificateFingerprint,
+          ...(type === "loki" ? { authMode, tenantId } : {}),
           approvedHostCidrs,
           createdAt: previous?.createdAt || now,
           updatedAt: now
@@ -3457,8 +3801,8 @@ export async function createControlPlane(options) {
             await credentialStore.replaceServiceCredentials(nextNamespace, submittedCredentials);
             stagedCredential = true;
           } else if (retainingCredential && previousNamespace !== nextNamespace) {
-            await credentialStore.useCredential(previousNamespace, "accessToken", (accessToken) => (
-              credentialStore.replaceServiceCredentials(nextNamespace, { accessToken })
+            await useInfrastructureServiceCredentials(previous.id, previous, (serviceCredentials) => (
+              credentialStore.replaceServiceCredentials(nextNamespace, serviceCredentials)
             ));
             stagedCredential = true;
           }
@@ -3482,6 +3826,7 @@ export async function createControlPlane(options) {
             });
           }
           savedService = nextService;
+          serviceChanged = true;
         } finally {
           clearInfrastructureCredentials(submittedCredentials);
           submittedCredentials = null;
@@ -3492,6 +3837,18 @@ export async function createControlPlane(options) {
     }
     monitor?.requestRefresh?.();
     const state = stateStore.snapshot();
+    if (serviceChanged) {
+      recordEvent({
+        level: "info",
+        category: "connector",
+        event: "connector_configuration",
+        outcome: "changed",
+        service: savedService.type,
+        operation: id ? "updated" : "created",
+        targetType: "infrastructure_service",
+        targetId: savedService.id
+      });
+    }
     sendJson(
       response,
       id ? 200 : 201,
@@ -3551,6 +3908,16 @@ export async function createControlPlane(options) {
         }
       });
       monitor?.requestRefresh?.();
+      recordEvent({
+        level: "info",
+        category: "connector",
+        event: "connector_configuration",
+        outcome: "changed",
+        service: service.type,
+        operation: "removed",
+        targetType: "infrastructure_service",
+        targetId: service.id
+      });
       noContent(response);
       return;
     }
@@ -3567,7 +3934,7 @@ export async function createControlPlane(options) {
     if (id) {
       requireExactKeys(body, []);
       const { state, service } = infrastructureServiceById(id);
-      const target = parseInfrastructureServiceUrl(service.url);
+      const target = parseInfrastructureServiceUrl(service.type, service.url);
       const targetResolution = await resolveAndAuthorizeTarget(target, state.policy, {
         lookup,
         approvedHostCidrs: service.approvedHostCidrs || []
@@ -3578,11 +3945,23 @@ export async function createControlPlane(options) {
           target,
           targetResolution,
           targetRevision: service.targetRevision,
+          authMode: service.authMode || INFRASTRUCTURE_SERVICE_DEFINITIONS[service.type]?.authMode,
+          tenantId: service.type === "loki" ? service.tenantId : null,
           tlsMode: service.tlsMode,
           certificateFingerprint: service.certificateFingerprint,
           credentials
         })
       ));
+      recordEvent({
+        level: "info",
+        category: "connector",
+        event: "connector_test",
+        outcome: "succeeded",
+        service: service.type,
+        operation: "tested",
+        targetType: "infrastructure_service",
+        targetId: service.id
+      });
       sendJson(response, 200, result);
       return;
     }
@@ -3593,14 +3972,26 @@ export async function createControlPlane(options) {
       "url",
       "enabled",
       "monitoringEnabled",
+      "authMode",
+      "tenantId",
       "tlsMode",
       "certificateFingerprint",
       "credentials"
     ]);
     const type = normalizeInfrastructureServiceType(body.type);
-    const target = parseInfrastructureServiceUrl(body.url);
-    const tls = normalizeInfrastructureTls(body);
-    const credentials = normalizeInfrastructureServiceCredentials(type, body.credentials);
+    const authMode = normalizeInfrastructureServiceAuthMode(type, body.authMode);
+    const tenantId = normalizeInfrastructureServiceTenant(type, body.tenantId);
+    const target = parseInfrastructureServiceUrl(type, body.url);
+    const tls = normalizeInfrastructureServiceTls(type, target, authMode, body);
+    const requiredCredentialFields = infrastructureServiceCredentialFields(type, authMode);
+    if (requiredCredentialFields.length > 0 && body.credentials === undefined) {
+      fail(400, "CREDENTIAL_REQUIRED", type === "portainer"
+        ? "Enter the Portainer access token."
+        : "Enter the Loki authentication credential.");
+    }
+    const credentials = body.credentials === undefined
+      ? {}
+      : normalizeInfrastructureServiceCredentials(type, authMode, body.credentials);
     body.credentials = undefined;
     try {
       const state = stateStore.snapshot();
@@ -3610,6 +4001,8 @@ export async function createControlPlane(options) {
         target,
         targetResolution,
         targetRevision: randomUUID(),
+        authMode,
+        tenantId,
         tlsMode: tls.tlsMode,
         certificateFingerprint: tls.certificateFingerprint,
         credentials
@@ -3618,6 +4011,147 @@ export async function createControlPlane(options) {
     } finally {
       clearInfrastructureCredentials(credentials);
     }
+  }
+
+  function normalizeLokiQuery(value) {
+    if (typeof value !== "string"
+      || Array.from(value).length < 1
+      || Array.from(value).length > MAX_LOKI_QUERY_CODE_POINTS
+      || /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(value)) {
+      fail(400, "INVALID_LOKI_QUERY", `Enter a Loki query of at most ${MAX_LOKI_QUERY_CODE_POINTS} characters.`);
+    }
+    return value;
+  }
+
+  function normalizeLokiQueryTime(value, label) {
+    if (typeof value !== "string" || value.length > 40) {
+      fail(400, "INVALID_LOKI_TIME", `Enter ${label} as an ISO timestamp.`);
+    }
+    const milliseconds = Date.parse(value);
+    if (!Number.isFinite(milliseconds)) {
+      fail(400, "INVALID_LOKI_TIME", `Enter ${label} as an ISO timestamp.`);
+    }
+    return { milliseconds, value: new Date(milliseconds).toISOString() };
+  }
+
+  function normalizeLokiQueryParameters(body) {
+    const query = normalizeLokiQuery(body.query);
+    const start = normalizeLokiQueryTime(body.start, "the query start time");
+    const end = normalizeLokiQueryTime(body.end, "the query end time");
+    if (start.milliseconds >= end.milliseconds
+      || end.milliseconds - start.milliseconds > MAX_LOKI_QUERY_RANGE_MS) {
+      fail(400, "INVALID_LOKI_RANGE", "Choose a positive Loki query range no longer than 24 hours.");
+    }
+    const direction = typeof body.direction === "string" ? body.direction.toLowerCase() : "";
+    if (!["forward", "backward"].includes(direction)) {
+      fail(400, "INVALID_LOKI_DIRECTION", "Choose forward or backward Loki query ordering.");
+    }
+    if (!Number.isSafeInteger(body.limit) || body.limit < 1 || body.limit > MAX_LOKI_QUERY_LIMIT) {
+      fail(400, "INVALID_LOKI_LIMIT", `Choose a Loki result limit between 1 and ${MAX_LOKI_QUERY_LIMIT}.`);
+    }
+    return Object.freeze({
+      query,
+      start: start.value,
+      end: end.value,
+      direction,
+      limit: body.limit
+    });
+  }
+
+  async function lokiQuery(request, response, id) {
+    if (request.method !== "POST") fail(405, "METHOD_NOT_ALLOWED", "That method is not allowed.");
+    await authenticate(request, { requireCsrf: true, requireFresh: false });
+    if (!executeLokiRead) {
+      fail(503, "LOKI_QUERY_UNAVAILABLE", "Loki log search is temporarily unavailable.");
+    }
+    const body = await readBoundedJson(request);
+    requireExactKeys(body, ["targetRevision", "query", "start", "end", "direction", "limit"]);
+    const targetRevision = requiredActionRevision(body.targetRevision);
+    const parameters = normalizeLokiQueryParameters(body);
+    const { state, service } = infrastructureServiceById(id);
+    if (service.type !== "loki") {
+      fail(404, "LOKI_CONNECTION_NOT_FOUND", "That Loki connection does not exist.");
+    }
+    if (service.enabled === false || service.targetRevision !== targetRevision) {
+      fail(409, "TARGET_CHANGED", "The Loki connection changed; refresh it before searching logs.");
+    }
+    const target = parseInfrastructureServiceUrl(service.type, service.url);
+    const targetResolution = await resolveAndAuthorizeTarget(target, state.policy, {
+      lookup,
+      approvedHostCidrs: service.approvedHostCidrs || []
+    });
+    const result = await useInfrastructureServiceCredentials(id, service, (credentials) => (
+      executeLokiRead({
+        service,
+        target,
+        targetResolution,
+        credentials,
+        routeId: "queryRange",
+        parameters
+      })
+    ));
+    recordEvent({
+      level: "info",
+      category: "action",
+      event: "loki_query",
+      outcome: "succeeded",
+      service: "loki",
+      operation: "query",
+      targetType: "infrastructure_service",
+      targetId: service.id
+    });
+    sendJson(response, 200, result);
+  }
+
+  function eventLogQuery(url) {
+    const query = {};
+    for (const [key, value] of url.searchParams) {
+      if (!LOG_QUERY_KEYS.has(key) || Object.hasOwn(query, key)) {
+        fail(400, "INVALID_LOG_QUERY", "The log query contains an unsupported or repeated field.");
+      }
+      query[key] = value;
+    }
+    if (query.limit !== undefined) {
+      if (!/^[1-9][0-9]{0,2}$/u.test(query.limit) || Number(query.limit) > 200) {
+        fail(400, "INVALID_LOG_QUERY", "The log result limit must be between 1 and 200.");
+      }
+      query.limit = Number(query.limit);
+    }
+    return query;
+  }
+
+  async function eventLogs(request, response, url) {
+    if (request.method !== "GET") fail(405, "METHOD_NOT_ALLOWED", "That method is not allowed.");
+    await authenticate(request, { requireCsrf: false, requireFresh: false });
+    if (!eventJournal) {
+      sendJson(response, 200, {
+        schema: 1,
+        generatedAt: new Date().toISOString(),
+        storage: {
+          state: "unavailable",
+          persistent: false,
+          writable: false,
+          retentionDays: 0,
+          maximumBytes: 0,
+          totalBytes: 0,
+          lastWriteAt: null,
+          issueCodes: ["LOG_JOURNAL_UNAVAILABLE"]
+        },
+        entries: [],
+        nextCursor: null
+      });
+      return;
+    }
+    let result;
+    try {
+      result = await eventJournal.query(eventLogQuery(url));
+    } catch (error) {
+      if (error instanceof TypeError || error instanceof RangeError) {
+        fail(400, "INVALID_LOG_QUERY", "The log query is invalid or no longer available.");
+      }
+      throw error;
+    }
+    sendJson(response, 200, result);
   }
 
   function requiredActionRevision(value) {
@@ -3858,7 +4392,7 @@ export async function createControlPlane(options) {
       fail(409, "ACTION_NOT_AVAILABLE", `The ${operation} action is not available while this container is ${container.state}.`);
     }
 
-    const target = parseInfrastructureServiceUrl(service.url);
+    const target = parseInfrastructureServiceUrl(service.type, service.url);
     const targetResolution = await resolveAndAuthorizeTarget(target, state.policy, {
       lookup,
       approvedHostCidrs: service.approvedHostCidrs || []
@@ -3882,6 +4416,16 @@ export async function createControlPlane(options) {
         }
       }
     );
+    recordEvent({
+      level: "info",
+      category: "action",
+      event: "container_control",
+      outcome: "succeeded",
+      service: "portainer",
+      operation,
+      targetType: "container",
+      targetId: containerId
+    });
     sendJson(response, 200, result);
   }
 
@@ -3964,6 +4508,16 @@ export async function createControlPlane(options) {
         }
       }
     );
+    recordEvent({
+      level: "info",
+      category: "action",
+      event: "workload_control",
+      outcome: "succeeded",
+      service: "proxmox",
+      operation,
+      targetType: type,
+      targetId: String(vmid)
+    });
     sendJson(response, 200, result);
   }
 
@@ -4112,6 +4666,16 @@ export async function createControlPlane(options) {
           }
         }
       );
+      recordEvent({
+        level: "info",
+        category: "action",
+        event: "media_control",
+        outcome: "succeeded",
+        service: "seerr",
+        operation: operation.replace(/[A-Z]/gu, (letter) => `-${letter.toLowerCase()}`),
+        targetType: "series",
+        targetId: String(resourceId)
+      });
       sendJson(response, 200, result);
       return;
     }
@@ -4140,6 +4704,16 @@ export async function createControlPlane(options) {
         }
       }
     );
+    recordEvent({
+      level: "info",
+      category: "action",
+      event: "media_control",
+      outcome: "succeeded",
+      service: serviceId,
+      operation: operation.replace(/[A-Z]/gu, (letter) => `-${letter.toLowerCase()}`),
+      targetType: queueAction ? "queue_item" : serviceId === "radarr" ? "movie" : "series",
+      targetId: String(queueAction ? queueId : resourceId)
+    });
     sendJson(response, 200, result);
   }
 
@@ -4277,6 +4851,10 @@ export async function createControlPlane(options) {
         await configuration(request, response);
         return true;
       }
+      if (url.pathname === "/api/v2/logs") {
+        await eventLogs(request, response, url);
+        return true;
+      }
       if (url.pathname === "/api/v2/actions/portainer/container") {
         if (url.search) fail(404, "NOT_FOUND", "Not found.");
         await portainerContainerAction(request, response);
@@ -4294,6 +4872,12 @@ export async function createControlPlane(options) {
       }
       if (url.pathname === "/api/v2/infrastructure/services/test") {
         await testInfrastructureService(request, response);
+        return true;
+      }
+      const lokiQueryMatch = url.pathname.match(/^\/api\/v2\/logging\/loki\/([a-f0-9-]+)\/query$/u);
+      if (lokiQueryMatch) {
+        if (url.search) fail(404, "NOT_FOUND", "Not found.");
+        await lokiQuery(request, response, lokiQueryMatch[1]);
         return true;
       }
       const infrastructureServiceTestMatch = url.pathname.match(

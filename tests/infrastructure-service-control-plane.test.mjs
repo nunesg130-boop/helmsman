@@ -221,12 +221,12 @@ test("Portainer infrastructure service CRUD and tests keep access tokens write-o
 
     const listed = await request(context.port, "/api/v2/infrastructure/services", authentication);
     assert.equal(listed.status, 200);
-    assert.deepEqual(listed.json.definitions.map(({ id }) => id), ["portainer"]);
+    assert.deepEqual(listed.json.definitions.map(({ id }) => id), ["portainer", "loki"]);
     assert.deepEqual(listed.json.services.map(({ displayName }) => displayName), ["Backup Portainer", "Example Portainer"]);
     const config = await request(context.port, "/api/v2/config", authentication);
     assert.equal(config.status, 200);
     assert.equal(config.json.infrastructureServices.length, 2);
-    assert.deepEqual(config.json.infrastructureServiceDefinitions.map(({ id }) => id), ["portainer"]);
+    assert.deepEqual(config.json.infrastructureServiceDefinitions.map(({ id }) => id), ["portainer", "loki"]);
     assert.equal(JSON.stringify(config.json).includes(ACCESS_TOKEN), false);
 
     const savedTest = await request(

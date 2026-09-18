@@ -37,12 +37,17 @@
 !src/ui/operations.css
 !src/ui/control.css
 !src/ui/retro.css
+!src/ui/logging.css
 !server
 !server/broker.mjs
 !server/control-plane.mjs
+!server/event-journal.mjs
 !server/health-engine.mjs
 !server/index.mjs
 !server/lock.mjs
+!server/loki.mjs
+!server/loki-probes.mjs
+!server/loki-transport.mjs
 !server/media-artwork.mjs
 !server/media-model.mjs
 !server/monitor.mjs

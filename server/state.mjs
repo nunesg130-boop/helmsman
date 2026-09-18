@@ -5,15 +5,15 @@ import { isIP } from "node:net";
 import path from "node:path";
 import { parseServiceUrl } from "./network.mjs";
 
-const STATE_VERSION = 4;
+const STATE_VERSION = 5;
 const MAX_STATE_BYTES = 1024 * 1024;
 const TOKEN_BYTES = 32;
 const TOKEN_HASH = /^[a-f0-9]{64}$/u;
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u;
 const SERVICE_IDS = new Set(["jellyfin", "seerr", "radarr", "sonarr", "prowlarr", "bazarr", "qbittorrent"]);
 const MAX_APPROVED_HOST_CIDRS = 32;
-// Seven media connectors, 25 Proxmox endpoint records, and eight container
-// management services can all be duplicated once during an atomic
+// Seven media connectors, 25 Proxmox endpoint records, and eight infrastructure
+// services can all be duplicated once during an atomic
 // policy/credential-binding migration without exceeding the encrypted store's
 // 96-namespace ceiling.
 const MAX_INFRASTRUCTURE_TARGETS = 25;
@@ -21,7 +21,9 @@ const MAX_INFRASTRUCTURE_ENDPOINTS = 25;
 const MAX_ENDPOINTS_PER_ENVIRONMENT = 4;
 const MAX_INFRASTRUCTURE_SERVICES = 8;
 const INFRASTRUCTURE_TYPES = new Set(["proxmox"]);
-const INFRASTRUCTURE_SERVICE_TYPES = new Set(["portainer"]);
+const INFRASTRUCTURE_SERVICE_TYPES = new Set(["portainer", "loki"]);
+const LOKI_AUTH_MODES = new Set(["none", "basic", "bearer"]);
+const LOKI_TENANT_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
 
 function isPlainObject(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -111,6 +113,13 @@ function migrateLoadedState(value) {
   }
   if (value.version === 3) {
     value.infrastructureServices = {};
+    value.version = 4;
+    changed = true;
+  }
+  if (value.version === 4) {
+    // Version 5 adds Loki as an infrastructure service. Existing Portainer
+    // records deliberately retain their exact shape so their destination-bound
+    // encrypted credential namespaces remain stable across the migration.
     value.version = STATE_VERSION;
     changed = true;
   }
@@ -303,6 +312,20 @@ function validateLoadedState(value) {
     } catch {
       // Report one stable state-integrity error below.
     }
+    const isPortainer = service?.type === "portainer";
+    const isLoki = service?.type === "loki";
+    const lokiTlsValid = isLoki && (
+      (protocol === "http:"
+        && service.tlsMode === "none"
+        && service.certificateFingerprint === null
+        && service.authMode === "none")
+      || (protocol === "https:"
+        && ["system", "pinned"].includes(service.tlsMode)
+        && (service.tlsMode === "pinned"
+          ? typeof service.certificateFingerprint === "string"
+            && /^[a-f0-9]{64}$/u.test(service.certificateFingerprint)
+          : service.certificateFingerprint === null))
+    );
     if (!UUID.test(id)
       || !isPlainObject(service)
       || service.id !== id
@@ -313,17 +336,22 @@ function validateLoadedState(value) {
       || /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(service.displayName)
       || typeof service.url !== "string"
       || service.url !== canonicalUrl
-      || protocol !== "https:"
+      || (isPortainer && protocol !== "https:")
+      || (isLoki && !["http:", "https:"].includes(protocol))
       || typeof service.targetRevision !== "string"
       || !UUID.test(service.targetRevision)
       || typeof service.enabled !== "boolean"
       || typeof service.monitoringEnabled !== "boolean"
-      || !["system", "pinned"].includes(service.tlsMode)
-      || (service.certificateFingerprint !== null
+      || (isPortainer && !["system", "pinned"].includes(service.tlsMode))
+      || (isPortainer && service.certificateFingerprint !== null
         && (typeof service.certificateFingerprint !== "string"
           || !/^[a-f0-9]{64}$/u.test(service.certificateFingerprint)))
-      || (service.tlsMode === "pinned" && service.certificateFingerprint === null)
-      || (service.tlsMode === "system" && service.certificateFingerprint !== null)
+      || (isPortainer && service.tlsMode === "pinned" && service.certificateFingerprint === null)
+      || (isPortainer && service.tlsMode === "system" && service.certificateFingerprint !== null)
+      || (isLoki && !lokiTlsValid)
+      || (isLoki && !LOKI_AUTH_MODES.has(service.authMode))
+      || (isLoki && service.tenantId !== null
+        && (typeof service.tenantId !== "string" || !LOKI_TENANT_ID.test(service.tenantId)))
       || !Array.isArray(service.approvedHostCidrs)
       || service.approvedHostCidrs.length > MAX_APPROVED_HOST_CIDRS
       || service.approvedHostCidrs.some((entry) => !isExactHostCidr(entry))

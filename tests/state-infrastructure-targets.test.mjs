@@ -58,6 +58,27 @@ function infrastructureService(id = randomUUID()) {
   };
 }
 
+function lokiInfrastructureService(overrides = {}, id = randomUUID()) {
+  const now = new Date().toISOString();
+  return {
+    id,
+    type: "loki",
+    displayName: "Example Loki",
+    url: "http://10.20.30.60:3100",
+    targetRevision: randomUUID(),
+    enabled: true,
+    monitoringEnabled: true,
+    authMode: "none",
+    tenantId: null,
+    tlsMode: "none",
+    certificateFingerprint: null,
+    approvedHostCidrs: ["10.20.30.60/32"],
+    createdAt: now,
+    updatedAt: now,
+    ...overrides
+  };
+}
+
 test("state v1 migrates atomically without losing media connections", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "helmsman-state-v1-"));
   try {
@@ -77,13 +98,13 @@ test("state v1 migrates atomically without losing media connections", async () =
 
     const migrated = new StateStore(root);
     const snapshot = await migrated.initialize();
-    assert.equal(snapshot.version, 4);
+    assert.equal(snapshot.version, 5);
     assert.deepEqual(snapshot.infrastructureTargets, {});
     assert.deepEqual(snapshot.infrastructureServices, {});
     assert.equal(snapshot.connections.radarr.url, "http://10.20.30.40:7878");
 
     const durable = JSON.parse(await readFile(path.join(root, "state.json"), "utf8"));
-    assert.equal(durable.version, 4);
+    assert.equal(durable.version, 5);
     assert.deepEqual(durable.infrastructureTargets, {});
     assert.deepEqual(durable.infrastructureServices, {});
     assert.equal(durable.connections.radarr.url, "http://10.20.30.40:7878");
@@ -120,7 +141,7 @@ test("state v2 keeps existing Proxmox targets separate while wrapping their prim
 
     const migratedStore = new StateStore(root);
     const migrated = await migratedStore.initialize();
-    assert.equal(migrated.version, 4);
+    assert.equal(migrated.version, 5);
     assert.deepEqual(migrated.infrastructureServices, {});
     assert.deepEqual(Object.keys(migrated.infrastructureTargets).sort(), [firstTarget.id, secondTarget.id].sort());
     assert.equal(migrated.infrastructureTargets[firstTarget.id].environmentIdentity, null);
@@ -143,7 +164,7 @@ test("state v2 keeps existing Proxmox targets separate while wrapping their prim
     assert.equal(migrated.infrastructureTargets[secondTarget.id].endpoints[0].url, secondTarget.url);
 
     const durable = JSON.parse(await readFile(path.join(root, "state.json"), "utf8"));
-    assert.equal(durable.version, 4);
+    assert.equal(durable.version, 5);
     assert.deepEqual(durable.infrastructureServices, {});
     assert.equal(Object.keys(durable.infrastructureTargets).length, 2);
     assert.equal(durable.infrastructureTargets[firstTarget.id].primaryEndpointId, firstTarget.id);
@@ -165,11 +186,35 @@ test("state v3 migration adds an independent infrastructure service collection",
 
     const migratedStore = new StateStore(root);
     const migrated = await migratedStore.initialize();
-    assert.equal(migrated.version, 4);
+    assert.equal(migrated.version, 5);
     assert.deepEqual(migrated.infrastructureServices, {});
     const durable = JSON.parse(await readFile(path.join(root, "state.json"), "utf8"));
-    assert.equal(durable.version, 4);
+    assert.equal(durable.version, 5);
     assert.deepEqual(durable.infrastructureServices, {});
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("state v4 migration preserves existing Portainer records exactly", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "helmsman-state-v4-loki-"));
+  try {
+    const first = new StateStore(root);
+    await first.initialize();
+    const saved = infrastructureService();
+    await first.mutate((state) => { state.infrastructureServices[saved.id] = saved; });
+    const legacy = JSON.parse(await readFile(path.join(root, "state.json"), "utf8"));
+    legacy.version = 4;
+    const before = structuredClone(legacy.infrastructureServices[saved.id]);
+    await writeFile(path.join(root, "state.json"), `${JSON.stringify(legacy)}\n`, { mode: 0o600 });
+
+    const migratedStore = new StateStore(root);
+    const migrated = await migratedStore.initialize();
+    assert.equal(migrated.version, 5);
+    assert.deepEqual(migrated.infrastructureServices[saved.id], before);
+    const durable = JSON.parse(await readFile(path.join(root, "state.json"), "utf8"));
+    assert.equal(durable.version, 5);
+    assert.deepEqual(durable.infrastructureServices[saved.id], before);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -215,6 +260,56 @@ test("state accepts eight canonical Portainer services and rejects unsafe shapes
       /Malformed broker infrastructure service state/u
     );
     assert.equal(Object.keys(store.snapshot().infrastructureServices).length, 8);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("state accepts canonical Loki services and rejects unsafe auth and TLS combinations", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "helmsman-state-loki-services-"));
+  try {
+    const store = new StateStore(root);
+    await store.initialize();
+    const privateHttp = lokiInfrastructureService();
+    const basicHttps = lokiInfrastructureService({
+      displayName: "Authenticated Loki",
+      url: "https://10.20.30.61:3100",
+      authMode: "basic",
+      tenantId: "home_lab-1",
+      tlsMode: "pinned",
+      certificateFingerprint: "c".repeat(64),
+      approvedHostCidrs: ["10.20.30.61/32"]
+    });
+    await store.mutate((state) => {
+      state.infrastructureServices[privateHttp.id] = privateHttp;
+      state.infrastructureServices[basicHttps.id] = basicHttps;
+    });
+    assert.deepEqual(store.snapshot().infrastructureServices[privateHttp.id], privateHttp);
+    assert.deepEqual(store.snapshot().infrastructureServices[basicHttps.id], basicHttps);
+
+    const invalidRecords = [
+      lokiInfrastructureService({ authMode: "basic" }),
+      lokiInfrastructureService({ tlsMode: "system" }),
+      lokiInfrastructureService({ tenantId: "invalid tenant" }),
+      lokiInfrastructureService({
+        url: "https://10.20.30.62:3100",
+        tlsMode: "none",
+        approvedHostCidrs: ["10.20.30.62/32"]
+      }),
+      lokiInfrastructureService({
+        url: "https://10.20.30.63:3100",
+        authMode: "bearer",
+        tlsMode: "pinned",
+        certificateFingerprint: null,
+        approvedHostCidrs: ["10.20.30.63/32"]
+      })
+    ];
+    for (const invalid of invalidRecords) {
+      await assert.rejects(
+        store.mutate((state) => { state.infrastructureServices[invalid.id] = invalid; }),
+        /Malformed broker infrastructure service state/u
+      );
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }

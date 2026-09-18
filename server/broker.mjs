@@ -16,7 +16,11 @@ import {
   authorizeProxmoxRoute
 } from "./routes.mjs";
 import { createControlPlane, ControlPlaneError } from "./control-plane.mjs";
+import { createEventJournal } from "./event-journal.mjs";
 import { createHealthIncidentEngine } from "./health-engine.mjs";
+import { normalizeLokiQueryResult, authorizeLokiRoute } from "./loki.mjs";
+import { probeLoki } from "./loki-probes.mjs";
+import { performLokiUpstreamRequest } from "./loki-transport.mjs";
 import { createMediaArtworkCache, MEDIA_ARTWORK_LIMITS } from "./media-artwork.mjs";
 import { createSeerrRequestMetadataEnricher } from "./seerr-request-metadata.mjs";
 import { normalizeSeerrSeriesSeasons } from "./seerr-series-seasons.mjs";
@@ -35,7 +39,7 @@ import {
 } from "./network.mjs";
 import { generateSecretToken, hashToken, StateStore, tokenMatches } from "./state.mjs";
 
-const DEFAULT_VERSION = "1.0.5";
+const DEFAULT_VERSION = "1.0.6";
 const requestedVersion = String(process.env.HELMSMAN_VERSION || DEFAULT_VERSION);
 const VERSION = /^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/u.test(requestedVersion)
   ? requestedVersion
@@ -1456,6 +1460,7 @@ export async function createBroker(options = {}) {
   const dispatchMediaAction = options.dispatchMediaAction || performMediaActionUpstreamRequest;
   const dispatchProxmox = options.dispatchProxmox || performProxmoxUpstreamRequest;
   const dispatchPortainer = options.dispatchPortainer || performPortainerUpstreamRequest;
+  const dispatchLoki = options.dispatchLoki || performLokiUpstreamRequest;
   const limits = {
     maxApiResponseBytes: options.maxApiResponseBytes || DEFAULT_MAX_API_RESPONSE_BYTES,
     maxImageResponseBytes: options.maxImageResponseBytes || DEFAULT_MAX_IMAGE_RESPONSE_BYTES,
@@ -1465,6 +1470,19 @@ export async function createBroker(options = {}) {
   };
   const store = new StateStore(dataDir, { guard: options.stateGuard });
   await store.initialize();
+  const eventJournal = options.eventJournal || await createEventJournal({
+    dataDir,
+    guard: options.stateGuard
+  });
+  const recordEvent = (event) => {
+    try {
+      const pending = eventJournal.record(event);
+      if (pending && typeof pending.catch === "function") pending.catch(() => {});
+      return pending;
+    } catch {
+      return null;
+    }
+  };
   const setupToken = await store.rotateUnclaimedSetupToken();
   if (setupToken) log(`Helmsman setup token: ${setupToken}`);
   let activeRequests = 0;
@@ -2337,6 +2355,153 @@ export async function createBroker(options = {}) {
     });
   }
 
+  async function requestLoki({
+    target,
+    targetResolution,
+    targetRevision,
+    authMode,
+    tenantId,
+    tlsMode,
+    certificateFingerprint,
+    credentials,
+    approvedHostCidrs,
+    signal
+  }, routeId, parameters = {}, requestOptions = {}) {
+    const state = store.snapshot();
+    const parsedTarget = typeof target === "string" ? parseServiceUrl(target) : target;
+    if (!parsedTarget || !["http:", "https:"].includes(parsedTarget.protocol)) {
+      throw new BrokerError(400, "INVALID_TARGET", "Enter one Loki HTTP or HTTPS URL.");
+    }
+    const resolution = targetResolution || await resolveAndAuthorizeTarget(parsedTarget, state.policy, {
+      lookup,
+      approvedHostCidrs: approvedHostCidrs || []
+    });
+    const route = authorizeLokiRoute(routeId, "GET", parameters);
+    if (!route.allowed) throw new BrokerError(route.status || 404, route.code, route.message);
+    const release = reserveServiceCapacity(`loki:${String(targetRevision || "draft").slice(0, 80)}`);
+    try {
+      const combinedSignal = signal
+        ? AbortSignal.any([shutdownController.signal, signal])
+        : shutdownController.signal;
+      return await dispatchLoki({
+        targetResolution: resolution,
+        route,
+        credentials,
+        authMode,
+        tenantId,
+        tlsMode,
+        certificateFingerprint,
+        limits: {
+          maxApiResponseBytes: Math.min(
+            2 * 1024 * 1024,
+            Number.isSafeInteger(requestOptions.maxBytes) && requestOptions.maxBytes > 0
+              ? requestOptions.maxBytes
+              : limits.maxApiResponseBytes
+          ),
+          upstreamTimeoutMs: Math.min(
+            15_000,
+            Number.isSafeInteger(requestOptions.timeoutMs) && requestOptions.timeoutMs > 0
+              ? requestOptions.timeoutMs
+              : limits.upstreamTimeoutMs
+          )
+        },
+        shutdownSignal: combinedSignal,
+        version: VERSION
+      });
+    } finally {
+      release();
+    }
+  }
+
+  async function runLokiProbe({
+    target,
+    targetResolution,
+    targetRevision,
+    authMode,
+    tenantId,
+    tlsMode,
+    certificateFingerprint,
+    credentials,
+    approvedHostCidrs,
+    signal
+  }) {
+    const context = {
+      target,
+      targetResolution,
+      targetRevision,
+      authMode,
+      tenantId,
+      tlsMode,
+      certificateFingerprint,
+      credentials,
+      approvedHostCidrs,
+      signal
+    };
+    return probeLoki(
+      async (routeId, parameters = {}) => {
+        const upstream = await requestLoki(context, routeId, parameters, {
+          maxBytes: routeId === "ready" ? 4 * 1024 : 128 * 1024,
+          timeoutMs: 10_000
+        });
+        const body = Buffer.isBuffer(upstream?.body)
+          ? upstream.body.toString("utf8")
+          : upstream?.body;
+        return { status: upstream?.status, body };
+      },
+      { checkedAt: new Date().toISOString() }
+    );
+  }
+
+  async function executeLokiRead(input) {
+    if (!input || input.service?.type !== "loki" || input.routeId !== "queryRange") {
+      throw new BrokerError(400, "INFRASTRUCTURE_SERVICE_TYPE_NOT_SUPPORTED", "That Loki read operation is not supported.");
+    }
+    const routeParameters = { queryInput: input.parameters };
+    const upstream = await requestLoki({
+      target: input.target,
+      targetResolution: input.targetResolution,
+      targetRevision: input.service.targetRevision,
+      authMode: input.service.authMode,
+      tenantId: input.service.tenantId,
+      tlsMode: input.service.tlsMode,
+      certificateFingerprint: input.service.certificateFingerprint,
+      credentials: input.credentials,
+      approvedHostCidrs: input.service.approvedHostCidrs || []
+    }, "queryRange", routeParameters, { maxBytes: 2 * 1024 * 1024, timeoutMs: 15_000 });
+    const status = Number(upstream?.status);
+    if ([401, 403].includes(status)) {
+      throw new BrokerError(502, "LOKI_AUTHENTICATION_FAILED", "Loki rejected the saved read credential or tenant.");
+    }
+    if (!Number.isInteger(status) || status < 200 || status >= 300) {
+      throw new BrokerError(502, "LOKI_QUERY_FAILED", "Loki did not complete the read-only log query.");
+    }
+    let payload;
+    try {
+      const raw = Buffer.isBuffer(upstream.body) ? upstream.body.toString("utf8") : String(upstream.body ?? "");
+      payload = JSON.parse(raw);
+    } catch {
+      throw new BrokerError(502, "LOKI_RESPONSE_INVALID", "Loki returned malformed query data.");
+    }
+    let normalized;
+    try {
+      normalized = normalizeLokiQueryResult(payload, {
+        direction: input.parameters.direction,
+        limit: input.parameters.limit
+      });
+    } catch {
+      throw new BrokerError(502, "LOKI_RESPONSE_INVALID", "Loki returned an unsupported log-query response.");
+    }
+    return {
+      entries: normalized.entries,
+      truncated: normalized.truncated,
+      stats: {
+        totalLinesProcessed: normalized.entries.length,
+        totalBytesProcessed: null,
+        execTimeMs: null
+      }
+    };
+  }
+
   async function testDraftInfrastructureConnection(input) {
     if (!input || input.type !== "proxmox") {
       throw new BrokerError(400, "INFRASTRUCTURE_TYPE_NOT_SUPPORTED", "That infrastructure target type is not supported.");
@@ -2345,10 +2510,10 @@ export async function createBroker(options = {}) {
   }
 
   async function testDraftInfrastructureServiceConnection(input) {
-    if (!input || input.type !== "portainer") {
+    if (!input || !["portainer", "loki"].includes(input.type)) {
       throw new BrokerError(400, "INFRASTRUCTURE_SERVICE_TYPE_NOT_SUPPORTED", "That infrastructure service type is not supported.");
     }
-    return runPortainerProbe(input);
+    return input.type === "loki" ? runLokiProbe(input) : runPortainerProbe(input);
   }
 
   function acceptedActionStatus(upstream, provider, options = {}) {
@@ -2536,6 +2701,8 @@ export async function createBroker(options = {}) {
     testServiceConnection: testDraftServiceConnection,
     testInfrastructureConnection: testDraftInfrastructureConnection,
     testInfrastructureServiceConnection: testDraftInfrastructureServiceConnection,
+    executeLokiRead,
+    eventJournal,
     executePortainerContainerAction,
     executeProxmoxWorkloadAction,
     executeMediaRecoveryAction,
@@ -2550,7 +2717,25 @@ export async function createBroker(options = {}) {
       ?? process.env.HELMSMAN_MASTER_KEY_FILE
       ?? process.env.JELLOFIN_COMMAND_MASTER_KEY_FILE
   });
-  const incidentEngine = createHealthIncidentEngine({ failureThreshold: 2, staleAfterMs: 5 * 60_000 });
+  const incidentEngine = createHealthIncidentEngine({
+    failureThreshold: 2,
+    staleAfterMs: 5 * 60_000,
+    onTransition: (transition) => recordEvent({
+      at: transition.at,
+      level: transition.type === "recovered"
+        ? "info"
+        : ["down", "degraded", "auth_required"].includes(transition.state) ? "error" : "warn",
+      category: "health",
+      event: "health_incident",
+      outcome: transition.type === "recovered" ? "recovered" : "changed",
+      service: transition.service,
+      capability: transition.capability,
+      code: transition.code || undefined,
+      httpStatus: transition.status ?? undefined,
+      targetType: "incident",
+      targetId: transition.incidentId
+    })
+  });
 
   function configuredProxmoxEndpoints(target) {
     if (Array.isArray(target?.endpoints) && target.endpoints.length) return target.endpoints;
@@ -2836,20 +3021,43 @@ export async function createBroker(options = {}) {
     probeInfrastructureService: async (service, context) => controlPlane.useInfrastructureServiceCredentials(
       service.id,
       service,
-      (credentials) => runPortainerProbe({
-        target: parseServiceUrl(service.url),
-        targetRevision: service.targetRevision,
-        tlsMode: service.tlsMode,
-        certificateFingerprint: service.certificateFingerprint,
-        credentials,
-        approvedHostCidrs: service.approvedHostCidrs || [],
-        signal: context.signal,
-        checkedAt: context.checkedAt
-      })
+      (credentials) => service.type === "loki"
+        ? runLokiProbe({
+            target: parseServiceUrl(service.url),
+            targetRevision: service.targetRevision,
+            authMode: service.authMode,
+            tenantId: service.tenantId,
+            tlsMode: service.tlsMode,
+            certificateFingerprint: service.certificateFingerprint,
+            credentials,
+            approvedHostCidrs: service.approvedHostCidrs || [],
+            signal: context.signal,
+            checkedAt: context.checkedAt
+          })
+        : runPortainerProbe({
+            target: parseServiceUrl(service.url),
+            targetRevision: service.targetRevision,
+            tlsMode: service.tlsMode,
+            certificateFingerprint: service.certificateFingerprint,
+            credentials,
+            approvedHostCidrs: service.approvedHostCidrs || [],
+            signal: context.signal,
+            checkedAt: context.checkedAt
+          })
     )
   });
   controlPlane.setMonitor(monitor);
-  void monitor.start().catch(() => log("Helmsman monitor cycle failed safely."));
+  void monitor.start().catch(() => {
+    recordEvent({
+      level: "error",
+      category: "application",
+      event: "monitor_cycle",
+      outcome: "failed",
+      service: "helmsman",
+      code: "MONITOR_START_FAILED"
+    });
+    log("Helmsman monitor cycle failed safely.");
+  });
 
   async function claimSetup(request, response) {
     if (store.snapshot().claimed) {
@@ -3091,13 +3299,41 @@ export async function createBroker(options = {}) {
     shutdownController.abort();
   };
   let closePromise = null;
-  const drain = async () => {
+  const drain = async (options = {}) => {
     if (activeHandlers !== 0) await new Promise((resolve) => drainWaiters.add(resolve));
-    closePromise ||= controlPlane.close();
-    await closePromise;
+    let controlPlaneError = null;
+    try {
+      closePromise ||= controlPlane.close();
+      await closePromise;
+    } catch (error) {
+      controlPlaneError = error;
+    }
+    if (options.finalEvent) {
+      const finalEvent = controlPlaneError
+        ? {
+            ...options.finalEvent,
+            level: "error",
+            outcome: "failed",
+            code: "APPLICATION_STOP_FAILED"
+          }
+        : options.finalEvent;
+      await recordEvent(finalEvent);
+    }
+    await eventJournal.close();
+    if (controlPlaneError) throw controlPlaneError;
   };
 
-  return { handler, store, controlPlane, setupToken, version: VERSION, beginShutdown, drain };
+  return {
+    handler,
+    store,
+    controlPlane,
+    eventJournal,
+    recordEvent,
+    setupToken,
+    version: VERSION,
+    beginShutdown,
+    drain
+  };
 }
 
 export function createHttpServer(handler) {

@@ -3244,6 +3244,13 @@ async function infrastructureWorkspaceContract() {
     }
     if (path === "/api/v2/operations/snapshot" && method === "GET") return jsonResponse(clone(snapshot));
     if (path === "/api/v2/operations/refresh" && method === "POST") return jsonResponse(clone(snapshot));
+    if (path.startsWith("/api/v2/logs?") && method === "GET") return jsonResponse({
+      schema: 1,
+      generatedAt: snapshot.generatedAt,
+      storage: { state: "healthy", persistent: true, writable: true, totalBytes: 0, maximumBytes: 20 * 1024 * 1024, retentionDays: 14, lastWriteAt: snapshot.generatedAt, issueCodes: [] },
+      entries: clone(snapshot.events),
+      nextCursor: null
+    });
     if (path === "/api/v2/infrastructure/environments" && method === "GET") return jsonResponse({ environments: clone(targets) });
     if (path === "/api/v2/infrastructure/environments/test" && method === "POST") return jsonResponse(clone(healthyTest));
     if (path === `/api/v2/infrastructure/environments/${targetId}/test` && method === "POST") return jsonResponse(clone(healthyTest));
@@ -4068,6 +4075,13 @@ async function portainerInfrastructureContract() {
       }
       return jsonResponse(clone(snapshot));
     }
+    if (path.startsWith("/api/v2/logs?") && method === "GET") return jsonResponse({
+      schema: 1,
+      generatedAt: snapshot.generatedAt,
+      storage: { state: "healthy", persistent: true, writable: true, totalBytes: 0, maximumBytes: 20 * 1024 * 1024, retentionDays: 14, lastWriteAt: snapshot.generatedAt, issueCodes: [] },
+      entries: clone(snapshot.events),
+      nextCursor: null
+    });
     if (path === "/api/v2/actions/portainer/container" && method === "POST") return jsonResponse({ ok: true, provider: "portainer", operation: "restart" });
     if (path === "/api/v2/sessions") return jsonResponse({ currentSessionId: "", sessions: [] });
     return jsonResponse({ code: "NOT_FOUND", message: "Unexpected test route." }, 404);

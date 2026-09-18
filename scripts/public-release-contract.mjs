@@ -45,7 +45,7 @@ function jpegDimensions(contents) {
 }
 
 const packageJson = JSON.parse(read("package.json"));
-assert.equal(packageJson.version, "1.0.5", "the public release must use the selected SemVer");
+assert.equal(packageJson.version, "1.0.6", "the public release must use the selected SemVer");
 assert.equal(packageJson.license, "AGPL-3.0-only", "package metadata must declare the source license");
 assert.equal(packageJson.private, true, "the package must remain protected from accidental npm publication");
 assert.equal(packageJson.repository?.url, "https://github.com/nunesg130-boop/helmsman.git");
@@ -54,8 +54,10 @@ const readme = read("README.md");
 const securityPolicy = read("SECURITY.md");
 const deploymentGuide = read("deploy/DOCKER.md");
 const browserAccessDocumentation = `${readme}\n${securityPolicy}\n${deploymentGuide}`;
-assert.match(readme, /^# Helmsman v1[.]0[.]5$/mu, "the public README must identify the stable release");
-assert.match(readme, /`v1[.]0[.]5` Git tag[\s\S]*?version, `latest`, and full-commit image tags/iu);
+assert.match(readme, /^# Helmsman v1[.]0[.]6$/mu, "the public README must identify the stable release");
+assert.match(readme, /`v1[.]0[.]6` Git tag[\s\S]*?version, `latest`, and full-commit image tags/iu);
+assert.match(readme, /## v1[.]0[.]6[\s\S]*?built-in Helmsman journal[\s\S]*?Loki Explorer/iu);
+assert.doesNotMatch(readme, /unreleased logging preview|Logging development preview/iu);
 assert.match(browserAccessDocumentation, /exact (?:enabled )?Jellyfin administrator/iu);
 assert.match(browserAccessDocumentation, /username and password/iu);
 assert.match(browserAccessDocumentation, /server ID and user ID[\s\S]{0,160}(?:never requested|never asks)/iu);

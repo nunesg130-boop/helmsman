@@ -86,8 +86,12 @@ const requiredFiles = [
   "server/index.mjs",
   "server/broker.mjs",
   "server/control-plane.mjs",
+  "server/event-journal.mjs",
   "server/health-engine.mjs",
   "server/lock.mjs",
+  "server/loki.mjs",
+  "server/loki-probes.mjs",
+  "server/loki-transport.mjs",
   "server/media-artwork.mjs",
   "server/media-model.mjs",
   "server/monitor.mjs",
@@ -111,6 +115,13 @@ const requiredFiles = [
   "tests/portainer-backend.test.mjs",
   "tests/portainer-monitor.test.mjs",
   "tests/portainer-transport.test.mjs",
+  "tests/event-journal.test.mjs",
+  "tests/logging-control-plane.test.mjs",
+  "tests/loki-control-plane.test.mjs",
+  "tests/loki-model.test.mjs",
+  "tests/loki-probes.test.mjs",
+  "tests/loki-routes.test.mjs",
+  "tests/loki-transport.test.mjs",
   "tests/helpers/self-signed-tls.mjs",
   "tests/media-model.test.mjs",
   "tests/media-artwork.test.mjs",
@@ -118,6 +129,7 @@ const requiredFiles = [
   "tests/seerr-series-seasons.test.mjs",
   "src/app-v5.js",
   "src/ui/control.css",
+  "src/ui/logging.css",
   "src/ui/operations.css",
   "src/ui/operations-views.js",
   "src/ui/retro.css",
@@ -153,7 +165,7 @@ const requiredFiles = [
 const missing = requiredFiles.filter((path) => !existsSync(join(root, path)));
 record(
   missing.length === 0,
-  "Helmsman v1.0.5 includes its unified media model, bounded fixed actions, Proxmox and Portainer infrastructure monitors, encrypted store, retro operations UI, and deployment contracts",
+  "Helmsman v1.0.6 includes its unified media model, bounded fixed actions, Proxmox and Portainer infrastructure monitors, encrypted store, retro operations UI, logging, and deployment contracts",
   missing.join(", ")
 );
 
@@ -174,12 +186,12 @@ if (existsSync(join(root, "Dockerfile"))) {
   );
 
   record(
-    /^ARG HELMSMAN_VERSION=1\.0\.5$/mu.test(dockerfile)
+    /^ARG HELMSMAN_VERSION=1\.0\.6$/mu.test(dockerfile)
       && /^ARG HELMSMAN_REVISION=unknown$/mu.test(dockerfile)
       && /org\.opencontainers\.image\.title="Helmsman"/u.test(dockerfile)
       && /org\.opencontainers\.image\.licenses="AGPL-3\.0-only"/u.test(dockerfile)
       && !/org\.opencontainers\.image\.title="Jellofin Command"/u.test(dockerfile),
-    "image metadata carries the Helmsman v1.0.5 identity and license"
+    "image metadata carries the Helmsman v1.0.6 identity and license"
   );
 
   record(
@@ -201,7 +213,7 @@ if (existsSync(join(root, "Dockerfile"))) {
     "COPY --chown=0:0 assets/services/licenses/ ./assets/services/licenses/",
     "COPY --chown=0:0 assets/workloads/vm.svg assets/workloads/container.svg ./assets/workloads/",
     "COPY --chown=0:0 src/app-v5.js ./src/app-v5.js",
-    "COPY --chown=0:0 src/ui/operations-views.js src/ui/operations.css src/ui/control.css src/ui/retro.css ./src/ui/",
+    "COPY --chown=0:0 src/ui/operations-views.js src/ui/operations.css src/ui/control.css src/ui/logging.css src/ui/retro.css ./src/ui/",
     "COPY --chown=0:0 server ./server",
     "COPY --chown=0:0 package.json ./package.json",
     "COPY --chown=0:0 LICENSE ./LICENSE"
@@ -240,10 +252,10 @@ if (existsSync(join(root, "Dockerfile"))) {
 if (existsSync(join(root, "server/broker.mjs"))) {
   const broker = read("server/broker.mjs");
   record(
-    /const DEFAULT_VERSION = "1\.0\.5"/u.test(broker)
+    /const DEFAULT_VERSION = "1\.0\.6"/u.test(broker)
       && /process\.env\.HELMSMAN_VERSION/u.test(broker)
       && /\^\[0-9A-Za-z\]\[0-9A-Za-z\.\+-\]\{0,63\}\$/u.test(broker),
-    "runtime version follows the validated immutable v1.0.5 image metadata"
+    "runtime version follows the validated immutable v1.0.6 image metadata"
   );
 }
 
@@ -314,7 +326,7 @@ if (existsSync(join(root, "server/index.mjs"))
       && !/url[.]pathname === "\/api\/v2\/access\/rotate"/u.test(controlPlane)
       && !/command === "rotate-access-key"/u.test(index)
       && !/rotate-access-key --confirm/u.test(index),
-    "the beta.2 access-key route is migration-only and v1.0.5 exposes no access-key rotation route or CLI"
+    "the beta.2 access-key route is migration-only and v1.0.6 exposes no access-key rotation route or CLI"
   );
   record(
     /command === "reset-access"/u.test(index)
@@ -361,7 +373,7 @@ if (existsSync(join(root, "compose.yaml"))) {
   record(
     /^name:\s*helmsman\s*$/mu.test(compose)
       && /^services:\s*\n\s{2}helmsman:\s*$/mu.test(compose)
-      && compose.includes('${HELMSMAN_IMAGE:-ghcr.io/OWNER/REPOSITORY:1.0.5}')
+      && compose.includes('${HELMSMAN_IMAGE:-ghcr.io/OWNER/REPOSITORY:1.0.6}')
       && !/^\s{4}build:/mu.test(compose),
     "production Compose has a stable project name and pulls the versioned GHCR image without a local build"
   );
@@ -420,9 +432,9 @@ if (existsSync(join(root, "compose.dev.yaml"))) {
       && /^\s{4}build:\s*$/mu.test(developmentCompose)
       && /^\s{6}context:\s*[.]\s*$/mu.test(developmentCompose)
       && /^\s{6}dockerfile:\s*Dockerfile\s*$/mu.test(developmentCompose)
-      && /HELMSMAN_VERSION:\s*["']1\.0\.5["']/u.test(developmentCompose)
+      && /HELMSMAN_VERSION:\s*["']1\.0\.6["']/u.test(developmentCompose)
       && /HELMSMAN_REVISION:\s*["']local["']/u.test(developmentCompose)
-      && /image:\s*["']helmsman:1\.0\.5["']/u.test(developmentCompose),
+      && /image:\s*["']helmsman:1\.0\.6["']/u.test(developmentCompose),
     "developer Compose override keeps source builds separate from the production pull contract"
   );
 }
@@ -449,18 +461,20 @@ if (existsSync(join(root, "server/state.mjs"))
   const proxmoxProbes = read("server/proxmox-probes.mjs");
   const proxmoxRouteBlock = routes.match(/const PROXMOX_ROUTES = Object\.freeze\(\{[\s\S]*?\n\}\);/u)?.[0] || "";
   record(
-    /const STATE_VERSION = 4;/u.test(state)
+    /const STATE_VERSION = 5;/u.test(state)
       && /infrastructureTargets:\s*\{\}/u.test(state)
       && /infrastructureServices:\s*\{\}/u.test(state)
       && /value\.version === 1/u.test(state)
       && /value\.infrastructureTargets = \{\}/u.test(state)
       && /value\.version === 3/u.test(state)
       && /value\.infrastructureServices = \{\}/u.test(state)
+      && /value\.version === 4/u.test(state)
+      && /value\.version = STATE_VERSION/u.test(state)
       && /MAX_INFRASTRUCTURE_TARGETS = 25/u.test(state)
       && /MAX_INFRASTRUCTURE_SERVICES = 8/u.test(state)
       && /INFRASTRUCTURE_TYPES = new Set\(\["proxmox"\]\)/u.test(state)
-      && /INFRASTRUCTURE_SERVICE_TYPES = new Set\(\["portainer"\]\)/u.test(state),
-    "v0.10 state migration adds bounded Portainer infrastructure services without replacing media or Proxmox state"
+      && /INFRASTRUCTURE_SERVICE_TYPES = new Set\(\["portainer", "loki"\]\)/u.test(state),
+    "state schema 5 preserves existing records while adding bounded Loki infrastructure services"
   );
   record(
     /export const PROXMOX_ROUTE_IDS/u.test(routes)
@@ -541,6 +555,83 @@ if (existsSync(join(root, "server/control-plane.mjs"))
   );
 }
 
+if (existsSync(join(root, "server/control-plane.mjs"))
+  && existsSync(join(root, "server/loki.mjs"))
+  && existsSync(join(root, "server/loki-probes.mjs"))
+  && existsSync(join(root, "server/loki-transport.mjs"))) {
+  const controlPlane = read("server/control-plane.mjs");
+  const loki = read("server/loki.mjs");
+  const lokiProbes = read("server/loki-probes.mjs");
+  const lokiTransport = read("server/loki-transport.mjs");
+  record(
+    /export const LOKI_ROUTE_IDS/u.test(loki)
+      && /"queryRange"/u.test(loki)
+      && /method !== "GET"/u.test(loki)
+      && /internalOnly:\s*true/u.test(loki)
+      && /export function normalizeLokiQueryInput/u.test(loki)
+      && /export function normalizeLokiResponse/u.test(loki)
+      && /maximumLines:\s*500/u.test(loki)
+      && /maximumStreams:\s*100/u.test(loki)
+      && /maximumLineCodePoints:\s*4_096/u.test(loki),
+    "Loki access is a fixed GET-only capability set with bounded normalized query results"
+  );
+  record(
+    /export async function probeLoki/u.test(lokiProbes)
+      && /connectionState:\s*"connected"/u.test(lokiProbes)
+      && /AUTHENTICATION_REQUIRED/u.test(lokiProbes)
+      && /LOKI_QUERY_UNAVAILABLE/u.test(lokiProbes),
+    "Loki probes distinguish transport connectivity from readiness, authentication, and query health"
+  );
+  record(
+    /export async function performLokiUpstreamRequest/u.test(lokiTransport)
+      && /MAX_RESPONSE_BYTES = 2 \* 1024 \* 1024/u.test(lokiTransport)
+      && /MAX_TIMEOUT_MS = 15_000/u.test(lokiTransport)
+      && /UPSTREAM_REDIRECT_REJECTED/u.test(lokiTransport)
+      && /"Accept-Encoding": "identity"/u.test(lokiTransport)
+      && /UPSTREAM_CONTENT_REJECTED/u.test(lokiTransport)
+      && /HTTPS_REQUIRED/u.test(lokiTransport)
+      && /X-Scope-OrgID/u.test(lokiTransport),
+    "Loki transport pins the authorized destination and rejects credential exposure, redirects, compression, and oversized responses"
+  );
+  record(
+    /loki:\s*Object\.freeze\(\{/u.test(controlPlane)
+      && /category:\s*"observability"/u.test(controlPlane)
+      && /id:\s*"none"/u.test(controlPlane)
+      && /id:\s*"basic"/u.test(controlPlane)
+      && /id:\s*"bearer"/u.test(controlPlane)
+      && /logging\\\/loki\\\//u.test(controlPlane)
+      && /routeId:\s*"queryRange"/u.test(controlPlane),
+    "authenticated infrastructure APIs expose Loki as an observability connector with explicit auth modes and one bounded query endpoint"
+  );
+}
+
+if (existsSync(join(root, "server/event-journal.mjs"))
+  && existsSync(join(root, "server/broker.mjs"))
+  && existsSync(join(root, "server/control-plane.mjs"))) {
+  const eventJournal = read("server/event-journal.mjs");
+  const broker = read("server/broker.mjs");
+  const controlPlane = read("server/control-plane.mjs");
+  record(
+    /export const EVENT_JOURNAL_SCHEMA = 1/u.test(eventJournal)
+      && /DEFAULT_RETENTION_DAYS = 14/u.test(eventJournal)
+      && /DEFAULT_MAXIMUM_BYTES = 20 \* 1024 \* 1024/u.test(eventJournal)
+      && /DEFAULT_MAXIMUM_EVENT_BYTES = 2 \* 1024/u.test(eventJournal)
+      && /DEFAULT_MAXIMUM_QUERY_LIMIT = 200/u.test(eventJournal)
+      && /requireExactKeys\(input, stored \? STORED_KEYS : INPUT_KEYS/u.test(eventJournal)
+      && /logsMetadata\.isSymbolicLink\(\)/u.test(eventJournal)
+      && /export async function createEventJournal/u.test(eventJournal),
+    "the persistent event journal accepts an exact safe schema with bounded retention, event size, queries, and filesystem checks"
+  );
+  record(
+    /createEventJournal\(\{/u.test(broker)
+      && /eventJournal\.record\(event\)/u.test(broker)
+      && /await eventJournal\.close\(\)/u.test(broker)
+      && /url\.pathname === "\/api\/v2\/logs"/u.test(controlPlane)
+      && /eventJournal\.query\(eventLogQuery\(url\)\)/u.test(controlPlane),
+    "the broker owns the event-journal lifecycle and exposes authenticated read-only log queries"
+  );
+}
+
 if (existsSync(join(root, "container.env.example"))) {
   const environment = read("container.env.example");
   const assignments = environment.split(/\r?\n/u)
@@ -550,7 +641,7 @@ if (existsSync(join(root, "container.env.example"))) {
   const allowed = new Set(["HELMSMAN_IMAGE", "HELMSMAN_BIND_IP", "HELMSMAN_PORT"]);
   const unexpected = keys.filter((key) => !allowed.has(key));
   record(
-    assignments.includes("HELMSMAN_IMAGE=ghcr.io/OWNER/REPOSITORY:1.0.5")
+    assignments.includes("HELMSMAN_IMAGE=ghcr.io/OWNER/REPOSITORY:1.0.6")
       && assignments.includes("HELMSMAN_BIND_IP=127.0.0.1")
       && assignments.includes("HELMSMAN_PORT=4180")
       && !assignments.some((line) => line.startsWith("HELMSMAN_DATA_VOLUME="))
@@ -616,12 +707,17 @@ if (existsSync(join(root, ".dockerignore"))) {
     "!src/ui/operations-views.js",
     "!src/ui/operations.css",
     "!src/ui/control.css",
+    "!src/ui/logging.css",
     "!src/ui/retro.css",
     "!server/broker.mjs",
     "!server/control-plane.mjs",
+    "!server/event-journal.mjs",
     "!server/health-engine.mjs",
     "!server/index.mjs",
     "!server/lock.mjs",
+    "!server/loki.mjs",
+    "!server/loki-probes.mjs",
+    "!server/loki-transport.mjs",
     "!server/media-artwork.mjs",
     "!server/media-model.mjs",
     "!server/monitor.mjs",
@@ -659,10 +755,10 @@ if (existsSync(join(root, "manifest.webmanifest"))) {
         && manifest.icons.some(({ src, sizes }) => src === "./assets/icon-192.png" && sizes === "192x192")
         && manifest.icons.some(({ src, sizes, purpose }) => src === "./assets/icon-512.png" && sizes === "512x512" && purpose === "any")
         && manifest.icons.some(({ src, sizes, purpose }) => src === "./assets/icon-maskable-512.png" && sizes === "512x512" && purpose === "maskable"),
-      "the v1.0.5 installed-app manifest opens Media Home and retains dedicated local application icons"
+      "the v1.0.6 installed-app manifest opens Media Home and retains dedicated local application icons"
     );
   } catch (error) {
-    record(false, "the v1.0.5 installed-app manifest opens Media Home and retains dedicated local application icons", error.message);
+    record(false, "the v1.0.6 installed-app manifest opens Media Home and retains dedicated local application icons", error.message);
   }
 }
 
@@ -871,7 +967,7 @@ if (existsSync(join(root, "package.json"))) {
     const packageJson = JSON.parse(read("package.json"));
     record(
       packageJson.name === "helmsman"
-        && packageJson.version === "1.0.5"
+        && packageJson.version === "1.0.6"
         && packageJson.scripts?.serve === "node server/index.mjs serve"
         && packageJson.scripts?.["check:broker"] === "node --test tests/control-plane.test.mjs"
         && /tests\/secrets[.]test[.]mjs/u.test(packageJson.scripts?.["check:security"] || "")
@@ -890,6 +986,13 @@ if (existsSync(join(root, "package.json"))) {
         && /tests\/portainer-backend[.]test[.]mjs/u.test(packageJson.scripts?.["check:security"] || "")
         && /tests\/portainer-monitor[.]test[.]mjs/u.test(packageJson.scripts?.["check:security"] || "")
         && /tests\/portainer-transport[.]test[.]mjs/u.test(packageJson.scripts?.["check:security"] || "")
+        && /tests\/event-journal[.]test[.]mjs/u.test(packageJson.scripts?.["check:security"] || "")
+        && /tests\/logging-control-plane[.]test[.]mjs/u.test(packageJson.scripts?.["check:security"] || "")
+        && /tests\/loki-control-plane[.]test[.]mjs/u.test(packageJson.scripts?.["check:security"] || "")
+        && /tests\/loki-model[.]test[.]mjs/u.test(packageJson.scripts?.["check:security"] || "")
+        && /tests\/loki-probes[.]test[.]mjs/u.test(packageJson.scripts?.["check:security"] || "")
+        && /tests\/loki-routes[.]test[.]mjs/u.test(packageJson.scripts?.["check:security"] || "")
+        && /tests\/loki-transport[.]test[.]mjs/u.test(packageJson.scripts?.["check:security"] || "")
         && /tests\/media-model[.]test[.]mjs/u.test(packageJson.scripts?.["check:security"] || "")
         && /tests\/media-artwork[.]test[.]mjs/u.test(packageJson.scripts?.["check:security"] || "")
         && /tests\/media-artwork-control-plane[.]test[.]mjs/u.test(packageJson.scripts?.["check:security"] || "")
@@ -899,10 +1002,10 @@ if (existsSync(join(root, "package.json"))) {
         && /publisher-contract[.]mjs/u.test(packageJson.scripts?.["check:container"] || "")
         && packageJson.scripts?.["check:public"] === "node scripts/public-release-contract.mjs"
         && /check:public/u.test(packageJson.scripts?.check || ""),
-      "package identity and checks cover the Helmsman media/infrastructure control plane, sessions, monitor, probes, and operations UI"
+      "package identity and checks cover the Helmsman media/infrastructure control plane, persistent event journal, Loki connector, probes, transport, and operations UI"
     );
   } catch (error) {
-    record(false, "package identity and checks cover the Helmsman media/infrastructure control plane, sessions, monitor, probes, and operations UI", error.message);
+    record(false, "package identity and checks cover the Helmsman media/infrastructure control plane, persistent event journal, Loki connector, probes, transport, and operations UI", error.message);
   }
 }
 
@@ -945,7 +1048,7 @@ if (existsSync(join(root, "README.md")) && existsSync(join(root, "deploy/DOCKER.
       && keyGuides.every((guide) => /(?:bounds? (?:their )?count and length|count and length are bounded)/iu.test(guide))
       && keyGuides.every((guide) => /redact/iu.test(guide))
       && keyGuides.every((guide) => /escapes? (?:them|every field) (?:again )?before display/iu.test(guide))
-      && keyGuides.every((guide) => /never copied into incidents, events, history, application logs, or persistent files/iu.test(guide))
+      && keyGuides.every((guide) => /never copied into incidents, (?:events|the journal), history, application logs, or persistent files/iu.test(guide))
       && keyGuides.every((guide) => /Raw response bodies and raw error bodies are never exposed/iu.test(guide)),
     "operator guides define the bounded transient live-health report boundary"
   );
