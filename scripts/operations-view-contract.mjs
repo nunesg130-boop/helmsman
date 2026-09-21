@@ -54,6 +54,7 @@ function jpegDimensions(contents) {
 }
 
 const retroCss = await readFile(new URL("../src/ui/retro.css", import.meta.url), "utf8");
+const obsidianGlassCss = await readFile(new URL("../src/ui/obsidian-glass.css", import.meta.url), "utf8");
 const operationsCss = await readFile(new URL("../src/ui/operations.css", import.meta.url), "utf8");
 const controlCss = await readFile(new URL("../src/ui/control.css", import.meta.url), "utf8");
 const shellCss = await readFile(new URL("../styles.css", import.meta.url), "utf8");
@@ -267,10 +268,16 @@ assert.match(
   /\.modal-card--portainer\s*>\s*form\s*\{[^}]*grid-template-rows:\s*minmax\(0,\s*1fr\)\s+auto[^}]*overflow:\s*hidden/su,
   "the Portainer form must keep its action footer outside the scrolling body"
 );
-assert.match(shellHtml, /<meta name="theme-color" content="#0d1719"\s*\/>/u);
-assert.equal(manifest.background_color, "#081012");
-assert.equal(manifest.theme_color, "#0d1719");
+assert.match(shellHtml, /<meta name="theme-color" content="#09090b"\s*\/>/u);
+assert.match(shellHtml, /<link rel="stylesheet" href="\.\/src\/ui\/obsidian-glass\.css"\s*\/>/u);
+assert.equal(manifest.background_color, "#070708");
+assert.equal(manifest.theme_color, "#09090b");
 assert.equal(manifest.start_url, "./#/overview", "the installed application must open canonical Media Overview");
+assert.match(obsidianGlassCss, /--bg:\s*#070708/u, "the visual overhaul must retain its near-black foundation");
+assert.match(obsidianGlassCss, /--accent:\s*#5ce395/u, "healthy and primary emphasis must use the restrained green accent");
+assert.match(obsidianGlassCss, /\.toast\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/su, "toast copy must own the full popup width");
+assert.match(obsidianGlassCss, /@media\s*\(max-width:\s*760px\)[\s\S]*?\.mobile-nav\s*\{/u, "the obsidian shell must define a dedicated mobile navigation surface");
+assert.doesNotMatch(obsidianGlassCss, /https?:\/\//u, "the visual layer must not load remote fonts or runtime assets");
 
 const mediaOverviewSourceStart = application.indexOf("function renderMediaHomeServiceHealth(");
 const mediaOverviewSourceEnd = application.indexOf("\nfunction renderMediaToolbar(", mediaOverviewSourceStart);

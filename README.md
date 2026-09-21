@@ -1,4 +1,4 @@
-# Helmsman v1.2.0
+# Helmsman v1.3.0
 
 Helmsman is a self-hosted operations center for a homelab's media services and infrastructure. It runs as one portable Linux container on Docker Desktop, Linux, macOS, compatible NAS platforms, AMD64, and ARM64.
 
@@ -14,6 +14,24 @@ Helmsman is a self-hosted operations center for a homelab's media services and i
 This Helmsman is the media and infrastructure dashboard in this repository. It
 is not affiliated with or derived from the existing Kubernetes project also
 named [Helmsman](https://github.com/mkubaczyk/helmsman).
+
+## v1.3.0
+
+This release introduces the **Obsidian Glass** visual system across the entire
+application. Helmsman now uses the near-black, compact operations-console
+presentation selected for the project: smoked translucent surfaces, restrained
+graphite borders, subtle blue-violet ambient depth, and green reserved for
+healthy state and primary emphasis. The redesign covers the shared shell,
+Media and Infrastructure dashboards, connector catalogs, service rows,
+logging, forms, controls, drawers, dialogs, notices, and mobile navigation.
+
+The visual reference informs color, density, surface treatment, typography,
+and interaction polish only. Helmsman does not copy its charts or example
+metrics, and every displayed value still comes from the existing normalized
+service model. Routes, authentication, cached-state boundaries, monitoring,
+health semantics, and fixed confirmation-controlled actions are unchanged.
+The responsive layer keeps desktop, tablet, and phone layouts usable without
+hiding authorized controls, and toast copy retains the full popup width.
 
 ## v1.2.0
 
@@ -140,7 +158,7 @@ Helmsman's project-owned logging mark. Original generic VM/container workload
 drawings are also bundled. See
 [the asset notices](assets/services/THIRD_PARTY_NOTICES.md).
 
-Helmsman v1.2.0 combines built-in logging, optional Loki search, Portainer monitoring, a private persistent state/artwork cache, and a small, fixed set of confirmed recovery actions under Infrastructure with targeted media recovery actions and Helmsman's cluster-aware Proxmox model:
+Helmsman v1.3.0 combines built-in logging, optional Loki search, Portainer monitoring, a private persistent state/artwork cache, and a small, fixed set of confirmed recovery actions under Infrastructure with targeted media recovery actions and Helmsman's cluster-aware Proxmox model:
 
 - Media and Infrastructure are separate workspaces inside the same authenticated application, and only the selected workspace's navigation is shown;
 - the desktop sidebar collapses to an icon rail, remembers that preference, keeps its navigation scrollable at high browser zoom, and places its 44 px collapse control on the content-side edge below the shared header rule;
@@ -178,7 +196,7 @@ Helmsman v1.2.0 combines built-in logging, optional Loki search, Portainer monit
 - service, capability, and end-to-end pipeline health are shown separately;
 - queue, request, download, import, schedule, missing-media, and subtitle-backlog views are derived from bounded normalized records; the last successful snapshot and successful raster artwork may be persisted privately under `/data/cache`, while raw service responses and credentials are never cached;
 - current structured health reports from supported service APIs can be shown only to authenticated browsers after bounding, redaction, and escaping;
-- the supplied Helmsman helmet is the sidebar, mobile, browser, and installable-app identity, and the interface uses its charcoal, slate, and muted sea-green palette in a modern rounded bento-style operations dashboard;
+- the supplied Helmsman helmet is the sidebar, mobile, browser, and installable-app identity, and the interface uses its near-black Obsidian Glass operations-console palette with smoked surfaces, graphite rules, restrained green state accents, and subtle blue-violet ambient depth;
 - credentials are encrypted in the container and are write-only through the interface;
 - private-network access defaults to exact per-connection host approvals, with manual CIDR ranges available as an advanced boundary;
 - the exact enrolled Jellyfin administrator signs in with a username and password to receive a revocable, 30-day, origin-bound HttpOnly session; passwords and internal Jellyfin identity IDs never reach browser storage, and each resulting Jellyfin token is encrypted server-side per session;
@@ -186,7 +204,7 @@ Helmsman v1.2.0 combines built-in logging, optional Loki search, Portainer monit
 
 ## Deploy the published container
 
-Helmsman is distributed as the public Linux AMD64/ARM64 image `ghcr.io/nunesg130-boop/helmsman`. The `v1.2.0` Git tag runs the contracts and architecture smoke tests, publishes the version, `latest`, and full-commit image tags, and creates a GitHub Release containing ready-to-use `compose.yaml`, `container.env.example`, and `SHA256SUMS` assets. The release deployment files pin `ghcr.io/nunesg130-boop/helmsman` to the exact multi-architecture manifest digest (`@sha256:...`).
+Helmsman is distributed as the public Linux AMD64/ARM64 image `ghcr.io/nunesg130-boop/helmsman`. The `v1.3.0` Git tag runs the contracts and architecture smoke tests, publishes the version, `latest`, and full-commit image tags, and creates a GitHub Release containing ready-to-use `compose.yaml`, `container.env.example`, and `SHA256SUMS` assets. The release deployment files pin `ghcr.io/nunesg130-boop/helmsman` to the exact multi-architecture manifest digest (`@sha256:...`).
 
 Download those three files from the matching [GitHub Release](https://github.com/nunesg130-boop/helmsman/releases) into one directory, verify the two deployment files against `SHA256SUMS`, open a terminal there, and make sure Docker Desktop or Docker Engine is running. No source checkout, Dockerfile, Node.js installation, or server-side image build is required.
 

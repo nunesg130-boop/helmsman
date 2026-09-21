@@ -37,6 +37,7 @@
 !src/ui/operations.css
 !src/ui/control.css
 !src/ui/retro.css
+!src/ui/obsidian-glass.css
 !src/ui/logging.css
 !server
 !server/broker.mjs

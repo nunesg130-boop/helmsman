@@ -1,6 +1,6 @@
 FROM node:24.19.0-alpine3.23@sha256:244cc2b53f46f9e876304391d17682b0ddae9ac33491f4857e25e35a36ba7995
 
-ARG HELMSMAN_VERSION=1.2.0
+ARG HELMSMAN_VERSION=1.3.0
 ARG HELMSMAN_REVISION=unknown
 
 LABEL org.opencontainers.image.title="Helmsman" \
@@ -30,7 +30,7 @@ COPY --chown=0:0 assets/services/THIRD_PARTY_NOTICES.md assets/services/bazarr.p
 COPY --chown=0:0 assets/services/licenses/ ./assets/services/licenses/
 COPY --chown=0:0 assets/workloads/vm.svg assets/workloads/container.svg ./assets/workloads/
 COPY --chown=0:0 src/app-v5.js ./src/app-v5.js
-COPY --chown=0:0 src/ui/operations-views.js src/ui/operations.css src/ui/control.css src/ui/logging.css src/ui/retro.css ./src/ui/
+COPY --chown=0:0 src/ui/operations-views.js src/ui/operations.css src/ui/control.css src/ui/logging.css src/ui/retro.css src/ui/obsidian-glass.css ./src/ui/
 COPY --chown=0:0 server ./server
 COPY --chown=0:0 package.json ./package.json
 COPY --chown=0:0 LICENSE ./LICENSE

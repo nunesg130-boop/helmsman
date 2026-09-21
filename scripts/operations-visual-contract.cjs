@@ -183,7 +183,7 @@ async function assertNoPageErrors(page, errors, viewport, label) {
 (async () => {
   const root = path.resolve(__dirname, "..");
   const { renderInfrastructureOverview, renderOperationsOverview } = await import(pathToFileURL(path.join(root, "src/ui/operations-views.js")).href);
-  const cssFiles = ["styles.css", "src/ui/operations.css", "src/ui/control.css", "src/ui/logging.css", "src/ui/retro.css"];
+  const cssFiles = ["styles.css", "src/ui/operations.css", "src/ui/control.css", "src/ui/logging.css", "src/ui/retro.css", "src/ui/obsidian-glass.css"];
   const css = cssFiles.map((file) => readFileSync(path.join(root, file), "utf8")).join("\n");
   const mediaHealthMarkup = renderOperationsOverview(mediaSnapshot);
   const infrastructureMarkup = renderInfrastructureOverview(infrastructureSnapshot, infrastructureConfiguration, {
