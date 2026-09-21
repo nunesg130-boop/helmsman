@@ -358,7 +358,16 @@ async function assertFilesDoNotContain(directory, forbiddenValues) {
       continue;
     }
     if (!entry.isFile()) continue;
-    const bytes = await readFile(filePath);
+    let bytes;
+    try {
+      bytes = await readFile(filePath);
+    } catch (error) {
+      // Atomic persistence may rename a private temporary file between the
+      // directory listing and this read. A vanished file contains nothing to
+      // inspect; every stable file is still checked below.
+      if (error?.code === "ENOENT") continue;
+      throw error;
+    }
     for (const forbidden of forbiddenValues) {
       assert.equal(
         bytes.includes(Buffer.from(forbidden, "utf8")),

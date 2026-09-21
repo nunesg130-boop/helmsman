@@ -1,4 +1,4 @@
-# Helmsman v1.1.2
+# Helmsman v1.2.0
 
 Helmsman is a self-hosted operations center for a homelab's media services and infrastructure. It runs as one portable Linux container on Docker Desktop, Linux, macOS, compatible NAS platforms, AMD64, and ARM64.
 
@@ -14,6 +14,28 @@ Helmsman is a self-hosted operations center for a homelab's media services and i
 This Helmsman is the media and infrastructure dashboard in this repository. It
 is not affiliated with or derived from the existing Kubernetes project also
 named [Helmsman](https://github.com/mkubaczyk/helmsman).
+
+## v1.2.0
+
+This release adds a private persistent cache for normalized dashboard state and
+media artwork. After a container restart, Helmsman can immediately show the
+last successful bounded snapshot with a visible **Cached data** notice while a
+live health cycle runs in the background. Cached evidence is always read-only:
+media recovery, Proxmox, and Portainer controls stay unavailable until a fresh
+connected, revision-matched health result replaces it.
+
+Successful raster artwork now uses a two-tier cache: the existing 64 MiB
+in-memory LRU remains the fast path, while a guarded 512 MiB persistent tier
+under `/data/cache/artwork` avoids refetching unchanged posters after a
+restart. Snapshot and artwork files are private, bounded, checksummed or
+content-verified, written atomically, and never contain credentials, headers,
+raw upstream responses, Jellyfin session identity, or Loki query results.
+Connector revisions remain part of every artwork key, so a changed service
+destination cannot reuse a previous target's cache entry.
+
+Shared toast notifications now use their full available width. Short messages
+such as **Health checks completed** no longer wrap one word per line on desktop
+or mobile.
 
 ## v1.1.2
 
@@ -118,7 +140,7 @@ Helmsman's project-owned logging mark. Original generic VM/container workload
 drawings are also bundled. See
 [the asset notices](assets/services/THIRD_PARTY_NOTICES.md).
 
-Helmsman v1.1.2 combines built-in logging, optional Loki search, Portainer monitoring, and a small, fixed set of confirmed recovery actions under Infrastructure with targeted media recovery actions and Helmsman's cluster-aware Proxmox model:
+Helmsman v1.2.0 combines built-in logging, optional Loki search, Portainer monitoring, a private persistent state/artwork cache, and a small, fixed set of confirmed recovery actions under Infrastructure with targeted media recovery actions and Helmsman's cluster-aware Proxmox model:
 
 - Media and Infrastructure are separate workspaces inside the same authenticated application, and only the selected workspace's navigation is shown;
 - the desktop sidebar collapses to an icon rail, remembers that preference, keeps its navigation scrollable at high browser zoom, and places its 44 px collapse control on the content-side edge below the shared header rule;
@@ -154,7 +176,7 @@ Helmsman v1.1.2 combines built-in logging, optional Loki search, Portainer monit
 - repeated failures become deduplicated incidents after two matching results, with aligned open and recovered panels;
 - the top assessment summary opens Media Health or Infrastructure Incidents for the active workspace;
 - service, capability, and end-to-end pipeline health are shown separately;
-- queue, request, download, import, schedule, missing-media, and subtitle-backlog views are derived without writing a media catalog or artwork cache to disk;
+- queue, request, download, import, schedule, missing-media, and subtitle-backlog views are derived from bounded normalized records; the last successful snapshot and successful raster artwork may be persisted privately under `/data/cache`, while raw service responses and credentials are never cached;
 - current structured health reports from supported service APIs can be shown only to authenticated browsers after bounding, redaction, and escaping;
 - the supplied Helmsman helmet is the sidebar, mobile, browser, and installable-app identity, and the interface uses its charcoal, slate, and muted sea-green palette in a modern rounded bento-style operations dashboard;
 - credentials are encrypted in the container and are write-only through the interface;
@@ -164,7 +186,7 @@ Helmsman v1.1.2 combines built-in logging, optional Loki search, Portainer monit
 
 ## Deploy the published container
 
-Helmsman is distributed as the public Linux AMD64/ARM64 image `ghcr.io/nunesg130-boop/helmsman`. The `v1.1.2` Git tag runs the contracts and architecture smoke tests, publishes the version, `latest`, and full-commit image tags, and creates a GitHub Release containing ready-to-use `compose.yaml`, `container.env.example`, and `SHA256SUMS` assets. The release deployment files pin `ghcr.io/nunesg130-boop/helmsman` to the exact multi-architecture manifest digest (`@sha256:...`).
+Helmsman is distributed as the public Linux AMD64/ARM64 image `ghcr.io/nunesg130-boop/helmsman`. The `v1.2.0` Git tag runs the contracts and architecture smoke tests, publishes the version, `latest`, and full-commit image tags, and creates a GitHub Release containing ready-to-use `compose.yaml`, `container.env.example`, and `SHA256SUMS` assets. The release deployment files pin `ghcr.io/nunesg130-boop/helmsman` to the exact multi-architecture manifest digest (`@sha256:...`).
 
 Download those three files from the matching [GitHub Release](https://github.com/nunesg130-boop/helmsman/releases) into one directory, verify the two deployment files against `SHA256SUMS`, open a terminal there, and make sure Docker Desktop or Docker Engine is running. No source checkout, Dockerfile, Node.js installation, or server-side image build is required.
 
@@ -336,9 +358,11 @@ There is no vendor cloud, hosted account, telemetry, analytics, advertising, tra
 | `/data/credentials.json` | AES-256-GCM ciphertext and authenticated metadata, including destination-bound connector credentials and separate per-session Jellyfin login tokens |
 | `/data/credentials.key` | Auto-generated local encryption key, unless the environment-sourced Docker secret is enabled |
 | `/data/logs/helmsman-events-*.jsonl` | Private, sanitized Helmsman operational events. The defaults retain no more than 14 days and 20 MiB across bounded segments |
-| In-memory operations snapshot | Bounded normalized media records, current activity, states, safe codes, latency, counters, incidents, and recent transitions; never raw responses |
+| `/data/cache/operations-v1.json` | The last successful bounded normalized operations snapshot, retained for no more than 30 days and marked read-only when restored; never raw responses or credentials |
+| `/data/cache/artwork/*.art` | Successful validated raster artwork only, keyed by connector revision and limited to 2,048 entries, 512 MiB total, 4 MiB per image, and 30 days |
+| In-memory operations snapshot | The current live or explicitly marked cached view model used by the UI; never raw responses |
 
-Saved credentials cannot be read back through the API. Each credential is bound to its connection's exact canonical destination; changing that URL requires a fresh credential, and offline URL tampering cannot redirect the old one. Replacing a credential overwrites it; removing a connection removes its encrypted credential. Proxmox token IDs and token secrets, Portainer access tokens, and Loki basic or bearer credentials are write-only just like media credentials. The monitor parses every response at a strict boundary and discards raw response bodies, headers, usernames, URLs, credentials, and unbounded error text. The authenticated UI receives only the normalized media fields needed for the desktop workflow, including bounded titles, provider identifiers, current states, progress, dates, and sanitized queue errors. Jellyfin Now Playing reads only the bounded current media item and play state; user, device, client, network, and stream-session metadata are discarded. These records and the bounded artwork cache remain in memory and are not added to `state.json`.
+Saved credentials cannot be read back through the API. Each credential is bound to its connection's exact canonical destination; changing that URL requires a fresh credential, and offline URL tampering cannot redirect the old one. Replacing a credential overwrites it; removing a connection removes its encrypted credential. Proxmox token IDs and token secrets, Portainer access tokens, and Loki basic or bearer credentials are write-only just like media credentials. The monitor parses every response at a strict boundary and discards raw response bodies, headers, usernames, URLs, credentials, and unbounded error text. The authenticated UI receives only the normalized media fields needed for the desktop workflow, including bounded titles, provider identifiers, current states, progress, dates, and sanitized queue errors. Jellyfin Now Playing reads only the bounded current media item and play state; user, device, client, network, and stream-session metadata are discarded. The current normalized snapshot and successful validated artwork can be persisted only in the separate bounded `/data/cache` area; neither is added to `state.json`, and cached state cannot authorize a control action.
 
 The built-in journal stores only a fixed event schema: timestamp, severity,
 category, outcome, and bounded identifiers or safe status codes when relevant.
@@ -379,9 +403,9 @@ Overview keeps existing data visible while a refresh is in flight and patches vo
 
 The only Media writes are a Helmsman-confirmed Seerr failed-request retry, a selected standard-season request for one exact current series through Seerr, a targeted Radarr/Sonarr search when Helmsman can resolve one exact current record, and **Block release & search again** for one exact current errored Sonarr/Radarr queue item. The blocked-queue action warns that it removes the download and its data from the download client, blocklists that release, and allows Sonarr/Radarr to seek a replacement according to its settings. It appears only from fresh, connected, revision-matched error evidence and is revalidated after its explicit danger confirmation. Series and parent-resolved episode drawers load a bounded current season catalog from Seerr on demand. The operator can select requestable standard seasons, review the exact selection in Helmsman's confirmation dialog, and submit one standard-quality request. Specials, 4K selection, arbitrary Seerr users, servers, profiles, root folders, and request bodies are not exposed. Helmsman revalidates the current record, target revision, and action-specific detail immediately before dispatch. Each action uses a Helmsman-styled confirmation dialog; browser-native confirmation prompts are not used. Helmsman cannot approve requests or delete requests, request movies or 4K/Specials, choose Seerr routing/profile fields, change monitoring, pause downloads, remove healthy or arbitrary downloads, alter any other files, or run a free-form search.
 
-Each media record uses provider and service identifiers to join evidence from multiple systems. Its five-stage lifecycle indicates which of **Requested**, **Monitored**, **Downloading**, **Imported**, and **Available** have actually been observed rather than inferring progress from position alone. qBittorrent transfers are correlated to Sonarr/Radarr queue rows by download identifiers; a bounded sanitized queue error is displayed when the service supplies one. Titles, identifiers, progress, and errors exist only in the current in-memory snapshot.
+Each media record uses provider and service identifiers to join evidence from multiple systems. Its five-stage lifecycle indicates which of **Requested**, **Monitored**, **Downloading**, **Imported**, and **Available** have actually been observed rather than inferring progress from position alone. qBittorrent transfers are correlated to Sonarr/Radarr queue rows by download identifiers; a bounded sanitized queue error is displayed when the service supplies one. Titles, identifiers, progress, and bounded sanitized errors may appear in the last normalized persistent snapshot so the dashboard can recover after a restart; the UI clearly marks that data cached until a live cycle replaces it.
 
-Artwork descriptors never reach the browser. The browser receives an opaque same-origin `/api/v2/media/artwork/<key>` URL, and the authenticated broker tries only fixed service-owned artwork routes in this order: Jellyfin, Radarr/Sonarr, then Seerr. Grid requests use a revisioned 342 px Jellyfin or Seerr thumbnail and try fixed 250 px, 500 px, then original Radarr/Sonarr covers. When Sonarr exposes only TVDB remote artwork, Helmsman uses the series' validated TMDb identifier for a typed Seerr metadata lookup and then requests only Seerr's fixed TMDb image-proxy route; it never follows the remote artwork URL. Duplicate misses are coalesced, and a bounded scheduler permits at most three upstream artwork fetches at once with 64 pending requests. Successful images are cached in memory for up to 24 hours. General failures are cached for 15 minutes, versioned Arr cover misses for 30 seconds, and unrevisioned Arr misses are not negative-cached, allowing newly generated covers to appear promptly without continuous retry. The cache is limited to 512 entries, 64 MiB total, and 4 MiB per accepted image, and accepts only bounded raster image types. Browser responses use an ETag, a one-day private cache lifetime, and one-week stale revalidation/error windows; media artwork is never written to the data volume.
+Artwork descriptors never reach the browser. The browser receives an opaque same-origin `/api/v2/media/artwork/<key>` URL, and the authenticated broker tries only fixed service-owned artwork routes in this order: Jellyfin, Radarr/Sonarr, then Seerr. Grid requests use a revisioned 342 px Jellyfin or Seerr thumbnail and try fixed 250 px, 500 px, then original Radarr/Sonarr covers. When Sonarr exposes only TVDB remote artwork, Helmsman uses the series' validated TMDb identifier for a typed Seerr metadata lookup and then requests only Seerr's fixed TMDb image-proxy route; it never follows the remote artwork URL. Duplicate misses are coalesced, and a bounded scheduler permits at most three upstream artwork fetches at once with 64 pending requests. Successful images are cached in memory for up to 24 hours and in the private persistent artwork tier for up to 30 days. General failures are cached only in memory for 15 minutes, versioned Arr cover misses for 30 seconds, and unrevisioned Arr misses are not negative-cached. The memory tier is limited to 512 entries and 64 MiB; the persistent tier is limited to 2,048 entries and 512 MiB. Both accept at most 4 MiB per image and only bounded raster types. Persistent entries are content-verified, keyed by the exact connector revision, protected against link traversal, and written atomically. Browser responses use an ETag, a one-day private cache lifetime, and one-week stale revalidation/error windows.
 
 Infrastructure navigation contains **Overview**, **Connectors**, **Proxmox**, **Workloads**, **Portainer**, and **Incidents**. Overview shows only connections that are already configured and their current read-only status; the always-available categorized Connectors view lists every supported provider and owns setup and connection editing. Proxmox and Workloads appear only after a Proxmox environment is configured, while Portainer appears only after a Portainer connection is configured. Loki is enrolled in the **Observability** category and queried from the global **Logs** workspace instead of receiving an infrastructure inventory page. Helmsman supports up to 25 Proxmox environments and 25 total endpoints, with no more than four endpoints in one environment. An environment is either a standalone server or one multi-node cluster. The combined Proxmox view presents environments, nodes, and a dedicated storage section with current sanitized status and capacity information.
 
@@ -618,7 +642,7 @@ To roll back application code, restore both
 into an older image unless that release explicitly documents schema
 compatibility; restore the matching pre-update volume backup instead.
 
-v0.10 advances the state schema to 4 by adding an empty, bounded Infrastructure-services collection. Existing media connections, destination-bound encrypted credentials, browser sessions, network approvals, and Proxmox environments/endpoints remain in place; nothing is converted into or automatically combined with a Portainer connection. The unified media catalog, artwork cache, and Portainer inventory are rebuilt in memory from current read-only service responses and do not require a data migration. Installations coming directly from an older schema still use the existing in-place migrations, including the rule that separate Proxmox targets are never merged automatically. Back up the volume before upgrading, and do not attempt to run an older image against state after it has been migrated.
+v0.10 advances the state schema to 4 by adding an empty, bounded Infrastructure-services collection. Existing media connections, destination-bound encrypted credentials, browser sessions, network approvals, and Proxmox environments/endpoints remain in place; nothing is converted into or automatically combined with a Portainer connection. Its original unified media model and Portainer inventory required no catalog migration. v1.2.0 adds a separate disposable `/data/cache` without changing the state schema; it can always be rebuilt from current read-only service responses. Installations coming directly from an older schema still use the existing in-place migrations, including the rule that separate Proxmox targets are never merged automatically. Back up the volume before upgrading, and do not attempt to run an older image against state after it has been migrated.
 
 v1.0.6 advances the state schema from 4 to 5 so Loki can be stored as a bounded Infrastructure observability service while preserving existing Portainer records exactly. Existing media connections, Proxmox environments, browser sessions, network approvals, and destination-bound encrypted credentials remain in place. Do not run v1.0.5 against state already migrated to schema 5; rollback requires restoring the `/data` volume backup taken before the v1.0.6 upgrade.
 

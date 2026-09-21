@@ -25,6 +25,7 @@ import { createMediaArtworkCache, MEDIA_ARTWORK_LIMITS } from "./media-artwork.m
 import { createSeerrRequestMetadataEnricher } from "./seerr-request-metadata.mjs";
 import { normalizeSeerrSeriesSeasons } from "./seerr-series-seasons.mjs";
 import { createOperationsMonitor } from "./monitor.mjs";
+import { createPersistentCache } from "./persistent-cache.mjs";
 import { probeProxmox, probeProxmoxEndpoint } from "./proxmox-probes.mjs";
 import { probePortainer } from "./portainer-probes.mjs";
 import { probeService } from "./service-probes.mjs";
@@ -39,7 +40,7 @@ import {
 } from "./network.mjs";
 import { generateSecretToken, hashToken, StateStore, tokenMatches } from "./state.mjs";
 
-const DEFAULT_VERSION = "1.1.2";
+const DEFAULT_VERSION = "1.2.0";
 const requestedVersion = String(process.env.HELMSMAN_VERSION || DEFAULT_VERSION);
 const VERSION = /^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/u.test(requestedVersion)
   ? requestedVersion
@@ -1474,6 +1475,20 @@ export async function createBroker(options = {}) {
     dataDir,
     guard: options.stateGuard
   });
+  let persistentCache = options.persistentCache || null;
+  if (!persistentCache) {
+    try {
+      persistentCache = await createPersistentCache({ dataDir });
+    } catch {
+      log("Helmsman persistent cache is unavailable; live monitoring will continue without it.");
+    }
+  }
+  let initialOperationsSnapshot = null;
+  try {
+    initialOperationsSnapshot = await persistentCache?.readSnapshot?.() || null;
+  } catch {
+    log("Helmsman ignored an unreadable cached operations snapshot.");
+  }
   const recordEvent = (event) => {
     try {
       const pending = eventJournal.record(event);
@@ -2689,7 +2704,8 @@ export async function createBroker(options = {}) {
       targetRevision: context.targetRevision,
       signal: context.signal
     }),
-    fetchSignal: shutdownController.signal
+    fetchSignal: shutdownController.signal,
+    persistentStore: persistentCache?.artwork
   });
 
   controlPlane = await createControlPlane({
@@ -2999,6 +3015,7 @@ export async function createBroker(options = {}) {
 
   const monitor = createOperationsMonitor({
     intervalMs: options.monitorIntervalMs || 30_000,
+    initialSnapshot: initialOperationsSnapshot,
     incidentEngine,
     loadServices: async () => controlPlane.listMonitorServices(),
     probe: async (service, context) => probeService(service.id, monitorRequest, {
@@ -3047,6 +3064,7 @@ export async function createBroker(options = {}) {
     )
   });
   controlPlane.setMonitor(monitor);
+  monitor.subscribe((snapshot) => persistentCache?.writeSnapshot?.(snapshot));
   void monitor.start().catch(() => {
     recordEvent({
       level: "error",
@@ -3320,6 +3338,7 @@ export async function createBroker(options = {}) {
       await recordEvent(finalEvent);
     }
     await eventJournal.close();
+    await persistentCache?.close?.();
     if (controlPlaneError) throw controlPlaneError;
   };
 

@@ -109,6 +109,38 @@ test("monitor creates a serializable, sanitized operations snapshot and feeds th
   assert.equal(serialized.includes("https://"), false);
 });
 
+test("serves a cached initial snapshot until the first live cycle replaces it", async () => {
+  const cached = {
+    version: 1,
+    generatedAt: "2026-09-12T19:59:00.000Z",
+    cache: {
+      state: "cached",
+      storedAt: "2026-09-12T19:59:05.000Z",
+      generatedAt: "2026-09-12T19:59:00.000Z"
+    },
+    overall: { state: "healthy", serviceCount: 0, affectedServiceCount: 0, openIncidentCount: 0, code: null },
+    services: [],
+    pipeline: { state: "healthy", stages: [] },
+    infrastructure: { state: "healthy", environments: [], services: [], portainer: [], loki: [] },
+    incidents: { open: [], recent: [] },
+    media: { generatedAt: "2026-09-12T19:59:00.000Z", records: [], artwork: {} },
+    workload: {},
+    events: [],
+    history: []
+  };
+  const monitor = createOperationsMonitor({
+    initialSnapshot: cached,
+    now: () => START,
+    loadServices: async () => [],
+    probe: async () => ({ ok: true })
+  });
+
+  assert.deepEqual(monitor.getSnapshot().cache, cached.cache);
+  const live = await monitor.refresh();
+  assert.equal(live.cache, undefined);
+  assert.equal(live.generatedAt, "2026-09-12T20:00:00.000Z");
+});
+
 test("refresh calls are coalesced and scheduled cycles never overlap", async () => {
   let active = 0;
   let maximumActive = 0;

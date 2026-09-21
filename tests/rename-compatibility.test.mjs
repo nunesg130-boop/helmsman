@@ -118,7 +118,7 @@ test("Helmsman boots the frozen v0.5 state, session, and credential formats", as
 
   const status = await statusRequest(port, cookie);
   assert.equal(status.status, 200);
-  assert.equal(status.body.version, "1.1.2");
+  assert.equal(status.body.version, "1.2.0");
   assert.equal(status.body.authenticated, true);
   assert.deepEqual(status.body.authentication, {
     provider: null,

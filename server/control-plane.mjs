@@ -4286,11 +4286,14 @@ export async function createControlPlane(options) {
     };
   }
 
-  function currentOperationsSnapshot() {
+  function currentOperationsSnapshot(options = {}) {
     if (!monitor) fail(503, "MONITOR_STARTING", "The operations monitor is still starting.");
     const snapshot = monitor.getSnapshot();
     if (!snapshot || typeof snapshot !== "object") {
       fail(503, "MONITOR_STARTING", "Current inventory is not available yet.");
+    }
+    if (options.liveOnly === true && snapshot.cache?.state === "cached") {
+      fail(409, "ACTION_INVENTORY_STALE", "Wait for a live health check before sending a control action.");
     }
     return snapshot;
   }
@@ -4369,7 +4372,7 @@ export async function createControlPlane(options) {
       fail(409, "TARGET_CHANGED", "The Portainer connection changed; refresh it before trying again.");
     }
     const snapshotService = requireCurrentActionEvidence(
-      (currentOperationsSnapshot().infrastructure?.portainer || [])
+      (currentOperationsSnapshot({ liveOnly: true }).infrastructure?.portainer || [])
         .find((candidate) => candidate?.id === serviceId),
       targetRevision,
       "Portainer inventory"
@@ -4456,7 +4459,7 @@ export async function createControlPlane(options) {
       fail(409, "TARGET_CHANGED", "The Proxmox environment changed; refresh it before trying again.");
     }
     const snapshotEnvironment = requireCurrentActionEvidence(
-      (currentOperationsSnapshot().infrastructure?.environments || [])
+      (currentOperationsSnapshot({ liveOnly: true }).infrastructure?.environments || [])
         .find((candidate) => candidate?.id === environmentId),
       targetRevision,
       "Proxmox inventory"
@@ -4557,7 +4560,7 @@ export async function createControlPlane(options) {
     if (!connection || connection.monitoringEnabled === false || connection.targetRevision !== targetRevision) {
       fail(409, "TARGET_CHANGED", "The media service connection changed; refresh it before trying again.");
     }
-    const snapshot = currentOperationsSnapshot();
+    const snapshot = currentOperationsSnapshot({ liveOnly: true });
     const provider = serviceId === "seerr"
       ? requireCurrentSeerrProvider(snapshot, targetRevision)
       : requireCurrentActionEvidence(
@@ -4626,7 +4629,7 @@ export async function createControlPlane(options) {
               || currentConnection.targetRevision !== targetRevision) {
               fail(409, "TARGET_CHANGED", "The Seerr connection changed; refresh it before trying again.");
             }
-            const currentSnapshot = currentOperationsSnapshot();
+            const currentSnapshot = currentOperationsSnapshot({ liveOnly: true });
             requireCurrentSeerrProvider(currentSnapshot, targetRevision);
             requireCurrentSeriesTarget(currentSnapshot, resourceId);
             const currentDetail = publicSeriesSeasonDetail(

@@ -134,6 +134,52 @@ test("uses descriptor order for fallback and stops at the first valid image", as
   ]);
 });
 
+test("reads a valid image from the persistent cache before contacting its service", async () => {
+  let fetches = 0;
+  const reads = [];
+  const cache = createMediaArtworkCache({
+    revisionFor: (source) => source.targetRevision,
+    persistentStore: {
+      async get(key) {
+        reads.push(key);
+        return { body: Buffer.from("disk-poster"), contentType: "image/png" };
+      },
+      async set() {}
+    },
+    fetchSource: async () => {
+      fetches += 1;
+      return image("network-poster");
+    }
+  });
+
+  const result = await cache.get(descriptor(JELLYFIN));
+  assert.deepEqual(result.body, Buffer.from("disk-poster"));
+  assert.equal(result.source, "jellyfin");
+  assert.equal(fetches, 0);
+  assert.equal(reads.length, 1);
+  assert.match(reads[0], /^jellyfin:/u);
+});
+
+test("writes successful upstream artwork through to the persistent cache", async () => {
+  const writes = [];
+  const cache = createMediaArtworkCache({
+    revisionFor: (source) => source.targetRevision,
+    persistentStore: {
+      async get() { return null; },
+      async set(key, entry) { writes.push({ key, entry }); }
+    },
+    fetchSource: async () => image("network-poster", "image/webp")
+  });
+
+  const result = await cache.get(descriptor(JELLYFIN));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(result.body, Buffer.from("network-poster"));
+  assert.equal(writes.length, 1);
+  assert.match(writes[0].key, /^jellyfin:/u);
+  assert.deepEqual(writes[0].entry.body, Buffer.from("network-poster"));
+  assert.equal(writes[0].entry.contentType, "image/webp");
+});
+
 test("resolves a Sonarr TV poster through a typed Seerr detail fallback", async () => {
   const calls = [];
   const cache = createMediaArtworkCache({

@@ -98,6 +98,7 @@ const requiredFiles = [
   "server/network.mjs",
   "server/portainer-model.mjs",
   "server/portainer-probes.mjs",
+  "server/persistent-cache.mjs",
   "server/proxmox-probes.mjs",
   "server/routes.mjs",
   "server/secrets.mjs",
@@ -115,6 +116,7 @@ const requiredFiles = [
   "tests/portainer-backend.test.mjs",
   "tests/portainer-monitor.test.mjs",
   "tests/portainer-transport.test.mjs",
+  "tests/persistent-cache.test.mjs",
   "tests/event-journal.test.mjs",
   "tests/logging-control-plane.test.mjs",
   "tests/loki-control-plane.test.mjs",
@@ -165,7 +167,7 @@ const requiredFiles = [
 const missing = requiredFiles.filter((path) => !existsSync(join(root, path)));
 record(
   missing.length === 0,
-  "Helmsman v1.1.2 includes its unified media model, bounded fixed actions, Proxmox and Portainer infrastructure monitors, encrypted store, modern rounded bento operations UI, logging, and deployment contracts",
+  "Helmsman v1.2.0 includes its unified media model, bounded fixed actions, Proxmox and Portainer infrastructure monitors, encrypted store, persistent cache, modern rounded bento operations UI, logging, and deployment contracts",
   missing.join(", ")
 );
 
@@ -186,12 +188,12 @@ if (existsSync(join(root, "Dockerfile"))) {
   );
 
   record(
-    /^ARG HELMSMAN_VERSION=1\.1\.2$/mu.test(dockerfile)
+    /^ARG HELMSMAN_VERSION=1\.2\.0$/mu.test(dockerfile)
       && /^ARG HELMSMAN_REVISION=unknown$/mu.test(dockerfile)
       && /org\.opencontainers\.image\.title="Helmsman"/u.test(dockerfile)
       && /org\.opencontainers\.image\.licenses="AGPL-3\.0-only"/u.test(dockerfile)
       && !/org\.opencontainers\.image\.title="Jellofin Command"/u.test(dockerfile),
-    "image metadata carries the Helmsman v1.1.2 identity and license"
+    "image metadata carries the Helmsman v1.2.0 identity and license"
   );
 
   record(
@@ -252,10 +254,10 @@ if (existsSync(join(root, "Dockerfile"))) {
 if (existsSync(join(root, "server/broker.mjs"))) {
   const broker = read("server/broker.mjs");
   record(
-    /const DEFAULT_VERSION = "1\.1\.2"/u.test(broker)
+    /const DEFAULT_VERSION = "1\.2\.0"/u.test(broker)
       && /process\.env\.HELMSMAN_VERSION/u.test(broker)
       && /\^\[0-9A-Za-z\]\[0-9A-Za-z\.\+-\]\{0,63\}\$/u.test(broker),
-    "runtime version follows the validated immutable v1.1.2 image metadata"
+    "runtime version follows the validated immutable v1.2.0 image metadata"
   );
 }
 
@@ -326,7 +328,7 @@ if (existsSync(join(root, "server/index.mjs"))
       && !/url[.]pathname === "\/api\/v2\/access\/rotate"/u.test(controlPlane)
       && !/command === "rotate-access-key"/u.test(index)
       && !/rotate-access-key --confirm/u.test(index),
-    "the beta.2 access-key route is migration-only and v1.1.2 exposes no access-key rotation route or CLI"
+    "the beta.2 access-key route is migration-only and v1.2.0 exposes no access-key rotation route or CLI"
   );
   record(
     /command === "reset-access"/u.test(index)
@@ -340,9 +342,11 @@ if (existsSync(join(root, "server/index.mjs"))
 }
 
 if (existsSync(join(root, "server/media-model.mjs"))
-  && existsSync(join(root, "server/media-artwork.mjs"))) {
+  && existsSync(join(root, "server/media-artwork.mjs"))
+  && existsSync(join(root, "server/persistent-cache.mjs"))) {
   const mediaModel = read("server/media-model.mjs");
   const mediaArtwork = read("server/media-artwork.mjs");
+  const persistentCache = read("server/persistent-cache.mjs");
   record(
     /export const MEDIA_SCHEMA = 1;/u.test(mediaModel)
       && /export function buildMediaSnapshot/u.test(mediaModel)
@@ -363,8 +367,13 @@ if (existsSync(join(root, "server/media-model.mjs"))
       && /const cache = new Map\(\)/u.test(mediaArtwork)
       && /const inFlight = new Map\(\)/u.test(mediaArtwork)
       && /const pendingFetches = \[\]/u.test(mediaArtwork)
-      && !/node:fs/u.test(mediaArtwork),
-    "media artwork uses bounded in-memory caching, miss coalescing, and fetch scheduling without writing catalog or image data to disk"
+      && !/node:fs/u.test(mediaArtwork)
+      && /DEFAULT_MAXIMUM_ARTWORK_BYTES = 512 \* 1024 \* 1024/u.test(persistentCache)
+      && /DEFAULT_MAXIMUM_ARTWORK_ENTRIES = 2_048/u.test(persistentCache)
+      && /DEFAULT_MAXIMUM_SNAPSHOT_AGE_MS = 30 \* 24 \* 60 \* 60 \* 1_000/u.test(persistentCache)
+      && /O_NOFOLLOW/u.test(persistentCache)
+      && /atomicWrite/u.test(persistentCache),
+    "media artwork uses bounded memory and private persistent tiers, miss coalescing, fixed scheduling, and guarded atomic cache files"
   );
 }
 
@@ -373,7 +382,7 @@ if (existsSync(join(root, "compose.yaml"))) {
   record(
     /^name:\s*helmsman\s*$/mu.test(compose)
       && /^services:\s*\n\s{2}helmsman:\s*$/mu.test(compose)
-      && compose.includes('${HELMSMAN_IMAGE:-ghcr.io/OWNER/REPOSITORY:1.1.2}')
+      && compose.includes('${HELMSMAN_IMAGE:-ghcr.io/OWNER/REPOSITORY:1.2.0}')
       && !/^\s{4}build:/mu.test(compose),
     "production Compose has a stable project name and pulls the versioned GHCR image without a local build"
   );
@@ -432,9 +441,9 @@ if (existsSync(join(root, "compose.dev.yaml"))) {
       && /^\s{4}build:\s*$/mu.test(developmentCompose)
       && /^\s{6}context:\s*[.]\s*$/mu.test(developmentCompose)
       && /^\s{6}dockerfile:\s*Dockerfile\s*$/mu.test(developmentCompose)
-      && /HELMSMAN_VERSION:\s*["']1\.1\.2["']/u.test(developmentCompose)
+      && /HELMSMAN_VERSION:\s*["']1\.2\.0["']/u.test(developmentCompose)
       && /HELMSMAN_REVISION:\s*["']local["']/u.test(developmentCompose)
-      && /image:\s*["']helmsman:1\.1\.2["']/u.test(developmentCompose),
+      && /image:\s*["']helmsman:1\.2\.0["']/u.test(developmentCompose),
     "developer Compose override keeps source builds separate from the production pull contract"
   );
 }
@@ -641,7 +650,7 @@ if (existsSync(join(root, "container.env.example"))) {
   const allowed = new Set(["HELMSMAN_IMAGE", "HELMSMAN_BIND_IP", "HELMSMAN_PORT"]);
   const unexpected = keys.filter((key) => !allowed.has(key));
   record(
-    assignments.includes("HELMSMAN_IMAGE=ghcr.io/OWNER/REPOSITORY:1.1.2")
+    assignments.includes("HELMSMAN_IMAGE=ghcr.io/OWNER/REPOSITORY:1.2.0")
       && assignments.includes("HELMSMAN_BIND_IP=127.0.0.1")
       && assignments.includes("HELMSMAN_PORT=4180")
       && !assignments.some((line) => line.startsWith("HELMSMAN_DATA_VOLUME="))
@@ -724,6 +733,7 @@ if (existsSync(join(root, ".dockerignore"))) {
     "!server/network.mjs",
     "!server/portainer-model.mjs",
     "!server/portainer-probes.mjs",
+    "!server/persistent-cache.mjs",
     "!server/proxmox-probes.mjs",
     "!server/routes.mjs",
     "!server/secrets.mjs",
@@ -755,10 +765,10 @@ if (existsSync(join(root, "manifest.webmanifest"))) {
         && manifest.icons.some(({ src, sizes }) => src === "./assets/icon-192.png" && sizes === "192x192")
         && manifest.icons.some(({ src, sizes, purpose }) => src === "./assets/icon-512.png" && sizes === "512x512" && purpose === "any")
         && manifest.icons.some(({ src, sizes, purpose }) => src === "./assets/icon-maskable-512.png" && sizes === "512x512" && purpose === "maskable"),
-      "the v1.1.2 installed-app manifest opens canonical Media Overview and retains dedicated local application icons"
+      "the v1.2.0 installed-app manifest opens canonical Media Overview and retains dedicated local application icons"
     );
   } catch (error) {
-    record(false, "the v1.1.2 installed-app manifest opens canonical Media Overview and retains dedicated local application icons", error.message);
+    record(false, "the v1.2.0 installed-app manifest opens canonical Media Overview and retains dedicated local application icons", error.message);
   }
 }
 
@@ -971,7 +981,7 @@ if (existsSync(join(root, "package.json"))) {
     const packageJson = JSON.parse(read("package.json"));
     record(
       packageJson.name === "helmsman"
-        && packageJson.version === "1.1.2"
+        && packageJson.version === "1.2.0"
         && packageJson.scripts?.serve === "node server/index.mjs serve"
         && packageJson.scripts?.["check:broker"] === "node --test tests/control-plane.test.mjs"
         && /tests\/secrets[.]test[.]mjs/u.test(packageJson.scripts?.["check:security"] || "")
@@ -1000,6 +1010,7 @@ if (existsSync(join(root, "package.json"))) {
         && /tests\/media-model[.]test[.]mjs/u.test(packageJson.scripts?.["check:security"] || "")
         && /tests\/media-artwork[.]test[.]mjs/u.test(packageJson.scripts?.["check:security"] || "")
         && /tests\/media-artwork-control-plane[.]test[.]mjs/u.test(packageJson.scripts?.["check:security"] || "")
+        && /tests\/persistent-cache[.]test[.]mjs/u.test(packageJson.scripts?.["check:security"] || "")
         && /operations-view-contract[.]mjs/u.test(packageJson.scripts?.["check:operations"] || "")
         && /runtime-v5-smoke[.]mjs/u.test(packageJson.scripts?.["check:operations"] || "")
         && /container-contract[.]mjs/u.test(packageJson.scripts?.["check:container"] || "")
@@ -1089,14 +1100,14 @@ if (existsSync(join(root, "README.md")) && existsSync(join(root, "deploy/DOCKER.
       .every((section) => new RegExp(`\\b${section}\\b`, "iu").test(guide)))
       && keyGuides.every((guide) => /Requested[^\n]{0,40}Monitored[^\n]{0,40}Downloading[^\n]{0,40}Imported[^\n]{0,40}Available/iu.test(guide))
       && keyGuides.every((guide) => /opaque[^.\n]*(?:artwork|Helmsman URL)|artwork[^.\n]*opaque/iu.test(guide))
-      && keyGuides.every((guide) => /(?:artwork cache|cache)[^.\n]*in memory|in-memory[^.\n]*(?:artwork|cache)/iu.test(guide))
+      && keyGuides.every((guide) => /(?:artwork cache|cache)[^.\n]*(?:persistent|data volume)|(?:persistent|data volume)[^.\n]*(?:artwork|cache)/iu.test(guide))
       && keyGuides.every((guide) => /cannot approve requests/iu.test(guide))
       && keyGuides.every((guide) => /(?:service (?:icons|marks|badges)|icons|marks|badges)[^.\n]*(?:bundled locally|icon CDN|runtime icon CDN)/iu.test(guide))
       && keyGuides.every((guide) => /state schema(?: to)? [34]/iu.test(guide))
       && /state schema(?: to)? 4/iu.test(keyGuides[0])
       && keyGuides.every((guide) => /(?:each visible node|node's fixed read-only task route)/iu.test(guide))
       && keyGuides.every((guide) => /raw UPIDs/iu.test(guide)),
-    "operator guides document the monitored desktop media lifecycle, opaque in-memory artwork, local marks, schema compatibility, and per-node Proxmox activity"
+    "operator guides document the monitored desktop media lifecycle, opaque persistent artwork, local marks, schema compatibility, and per-node Proxmox activity"
   );
   record(
     keyGuides.every((guide) => /Portainer/iu.test(guide))

@@ -155,6 +155,20 @@ for (const [property, expected] of [
 assert.equal(lastCssCustomProperty(retroCss, "--radius-lg"), "20px", "large dashboard surfaces must use the rounded bento radius");
 assert.equal(lastCssCustomProperty(retroCss, "--radius-xl"), "24px", "lead dashboard surfaces must use the rounded bento radius");
 
+const toastCss = ruleBody(shellCss, "\\.toast", "shared notification styles");
+assert.match(
+  toastCss,
+  /grid-template-columns:\s*minmax\(0,\s*1fr\)/u,
+  "plain-text notifications must use the full toast width instead of an empty icon column"
+);
+assert.doesNotMatch(
+  toastCss,
+  /grid-template-columns:\s*24px/u,
+  "plain-text notifications must not force copy into a 24px grid track"
+);
+assert.match(application, /function snapshotIsCached\(\)/u, "the client must distinguish cached startup data from live state");
+assert.match(application, /controls remain unavailable until it completes/u, "cached startup state must explain its read-only action boundary");
+
 const bentoCss = `${shellCss}\n${operationsCss}\n${controlCss}\n${retroCss}`;
 assert.match(
   bentoCss,

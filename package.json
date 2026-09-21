@@ -1,6 +1,6 @@
 {
   "name": "helmsman",
-  "version": "1.1.2",
+  "version": "1.2.0",
   "private": true,
   "description": "Local-first media and infrastructure operations center with a hardened self-hosted control plane.",
   "license": "AGPL-3.0-only",
@@ -31,7 +31,7 @@
     "test": "npm run check",
     "check": "npm run check:security && npm run check:operations && npm run check:container && npm run check:public",
     "check:broker": "node --test tests/control-plane.test.mjs",
-    "check:security": "node --test tests/secrets.test.mjs tests/session-auth.test.mjs tests/control-plane.test.mjs tests/jellyfin-browser-transport.test.mjs tests/recovery.test.mjs tests/rename-compatibility.test.mjs tests/health-engine.test.mjs tests/service-probes.test.mjs tests/seerr-request-metadata.test.mjs tests/seerr-series-seasons.test.mjs tests/monitor.test.mjs tests/network-transport-security.test.mjs tests/state-approved-hosts.test.mjs tests/state-infrastructure-targets.test.mjs tests/infrastructure-control-plane.test.mjs tests/infrastructure-service-control-plane.test.mjs tests/action-routes.test.mjs tests/action-control-plane.test.mjs tests/proxmox-environment-failover.test.mjs tests/proxmox-probes.test.mjs tests/proxmox-monitor.test.mjs tests/proxmox-transport.test.mjs tests/portainer-backend.test.mjs tests/portainer-monitor.test.mjs tests/portainer-transport.test.mjs tests/event-journal.test.mjs tests/logging-control-plane.test.mjs tests/loki-control-plane.test.mjs tests/loki-model.test.mjs tests/loki-probes.test.mjs tests/loki-routes.test.mjs tests/loki-transport.test.mjs tests/media-model.test.mjs tests/media-artwork.test.mjs tests/media-artwork-control-plane.test.mjs",
+    "check:security": "node --test tests/secrets.test.mjs tests/session-auth.test.mjs tests/control-plane.test.mjs tests/jellyfin-browser-transport.test.mjs tests/recovery.test.mjs tests/rename-compatibility.test.mjs tests/health-engine.test.mjs tests/service-probes.test.mjs tests/seerr-request-metadata.test.mjs tests/seerr-series-seasons.test.mjs tests/monitor.test.mjs tests/persistent-cache.test.mjs tests/network-transport-security.test.mjs tests/state-approved-hosts.test.mjs tests/state-infrastructure-targets.test.mjs tests/infrastructure-control-plane.test.mjs tests/infrastructure-service-control-plane.test.mjs tests/action-routes.test.mjs tests/action-control-plane.test.mjs tests/proxmox-environment-failover.test.mjs tests/proxmox-probes.test.mjs tests/proxmox-monitor.test.mjs tests/proxmox-transport.test.mjs tests/portainer-backend.test.mjs tests/portainer-monitor.test.mjs tests/portainer-transport.test.mjs tests/event-journal.test.mjs tests/logging-control-plane.test.mjs tests/loki-control-plane.test.mjs tests/loki-model.test.mjs tests/loki-probes.test.mjs tests/loki-routes.test.mjs tests/loki-transport.test.mjs tests/media-model.test.mjs tests/media-artwork.test.mjs tests/media-artwork-control-plane.test.mjs",
     "check:operations": "node scripts/operations-view-contract.mjs && node scripts/runtime-v5-smoke.mjs",
     "check:container": "node scripts/container-contract.mjs && node scripts/publisher-contract.mjs && node scripts/bootstrap-contract.mjs",
     "check:public": "node scripts/public-release-contract.mjs",

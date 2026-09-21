@@ -1136,6 +1136,24 @@ function emptySnapshot(definitions) {
   };
 }
 
+function cachedInitialSnapshot(value, definitions) {
+  if (!value
+    || typeof value !== "object"
+    || Array.isArray(value)
+    || value.version !== 1
+    || typeof value.generatedAt !== "string"
+    || !Number.isFinite(Date.parse(value.generatedAt))
+    || value.cache?.state !== "cached"
+    || !Array.isArray(value.services)
+    || !value.pipeline
+    || typeof value.pipeline !== "object"
+    || !value.infrastructure
+    || typeof value.infrastructure !== "object"
+    || !value.media
+    || typeof value.media !== "object") return emptySnapshot(definitions);
+  return clone(value);
+}
+
 export class OperationsMonitor {
   #loadServices;
   #probe;
@@ -1208,7 +1226,10 @@ export class OperationsMonitor {
     this.#pipelineDefinitions = pipelineDefinitions(options.pipelineStages);
     this.#setTimer = typeof options.setTimer === "function" ? options.setTimer : setTimeout;
     this.#clearTimer = typeof options.clearTimer === "function" ? options.clearTimer : clearTimeout;
-    this.#snapshot = emptySnapshot(this.#pipelineDefinitions);
+    this.#snapshot = cachedInitialSnapshot(options.initialSnapshot, this.#pipelineDefinitions);
+    this.#history = Array.isArray(this.#snapshot.history)
+      ? clone(this.#snapshot.history.slice(-this.#historyLimit))
+      : [];
   }
 
   start() {

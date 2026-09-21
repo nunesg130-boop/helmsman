@@ -519,7 +519,10 @@ function operationalFingerprint(snapshot) {
   const mediaStructure = state.workspace === "media" && !["health", "connections", "logs", "settings"].includes(route)
     ? mediaStructuralFingerprint(snapshot?.media)
     : "";
-  return `${structure}\n${JSON.stringify(liveShape)}\n${JSON.stringify(infrastructureStructure)}\n${JSON.stringify(portainerStructure)}\n${JSON.stringify(lokiStructure)}\n${JSON.stringify(infrastructureEventsStructure)}\n${JSON.stringify(logs)}\n${mediaStructure}`;
+  const cacheState = snapshot?.cache?.state === "cached"
+    ? `cached:${snapshot.cache.storedAt || snapshot.cache.generatedAt || snapshot.generatedAt || "unknown"}`
+    : "live";
+  return `${cacheState}\n${structure}\n${JSON.stringify(liveShape)}\n${JSON.stringify(infrastructureStructure)}\n${JSON.stringify(portainerStructure)}\n${JSON.stringify(lokiStructure)}\n${JSON.stringify(infrastructureEventsStructure)}\n${JSON.stringify(logs)}\n${mediaStructure}`;
 }
 
 function rawRoute() {
@@ -1095,6 +1098,16 @@ function renderStarting() {
 
 function renderFatal() {
   return `<section class="state-page state-page--error">${icon("x")}<h2>Helmsman unavailable</h2><p>${escapeHtml(state.fatalError)}</p><button class="button" type="button" data-action="retry-startup">Try again</button></section>`;
+}
+
+function snapshotIsCached() {
+  return state.snapshot?.cache?.state === "cached";
+}
+
+function renderCachedSnapshotNotice() {
+  if (!snapshotIsCached()) return "";
+  const observedAt = state.snapshot.cache?.generatedAt || state.snapshot.generatedAt;
+  return `<aside class="cached-snapshot-notice" role="status">${icon("refresh")}<span><strong>Cached data</strong><small>Last updated ${escapeHtml(formatTime(observedAt, "before this restart"))}. A live health check is running; controls remain unavailable until it completes.</small></span></aside>`;
 }
 
 function snapshotForUi() {
@@ -2189,6 +2202,7 @@ function mediaRecordById(id) {
 }
 
 function configuredMediaConnection(serviceId) {
+  if (snapshotIsCached()) return null;
   const connection = state.config?.services?.find((service) => (
     service.id === serviceId
     && service.configured !== false
@@ -4024,6 +4038,7 @@ function openInfrastructureNode(nodeId) {
 }
 
 function proxmoxActionContext(workload) {
+  if (snapshotIsCached()) return null;
   const environment = infrastructureTargetById(workload.environmentId);
   const evidence = infrastructureHealthForTarget(workload.environmentId);
   if (!environment?.targetRevision
@@ -4235,6 +4250,7 @@ function portainerContainerByKey(key) {
 }
 
 function portainerActionContext(container) {
+  if (snapshotIsCached()) return null;
   const configuration = normalizedPortainerConfigurations().find(({ id }) => id === container.serverId);
   const evidence = portainerHealthById(container.serverId);
   const environment = evidence?.inventory.environments.find(({ id }) => id === container.environmentId);
@@ -4528,7 +4544,7 @@ function renderPage({ force = false, preserveFocus = false } = {}) {
     else if (authentication.legacyAccessKeyAvailable) markup = renderLegacyAccessLogin();
     else markup = renderAuthenticationRecovery();
   }
-  else markup = renderAuthenticatedRoute();
+  else markup = `${renderCachedSnapshotNotice()}${renderAuthenticatedRoute()}`;
   const viewTitle = state.starting
     ? "Starting"
     : state.fatalError

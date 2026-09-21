@@ -54,6 +54,7 @@
 !server/network.mjs
 !server/portainer-model.mjs
 !server/portainer-probes.mjs
+!server/persistent-cache.mjs
 !server/proxmox-probes.mjs
 !server/routes.mjs
 !server/secrets.mjs

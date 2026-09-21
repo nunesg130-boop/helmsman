@@ -536,6 +536,29 @@ test("minor controls require CSRF, current inventory, exact revisions, and saved
     assert.equal(context.calls.length, 7);
 
     const currentSnapshot = context.getSnapshot();
+    const cachedSnapshot = structuredClone(currentSnapshot);
+    cachedSnapshot.cache = {
+      state: "cached",
+      storedAt: new Date().toISOString(),
+      generatedAt: new Date().toISOString()
+    };
+    context.setSnapshot(cachedSnapshot);
+    const cachedInventoryAction = await request(context.port, "/api/v2/actions/proxmox/workload", {
+      method: "POST",
+      ...authentication,
+      body: {
+        environmentId: proxmox.json.id,
+        node: "pve-a",
+        type: "qemu",
+        vmid: 2101,
+        operation: "shutdown",
+        targetRevision: proxmox.json.targetRevision
+      }
+    });
+    assert.equal(cachedInventoryAction.status, 409);
+    assert.equal(cachedInventoryAction.json.code, "ACTION_INVENTORY_STALE");
+    assert.equal(context.calls.length, 7);
+
     const duplicateQueueEvidence = structuredClone(currentSnapshot);
     duplicateQueueEvidence.services.find(({ id }) => id === "radarr").inventory.activity.push({
       service: "radarr",

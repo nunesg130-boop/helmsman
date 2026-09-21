@@ -220,6 +220,11 @@ function seerrDetails(value) {
 export function createMediaArtworkCache(options = {}) {
   if (typeof options.fetchSource !== "function") throw new TypeError("An artwork source loader is required.");
   const fetchSource = options.fetchSource;
+  const persistentStore = options.persistentStore
+    && typeof options.persistentStore.get === "function"
+    && typeof options.persistentStore.set === "function"
+    ? options.persistentStore
+    : null;
   const revisionFor = typeof options.revisionFor === "function" ? options.revisionFor : () => "";
   const fetchSignal = requestSignal(options.fetchSignal);
   const clock = typeof options.clock === "function" ? options.clock : Date.now;
@@ -357,6 +362,34 @@ export function createMediaArtworkCache(options = {}) {
         return { body: Buffer.from(cached.body), contentType: cached.contentType, etag: cached.etag, source: source.service };
       }
       if (cached) remove(key);
+      if (persistentStore) {
+        let persisted = null;
+        try {
+          persisted = await persistentStore.get(key);
+        } catch {
+          // A damaged or unavailable disk cache must never prevent a trusted
+          // upstream image fetch.
+        }
+        if (waiterSignal?.aborted) return null;
+        const persistedTargetRevision = normalizedTargetRevision(await revisionFor(source));
+        if (persistedTargetRevision !== source.targetRevision) continue;
+        const normalizedPersisted = normalizedResponse({
+          status: 200,
+          contentType: persisted?.contentType,
+          body: persisted?.body
+        });
+        if (normalizedPersisted) {
+          const entry = {
+            ...normalizedPersisted,
+            negative: false,
+            expiresAt: now + positiveTtlMs
+          };
+          cache.set(key, entry);
+          cachedBytes += entry.body.length;
+          prune(now);
+          return { body: Buffer.from(entry.body), contentType: entry.contentType, etag: entry.etag, source: source.service };
+        }
+      }
       let flight = inFlight.get(key);
       if (flight?.controller.signal.aborted) {
         if (inFlight.get(key) === flight) inFlight.delete(key);
@@ -437,6 +470,9 @@ export function createMediaArtworkCache(options = {}) {
           cache.set(key, entry);
           cachedBytes += entry.body.length;
           prune(completedAt);
+          if (persistentStore) {
+            Promise.resolve(persistentStore.set(key, entry)).catch(() => {});
+          }
           return entry;
         }, sourceIndex > 0, controller.signal).finally(() => {
           currentFlight.settled = true;

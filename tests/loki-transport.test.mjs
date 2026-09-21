@@ -64,7 +64,7 @@ function transportOptions(resolution, route = authorizeLokiRoute("ready"), overr
     tlsMode: resolution.target.protocol === "https:" ? "pinned" : "none",
     certificateFingerprint: resolution.target.protocol === "https:" ? FINGERPRINT : null,
     limits: { maxApiResponseBytes: 64 * 1024, upstreamTimeoutMs: 1_000 },
-    version: "1.1.2",
+    version: "1.2.0",
     ...overrides
   };
 }
@@ -97,7 +97,7 @@ test("Loki transport permits private HTTP only without credentials or TLS settin
     accept: "application/json,text/plain",
     encoding: "identity",
     host: fixture.resolution.target.authority,
-    userAgent: "Helmsman/1.1.2",
+    userAgent: "Helmsman/1.2.0",
     connection: "close"
   }]);
 

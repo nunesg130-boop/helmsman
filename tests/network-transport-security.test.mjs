@@ -464,7 +464,7 @@ test("outbound transport clears source response chunks and rejected assembled bo
   const target = parseServiceUrl(`http://pin.test:${port}`);
   const common = {
     request: browserRequest({
-      authorization: 'MediaBrowser Client="Helmsman", Device="Browser", DeviceId="device-1", Version="1.1.2"',
+      authorization: 'MediaBrowser Client="Helmsman", Device="Browser", DeviceId="device-1", Version="1.2.0"',
       "content-type": "application/json"
     }),
     targetResolution: {
