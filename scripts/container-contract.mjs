@@ -168,7 +168,7 @@ const requiredFiles = [
 const missing = requiredFiles.filter((path) => !existsSync(join(root, path)));
 record(
   missing.length === 0,
-  "Helmsman v1.3.0 includes its unified media model, bounded fixed actions, Proxmox and Portainer infrastructure monitors, encrypted store, persistent cache, Obsidian Glass operations UI, logging, and deployment contracts",
+  "Helmsman v1.3.1 includes its unified media model, bounded fixed actions, Proxmox and Portainer infrastructure monitors, encrypted store, persistent cache, Obsidian Glass operations UI, logging, and deployment contracts",
   missing.join(", ")
 );
 
@@ -189,12 +189,12 @@ if (existsSync(join(root, "Dockerfile"))) {
   );
 
   record(
-    /^ARG HELMSMAN_VERSION=1\.3\.0$/mu.test(dockerfile)
+    /^ARG HELMSMAN_VERSION=1\.3\.1$/mu.test(dockerfile)
       && /^ARG HELMSMAN_REVISION=unknown$/mu.test(dockerfile)
       && /org\.opencontainers\.image\.title="Helmsman"/u.test(dockerfile)
       && /org\.opencontainers\.image\.licenses="AGPL-3\.0-only"/u.test(dockerfile)
       && !/org\.opencontainers\.image\.title="Jellofin Command"/u.test(dockerfile),
-    "image metadata carries the Helmsman v1.3.0 identity and license"
+    "image metadata carries the Helmsman v1.3.1 identity and license"
   );
 
   record(
@@ -255,10 +255,10 @@ if (existsSync(join(root, "Dockerfile"))) {
 if (existsSync(join(root, "server/broker.mjs"))) {
   const broker = read("server/broker.mjs");
   record(
-    /const DEFAULT_VERSION = "1\.3\.0"/u.test(broker)
+    /const DEFAULT_VERSION = "1\.3\.1"/u.test(broker)
       && /process\.env\.HELMSMAN_VERSION/u.test(broker)
       && /\^\[0-9A-Za-z\]\[0-9A-Za-z\.\+-\]\{0,63\}\$/u.test(broker),
-    "runtime version follows the validated immutable v1.3.0 image metadata"
+    "runtime version follows the validated immutable v1.3.1 image metadata"
   );
 }
 
@@ -329,7 +329,7 @@ if (existsSync(join(root, "server/index.mjs"))
       && !/url[.]pathname === "\/api\/v2\/access\/rotate"/u.test(controlPlane)
       && !/command === "rotate-access-key"/u.test(index)
       && !/rotate-access-key --confirm/u.test(index),
-    "the beta.2 access-key route is migration-only and v1.3.0 exposes no access-key rotation route or CLI"
+    "the beta.2 access-key route is migration-only and v1.3.1 exposes no access-key rotation route or CLI"
   );
   record(
     /command === "reset-access"/u.test(index)
@@ -383,7 +383,7 @@ if (existsSync(join(root, "compose.yaml"))) {
   record(
     /^name:\s*helmsman\s*$/mu.test(compose)
       && /^services:\s*\n\s{2}helmsman:\s*$/mu.test(compose)
-      && compose.includes('${HELMSMAN_IMAGE:-ghcr.io/OWNER/REPOSITORY:1.3.0}')
+      && compose.includes('${HELMSMAN_IMAGE:-ghcr.io/OWNER/REPOSITORY:1.3.1}')
       && !/^\s{4}build:/mu.test(compose),
     "production Compose has a stable project name and pulls the versioned GHCR image without a local build"
   );
@@ -442,9 +442,9 @@ if (existsSync(join(root, "compose.dev.yaml"))) {
       && /^\s{4}build:\s*$/mu.test(developmentCompose)
       && /^\s{6}context:\s*[.]\s*$/mu.test(developmentCompose)
       && /^\s{6}dockerfile:\s*Dockerfile\s*$/mu.test(developmentCompose)
-      && /HELMSMAN_VERSION:\s*["']1\.3\.0["']/u.test(developmentCompose)
+      && /HELMSMAN_VERSION:\s*["']1\.3\.1["']/u.test(developmentCompose)
       && /HELMSMAN_REVISION:\s*["']local["']/u.test(developmentCompose)
-      && /image:\s*["']helmsman:1\.3\.0["']/u.test(developmentCompose),
+      && /image:\s*["']helmsman:1\.3\.1["']/u.test(developmentCompose),
     "developer Compose override keeps source builds separate from the production pull contract"
   );
 }
@@ -651,7 +651,7 @@ if (existsSync(join(root, "container.env.example"))) {
   const allowed = new Set(["HELMSMAN_IMAGE", "HELMSMAN_BIND_IP", "HELMSMAN_PORT"]);
   const unexpected = keys.filter((key) => !allowed.has(key));
   record(
-    assignments.includes("HELMSMAN_IMAGE=ghcr.io/OWNER/REPOSITORY:1.3.0")
+    assignments.includes("HELMSMAN_IMAGE=ghcr.io/OWNER/REPOSITORY:1.3.1")
       && assignments.includes("HELMSMAN_BIND_IP=127.0.0.1")
       && assignments.includes("HELMSMAN_PORT=4180")
       && !assignments.some((line) => line.startsWith("HELMSMAN_DATA_VOLUME="))
@@ -767,10 +767,10 @@ if (existsSync(join(root, "manifest.webmanifest"))) {
         && manifest.icons.some(({ src, sizes }) => src === "./assets/icon-192.png" && sizes === "192x192")
         && manifest.icons.some(({ src, sizes, purpose }) => src === "./assets/icon-512.png" && sizes === "512x512" && purpose === "any")
         && manifest.icons.some(({ src, sizes, purpose }) => src === "./assets/icon-maskable-512.png" && sizes === "512x512" && purpose === "maskable"),
-      "the v1.3.0 installed-app manifest opens canonical Media Overview and retains dedicated local application icons"
+      "the v1.3.1 installed-app manifest opens canonical Media Overview and retains dedicated local application icons"
     );
   } catch (error) {
-    record(false, "the v1.3.0 installed-app manifest opens canonical Media Overview and retains dedicated local application icons", error.message);
+    record(false, "the v1.3.1 installed-app manifest opens canonical Media Overview and retains dedicated local application icons", error.message);
   }
 }
 
@@ -888,17 +888,18 @@ if (existsSync(join(root, "index.html"))) {
     "expanded and compact navigation surfaces use the supplied Helmsman identity"
   );
   record(
-    /data-action="switch-workspace"\s+data-workspace="media"/u.test(shell)
+    /data-action="switch-workspace"\s+data-workspace="system"/u.test(shell)
+      && /data-action="switch-workspace"\s+data-workspace="media"/u.test(shell)
       && /data-action="switch-workspace"\s+data-workspace="infrastructure"/u.test(shell)
       && /aria-pressed="true"/u.test(shell)
       && /aria-pressed="false"/u.test(shell),
-    "desktop and compact navigation expose semantic Media and Infrastructure workspace controls"
+    "desktop and compact navigation expose semantic Overview, Media, and Infrastructure workspace controls"
   );
   const workspaceRouteCount = (workspace, route) => (
     shell.match(new RegExp(`<a[^>]*class="[^"]*workspace-${workspace}-only[^"]*"[^>]*data-route="${route}"[^>]*>`, "gu")) || []
   ).length;
   const sharedRouteCount = (route) => (
-    shell.match(new RegExp(`<a(?=[^>]*data-route="${route}")(?![^>]*workspace-(?:media|infrastructure)-only)[^>]*>`, "gu")) || []
+    shell.match(new RegExp(`<a(?=[^>]*data-route="${route}")(?![^>]*workspace-(?:system|media|infrastructure)-only)[^>]*>`, "gu")) || []
   ).length;
   const serviceRouteCount = (route, service) => (
     shell.match(new RegExp(`<a(?=[^>]*data-route="${route}")(?=[^>]*data-service-nav="${service}")[^>]*>`, "gu")) || []
@@ -912,15 +913,18 @@ if (existsSync(join(root, "index.html"))) {
       && serviceRouteCount("proxmox", "proxmox") === 2
       && serviceRouteCount("workloads", "proxmox") === 2
       && serviceRouteCount("portainer", "portainer") === 2
+      && workspaceRouteCount("system", "system") === 2
       && ["logs", "settings"].every((route) => sharedRouteCount(route) === 2)
       && /\[hidden\]\s*\{\s*display:\s*none\s*!important;\s*\}/u.test(shellStyles),
-    "desktop and mobile navigation expose canonical Overview in both workspaces, one gated Proxmox route, and shared routes"
+    "desktop and mobile navigation expose all three workspaces, gated infrastructure routes, and shared routes"
   );
   record(
     /data-action="toggle-sidebar"[^>]+aria-controls="sidebar-navigation"[^>]+aria-expanded="true"/u.test(shell)
       && /class="sidebar-scroll-region"/u.test(shell)
       && /class="sidebar-footer"/u.test(shell)
-      && /<a[^>]+id="monitor-summary"[^>]+href="#\/health"[^>]+aria-label="Open media health"/u.test(shell)
+      && /<div[^>]+id="monitor-summary"[^>]+aria-label="Current health summary"/u.test(shell)
+      && /class="monitor-summary__metric" href="#\/connections"/u.test(shell)
+      && /class="monitor-summary__metric" href="#\/health"/u.test(shell)
       && /\.sidebar-scroll-region\s*\{[\s\S]*?min-height:\s*0;[\s\S]*?overflow-y:\s*auto;/u.test(shellStyles)
       && /\.app-shell\.is-sidebar-collapsed\s*\{\s*--sidebar-width:\s*102px;/u.test(shellStyles)
       && /\.poster-rail\s*\{[\s\S]*?grid-auto-columns:\s*clamp\(140px,\s*11vw,\s*176px\)/u.test(shellStyles),
@@ -952,7 +956,9 @@ if (existsSync(join(root, "src/app-v5.js")) && existsSync(join(root, "src/ui/ope
       && /setItem\("helmsman[.]sidebarCollapsed",\s*String\(state[.]sidebarCollapsed\)\)/u.test(application)
       && /proxmox:\s*state[.]infrastructure[.]targets[.]length\s*>\s*0/u.test(application)
       && /portainer:\s*normalizedPortainerConfigurations\(\)[.]length\s*>\s*0/u.test(application)
-      && /setAttribute\("href",\s*infrastructureWorkspace\s*\?\s*"#\/incidents"\s*:\s*"#\/health"\)/u.test(application),
+      && /href="#\/connections"/u.test(application)
+      && /href="#\/health"/u.test(application)
+      && /href="#\/incidents"/u.test(application),
     "legacy Infrastructure URLs, saved sidebar preference, connection-gated navigation, and workspace-specific monitor targets remain wired"
   );
   const reviewedServiceIconPaths = serviceIconAssets.map(({ path }) => `./${path}`);
@@ -984,7 +990,7 @@ if (existsSync(join(root, "package.json"))) {
     const packageJson = JSON.parse(read("package.json"));
     record(
       packageJson.name === "helmsman"
-        && packageJson.version === "1.3.0"
+        && packageJson.version === "1.3.1"
         && packageJson.scripts?.serve === "node server/index.mjs serve"
         && packageJson.scripts?.["check:broker"] === "node --test tests/control-plane.test.mjs"
         && /tests\/secrets[.]test[.]mjs/u.test(packageJson.scripts?.["check:security"] || "")

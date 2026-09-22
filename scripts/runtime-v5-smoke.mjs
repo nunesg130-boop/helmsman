@@ -148,24 +148,31 @@ function installFakeBrowser(fetchHandler, suffix) {
   const monitorNodes = {
     mediaSummary: new FakeElement(),
     infrastructureSummary: new FakeElement(),
+    systemSummary: new FakeElement(),
     connectionDot: new FakeElement(),
     connectionState: new FakeElement(),
     serviceDot: new FakeElement(),
     serviceState: new FakeElement(),
     infrastructureDot: new FakeElement(),
     infrastructureText: new FakeElement(),
+    systemDot: new FakeElement(),
+    systemText: new FakeElement(),
     checkedText: new FakeElement(),
     mobileDot: new FakeElement()
   };
   monitorNodes.infrastructureSummary.hidden = true;
+  monitorNodes.systemSummary.hidden = true;
   monitorSummary.registerSelector("[data-monitor-media-summary]", monitorNodes.mediaSummary);
   monitorSummary.registerSelector("[data-monitor-infrastructure-summary]", monitorNodes.infrastructureSummary);
+  monitorSummary.registerSelector("[data-monitor-system-summary]", monitorNodes.systemSummary);
   monitorSummary.registerSelector("[data-monitor-connection-dot]", monitorNodes.connectionDot);
   monitorSummary.registerSelector("[data-monitor-connection-state]", monitorNodes.connectionState);
   monitorSummary.registerSelector("[data-monitor-service-dot]", monitorNodes.serviceDot);
   monitorSummary.registerSelector("[data-monitor-service-state]", monitorNodes.serviceState);
   monitorSummary.registerSelector("[data-monitor-infrastructure-dot]", monitorNodes.infrastructureDot);
   monitorSummary.registerSelector("[data-monitor-infrastructure-text]", monitorNodes.infrastructureText);
+  monitorSummary.registerSelector("[data-monitor-system-dot]", monitorNodes.systemDot);
+  monitorSummary.registerSelector("[data-monitor-system-text]", monitorNodes.systemText);
   monitorSummary.registerSelector("[data-monitor-checked]", monitorNodes.checkedText);
   monitorSummary.registerSelector("[data-monitor-mobile-dot]", monitorNodes.mobileDot);
   const confirmationLayer = elements.get("#control-confirm-layer");
@@ -197,9 +204,10 @@ function installFakeBrowser(fetchHandler, suffix) {
     .flatMap((route) => routeElements(route, { workspace: "infrastructure", service: "proxmox" }));
   const portainerNav = routeElements("portainer", { workspace: "infrastructure", service: "portainer" });
   const infrastructureOnly = [...infrastructureGlobalNav, ...proxmoxNav, ...portainerNav];
+  const systemOnly = routeElements("system", { workspace: "system" });
   const sharedRoutes = ["logs", "settings"].flatMap((route) => routeElements(route));
-  const routes = [...mediaOnly, ...infrastructureOnly, ...sharedRoutes];
-  const workspaceButtons = ["media", "infrastructure"].flatMap((workspace) => Array.from({ length: 2 }, () => {
+  const routes = [...systemOnly, ...mediaOnly, ...infrastructureOnly, ...sharedRoutes];
+  const workspaceButtons = ["system", "media", "infrastructure"].flatMap((workspace) => Array.from({ length: 2 }, () => {
     const element = new FakeElement();
     element.dataset.action = "switch-workspace";
     element.dataset.workspace = workspace;
@@ -240,6 +248,7 @@ function installFakeBrowser(fetchHandler, suffix) {
       if (selector === "[data-action='switch-workspace']") return workspaceButtons;
       if (selector === ".workspace-media-only") return mediaOnly;
       if (selector === ".workspace-infrastructure-only") return infrastructureOnly;
+      if (selector === ".workspace-system-only") return systemOnly;
       if (selector === "[data-infrastructure-incident-count]") return infrastructureIncidentCounts;
       return [];
     }
@@ -361,6 +370,7 @@ function installFakeBrowser(fetchHandler, suffix) {
     workspaceButtons,
     sidebarToggle,
     mediaOnly,
+    systemOnly,
     infrastructureOnly,
     infrastructureGlobalNav,
     proxmoxNav,
@@ -1081,7 +1091,9 @@ async function emptyStateLayoutContract() {
   assert.match(documentMarkup, /<body\s+av-disable="true">/u, "the app shell must opt out of AliasVault's page-wide autofill injection");
   assert.match(documentMarkup, /content="A private, local-first operations center for your media and infrastructure stack\."/u);
   assert.doesNotMatch(documentMarkup, /id="monitor-summary"\s+role="status"/u, "background polling must not repeatedly announce a global status region");
-  assert.match(documentMarkup, /<a[^>]+id="monitor-summary"[^>]+href="#\/health"[^>]+aria-label="Open media health"/u, "the monitor summary must be a direct navigation link");
+  assert.match(documentMarkup, /<div[^>]+id="monitor-summary"[^>]+aria-label="Current health summary"/u, "the monitor summary must group independent health links");
+  assert.match(documentMarkup, /class="monitor-summary__metric" href="#\/connections"/u, "connection health must be independently navigable");
+  assert.match(documentMarkup, /class="monitor-summary__metric" href="#\/health"/u, "service health must be independently navigable");
   assert.match(documentMarkup, /data-action="toggle-sidebar"[^>]+aria-controls="sidebar-navigation"[^>]+aria-expanded="true"/u, "the desktop sidebar needs an accessible collapse toggle");
   assert.match(documentMarkup, /<div class="sidebar-scroll-region">[\s\S]*?<nav class="nav-list" id="sidebar-navigation">[\s\S]*?<div class="sidebar-footer">/u, "navigation must scroll independently while Settings remains in the sidebar footer");
   assert.match(documentMarkup, /<div class="control-confirm-layer" id="control-confirm-layer" aria-hidden="true"><\/div>/u, "consequential actions need a dedicated in-app confirmation layer");
@@ -1111,9 +1123,10 @@ async function emptyStateLayoutContract() {
   assert.equal((documentMarkup.match(/data-route="workloads"[^>]+data-service-nav="proxmox"/gu) || []).length, 2, "Workloads navigation must follow the Proxmox connection gate");
   assert.equal((documentMarkup.match(/data-route="portainer"[^>]+data-service-nav="portainer"/gu) || []).length, 2, "Portainer navigation must use its own connection gate");
   assert.equal((documentMarkup.match(/data-route="connectors"/gu) || []).length, 2, "Connectors must remain available in both Infrastructure navigation surfaces");
+  assert.equal((documentMarkup.match(/data-route="system"/gu) || []).length, 2, "the combined Overview must appear in desktop and mobile navigation");
   assert.doesNotMatch(documentMarkup, /data-route="connectors"[^>]+data-service-nav=/u, "Connectors must not require an existing provider connection");
   assert.match(application, /const MEDIA_ROUTE_ALIASES\s*=\s*Object\.freeze\(\{[\s\S]*?home:\s*"overview"/u, "legacy #/home URLs must canonicalize to Media Overview");
-  assert.match(application, /function workspaceLandingRoute\([^)]*\)\s*\{\s*return "overview";\s*\}/u, "both workspaces must use Overview as their landing route");
+  assert.match(application, /function workspaceLandingRoute\(workspace\)\s*\{\s*return workspace === "system" \? "system" : "overview";\s*\}/u, "each workspace must use its canonical Overview route");
   assert.match(application, /const INFRASTRUCTURE_ROUTE_ALIASES\s*=\s*Object\.freeze\(\{[\s\S]*?environments:\s*"proxmox"[\s\S]*?nodes:\s*"proxmox"/u, "legacy Infrastructure URLs must canonicalize to the merged Proxmox route");
   for (const [code, copy] of [
     ["FORBIDDEN", "Authenticated user lacks permission for this capability or environment"],
@@ -3399,13 +3412,34 @@ async function infrastructureWorkspaceContract() {
   await importShell(environment);
   await waitFor(() => environment.main.innerHTML.includes("operations-page"), "media workspace startup");
   assert.equal(environment.elements.get("#page-eyebrow").textContent, "Media operations");
-  assert.equal(environment.elements.get("#monitor-summary").attributes.get("href"), "#/health", "Media monitor summary must link to Health");
+  assert.equal(environment.elements.get("#monitor-summary").attributes.get("href"), undefined, "the monitor group must leave each Media health link independent");
   assert.equal(
     environment.elements.get("#monitor-summary").attributes.get("aria-label"),
     "Open media health. Connection health: Unverified. Service health: Healthy."
   );
   assert.equal(environment.monitorNodes.connectionState.textContent, "Unverified");
   assert.equal(environment.monitorNodes.serviceState.textContent, "Healthy");
+
+  const systemSwitch = environment.workspaceButtons.find((button) => button.dataset.workspace === "system");
+  systemSwitch.closest = (selector) => selector === "[data-action]" ? systemSwitch : null;
+  await environment.dispatchDocument("click", { target: systemSwitch });
+  await waitFor(() => environment.main.innerHTML.includes("system-overview-page"), "combined system Overview");
+  assert.equal(environment.location.hash, "#/system");
+  assert.match(environment.main.innerHTML, /System health/u);
+  assert.match(environment.main.innerHTML, /Media operations[\s\S]*Service health/u);
+  assert.match(environment.main.innerHTML, /Infrastructure operations[\s\S]*Connections/u);
+  assert.match(environment.main.innerHTML, /Media pipeline/u);
+  assert.ok(environment.systemOnly.every((element) => !element.hidden), "combined Overview navigation must be visible in its workspace");
+  assert.ok(environment.mediaOnly.every((element) => element.hidden), "Media navigation must hide in combined Overview");
+  assert.ok(environment.infrastructureOnly.every((element) => element.hidden), "Infrastructure navigation must hide in combined Overview");
+  assert.equal(environment.monitorNodes.systemSummary.hidden, false);
+  assert.equal(environment.monitorNodes.mediaSummary.hidden, true);
+  assert.equal(environment.monitorNodes.infrastructureSummary.hidden, true);
+
+  const mediaWorkspaceSwitch = environment.workspaceButtons.find((button) => button.dataset.workspace === "media");
+  mediaWorkspaceSwitch.closest = (selector) => selector === "[data-action]" ? mediaWorkspaceSwitch : null;
+  await environment.dispatchDocument("click", { target: mediaWorkspaceSwitch });
+  await waitFor(() => environment.location.hash === "#/overview", "Media Overview return");
 
   environment.sidebarToggle.closest = (selector) => selector === "[data-action]" ? environment.sidebarToggle : null;
   assert.equal(environment.elements.get("#app").classList.contains("is-sidebar-collapsed"), false);
@@ -3432,16 +3466,16 @@ async function infrastructureWorkspaceContract() {
   assert.ok(environment.infrastructureGlobalNav.every((element) => !element.hidden), "global Infrastructure navigation must remain available without a service connection");
   assert.ok(environment.proxmoxNav.every((element) => element.hidden), "Proxmox and Workloads navigation must stay hidden until Proxmox is connected");
   assert.ok(environment.portainerNav.every((element) => element.hidden), "Portainer navigation must stay hidden until Portainer is connected");
-  assert.equal(environment.elements.get("#monitor-summary").attributes.get("href"), "#/incidents", "Infrastructure monitor summary must link to Incidents");
+  assert.equal(environment.elements.get("#monitor-summary").attributes.get("href"), undefined, "the monitor group must leave the Infrastructure health link independent");
   assert.equal(
     environment.elements.get("#monitor-summary").attributes.get("aria-label"),
     "Open infrastructure incidents. Connection health: Unverified. Service health: Disabled."
   );
-  assert.equal(environment.monitorNodes.mediaSummary.hidden, false, "Infrastructure must keep the separate connection and service health signals visible");
+  assert.equal(environment.monitorNodes.mediaSummary.hidden, true, "Infrastructure must hide Media-only connection and service signals");
   assert.equal(environment.monitorNodes.connectionState.textContent, "Unverified");
   assert.equal(environment.monitorNodes.serviceState.textContent, "Disabled");
   assert.equal(environment.monitorNodes.checkedText.hidden, true);
-  assert.equal(environment.monitorNodes.infrastructureSummary.hidden, true, "the legacy combined Infrastructure signal must stay hidden");
+  assert.equal(environment.monitorNodes.infrastructureSummary.hidden, false, "Infrastructure must expose its dedicated health signal");
   assert.ok(environment.requestLog.some(({ path }) => path === "/api/v2/infrastructure/environments"), "workspace switch must load environment metadata");
   assert.match(environment.main.innerHTML, /class="page operations-page infrastructure-page infrastructure-bento has-no-connections"/u, "an empty Infrastructure Overview must keep the bento shell");
   assert.match(environment.main.innerHTML, /infrastructure-overview-card/u, "the empty state must remain a first-class bento card");
@@ -4166,7 +4200,7 @@ async function portainerInfrastructureContract() {
   assert.ok(environment.infrastructureGlobalNav.every((element) => !element.hidden), "global Infrastructure navigation must remain visible with Portainer configured");
   assert.ok(environment.proxmoxNav.every((element) => element.hidden), "Portainer alone must not reveal Proxmox-specific navigation");
   assert.ok(environment.portainerNav.every((element) => !element.hidden), "a saved Portainer connection must reveal Portainer navigation even while its live state is degraded");
-  assert.equal(environment.elements.get("#monitor-summary").attributes.get("href"), "#/incidents");
+  assert.equal(environment.elements.get("#monitor-summary").attributes.get("href"), undefined);
   assert.equal(
     environment.elements.get("#monitor-summary").attributes.get("aria-label"),
     "Open infrastructure incidents. Connection health: Connected. Service health: Degraded."

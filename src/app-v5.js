@@ -118,9 +118,10 @@ const MEDIA_CONNECTION_CATEGORIES = Object.freeze([
   Object.freeze({ id: "subtitles", kicker: "Accessibility", title: "Subtitles", description: "Subtitle health and wanted-item backlog.", services: Object.freeze(["bazarr"]) })
 ]);
 const SHARED_ROUTES = new Set(["logs", "settings"]);
+const SYSTEM_ROUTES = new Set(["system", ...SHARED_ROUTES]);
 const MEDIA_ROUTES = new Set(["overview", "discover", "library", "requests", "activity", "calendar", "health", "connections", ...SHARED_ROUTES]);
 const INFRASTRUCTURE_ROUTES = new Set(["overview", "connectors", "proxmox", "workloads", "portainer", "incidents", ...SHARED_ROUTES]);
-const ROUTES = new Set([...MEDIA_ROUTES, ...INFRASTRUCTURE_ROUTES, "home", "pipeline", "services", "environments", "nodes"]);
+const ROUTES = new Set([...SYSTEM_ROUTES, ...MEDIA_ROUTES, ...INFRASTRUCTURE_ROUTES, "home", "pipeline", "services", "environments", "nodes"]);
 const MEDIA_ROUTE_ALIASES = Object.freeze({ home: "overview", pipeline: "health", incidents: "health", services: "connections" });
 const INFRASTRUCTURE_ROUTE_ALIASES = Object.freeze({
   environments: "proxmox",
@@ -235,6 +236,7 @@ const CONNECTION_CODE_COPY = Object.freeze({
   NOT_CHECKED: "Not checked"
 });
 const ROUTE_TITLES = Object.freeze({
+  system: "Overview",
   home: "Overview",
   discover: "Discover",
   library: "Library",
@@ -254,7 +256,7 @@ const ROUTE_TITLES = Object.freeze({
   logs: "Logs",
   settings: "Settings"
 });
-const WORKSPACES = new Set(["media", "infrastructure"]);
+const WORKSPACES = new Set(["system", "media", "infrastructure"]);
 
 function savedWorkspace() {
   try {
@@ -328,9 +330,11 @@ function operationalFingerprint(snapshot) {
   if (!snapshot) return "";
   const normalized = normalizeOperationsSnapshot(snapshot, state.infrastructure.targets);
   const route = currentRoute();
-  const includeOperationsStructure = state.workspace === "media"
-    ? ["overview", "health", "connections"].includes(route)
-    : ["incidents", "logs"].includes(route);
+  const includeOperationsStructure = state.workspace === "system"
+    ? route === "system"
+    : state.workspace === "media"
+      ? ["overview", "health", "connections"].includes(route)
+      : ["incidents", "logs"].includes(route);
   const structure = JSON.stringify(includeOperationsStructure ? normalized : { version: normalized.version }, (key, value) => {
     if ([
       "generatedAt",
@@ -355,13 +359,13 @@ function operationalFingerprint(snapshot) {
       entry.latencyMs !== null || Boolean(entry.version) || Boolean(entry.lastCheckedAt)
     ))
   } : {};
-  const infrastructure = state.workspace === "infrastructure"
-    && ["overview", "connectors", "proxmox", "workloads", "portainer"].includes(route)
+  const infrastructure = ["system", "infrastructure"].includes(state.workspace)
+    && ["system", "overview", "connectors", "proxmox", "workloads", "portainer"].includes(route)
     ? normalizeInfrastructureSnapshot(snapshot, state.infrastructure.targets)
     : null;
   const configuredInfrastructureIds = new Set(state.infrastructure.targets.map(({ id }) => id));
   const infrastructureTargets = infrastructure
-    ? infrastructure.targets.filter(({ id }) => !["overview", "connectors"].includes(route) || configuredInfrastructureIds.has(id))
+    ? infrastructure.targets.filter(({ id }) => !["system", "overview", "connectors"].includes(route) || configuredInfrastructureIds.has(id))
     : [];
   const infrastructureStructure = infrastructure
     ? route === "connectors"
@@ -413,8 +417,8 @@ function operationalFingerprint(snapshot) {
         }))
       }
     : null;
-  const includePortainerStructure = state.workspace === "infrastructure"
-    && ["overview", "connectors", "portainer"].includes(route);
+  const includePortainerStructure = ["system", "infrastructure"].includes(state.workspace)
+    && ["system", "overview", "connectors", "portainer"].includes(route);
   const configuredPortainerIds = new Set(normalizedPortainerConfigurations().map(({ id }) => id));
   const fingerprintPortainers = includePortainerStructure
     ? portainerServicesForSnapshot(snapshot)
@@ -470,7 +474,10 @@ function operationalFingerprint(snapshot) {
     ...infrastructureTargets.flatMap((target) => [target.id, `proxmox-${target.id}`]),
     ...fingerprintPortainers.flatMap((service) => [service.id, `portainer-${service.id}`])
   ]);
-  const infrastructureEventsStructure = state.workspace === "infrastructure" && route === "overview"
+  const infrastructureEventsStructure = (
+    (state.workspace === "infrastructure" && route === "overview")
+    || (state.workspace === "system" && route === "system")
+  )
     ? {
         incidents: normalized.incidents
           .filter((entry) => entry.scope === "infrastructure" && visibleInfrastructureServiceIds.has(entry.service))
@@ -516,7 +523,10 @@ function operationalFingerprint(snapshot) {
         createdAt: entry?.createdAt
       }))
     : [];
-  const mediaStructure = state.workspace === "media" && !["health", "connections", "logs", "settings"].includes(route)
+  const mediaStructure = (
+    (state.workspace === "media" && !["health", "connections", "logs", "settings"].includes(route))
+    || (state.workspace === "system" && route === "system")
+  )
     ? mediaStructuralFingerprint(snapshot?.media)
     : "";
   const cacheState = snapshot?.cache?.state === "cached"
@@ -608,6 +618,9 @@ function canonicalLoggingHash() {
 
 function currentRoute() {
   const candidate = rawRoute();
+  if (state.workspace === "system") {
+    return SYSTEM_ROUTES.has(candidate) ? candidate : "system";
+  }
   if (state.workspace === "media") {
     const aliased = MEDIA_ROUTE_ALIASES[candidate] || candidate;
     return MEDIA_ROUTES.has(aliased) ? aliased : "overview";
@@ -616,8 +629,8 @@ function currentRoute() {
   return INFRASTRUCTURE_ROUTES.has(aliased) ? aliased : "overview";
 }
 
-function workspaceLandingRoute(_workspace) {
-  return "overview";
+function workspaceLandingRoute(workspace) {
+  return workspace === "system" ? "system" : "overview";
 }
 
 function applySidebarState({ persist = false } = {}) {
@@ -643,9 +656,16 @@ function toggleSidebar() {
   applySidebarState({ persist: true });
 }
 
-async function switchWorkspace(value) {
+async function switchWorkspace(value, requestedRoute = "") {
   const workspace = String(value || "").toLowerCase();
-  if (!WORKSPACES.has(workspace) || workspace === state.workspace) return;
+  if (!WORKSPACES.has(workspace)) return;
+  const allowedRoutes = workspace === "system"
+    ? SYSTEM_ROUTES
+    : workspace === "media"
+      ? MEDIA_ROUTES
+      : INFRASTRUCTURE_ROUTES;
+  const requestedDestination = String(requestedRoute || "").toLowerCase();
+  if (workspace === state.workspace && !requestedDestination) return;
   closeModal();
   closeMediaDrawer();
   state.workspace = workspace;
@@ -655,11 +675,15 @@ async function switchWorkspace(value) {
     // A private browser can deny storage; the in-memory workspace still works.
   }
   const candidate = rawRoute();
-  const destination = SHARED_ROUTES.has(candidate) ? candidate : workspaceLandingRoute(workspace);
+  const destination = requestedDestination && allowedRoutes.has(requestedDestination)
+    ? requestedDestination
+    : SHARED_ROUTES.has(candidate)
+      ? candidate
+      : workspaceLandingRoute(workspace);
   location.hash = destination === "logs" ? canonicalLoggingHash() : `#/${destination}`;
   state.lastMarkup = "";
   renderPage({ force: true, preserveFocus: true });
-  if (workspace === "infrastructure" && state.status?.authenticated) {
+  if (["system", "infrastructure"].includes(workspace) && state.status?.authenticated) {
     await loadInfrastructureTargets({ render: true });
   }
 }
@@ -2015,6 +2039,100 @@ function renderMediaHome() {
     </div>
     ${renderMediaOverviewShelf(media.home.recentlyAdded, { title: "Recently added", titleId: "media-overview-recent-title", slot: "recently-added", emptyTitle: "Nothing new yet", emptyCopy: "Recently added Jellyfin titles will appear here." })}
     ${continueWatching.length > 1 ? renderMediaOverviewShelf(continueWatching.slice(1), { title: "More to continue", titleId: "media-overview-more-title", slot: "continue-queue" }) : ""}
+  </div>`;
+}
+
+function systemOverviewRouteButton(workspace, route, label) {
+  return `<button class="system-overview-link" type="button" data-action="switch-workspace" data-workspace="${escapeHtml(workspace)}" data-workspace-route="${escapeHtml(route)}">${escapeHtml(label)} ${icon("chevron")}</button>`;
+}
+
+function renderSystemHealthGauge(score, overall, healthy, total) {
+  const segmentCount = 28;
+  const activeSegments = Math.round((score / 100) * segmentCount);
+  const segments = Array.from({ length: segmentCount }, (_, index) => (
+    `<i style="--segment-index:${index};--segment-count:${segmentCount}" class="${index < activeSegments ? "is-active" : ""}" aria-hidden="true"></i>`
+  )).join("");
+  return `<div class="system-health-gauge is-${escapeHtml(statusClass(overall))}" role="img" aria-label="${score}% system health, ${healthy} of ${total} monitored services healthy">
+    <div class="system-health-gauge__segments">${segments}</div>
+    <div class="system-health-gauge__value"><strong>${score}%</strong><span>${healthy} of ${total} healthy</span></div>
+  </div>`;
+}
+
+function renderSystemOverview() {
+  const media = mediaSnapshotForUi();
+  const operations = normalizeOperationsSnapshot(mediaOnlyOperationsSnapshot(), []);
+  const infrastructure = configuredInfrastructureSnapshotForUi();
+  const portainers = configuredPortainerServicesForUi();
+  const mediaServices = operations.services.filter(({ state: serviceState }) => statusClass(serviceState) !== "disabled");
+  const infrastructureEntries = [
+    ...infrastructure.targets
+      .filter((target) => target.enabled !== false && target.monitoringEnabled !== false)
+      .map((target) => ({
+        id: target.id,
+        provider: "proxmox",
+        name: target.displayName,
+        detail: target.environmentKind === "cluster" ? target.clusterName || "Proxmox cluster" : target.environmentName || "Proxmox environment",
+        state: statusClass(target.state),
+        connectionState: target.connectionState
+      })),
+    ...portainers
+      .filter((service) => service.enabled !== false && service.monitoringEnabled !== false)
+      .map((service) => ({
+        id: service.id,
+        provider: "portainer",
+        name: service.displayName,
+        detail: service.inventory?.environments?.length
+          ? `${service.inventory.environments.length} environment${service.inventory.environments.length === 1 ? "" : "s"}`
+          : "Portainer server",
+        state: statusClass(service.state),
+        connectionState: service.connectionState
+      }))
+  ];
+  const monitored = [
+    ...mediaServices.map((service) => ({ state: statusClass(service.state) })),
+    ...infrastructureEntries
+  ];
+  const healthy = monitored.filter(({ state: itemState }) => itemState === "healthy").length;
+  const score = monitored.length ? Math.round((healthy / monitored.length) * 100) : 0;
+  const infrastructureState = combinedInfrastructureState(infrastructure, portainers);
+  const overall = [statusClass(operations.overall.state), statusClass(infrastructureState)]
+    .sort((left, right) => (WORKSPACE_STATE_PRIORITY[left] ?? 99) - (WORKSPACE_STATE_PRIORITY[right] ?? 99))[0] || "disabled";
+  const mediaConnected = mediaServices.filter(({ connectionState }) => connectionState === "connected").length;
+  const infrastructureConnected = infrastructureEntries.filter(({ connectionState }) => connectionState === "connected").length;
+  const activeIncidents = normalizeOperationsSnapshot(snapshotForUi(), state.infrastructure.targets).incidents.length;
+  const pipeline = mediaOverviewLifecycle(media);
+  const systemCopy = monitored.length
+    ? overall === "healthy" ? "Every monitored media and infrastructure service is healthy." : "One or more monitored services needs attention."
+    : "Connect media or infrastructure services to begin monitoring system health.";
+  return `<div class="page system-overview-page">
+    <section class="system-overview-hero">
+      <div><span class="section-kicker">All systems</span><h2>System overview</h2><p>Media and infrastructure health in one live, read-only view.</p></div>
+      <span class="operations-status-badge is-${escapeHtml(statusClass(overall))}"><i aria-hidden="true"></i>${escapeHtml(statusLabel(overall))}</span>
+    </section>
+    <div class="system-overview-grid">
+      <section class="system-overview-card system-overview-card--health" aria-labelledby="system-health-title">
+        <header><div><span class="section-kicker">Live assessment</span><h3 id="system-health-title">System health</h3></div></header>
+        ${renderSystemHealthGauge(score, overall, healthy, monitored.length)}
+        <p class="system-health-copy">${escapeHtml(systemCopy)}</p>
+        <dl class="system-health-facts">
+          <div><dt>Media connections</dt><dd>${mediaConnected}/${mediaServices.length}</dd></div>
+          <div><dt>Infrastructure connections</dt><dd>${infrastructureConnected}/${infrastructureEntries.length}</dd></div>
+          <div><dt>Active incidents</dt><dd>${activeIncidents}</dd></div>
+        </dl>
+      </section>
+      <section class="system-overview-card system-overview-card--media" aria-labelledby="system-media-title">
+        <header><div><span class="section-kicker">Media operations</span><h3 id="system-media-title">Service health</h3></div>${systemOverviewRouteButton("media", "health", "Open media")}</header>
+        ${mediaServices.length ? `<ul class="system-service-list">${mediaServices.slice(0, 7).map((service) => `<li><span class="system-service-icon">${serviceIconMarkup(service.id, service.name.slice(0, 1))}</span><span><strong>${escapeHtml(service.name)}</strong><small>${escapeHtml(mediaHomeServiceSummary(service))}</small></span><span class="system-service-state is-${escapeHtml(statusClass(service.state))}"><i class="health-dot is-${escapeHtml(statusClass(service.state))}"></i>${escapeHtml(statusLabel(service.state))}</span></li>`).join("")}</ul>` : renderMediaEmpty("No monitored media services", "Add a media connection to begin collecting health signals.", "shield")}
+      </section>
+      <section class="system-overview-card system-overview-card--infrastructure" aria-labelledby="system-infrastructure-title">
+        <header><div><span class="section-kicker">Infrastructure operations</span><h3 id="system-infrastructure-title">Connections</h3></div>${systemOverviewRouteButton("infrastructure", "overview", "Open infrastructure")}</header>
+        ${infrastructureEntries.length ? `<ul class="system-service-list">${infrastructureEntries.slice(0, 7).map((entry) => `<li><span class="system-service-icon">${serviceIconMarkup(entry.provider, entry.name.slice(0, 1))}</span><span><strong>${escapeHtml(entry.name)}</strong><small>${escapeHtml(entry.detail)}</small></span><span class="system-service-state is-${escapeHtml(entry.state)}"><i class="health-dot is-${escapeHtml(entry.state)}"></i>${escapeHtml(statusLabel(entry.state))}</span></li>`).join("")}</ul>` : renderMediaEmpty("No infrastructure connections", "Connect Proxmox or Portainer to add infrastructure health.", "server")}
+      </section>
+      <section class="system-overview-card system-overview-card--pipeline" aria-labelledby="system-pipeline-title">
+        <header><div><span class="section-kicker">End-to-end signal</span><h3 id="system-pipeline-title">Media pipeline</h3></div>${systemOverviewRouteButton("media", "activity", "Open activity")}</header>
+        <ol class="system-pipeline-list">${pipeline.map((stage) => `<li><span class="system-pipeline-marker">${icon(stage.icon)}</span><span><strong>${escapeHtml(stage.label)}</strong><small>${escapeHtml(stage.detail)}</small></span><em>${stage.count.toLocaleString()}</em></li>`).join("")}</ol>
+      </section>
+    </div>
   </div>`;
 }
 
@@ -4473,6 +4591,11 @@ function announcePortainerFilterResults() {
 }
 
 function renderAuthenticatedRoute() {
+  if (state.workspace === "system") {
+    if (state.route === "system") return renderSystemOverview();
+    if (state.route === "logs") return renderLogsPage();
+    return renderSettingsPage();
+  }
   if (state.workspace === "media") {
     if (state.route === "overview") return renderMediaHome();
     if (state.route === "discover") return renderDiscoverPage();
@@ -4651,49 +4774,56 @@ function mediaConnectionSummary(services) {
   }[state];
 }
 
-function monitorSummaryMarkup({ infrastructureWorkspace, overall, connection, summaryText }) {
+function monitorSummaryMarkup({ infrastructureWorkspace, systemWorkspace, overall, connection, summaryText }) {
   const mobileDot = `<i class="monitor-summary__mobile-dot health-dot is-${escapeHtml(statusClass(overall))}" data-monitor-mobile-dot aria-hidden="true"></i>`;
-  return `<span class="monitor-summary__metrics" data-monitor-media-summary><span class="monitor-summary__metric"><small>Connection health</small><span class="monitor-summary__value"><i class="health-dot is-${escapeHtml(connection.state)}" data-monitor-connection-dot aria-hidden="true"></i><strong data-monitor-connection-state>${escapeHtml(connection.label)}</strong></span>${icon("chevron")}</span><span class="monitor-summary__metric"><small>Service health</small><span class="monitor-summary__value"><i class="health-dot is-${escapeHtml(statusClass(overall))}" data-monitor-service-dot aria-hidden="true"></i><strong data-monitor-service-state>${escapeHtml(statusLabel(overall))}</strong></span>${icon("chevron")}</span></span><span class="monitor-summary__single" data-monitor-infrastructure-summary hidden><i class="health-dot is-${escapeHtml(statusClass(overall))}" data-monitor-infrastructure-dot aria-hidden="true"></i><span data-monitor-infrastructure-text>${escapeHtml(summaryText)}</span></span><span class="monitor-summary__checked" data-monitor-checked hidden>${escapeHtml(summaryText)}</span>${mobileDot}`;
+  return `<span class="monitor-summary__metrics" data-monitor-media-summary><a class="monitor-summary__metric" href="#/connections" aria-label="Open media connection health"><small>Connection health</small><span class="monitor-summary__value"><i class="health-dot is-${escapeHtml(connection.state)}" data-monitor-connection-dot aria-hidden="true"></i><strong data-monitor-connection-state>${escapeHtml(connection.label)}</strong></span>${icon("chevron")}</a><a class="monitor-summary__metric" href="#/health" aria-label="Open media service health"><small>Service health</small><span class="monitor-summary__value"><i class="health-dot is-${escapeHtml(statusClass(overall))}" data-monitor-service-dot aria-hidden="true"></i><strong data-monitor-service-state>${escapeHtml(statusLabel(overall))}</strong></span>${icon("chevron")}</a></span><a class="monitor-summary__single" href="#/incidents" data-monitor-infrastructure-summary hidden><i class="health-dot is-${escapeHtml(statusClass(overall))}" data-monitor-infrastructure-dot aria-hidden="true"></i><span data-monitor-infrastructure-text>${escapeHtml(summaryText)}</span></a><a class="monitor-summary__single" href="#/system" data-monitor-system-summary hidden><i class="health-dot is-${escapeHtml(statusClass(overall))}" data-monitor-system-dot aria-hidden="true"></i><span data-monitor-system-text>${escapeHtml(summaryText)}</span></a><span class="monitor-summary__checked" data-monitor-checked hidden>${escapeHtml(summaryText)}</span>${mobileDot}`;
 }
 
-function updateMonitorSummary({ infrastructureWorkspace, overall, services, summaryText }) {
+function updateMonitorSummary({ infrastructureWorkspace, systemWorkspace, overall, services, summaryText }) {
   const connection = mediaConnectionSummary(services);
   const serviceLabel = statusLabel(overall);
-  monitorSummary.setAttribute("href", infrastructureWorkspace ? "#/incidents" : "#/health");
   monitorSummary.setAttribute(
     "aria-label",
-    infrastructureWorkspace
+    systemWorkspace
+      ? `Open combined overview. System health: ${serviceLabel}.`
+      : infrastructureWorkspace
       ? `Open infrastructure incidents. Connection health: ${connection.label}. Service health: ${serviceLabel}.`
       : `Open media health. Connection health: ${connection.label}. Service health: ${serviceLabel}.`
   );
 
   const mediaSummary = monitorSummary.querySelector("[data-monitor-media-summary]");
   const infrastructureSummary = monitorSummary.querySelector("[data-monitor-infrastructure-summary]");
+  const systemSummary = monitorSummary.querySelector("[data-monitor-system-summary]");
   const connectionDot = monitorSummary.querySelector("[data-monitor-connection-dot]");
   const connectionState = monitorSummary.querySelector("[data-monitor-connection-state]");
   const serviceDot = monitorSummary.querySelector("[data-monitor-service-dot]");
   const serviceState = monitorSummary.querySelector("[data-monitor-service-state]");
   const infrastructureDot = monitorSummary.querySelector("[data-monitor-infrastructure-dot]");
   const infrastructureText = monitorSummary.querySelector("[data-monitor-infrastructure-text]");
+  const systemDot = monitorSummary.querySelector("[data-monitor-system-dot]");
+  const systemText = monitorSummary.querySelector("[data-monitor-system-text]");
   const checkedText = monitorSummary.querySelector("[data-monitor-checked]");
   const mobileDot = monitorSummary.querySelector("[data-monitor-mobile-dot]");
-  const canPatch = mediaSummary && infrastructureSummary && connectionDot && connectionState
-    && serviceDot && serviceState && infrastructureDot && infrastructureText && checkedText && mobileDot;
+  const canPatch = mediaSummary && infrastructureSummary && systemSummary && connectionDot && connectionState
+    && serviceDot && serviceState && infrastructureDot && infrastructureText && systemDot && systemText && checkedText && mobileDot;
 
   if (!canPatch) {
-    setMarkup(monitorSummary, monitorSummaryMarkup({ infrastructureWorkspace, overall, connection, summaryText }));
+    setMarkup(monitorSummary, monitorSummaryMarkup({ infrastructureWorkspace, systemWorkspace, overall, connection, summaryText }));
     return;
   }
 
-  mediaSummary.hidden = false;
+  mediaSummary.hidden = infrastructureWorkspace || systemWorkspace;
   checkedText.hidden = true;
-  infrastructureSummary.hidden = true;
+  infrastructureSummary.hidden = !infrastructureWorkspace;
+  systemSummary.hidden = !systemWorkspace;
   connectionDot.className = `health-dot is-${connection.state}`;
   connectionState.textContent = connection.label;
   serviceDot.className = `health-dot is-${statusClass(overall)}`;
   serviceState.textContent = serviceLabel;
   infrastructureDot.className = `health-dot is-${statusClass(overall)}`;
   infrastructureText.textContent = summaryText;
+  systemDot.className = `health-dot is-${statusClass(overall)}`;
+  systemText.textContent = summaryText;
   checkedText.textContent = summaryText;
   mobileDot.className = `monitor-summary__mobile-dot health-dot is-${statusClass(overall)}`;
 }
@@ -4703,6 +4833,7 @@ function updateChrome() {
   const infrastructure = configuredInfrastructureSnapshotForUi();
   const portainers = configuredPortainerServicesForUi();
   const infrastructureWorkspace = state.workspace === "infrastructure";
+  const systemWorkspace = state.workspace === "system";
   const navigationAvailability = {
     proxmox: state.infrastructure.targets.length > 0,
     portainer: normalizedPortainerConfigurations().length > 0
@@ -4713,8 +4844,18 @@ function updateChrome() {
   const infrastructureCount = normalized.incidents.filter(({ scope }) => scope === "infrastructure").length;
   incidentCount.textContent = String(count);
   incidentCount.hidden = count === 0;
-  const overall = infrastructureWorkspace ? combinedInfrastructureState(infrastructure, portainers) : normalized.overall.state;
-  if (pageEyebrow) pageEyebrow.textContent = infrastructureWorkspace ? "Infrastructure operations" : "Media operations";
+  const infrastructureOverall = combinedInfrastructureState(infrastructure, portainers);
+  const overall = systemWorkspace
+    ? [statusClass(normalized.overall.state), statusClass(infrastructureOverall)]
+      .sort((left, right) => (WORKSPACE_STATE_PRIORITY[left] ?? 99) - (WORKSPACE_STATE_PRIORITY[right] ?? 99))[0] || "disabled"
+    : infrastructureWorkspace
+      ? infrastructureOverall
+      : normalized.overall.state;
+  if (pageEyebrow) pageEyebrow.textContent = systemWorkspace
+    ? "All systems"
+    : infrastructureWorkspace
+      ? "Infrastructure operations"
+      : "Media operations";
   document.documentElement?.setAttribute?.("data-workspace", state.workspace);
   document.querySelectorAll("[data-action='switch-workspace']").forEach((button) => {
     const active = button.dataset.workspace === state.workspace;
@@ -4722,17 +4863,24 @@ function updateChrome() {
     button.setAttribute("aria-pressed", active ? "true" : "false");
   });
   document.querySelectorAll(".workspace-media-only").forEach((element) => {
-    element.hidden = infrastructureWorkspace;
+    element.hidden = state.workspace !== "media";
   });
   document.querySelectorAll(".workspace-infrastructure-only").forEach((element) => {
     const requiredService = element.dataset.serviceNav;
     element.hidden = !infrastructureWorkspace
       || (Boolean(requiredService) && navigationAvailability[requiredService] !== true);
   });
+  document.querySelectorAll(".workspace-system-only").forEach((element) => {
+    element.hidden = !systemWorkspace;
+  });
   const workspaceHome = `#/${workspaceLandingRoute(state.workspace)}`;
   document.querySelectorAll(".brand, .mobile-brand").forEach((link) => {
     link.setAttribute("href", workspaceHome);
-    link.setAttribute("aria-label", infrastructureWorkspace ? "Helmsman infrastructure overview" : "Helmsman media overview");
+    link.setAttribute("aria-label", systemWorkspace
+      ? "Helmsman combined overview"
+      : infrastructureWorkspace
+        ? "Helmsman infrastructure overview"
+        : "Helmsman media overview");
   });
   document.querySelectorAll("[data-infrastructure-incident-count]").forEach((element) => {
     element.textContent = String(infrastructureCount);
@@ -4741,14 +4889,19 @@ function updateChrome() {
   const authenticated = Boolean(state.status?.authenticated);
   modeBadge.textContent = authenticated ? statusLabel(overall) : "Helmsman server";
   modeBadge.dataset.state = statusClass(overall);
-  const time = infrastructureWorkspace ? latestInfrastructureCheck(infrastructure.targets, portainers) : state.snapshot?.generatedAt;
+  const infrastructureTime = latestInfrastructureCheck(infrastructure.targets, portainers);
+  const time = systemWorkspace
+    ? [state.snapshot?.generatedAt, infrastructureTime].filter(Boolean).sort((left, right) => Date.parse(right) - Date.parse(left))[0]
+    : infrastructureWorkspace
+      ? infrastructureTime
+      : state.snapshot?.generatedAt;
   const summaryText = state.refreshing
-    ? infrastructureWorkspace ? "Checking infrastructure…" : "Checking services…"
-    : `Last ${infrastructureWorkspace ? "infrastructure" : "container"} check ${formatTime(time, "pending")}`;
-  const monitoredConnections = infrastructureWorkspace
+    ? systemWorkspace ? "Checking all systems…" : infrastructureWorkspace ? "Checking infrastructure…" : "Checking services…"
+    : `Last ${systemWorkspace ? "system" : infrastructureWorkspace ? "infrastructure" : "container"} check ${formatTime(time, "pending")}`;
+  const monitoredConnections = (infrastructureWorkspace || systemWorkspace)
     ? [...infrastructure.targets, ...portainers]
     : normalized.services;
-  updateMonitorSummary({ infrastructureWorkspace, overall, services: monitoredConnections, summaryText });
+  updateMonitorSummary({ infrastructureWorkspace, systemWorkspace, overall, services: monitoredConnections, summaryText });
   const initials = String(state.status?.session?.name || "HM").split(/\s+/u).map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "HM";
   sessionButton.querySelector("span").textContent = initials;
   sessionButton.disabled = !authenticated;
@@ -4756,10 +4909,10 @@ function updateChrome() {
   sessionButton.setAttribute("aria-label", authenticated ? "Open browser session settings" : "Browser session unavailable until signed in");
   sessionButton.setAttribute("title", authenticated ? "Browser session settings" : "Sign in to manage browser sessions");
   if (privacyButton) {
-    const alertCount = infrastructureWorkspace ? infrastructureCount : count;
+    const alertCount = systemWorkspace ? infrastructureCount + count : infrastructureWorkspace ? infrastructureCount : count;
     const alertDot = privacyButton.querySelector(".secure-indicator");
     if (alertDot) alertDot.hidden = !authenticated || alertCount === 0;
-    const alertDestination = infrastructureWorkspace ? "infrastructure incidents" : "media health alerts";
+    const alertDestination = systemWorkspace ? "combined system overview" : infrastructureWorkspace ? "infrastructure incidents" : "media health alerts";
     privacyButton.setAttribute("aria-label", authenticated
       ? `Open ${alertDestination}${alertCount ? `, ${alertCount} active` : ", no active alerts"}`
       : "Health alerts are available after sign in");
@@ -7588,7 +7741,7 @@ async function loadOperations() {
 async function loadInfrastructureTargets({ render = false } = {}) {
   if (state.infrastructure.loading || !state.status?.authenticated) return false;
   state.infrastructure.loading = true;
-  if (render && state.workspace === "infrastructure") {
+  if (render && ["system", "infrastructure"].includes(state.workspace)) {
     state.lastMarkup = "";
     renderPage({ force: true, preserveFocus: true });
   }
@@ -7609,7 +7762,7 @@ async function loadInfrastructureTargets({ render = false } = {}) {
   } finally {
     state.infrastructure.loading = false;
   }
-  if (render && state.workspace === "infrastructure") {
+  if (render && ["system", "infrastructure"].includes(state.workspace)) {
     state.lastMarkup = "";
     renderPage({ force: true, preserveFocus: true });
   }
@@ -7808,7 +7961,7 @@ document.addEventListener("click", async (event) => {
     return;
   }
   if (action === "toggle-sidebar") toggleSidebar();
-  if (action === "switch-workspace") await switchWorkspace(target.dataset.workspace);
+  if (action === "switch-workspace") await switchWorkspace(target.dataset.workspace, target.dataset.workspaceRoute);
   if (action === "open-service") openService(target.dataset.serviceId);
   if (action === "open-media-detail") openMediaDrawer(target.dataset.mediaId);
   if (action === "close-media-drawer") closeMediaDrawer();
@@ -8114,7 +8267,11 @@ sessionButton.addEventListener("click", () => {
 
 privacyButton?.addEventListener("click", () => {
   if (state.status?.authenticated) {
-    location.hash = state.workspace === "infrastructure" ? "#/incidents" : "#/health";
+    location.hash = state.workspace === "system"
+      ? "#/system"
+      : state.workspace === "infrastructure"
+        ? "#/incidents"
+        : "#/health";
     return;
   }
   showToast("Complete setup or sign in to review health alerts.");
@@ -8125,7 +8282,7 @@ skipLink?.addEventListener("click", (event) => {
   main.focus({ preventScroll: false });
 });
 
-if (!location.hash || !ROUTES.has(rawRoute())) location.replace("#/overview");
+if (!location.hash || !ROUTES.has(rawRoute())) location.replace(`#/${workspaceLandingRoute(state.workspace)}`);
 initialize();
 
 if ("serviceWorker" in navigator) {

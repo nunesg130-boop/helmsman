@@ -285,7 +285,8 @@ assert.ok(mediaOverviewSourceStart >= 0 && mediaOverviewSourceEnd > mediaOvervie
 const mediaOverviewSource = application.slice(mediaOverviewSourceStart, mediaOverviewSourceEnd);
 assert.match(application, /const MEDIA_ROUTES = new Set\(\["overview",\s*"discover"/u, "Media Overview must be a canonical Media route");
 assert.match(application, /const MEDIA_ROUTE_ALIASES = Object\.freeze\(\{\s*home:\s*"overview"/u, "legacy #/home must remain a compatibility alias");
-assert.match(application, /function workspaceLandingRoute\([^)]*\)\s*\{\s*return "overview";\s*\}/u, "both workspaces must land on Overview");
+assert.match(application, /function workspaceLandingRoute\(workspace\)\s*\{\s*return workspace === "system" \? "system" : "overview";\s*\}/u, "each workspace must use its canonical Overview route");
+assert.match(application, /function renderSystemOverview\(\)/u, "the combined Overview workspace must render real system health");
 for (const slot of ["continue-watching", "downloads", "service-health", "requests-and-warnings", "media-pipeline", "recently-added", "continue-queue"]) {
   assert.match(mediaOverviewSource, new RegExp(`(?:data-home-slot="${slot}"|slot:\\s*"${slot}")`, "u"), `Media Overview must retain its ${slot} surface`);
 }

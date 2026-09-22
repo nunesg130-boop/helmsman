@@ -40,6 +40,10 @@
 
         <div class="sidebar-scroll-region">
           <div class="world-switch" role="group" aria-label="Workspace">
+            <button class="world-option" type="button" data-action="switch-workspace" data-workspace="system" aria-pressed="false" aria-label="Combined overview">
+              <span class="world-dot world-dot--system" aria-hidden="true"></span>
+              <span class="world-option__label">Overview</span>
+            </button>
             <button class="world-option is-active" type="button" data-action="switch-workspace" data-workspace="media" aria-pressed="true" aria-label="Media workspace">
               <span class="world-dot" aria-hidden="true"></span>
               <span class="world-option__label">Media</span>
@@ -51,6 +55,9 @@
           </div>
 
           <nav class="nav-list" id="sidebar-navigation">
+          <a class="nav-item workspace-system-only" hidden href="#/system" data-route="system" aria-label="Combined system overview">
+            <svg aria-hidden="true"><use href="#icon-home"></use></svg><span>Overview</span>
+          </a>
           <a class="nav-item workspace-media-only" href="#/overview" data-route="overview" aria-label="Media overview">
             <svg aria-hidden="true"><use href="#icon-home"></use></svg><span>Overview</span>
           </a>
@@ -127,26 +134,28 @@
           <h1 id="page-title">Overview</h1>
         </div>
         <div class="topbar-workspace-switch" role="group" aria-label="Workspace">
+          <button type="button" data-action="switch-workspace" data-workspace="system" aria-pressed="false">Overview</button>
           <button type="button" class="is-active" data-action="switch-workspace" data-workspace="media" aria-pressed="true">Media</button>
           <button type="button" data-action="switch-workspace" data-workspace="infrastructure" aria-pressed="false">Infrastructure</button>
         </div>
-        <a class="global-search monitor-summary" id="monitor-summary" href="#/health" aria-label="Open media health">
+        <div class="global-search monitor-summary" id="monitor-summary" aria-label="Current health summary">
           <span class="monitor-summary__metrics" data-monitor-media-summary>
-            <span class="monitor-summary__metric">
+            <a class="monitor-summary__metric" href="#/connections" aria-label="Open media connection health">
               <small>Connection health</small>
               <span class="monitor-summary__value"><i class="health-dot is-checking" data-monitor-connection-dot aria-hidden="true"></i><strong data-monitor-connection-state>Checking</strong></span>
               <svg aria-hidden="true"><use href="#icon-chevron"></use></svg>
-            </span>
-            <span class="monitor-summary__metric">
+            </a>
+            <a class="monitor-summary__metric" href="#/health" aria-label="Open media service health">
               <small>Service health</small>
               <span class="monitor-summary__value"><i class="health-dot is-checking" data-monitor-service-dot aria-hidden="true"></i><strong data-monitor-service-state>Checking</strong></span>
               <svg aria-hidden="true"><use href="#icon-chevron"></use></svg>
-            </span>
+            </a>
           </span>
-          <span class="monitor-summary__single" data-monitor-infrastructure-summary hidden><i class="health-dot is-checking" data-monitor-infrastructure-dot aria-hidden="true"></i><span data-monitor-infrastructure-text>Infrastructure monitor starting…</span></span>
+          <a class="monitor-summary__single" href="#/incidents" data-monitor-infrastructure-summary hidden><i class="health-dot is-checking" data-monitor-infrastructure-dot aria-hidden="true"></i><span data-monitor-infrastructure-text>Infrastructure monitor starting…</span></a>
+          <a class="monitor-summary__single" href="#/system" data-monitor-system-summary hidden><i class="health-dot is-checking" data-monitor-system-dot aria-hidden="true"></i><span data-monitor-system-text>System monitor starting…</span></a>
           <span class="monitor-summary__checked" data-monitor-checked>Container monitor starting…</span>
           <i class="monitor-summary__mobile-dot health-dot is-checking" data-monitor-mobile-dot aria-hidden="true"></i>
-        </a>
+        </div>
         <div class="topbar-actions">
           <span class="preview-badge" id="mode-badge" hidden>Local container</span>
           <a class="icon-button topbar-search-button" href="#/discover" aria-label="Search and discover media" title="Search and discover">
@@ -169,6 +178,7 @@
       <main class="main-content" id="main-content" tabindex="-1"></main>
 
       <nav class="mobile-nav" aria-label="Mobile navigation">
+        <a class="workspace-system-only" hidden href="#/system" data-route="system" aria-label="Combined system overview"><svg aria-hidden="true"><use href="#icon-home"></use></svg><span>Overview</span></a>
         <a class="workspace-media-only" href="#/overview" data-route="overview" aria-label="Media overview"><svg aria-hidden="true"><use href="#icon-home"></use></svg><span>Overview</span></a>
         <a class="workspace-media-only" href="#/discover" data-route="discover" aria-label="Discover media"><svg aria-hidden="true"><use href="#icon-compass"></use></svg><span>Discover</span></a>
         <a class="workspace-media-only" href="#/library" data-route="library" aria-label="Media library"><svg aria-hidden="true"><use href="#icon-library"></use></svg><span>Library</span></a>
