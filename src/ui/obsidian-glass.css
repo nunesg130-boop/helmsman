@@ -1433,15 +1433,41 @@ body::after {
 
 .system-health-gauge__segments i {
   position: absolute;
-  top: var(--segment-y);
-  left: calc(50% + var(--segment-x));
   width: 8px;
   height: 39px;
   border-radius: 5px;
   background: #26262a;
-  transform: translate(-50%, -50%) rotate(var(--segment-angle));
   transform-origin: center;
 }
+
+.system-health-gauge__segments i:nth-child(1) { left: calc(50% - 118px); top: 116px; transform: translate(-50%, -50%) rotate(68deg); }
+.system-health-gauge__segments i:nth-child(2) { left: calc(50% - 117.2px); top: 106.71px; transform: translate(-50%, -50%) rotate(62.96deg); }
+.system-health-gauge__segments i:nth-child(3) { left: calc(50% - 114.82px); top: 97.55px; transform: translate(-50%, -50%) rotate(57.93deg); }
+.system-health-gauge__segments i:nth-child(4) { left: calc(50% - 110.88px); top: 88.64px; transform: translate(-50%, -50%) rotate(52.89deg); }
+.system-health-gauge__segments i:nth-child(5) { left: calc(50% - 105.45px); top: 80.1px; transform: translate(-50%, -50%) rotate(47.85deg); }
+.system-health-gauge__segments i:nth-child(6) { left: calc(50% - 98.59px); top: 72.04px; transform: translate(-50%, -50%) rotate(42.81deg); }
+.system-health-gauge__segments i:nth-child(7) { left: calc(50% - 90.39px); top: 64.58px; transform: translate(-50%, -50%) rotate(37.78deg); }
+.system-health-gauge__segments i:nth-child(8) { left: calc(50% - 80.98px); top: 57.81px; transform: translate(-50%, -50%) rotate(32.74deg); }
+.system-health-gauge__segments i:nth-child(9) { left: calc(50% - 70.46px); top: 51.83px; transform: translate(-50%, -50%) rotate(27.7deg); }
+.system-health-gauge__segments i:nth-child(10) { left: calc(50% - 59px); top: 46.72px; transform: translate(-50%, -50%) rotate(22.67deg); }
+.system-health-gauge__segments i:nth-child(11) { left: calc(50% - 46.74px); top: 42.54px; transform: translate(-50%, -50%) rotate(17.63deg); }
+.system-health-gauge__segments i:nth-child(12) { left: calc(50% - 33.84px); top: 39.36px; transform: translate(-50%, -50%) rotate(12.59deg); }
+.system-health-gauge__segments i:nth-child(13) { left: calc(50% - 20.49px); top: 37.22px; transform: translate(-50%, -50%) rotate(7.56deg); }
+.system-health-gauge__segments i:nth-child(14) { left: calc(50% - 6.86px); top: 36.14px; transform: translate(-50%, -50%) rotate(2.52deg); }
+.system-health-gauge__segments i:nth-child(15) { left: calc(50% + 6.86px); top: 36.14px; transform: translate(-50%, -50%) rotate(-2.52deg); }
+.system-health-gauge__segments i:nth-child(16) { left: calc(50% + 20.49px); top: 37.22px; transform: translate(-50%, -50%) rotate(-7.56deg); }
+.system-health-gauge__segments i:nth-child(17) { left: calc(50% + 33.84px); top: 39.36px; transform: translate(-50%, -50%) rotate(-12.59deg); }
+.system-health-gauge__segments i:nth-child(18) { left: calc(50% + 46.74px); top: 42.54px; transform: translate(-50%, -50%) rotate(-17.63deg); }
+.system-health-gauge__segments i:nth-child(19) { left: calc(50% + 59px); top: 46.72px; transform: translate(-50%, -50%) rotate(-22.67deg); }
+.system-health-gauge__segments i:nth-child(20) { left: calc(50% + 70.46px); top: 51.83px; transform: translate(-50%, -50%) rotate(-27.7deg); }
+.system-health-gauge__segments i:nth-child(21) { left: calc(50% + 80.98px); top: 57.81px; transform: translate(-50%, -50%) rotate(-32.74deg); }
+.system-health-gauge__segments i:nth-child(22) { left: calc(50% + 90.39px); top: 64.58px; transform: translate(-50%, -50%) rotate(-37.78deg); }
+.system-health-gauge__segments i:nth-child(23) { left: calc(50% + 98.59px); top: 72.04px; transform: translate(-50%, -50%) rotate(-42.81deg); }
+.system-health-gauge__segments i:nth-child(24) { left: calc(50% + 105.45px); top: 80.1px; transform: translate(-50%, -50%) rotate(-47.85deg); }
+.system-health-gauge__segments i:nth-child(25) { left: calc(50% + 110.88px); top: 88.64px; transform: translate(-50%, -50%) rotate(-52.89deg); }
+.system-health-gauge__segments i:nth-child(26) { left: calc(50% + 114.82px); top: 97.55px; transform: translate(-50%, -50%) rotate(-57.93deg); }
+.system-health-gauge__segments i:nth-child(27) { left: calc(50% + 117.2px); top: 106.71px; transform: translate(-50%, -50%) rotate(-62.96deg); }
+.system-health-gauge__segments i:nth-child(28) { left: calc(50% + 118px); top: 116px; transform: translate(-50%, -50%) rotate(-68deg); }
 
 .system-health-gauge__segments i.is-active {
   background: var(--success);

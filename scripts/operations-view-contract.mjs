@@ -287,8 +287,10 @@ assert.match(application, /const MEDIA_ROUTES = new Set\(\["overview",\s*"discov
 assert.match(application, /const MEDIA_ROUTE_ALIASES = Object\.freeze\(\{\s*home:\s*"overview"/u, "legacy #/home must remain a compatibility alias");
 assert.match(application, /function workspaceLandingRoute\(workspace\)\s*\{\s*return workspace === "system" \? "system" : "overview";\s*\}/u, "each workspace must use its canonical Overview route");
 assert.match(application, /function renderSystemOverview\(\)/u, "the combined Overview workspace must render real system health");
-assert.match(application, /--segment-x:\$\{x\.toFixed\(2\)\}px;--segment-y:\$\{y\.toFixed\(2\)\}px/u, "the combined health gauge must render distinct arc coordinates");
+assert.doesNotMatch(application, /system-health-gauge[\s\S]{0,500}<i style=/u, "the combined health gauge must not rely on CSP-blocked inline styles");
+assert.match(obsidianGlassCss, /\.system-health-gauge__segments i:nth-child\(1\)[\s\S]*?\.system-health-gauge__segments i:nth-child\(28\)/u, "the combined health gauge must define all 28 arc positions in trusted CSS");
 assert.doesNotMatch(obsidianGlassCss, /var\(--segment-index\)[\s\S]{0,120}var\(--segment-count\)/u, "the health gauge must not depend on unsupported custom-property division");
+assert.match(shellHtml, /href="#\/portainer"[\s\S]{0,220}src="\.\/assets\/services\/portainer[.]svg"/u, "Portainer navigation must use the reviewed local Portainer icon");
 for (const slot of ["continue-watching", "downloads", "service-health", "requests-and-warnings", "media-pipeline", "recently-added", "continue-queue"]) {
   assert.match(mediaOverviewSource, new RegExp(`(?:data-home-slot="${slot}"|slot:\\s*"${slot}")`, "u"), `Media Overview must retain its ${slot} surface`);
 }
