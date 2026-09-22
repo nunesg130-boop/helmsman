@@ -23,7 +23,7 @@ const serviceIconAssets = Object.freeze({
   prowlarr: Object.freeze({ file: "prowlarr.png", width: 460, height: 460, hash: "fe75eafc608e288c9736b740afe1c30c715eaf56dc284fec1926491d245fea52", format: "png" }),
   qbittorrent: Object.freeze({ file: "qbittorrent.svg", width: 1024, height: 1024, hash: "f96f40f70830e245cc184291d1173aa705b68b0865970b44aa1ee63350bcb9c2", format: "svg", viewBox: "0 0 1024 1024" }),
   bazarr: Object.freeze({ file: "bazarr.png", width: 200, height: 200, hash: "aefd3aac28d67fd4d48b24dd2ae33b3b0a9f26e7950c2e1d34bef98cecf18876", format: "png", lightPlate: true }),
-  proxmox: Object.freeze({ file: "proxmox.png", width: 595, height: 516, hash: "c8dca83af2f6519f025aad6325cc702ad491b19727bae42b9b87b6d20fa13440", format: "png" }),
+  proxmox: Object.freeze({ file: "proxmox.png", width: 536, height: 465, hash: "aabecd536afb7f96b2916b88bd9b9cad8a0feb22a8ddf48f6504ba4b84b9d649", format: "png" }),
   portainer: Object.freeze({ file: "portainer.svg", width: 168, height: 219, hash: "5d1e07021683d15ea67225c60975729f4ee0ed380f3a0fb21ffb2ad00eb6e85b", format: "svg", viewBox: "0.72 0 168.18 218.62", lightPlate: true })
 });
 
@@ -287,6 +287,8 @@ assert.match(application, /const MEDIA_ROUTES = new Set\(\["overview",\s*"discov
 assert.match(application, /const MEDIA_ROUTE_ALIASES = Object\.freeze\(\{\s*home:\s*"overview"/u, "legacy #/home must remain a compatibility alias");
 assert.match(application, /function workspaceLandingRoute\(workspace\)\s*\{\s*return workspace === "system" \? "system" : "overview";\s*\}/u, "each workspace must use its canonical Overview route");
 assert.match(application, /function renderSystemOverview\(\)/u, "the combined Overview workspace must render real system health");
+assert.match(application, /--segment-x:\$\{x\.toFixed\(2\)\}px;--segment-y:\$\{y\.toFixed\(2\)\}px/u, "the combined health gauge must render distinct arc coordinates");
+assert.doesNotMatch(obsidianGlassCss, /var\(--segment-index\)[\s\S]{0,120}var\(--segment-count\)/u, "the health gauge must not depend on unsupported custom-property division");
 for (const slot of ["continue-watching", "downloads", "service-health", "requests-and-warnings", "media-pipeline", "recently-added", "continue-queue"]) {
   assert.match(mediaOverviewSource, new RegExp(`(?:data-home-slot="${slot}"|slot:\\s*"${slot}")`, "u"), `Media Overview must retain its ${slot} surface`);
 }

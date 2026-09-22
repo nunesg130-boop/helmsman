@@ -101,8 +101,8 @@ const SERVICE_ICON_ASSETS = Object.freeze({
   }),
   proxmox: Object.freeze({
     path: "./assets/services/proxmox.png",
-    width: 595,
-    height: 516
+    width: 536,
+    height: 465
   }),
   portainer: Object.freeze({
     path: "./assets/services/portainer.svg",

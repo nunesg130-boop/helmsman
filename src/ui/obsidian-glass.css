@@ -44,7 +44,7 @@
   --retro-screen-strong: #1a1a1e;
   --glass-blur: 28px;
   --glass-saturation: 112%;
-  --sidebar-width: 226px;
+  --sidebar-width: 260px;
   --topbar-height: 76px;
   --radius-sm: 8px;
   --radius: 11px;
@@ -194,7 +194,7 @@ body::after {
 }
 
 .world-switch {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr) minmax(0, 0.8fr) minmax(0, 1.45fr);
   gap: 3px;
   margin: 0 2px 13px;
   padding: 3px;
@@ -207,7 +207,7 @@ body::after {
   min-height: 32px;
   justify-content: center;
   gap: 6px;
-  padding: 0 7px;
+  padding: 0 8px;
   border-radius: 7px;
   color: #787980;
   font-size: 10px;
@@ -290,6 +290,14 @@ body::after {
   height: 16px;
   flex-basis: 16px;
   stroke-width: 1.65;
+}
+
+.sidebar .nav-item > img,
+.mobile-nav a > img {
+  width: 17px;
+  height: 17px;
+  flex: 0 0 17px;
+  object-fit: contain;
 }
 
 .nav-count {
@@ -868,6 +876,8 @@ body::after {
 .infrastructure-target__mark,
 .portainer-environment-mark,
 .environment-card__icon,
+.node-mark,
+.detail-modal-mark,
 .infrastructure-overview-workload__mark,
 .media-overview-event__mark {
   border: 0;
@@ -1336,7 +1346,11 @@ body::after {
 
 .system-overview-grid {
   display: grid;
-  grid-template-columns: minmax(290px, 0.84fr) minmax(340px, 1.16fr);
+  grid-template-areas:
+    "health media"
+    "infrastructure pipeline";
+  grid-template-columns: minmax(300px, 0.9fr) minmax(380px, 1.1fr);
+  align-items: start;
   gap: 12px;
 }
 
@@ -1393,15 +1407,23 @@ body::after {
 }
 
 .system-overview-card--health {
-  grid-row: span 2;
+  grid-area: health;
   padding-bottom: 14px;
+}
+
+.system-overview-card--media {
+  grid-area: media;
+}
+
+.system-overview-card--infrastructure {
+  grid-area: infrastructure;
 }
 
 .system-health-gauge {
   position: relative;
-  width: min(290px, 92%);
-  height: 168px;
-  margin: 19px auto 0;
+  width: min(320px, 94%);
+  height: 184px;
+  margin: 12px auto 0;
 }
 
 .system-health-gauge__segments {
@@ -1411,14 +1433,14 @@ body::after {
 
 .system-health-gauge__segments i {
   position: absolute;
-  bottom: 26px;
-  left: 50%;
-  width: 7px;
-  height: 42px;
+  top: var(--segment-y);
+  left: calc(50% + var(--segment-x));
+  width: 8px;
+  height: 39px;
   border-radius: 5px;
   background: #26262a;
-  transform: translateX(-50%) rotate(calc(-84deg + (168deg * var(--segment-index) / (var(--segment-count) - 1)))) translateY(-75px);
-  transform-origin: 50% 75px;
+  transform: translate(-50%, -50%) rotate(var(--segment-angle));
+  transform-origin: center;
 }
 
 .system-health-gauge__segments i.is-active {
@@ -1439,7 +1461,7 @@ body::after {
 
 .system-health-gauge__value {
   position: absolute;
-  inset: auto 0 15px;
+  inset: auto 0 22px;
   display: grid;
   justify-items: center;
 }
@@ -1608,19 +1630,22 @@ body::after {
 }
 
 .system-overview-card--pipeline {
-  grid-column: 1 / -1;
+  grid-area: pipeline;
 }
 
 @media (max-width: 940px) {
   .system-overview-grid {
+    grid-template-areas:
+      "health"
+      "media"
+      "infrastructure"
+      "pipeline";
     grid-template-columns: 1fr;
   }
 
-  .system-overview-card--health {
-    grid-row: auto;
-  }
-
+  .system-overview-card--health,
   .system-overview-card--pipeline {
+    grid-row: auto;
     grid-column: auto;
   }
 }
@@ -1877,7 +1902,7 @@ body::after {
 
 @media (max-width: 1240px) and (min-width: 761px) {
   :root {
-    --sidebar-width: 204px;
+    --sidebar-width: 238px;
   }
 
   .topbar {

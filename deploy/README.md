@@ -1,6 +1,6 @@
 # Deployment files
 
-The supported Helmsman v1.3.1 deployment uses the GitHub Release
+The supported Helmsman v1.3.2 deployment uses the GitHub Release
 `compose.yaml` and environment example to pull the exact multi-architecture
 image digest published by GitHub Container Registry. It does not build
 application source on the Docker host. Back up the `/data` volume before every
@@ -10,7 +10,7 @@ instructions are in [DOCKER.md](DOCKER.md).
 
 ## Published deployment
 
-Pushing the Git tag `v1.3.1` runs the Node contracts and Linux AMD64/ARM64 smoke
+Pushing the Git tag `v1.3.2` runs the Node contracts and Linux AMD64/ARM64 smoke
 tests. A successful tagged workflow publishes version, `latest`, and
 full-commit tags with provenance and an SBOM, then creates a GitHub Release
 containing `compose.yaml`, `container.env.example`, and `SHA256SUMS`. The
@@ -36,9 +36,9 @@ Updates use the same `docker compose pull` and `docker compose up -d` commands a
 
 v1.0.6 migrates state schema 4 to schema 5 so Loki connections can be stored as bounded Infrastructure observability services while preserving existing Portainer records. Do not start v1.0.5 against a volume already migrated to schema 5. A rollback to v1.0.5 requires the `/data` backup taken before the v1.0.6 upgrade.
 
-## v1.3.1 Obsidian Glass visual release
+## v1.3.2 Obsidian Glass visual release
 
-v1.3.1 applies the compact near-black Obsidian Glass design system to every
+v1.3.2 applies the compact near-black Obsidian Glass design system to every
 Helmsman workspace and shared component. It changes presentation only: the
 reference image's charts and illustrative metrics are not copied, and all
 rendered values, health states, routes, cached-state boundaries, and controls
@@ -137,4 +137,4 @@ Media and Infrastructure are separate workspaces in the same container. Infrastr
 
 v1.0.6 includes a persistent sanitized Helmsman event journal under `/data/logs` and an optional Loki connection under **Infrastructure → Connectors → Observability**. The dedicated Loki Explorer performs bounded read-only queries; returned external log entries remain transient and are not copied into the built-in journal. Grafana is optional.
 
-The v1.3.1 Media workspace monitors through fixed read-only GET routes. Its only media writes are a Helmsman-confirmed Seerr failed-request retry, a selected standard-season request for one exact current series through Seerr, a targeted Radarr/Sonarr search when one exact current record can be resolved, and **Block release & search again** for one exact current errored Sonarr/Radarr queue item. The last action requires a danger confirmation plus fresh, connected, revision-matched blocked/error evidence; it removes the download and its data from the client, blocklists that release, and allows normal replacement handling under the Arr service's settings. Helmsman cannot approve or delete requests, request movies or 4K/Specials, choose Seerr routing/profile fields, change monitoring, pause downloads, remove healthy or arbitrary downloads, or run free-form searches. Series and parent-resolved episode drawers load a bounded current season catalog on demand, warn when Seerr reports no TVDB mapping for an auto-approved Sonarr handoff, confirm the exact requestable standard seasons, and revalidate the current record, target, detail revision, and selection before dispatch. Contract-valid Seerr acknowledgements may omit optional echoed fields, while unreadable or HTTP 5xx mutation responses remain an uncertain outcome and require a separate refresh before another write. Helmsman correlates bounded Jellyfin, Seerr, Radarr, Sonarr, qBittorrent, and Bazarr records by provider/download identifiers, exposes current lifecycle and activity state, and serves artwork only through an authenticated opaque Helmsman URL. A fixed Jellyfin Now Playing check retains media/play-state fields while discarding session identity metadata. Its normalized dashboard snapshot and successful artwork can be restored from the bounded private persistent cache, while negative artwork results remain memory-only. Reviewed, hash-pinned icons for all nine supported service integrations are bundled locally and require no runtime icon CDN; the user-supplied Radarr, Seerr, and Sonarr SVG refreshes are included, original generic workload SVGs are also local, and compatible-service names and trademarks remain their owners' property. The authenticated shell uses the Obsidian Glass near-black operations-console design while preserving Helmsman's real normalized data and action boundaries.
+The v1.3.2 Media workspace monitors through fixed read-only GET routes. Its only media writes are a Helmsman-confirmed Seerr failed-request retry, a selected standard-season request for one exact current series through Seerr, a targeted Radarr/Sonarr search when one exact current record can be resolved, and **Block release & search again** for one exact current errored Sonarr/Radarr queue item. The last action requires a danger confirmation plus fresh, connected, revision-matched blocked/error evidence; it removes the download and its data from the client, blocklists that release, and allows normal replacement handling under the Arr service's settings. Helmsman cannot approve or delete requests, request movies or 4K/Specials, choose Seerr routing/profile fields, change monitoring, pause downloads, remove healthy or arbitrary downloads, or run free-form searches. Series and parent-resolved episode drawers load a bounded current season catalog on demand, warn when Seerr reports no TVDB mapping for an auto-approved Sonarr handoff, confirm the exact requestable standard seasons, and revalidate the current record, target, detail revision, and selection before dispatch. Contract-valid Seerr acknowledgements may omit optional echoed fields, while unreadable or HTTP 5xx mutation responses remain an uncertain outcome and require a separate refresh before another write. Helmsman correlates bounded Jellyfin, Seerr, Radarr, Sonarr, qBittorrent, and Bazarr records by provider/download identifiers, exposes current lifecycle and activity state, and serves artwork only through an authenticated opaque Helmsman URL. A fixed Jellyfin Now Playing check retains media/play-state fields while discarding session identity metadata. Its normalized dashboard snapshot and successful artwork can be restored from the bounded private persistent cache, while negative artwork results remain memory-only. Reviewed, hash-pinned icons for all nine supported service integrations are bundled locally and require no runtime icon CDN; the user-supplied Radarr, Seerr, and Sonarr SVG refreshes are included, original generic workload SVGs are also local, and compatible-service names and trademarks remain their owners' property. The authenticated shell uses the Obsidian Glass near-black operations-console design while preserving Helmsman's real normalized data and action boundaries.

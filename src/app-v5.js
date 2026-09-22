@@ -2049,9 +2049,14 @@ function systemOverviewRouteButton(workspace, route, label) {
 function renderSystemHealthGauge(score, overall, healthy, total) {
   const segmentCount = 28;
   const activeSegments = Math.round((score / 100) * segmentCount);
-  const segments = Array.from({ length: segmentCount }, (_, index) => (
-    `<i style="--segment-index:${index};--segment-count:${segmentCount}" class="${index < activeSegments ? "is-active" : ""}" aria-hidden="true"></i>`
-  )).join("");
+  const segments = Array.from({ length: segmentCount }, (_, index) => {
+    const progress = index / (segmentCount - 1);
+    const radians = Math.PI - (Math.PI * progress);
+    const x = Math.cos(radians) * 118;
+    const y = 116 - (Math.sin(radians) * 80);
+    const angle = 68 - (progress * 136);
+    return `<i style="--segment-x:${x.toFixed(2)}px;--segment-y:${y.toFixed(2)}px;--segment-angle:${angle.toFixed(2)}deg" class="${index < activeSegments ? "is-active" : ""}" aria-hidden="true"></i>`;
+  }).join("");
   return `<div class="system-health-gauge is-${escapeHtml(statusClass(overall))}" role="img" aria-label="${score}% system health, ${healthy} of ${total} monitored services healthy">
     <div class="system-health-gauge__segments">${segments}</div>
     <div class="system-health-gauge__value"><strong>${score}%</strong><span>${healthy} of ${total} healthy</span></div>

@@ -22,7 +22,7 @@ const serviceIconAssets = Object.freeze([
   Object.freeze({ service: "Jellyfin", path: "assets/services/jellyfin.svg", width: 512, height: 512, hash: "7f53cf083dbb3119ec8c5acbd8049c5033227617e461540f70591ac109124306", format: "svg", viewBox: "0 0 512 512", auditedInlineStyle: true }),
   Object.freeze({ service: "Portainer", path: "assets/services/portainer.svg", width: 168.18, height: 218.62, hash: "5d1e07021683d15ea67225c60975729f4ee0ed380f3a0fb21ffb2ad00eb6e85b", format: "svg", viewBox: "0.72 0 168.18 218.62" }),
   Object.freeze({ service: "Prowlarr", path: "assets/services/prowlarr.png", width: 460, height: 460, hash: "fe75eafc608e288c9736b740afe1c30c715eaf56dc284fec1926491d245fea52", format: "png" }),
-  Object.freeze({ service: "Proxmox", path: "assets/services/proxmox.png", width: 595, height: 516, hash: "c8dca83af2f6519f025aad6325cc702ad491b19727bae42b9b87b6d20fa13440", format: "png" }),
+  Object.freeze({ service: "Proxmox", path: "assets/services/proxmox.png", width: 536, height: 465, hash: "aabecd536afb7f96b2916b88bd9b9cad8a0feb22a8ddf48f6504ba4b84b9d649", format: "png" }),
   Object.freeze({ service: "qBittorrent", path: "assets/services/qbittorrent.svg", width: 1024, height: 1024, hash: "f96f40f70830e245cc184291d1173aa705b68b0865970b44aa1ee63350bcb9c2", format: "svg", viewBox: "0 0 1024 1024" }),
   Object.freeze({ service: "Radarr", path: "assets/services/radarr.svg", width: 512, height: 512, hash: "4767088c158c5507957232782f491ad1c3a048c013ce04d58da81148158a89b3", format: "svg", viewBox: "0 0 512 512", auditedInlineStyle: true }),
   Object.freeze({ service: "Seerr", path: "assets/services/seerr.svg", width: 96, height: 96, hash: "b12e5dfd641d961cfb68360da33fe28873b95ea9b64c23233d5b87a37cbfa4c4", format: "svg", viewBox: "0 0 96 96", auditedStyleElement: true }),
@@ -168,7 +168,7 @@ const requiredFiles = [
 const missing = requiredFiles.filter((path) => !existsSync(join(root, path)));
 record(
   missing.length === 0,
-  "Helmsman v1.3.1 includes its unified media model, bounded fixed actions, Proxmox and Portainer infrastructure monitors, encrypted store, persistent cache, Obsidian Glass operations UI, logging, and deployment contracts",
+  "Helmsman v1.3.2 includes its unified media model, bounded fixed actions, Proxmox and Portainer infrastructure monitors, encrypted store, persistent cache, Obsidian Glass operations UI, logging, and deployment contracts",
   missing.join(", ")
 );
 
@@ -189,12 +189,12 @@ if (existsSync(join(root, "Dockerfile"))) {
   );
 
   record(
-    /^ARG HELMSMAN_VERSION=1\.3\.1$/mu.test(dockerfile)
+    /^ARG HELMSMAN_VERSION=1\.3\.2$/mu.test(dockerfile)
       && /^ARG HELMSMAN_REVISION=unknown$/mu.test(dockerfile)
       && /org\.opencontainers\.image\.title="Helmsman"/u.test(dockerfile)
       && /org\.opencontainers\.image\.licenses="AGPL-3\.0-only"/u.test(dockerfile)
       && !/org\.opencontainers\.image\.title="Jellofin Command"/u.test(dockerfile),
-    "image metadata carries the Helmsman v1.3.1 identity and license"
+    "image metadata carries the Helmsman v1.3.2 identity and license"
   );
 
   record(
@@ -255,10 +255,10 @@ if (existsSync(join(root, "Dockerfile"))) {
 if (existsSync(join(root, "server/broker.mjs"))) {
   const broker = read("server/broker.mjs");
   record(
-    /const DEFAULT_VERSION = "1\.3\.1"/u.test(broker)
+    /const DEFAULT_VERSION = "1\.3\.2"/u.test(broker)
       && /process\.env\.HELMSMAN_VERSION/u.test(broker)
       && /\^\[0-9A-Za-z\]\[0-9A-Za-z\.\+-\]\{0,63\}\$/u.test(broker),
-    "runtime version follows the validated immutable v1.3.1 image metadata"
+    "runtime version follows the validated immutable v1.3.2 image metadata"
   );
 }
 
@@ -329,7 +329,7 @@ if (existsSync(join(root, "server/index.mjs"))
       && !/url[.]pathname === "\/api\/v2\/access\/rotate"/u.test(controlPlane)
       && !/command === "rotate-access-key"/u.test(index)
       && !/rotate-access-key --confirm/u.test(index),
-    "the beta.2 access-key route is migration-only and v1.3.1 exposes no access-key rotation route or CLI"
+    "the beta.2 access-key route is migration-only and v1.3.2 exposes no access-key rotation route or CLI"
   );
   record(
     /command === "reset-access"/u.test(index)
@@ -383,7 +383,7 @@ if (existsSync(join(root, "compose.yaml"))) {
   record(
     /^name:\s*helmsman\s*$/mu.test(compose)
       && /^services:\s*\n\s{2}helmsman:\s*$/mu.test(compose)
-      && compose.includes('${HELMSMAN_IMAGE:-ghcr.io/OWNER/REPOSITORY:1.3.1}')
+      && compose.includes('${HELMSMAN_IMAGE:-ghcr.io/OWNER/REPOSITORY:1.3.2}')
       && !/^\s{4}build:/mu.test(compose),
     "production Compose has a stable project name and pulls the versioned GHCR image without a local build"
   );
@@ -442,9 +442,9 @@ if (existsSync(join(root, "compose.dev.yaml"))) {
       && /^\s{4}build:\s*$/mu.test(developmentCompose)
       && /^\s{6}context:\s*[.]\s*$/mu.test(developmentCompose)
       && /^\s{6}dockerfile:\s*Dockerfile\s*$/mu.test(developmentCompose)
-      && /HELMSMAN_VERSION:\s*["']1\.3\.1["']/u.test(developmentCompose)
+      && /HELMSMAN_VERSION:\s*["']1\.3\.2["']/u.test(developmentCompose)
       && /HELMSMAN_REVISION:\s*["']local["']/u.test(developmentCompose)
-      && /image:\s*["']helmsman:1\.3\.1["']/u.test(developmentCompose),
+      && /image:\s*["']helmsman:1\.3\.2["']/u.test(developmentCompose),
     "developer Compose override keeps source builds separate from the production pull contract"
   );
 }
@@ -651,7 +651,7 @@ if (existsSync(join(root, "container.env.example"))) {
   const allowed = new Set(["HELMSMAN_IMAGE", "HELMSMAN_BIND_IP", "HELMSMAN_PORT"]);
   const unexpected = keys.filter((key) => !allowed.has(key));
   record(
-    assignments.includes("HELMSMAN_IMAGE=ghcr.io/OWNER/REPOSITORY:1.3.1")
+    assignments.includes("HELMSMAN_IMAGE=ghcr.io/OWNER/REPOSITORY:1.3.2")
       && assignments.includes("HELMSMAN_BIND_IP=127.0.0.1")
       && assignments.includes("HELMSMAN_PORT=4180")
       && !assignments.some((line) => line.startsWith("HELMSMAN_DATA_VOLUME="))
@@ -767,10 +767,10 @@ if (existsSync(join(root, "manifest.webmanifest"))) {
         && manifest.icons.some(({ src, sizes }) => src === "./assets/icon-192.png" && sizes === "192x192")
         && manifest.icons.some(({ src, sizes, purpose }) => src === "./assets/icon-512.png" && sizes === "512x512" && purpose === "any")
         && manifest.icons.some(({ src, sizes, purpose }) => src === "./assets/icon-maskable-512.png" && sizes === "512x512" && purpose === "maskable"),
-      "the v1.3.1 installed-app manifest opens canonical Media Overview and retains dedicated local application icons"
+      "the v1.3.2 installed-app manifest opens canonical Media Overview and retains dedicated local application icons"
     );
   } catch (error) {
-    record(false, "the v1.3.1 installed-app manifest opens canonical Media Overview and retains dedicated local application icons", error.message);
+    record(false, "the v1.3.2 installed-app manifest opens canonical Media Overview and retains dedicated local application icons", error.message);
   }
 }
 
@@ -990,7 +990,7 @@ if (existsSync(join(root, "package.json"))) {
     const packageJson = JSON.parse(read("package.json"));
     record(
       packageJson.name === "helmsman"
-        && packageJson.version === "1.3.1"
+        && packageJson.version === "1.3.2"
         && packageJson.scripts?.serve === "node server/index.mjs serve"
         && packageJson.scripts?.["check:broker"] === "node --test tests/control-plane.test.mjs"
         && /tests\/secrets[.]test[.]mjs/u.test(packageJson.scripts?.["check:security"] || "")

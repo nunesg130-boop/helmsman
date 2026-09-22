@@ -23,7 +23,7 @@ described separately and is not represented as an upstream-original file.
 | Jellyfin | `assets/services/jellyfin.svg` | SVG viewBox `0 0 512 512` | `7f53cf083dbb3119ec8c5acbd8049c5033227617e461540f70591ac109124306` |
 | Portainer | `assets/services/portainer.svg` | SVG viewBox `0.72 0 168.18 218.62` | `5d1e07021683d15ea67225c60975729f4ee0ed380f3a0fb21ffb2ad00eb6e85b` |
 | Prowlarr | `assets/services/prowlarr.png` | 460 x 460 px | `fe75eafc608e288c9736b740afe1c30c715eaf56dc284fec1926491d245fea52` |
-| Proxmox | `assets/services/proxmox.png` | 595 x 516 px | `c8dca83af2f6519f025aad6325cc702ad491b19727bae42b9b87b6d20fa13440` |
+| Proxmox | `assets/services/proxmox.png` | 536 x 465 px | `aabecd536afb7f96b2916b88bd9b9cad8a0feb22a8ddf48f6504ba4b84b9d649` |
 | qBittorrent | `assets/services/qbittorrent.svg` | 1024 x 1024; SVG viewBox `0 0 1024 1024` | `f96f40f70830e245cc184291d1173aa705b68b0865970b44aa1ee63350bcb9c2` |
 | Radarr | `assets/services/radarr.svg` | SVG viewBox `0 0 512 512` | `4767088c158c5507957232782f491ad1c3a048c013ce04d58da81148158a89b3` |
 | Seerr | `assets/services/seerr.svg` | SVG viewBox `0 0 96 96` | `b12e5dfd641d961cfb68360da33fe28873b95ea9b64c23233d5b87a37cbfa4c4` |
