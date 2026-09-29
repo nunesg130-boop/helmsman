@@ -1118,14 +1118,8 @@ function Stage-AndValidateRelease {
     Invoke-NativeLive -FilePath $Tools.Git -ArgumentList @('-C', $RepoRoot, 'add', '-A', '--', '.') -FailureMessage 'Git staging'
 
     $changed = Invoke-NativeProbe -FilePath $Tools.Git -ArgumentList @('-C', $RepoRoot, 'diff', '--cached', '--quiet')
-    if ($changed.ExitCode -eq 0) {
-        # The release was already merged to main (for example through a pull
-        # request). Every validation below still runs against the unchanged
-        # tree; orchestration then tags the existing main commit instead of
-        # creating an empty release commit.
-        Write-Host 'The source release matches origin/main exactly; no new commit is needed.' -ForegroundColor Yellow
-    }
-    elseif ($changed.ExitCode -ne 1) { throw 'The staged-change check failed.' }
+    if ($changed.ExitCode -eq 0) { throw 'The source release produced no staged changes.' }
+    if ($changed.ExitCode -ne 1) { throw 'The staged-change check failed.' }
 
     Invoke-NativeLive -FilePath $Tools.Git -ArgumentList @('-C', $RepoRoot, 'diff', '--cached', '--check') -FailureMessage 'Staged whitespace validation'
 
@@ -1224,87 +1218,12 @@ function Assert-StagedTreeUnchanged {
     }
 }
 
-function Test-ReleaseAlreadyOnMain {
-    param(
-        [Parameter(Mandatory = $true)][string]$RepoRoot,
-        [Parameter(Mandatory = $true)]$Tools,
-        [Parameter(Mandatory = $true)][string]$ExpectedTree
-    )
-
-    $headTree = Invoke-NativeText -FilePath $Tools.Git -ArgumentList @('-C', $RepoRoot, 'rev-parse', 'HEAD^{tree}') -FailureMessage 'Main tree identity'
-    return ($headTree -ceq $ExpectedTree)
-}
-
-function Wait-MergedMainWorkflow {
-    param(
-        [Parameter(Mandatory = $true)]$Tools,
-        [Parameter(Mandatory = $true)][string]$ExpectedRepository,
-        [Parameter(Mandatory = $true)][string]$WorkflowName,
-        [Parameter(Mandatory = $true)][string]$CommitSha,
-        [string[]]$ExistingRunIds = @(),
-        [int]$RestartTimeoutSeconds = 180,
-        [int]$CompletionTimeoutSeconds = 3600
-    )
-
-    # A release merged through a pull request already has a main push run for
-    # its commit. Require the newest one to succeed; if it was cancelled or
-    # failed, re-run it once (same commit, same push event) and require that
-    # attempt to succeed before any tag is created.
-    if ($ExistingRunIds.Count -eq 0) {
-        throw 'No main workflow run exists for the merged release commit. Push a new commit to main so CI runs, then publish again.'
-    }
-    $runId = [string]($ExistingRunIds | Sort-Object { [long]$_ } | Select-Object -Last 1)
-    if ($runId -notmatch '^[1-9][0-9]{0,19}$') {
-        throw 'The main workflow run identifier is malformed.'
-    }
-    $repositorySelector = 'github.com/' + $ExpectedRepository
-    $rerunRequested = $false
-    $restartObserved = $false
-    $restartDeadline = $null
-    Write-Host "Checking main workflow run $runId for the merged release commit..."
-    $completionDeadline = [DateTime]::UtcNow.AddSeconds($CompletionTimeoutSeconds)
-    while ([DateTime]::UtcNow -lt $completionDeadline) {
-        $viewJson = Invoke-NativeJson -FilePath $Tools.GitHub -ArgumentList @(
-            'run', 'view', $runId, '--repo', $repositorySelector,
-            '--json', 'conclusion,headBranch,headSha,event,status'
-        ) -FailureMessage 'Merged main workflow verification'
-        $view = ConvertFrom-GitHubRunViewJson -Json $viewJson -Context 'Merged main workflow verification'
-        if ($view.HeadSha -cne $CommitSha -or $view.HeadBranch -cne 'main' -or $view.Event -cne 'push') {
-            throw 'The merged main workflow does not belong to the release commit.'
-        }
-        if ($view.Status -cne 'completed') {
-            $restartObserved = $true
-        }
-        elseif (!$rerunRequested -or $restartObserved) {
-            if ($view.Conclusion -ceq 'success') {
-                return $runId
-            }
-            if ($rerunRequested) {
-                throw "The re-run main workflow completed with conclusion '$($view.Conclusion)'."
-            }
-            Write-Host "Main workflow run $runId ended '$($view.Conclusion)'. Re-running it for the merged release commit..." -ForegroundColor Yellow
-            Invoke-NativeLive -FilePath $Tools.GitHub -ArgumentList @(
-                'run', 'rerun', $runId, '--repo', $repositorySelector
-            ) -FailureMessage 'Main workflow re-run'
-            $rerunRequested = $true
-            $restartObserved = $false
-            $restartDeadline = [DateTime]::UtcNow.AddSeconds($RestartTimeoutSeconds)
-        }
-        elseif ([DateTime]::UtcNow -gt $restartDeadline) {
-            throw "The main workflow re-run did not start within $RestartTimeoutSeconds seconds."
-        }
-        Start-Sleep -Seconds 10
-    }
-    throw "The main workflow did not complete within $CompletionTimeoutSeconds seconds."
-}
-
 function Show-StagedSummary {
     param(
         [Parameter(Mandatory = $true)][string]$RepoRoot,
         [Parameter(Mandatory = $true)]$Tools,
         [Parameter(Mandatory = $true)]$Release,
-        [Parameter(Mandatory = $true)][string]$ExpectedRepository,
-        [switch]$AlreadyMerged
+        [Parameter(Mandatory = $true)][string]$ExpectedRepository
     )
 
     Write-Host ''
@@ -1313,25 +1232,14 @@ function Show-StagedSummary {
     Write-Host "  Source:     $($Release.Root)"
     Write-Host "  Version:    $($Release.Version)"
     Write-Host "  Tag:        $($Release.Tag)"
-    if ($AlreadyMerged) {
-        Write-Host '  Mode:       already merged to main; only the version tag will be pushed'
-    }
     Write-Host ''
     Invoke-NativeLive -FilePath $Tools.Git -ArgumentList @('-C', $RepoRoot, 'diff', '--cached', '--name-status') -FailureMessage 'Staged file summary'
     Invoke-NativeLive -FilePath $Tools.Git -ArgumentList @('-C', $RepoRoot, 'diff', '--cached', '--stat') -FailureMessage 'Staged change statistics'
 }
 
 function Confirm-Release {
-    param(
-        [Parameter(Mandatory = $true)]$Release,
-        [switch]$AlreadyMerged
-    )
-    if ($AlreadyMerged) {
-        Write-Warning 'The next step tags the current main commit and may publish a public container after both workflow gates pass.'
-    }
-    else {
-        Write-Warning 'The next step commits to main, pushes it, and may publish a public container after both workflow gates pass.'
-    }
+    param([Parameter(Mandatory = $true)]$Release)
+    Write-Warning 'The next step commits to main, pushes it, and may publish a public container after both workflow gates pass.'
     $answer = Read-Host "Type PUBLISH $($Release.Version) to continue"
     return $answer -ceq "PUBLISH $($Release.Version)"
 }
@@ -1935,35 +1843,22 @@ try {
     # mandatory hosted main workflow tests that commit before a tag exists.
     Assert-StagedTreeUnchanged -RepoRoot $canonical.Root -Tools $tools -ExpectedTree $reviewedTree
 
-    $alreadyMerged = Test-ReleaseAlreadyOnMain -RepoRoot $canonical.Root -Tools $tools -ExpectedTree $reviewedTree
-    Show-StagedSummary -RepoRoot $canonical.Root -Tools $tools -Release $release -ExpectedRepository $Repository -AlreadyMerged:$alreadyMerged
-    if (!(Confirm-Release -Release $release -AlreadyMerged:$alreadyMerged)) {
+    Show-StagedSummary -RepoRoot $canonical.Root -Tools $tools -Release $release -ExpectedRepository $Repository
+    if (!(Confirm-Release -Release $release)) {
         Write-Host 'Release cancelled. Nothing was committed, tagged, or pushed. The reviewed changes remain staged.' -ForegroundColor Yellow
         return
     }
 
     Write-Step 'Committing and validating main'
-    if ($alreadyMerged) {
-        # Main already holds the reviewed tree, and the clean-clone check above
-        # proved HEAD equals origin/main, so the release commit is HEAD.
-        $commitSha = Invoke-NativeText -FilePath $tools.Git -ArgumentList @('-C', $canonical.Root, 'rev-parse', 'HEAD') -FailureMessage 'Merged release commit identity'
-    }
-    else {
-        $commitSha = New-ReleaseCommit -RepoRoot $canonical.Root -Tools $tools -Release $release -ExpectedTree $reviewedTree
-    }
+    $commitSha = New-ReleaseCommit -RepoRoot $canonical.Root -Tools $tools -Release $release -ExpectedTree $reviewedTree
     $existingMainRuns = @(Get-WorkflowRunIds -Tools $tools -ExpectedRepository $Repository -WorkflowName $Workflow -CommitSha $commitSha -RefName 'main')
-    if ($alreadyMerged) {
-        $mainRun = Wait-MergedMainWorkflow -Tools $tools -ExpectedRepository $Repository -WorkflowName $Workflow -CommitSha $commitSha -ExistingRunIds $existingMainRuns
-    }
-    else {
-        Push-Main `
-            -RepoRoot $canonical.Root `
-            -Tools $tools `
-            -CommitSha $commitSha `
-            -ExpectedRepository $Repository `
-            -ExpectedLogin $GitHubLogin
-        $mainRun = Wait-WorkflowForCommit -Tools $tools -ExpectedRepository $Repository -WorkflowName $Workflow -CommitSha $commitSha -RefName 'main' -ExcludedRunIds $existingMainRuns
-    }
+    Push-Main `
+        -RepoRoot $canonical.Root `
+        -Tools $tools `
+        -CommitSha $commitSha `
+        -ExpectedRepository $Repository `
+        -ExpectedLogin $GitHubLogin
+    $mainRun = Wait-WorkflowForCommit -Tools $tools -ExpectedRepository $Repository -WorkflowName $Workflow -CommitSha $commitSha -RefName 'main' -ExcludedRunIds $existingMainRuns
 
     Write-Step 'Publishing the version tag'
     $existingTagRuns = @(Get-WorkflowRunIds -Tools $tools -ExpectedRepository $Repository -WorkflowName $Workflow -CommitSha $commitSha -RefName $release.Tag)

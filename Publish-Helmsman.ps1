@@ -17,7 +17,7 @@ $script:ExpectedRepository = 'nunesg130-boop/helmsman'
 $script:ExpectedGitHubLogin = 'nunesg130-boop'
 $script:ExpectedCloneUrl = 'https://github.com/nunesg130-boop/helmsman.git'
 $script:MinimumGitHubCliVersion = [version]'2.57.0'
-$script:ExpectedPublisherSha256 = 'cc81b67d620ef7519ddffeef1579bea38ff3f09897cf0ad6537f4cc5258bf75e'
+$script:ExpectedPublisherSha256 = '9af731189a3ec8b322b4bd7517859e3c78f7e034a3c3e13992c6c583a616b9cd'
 $script:MaximumRecoveryClones = 20
 
 function Write-Step {
