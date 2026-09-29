@@ -177,6 +177,7 @@ const INCIDENT_METRICS = Object.freeze([
   "indexersBlocked"
 ]);
 const REPORT_SEVERITIES = new Set(["notice", "warning", "error"]);
+const REPORT_ID = /^[a-f0-9]{32}$/u;
 
 function own(value, key) {
   try {
@@ -216,10 +217,12 @@ export function normalizeOperationsReports(value, fallbackSource = "Service") {
     const severity = boundedText(own(source, "severity"), "", 16).toLowerCase();
     const message = boundedText(own(source, "message"), "", 600);
     if (!REPORT_SEVERITIES.has(severity) || !message) return [];
+    const id = own(source, "id");
     return [{
       severity,
       source: boundedText(own(source, "source"), safeFallback, 96),
-      message
+      message,
+      ...(typeof id === "string" && REPORT_ID.test(id) ? { id } : {})
     }];
   });
 }
@@ -1252,6 +1255,16 @@ export function incidentNextStep(incident) {
   return "Open Logs for the latest sanitized evidence.";
 }
 
+/**
+ * "Ignore" control for one report. Only reports that carry a server-issued
+ * acknowledgement id get the control, and notices never lower health, so
+ * they have nothing to ignore.
+ */
+export function renderReportIgnoreButton(report) {
+  if (!report?.id || !REPORT_ID.test(report.id) || report.severity === "notice") return "";
+  return `<button class="operations-report__ignore" type="button" data-action="acknowledge-report" data-report-id="${escapeOperationsHtml(report.id)}" title="Stop this warning from affecting system health">Ignore</button>`;
+}
+
 export function renderOperationsReports(value, serviceName = "Service") {
   const reporter = boundedText(serviceName, "Service", 60);
   const reports = normalizeOperationsReports(value, `${reporter} health`);
@@ -1261,6 +1274,7 @@ export function renderOperationsReports(value, serviceName = "Service") {
     <ul>${reports.map((report) => `<li class="operations-report is-${report.severity}">
       <i aria-hidden="true"></i>
       <div><p>${escapeOperationsHtml(report.message)}</p><small>${escapeOperationsHtml(report.source)} · ${escapeOperationsHtml(report.severity)}</small></div>
+      ${renderReportIgnoreButton(report)}
     </li>`).join("")}</ul>
   </div>`;
 }

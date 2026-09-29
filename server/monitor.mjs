@@ -3,6 +3,7 @@ import {
   normalizeServiceMediaInventory
 } from "./media-model.mjs";
 import { normalizePortainerInventory } from "./portainer-model.mjs";
+import { reportFingerprint } from "./acknowledgements.mjs";
 
 const DEFAULT_INTERVAL_MS = 30_000;
 const MIN_INTERVAL_MS = 30_000;
@@ -453,7 +454,37 @@ function checkFromResult(input, index, serviceId, checkedAt, measuredLatency) {
   };
 }
 
-function normalizeProbeResult(serviceId, result, checkedAt, measuredLatency, targetRevision = null) {
+// Gives every report a stable id (so the dashboard can offer "Ignore") and
+// applies operator acknowledgements. A failing check whose every warning or
+// error report has been acknowledged is treated as healthy: it no longer
+// lowers the service state, the health score, or keeps an incident open.
+// Checks with more reports than the display cap are never cleared, because
+// unseen reports could still be real problems.
+function annotateReports(serviceId, checks, acknowledgements) {
+  let acknowledgedCheck = false;
+  const annotated = checks.map((check) => {
+    if (!check.reports?.length) return check;
+    const active = [];
+    const acknowledged = [];
+    for (const report of check.reports) {
+      const entry = { ...report, id: reportFingerprint(serviceId, check.id, report) };
+      (acknowledgements?.has(entry.id) ? acknowledged : active).push(entry);
+    }
+    const next = { ...check };
+    if (active.length) next.reports = active;
+    else delete next.reports;
+    if (acknowledged.length) next.acknowledgedReports = acknowledged;
+    const remainingProblems = active.some((report) => report.severity !== "notice");
+    if (!check.ok && acknowledged.length && !remainingProblems && check.reports.length < MAX_REPORTS_PER_CHECK) {
+      Object.assign(next, { ok: true, state: "healthy", code: null, httpStatus: null, acknowledged: true });
+      acknowledgedCheck = true;
+    }
+    return next;
+  });
+  return { checks: annotated, acknowledgedCheck };
+}
+
+function normalizeProbeResult(serviceId, result, checkedAt, measuredLatency, targetRevision = null, acknowledgements = null) {
   const source = result && typeof result === "object" && !Array.isArray(result) ? result : {};
   const resultCheckedAt = validIso(source.checkedAt) || checkedAt;
   const rawChecks = Array.isArray(source.checks) && source.checks.length
@@ -473,14 +504,28 @@ function normalizeProbeResult(serviceId, result, checkedAt, measuredLatency, tar
         affectsHealth: source.affectsHealth
       }];
   const seen = new Set();
-  const checks = [];
+  const rawNormalized = [];
   for (let index = 0; index < rawChecks.length; index += 1) {
     const normalized = checkFromResult(rawChecks[index], index, serviceId, resultCheckedAt, measuredLatency);
     if (seen.has(normalized.id)) continue;
     seen.add(normalized.id);
-    checks.push(normalized);
+    rawNormalized.push(normalized);
   }
-  const state = normalizeState(source.state, null) || worstState(checks.map((check) => check.state));
+  const { checks, acknowledgedCheck } = annotateReports(serviceId, rawNormalized, acknowledgements);
+  const reportedState = normalizeState(source.state, null) || worstState(rawNormalized.map((check) => check.state));
+  const checksState = worstState(rawNormalized.map((check) => check.state));
+  // Only re-derive the state when acknowledgements changed a check and the
+  // probe's own state is fully explained by its checks. A probe-level state
+  // that is worse than any check (for example a connection failure) stands,
+  // and acknowledgements can only ever improve a state, never worsen it.
+  let state = reportedState;
+  if (acknowledgedCheck && worstState([reportedState, checksState]) === checksState) {
+    const cleared = worstState(
+      checks.filter((check) => check.affectsHealth !== false).map((check) => check.state),
+      "healthy"
+    );
+    if (worstState([cleared, reportedState]) === reportedState) state = cleared;
+  }
   return {
     id: serviceId,
     targetRevision: typeof targetRevision === "string" && UUID.test(targetRevision) ? targetRevision : null,
@@ -678,10 +723,10 @@ function normalizeProxmoxActivity(value) {
   });
 }
 
-function normalizeInfrastructureTargetResult(target, result, checkedAt, measuredLatency) {
+function normalizeInfrastructureTargetResult(target, result, checkedAt, measuredLatency, acknowledgements = null) {
   const targetId = String(target.id || "").toLowerCase();
   const monitorId = `proxmox-${targetId}`;
-  const normalized = normalizeProbeResult(monitorId, result, checkedAt, measuredLatency);
+  const normalized = normalizeProbeResult(monitorId, result, checkedAt, measuredLatency, null, acknowledgements);
   const sourceChecks = Array.isArray(result?.checks) ? result.checks.slice(0, MAX_CHECKS_PER_SERVICE) : [];
   const sourceLabels = new Map();
   for (const source of sourceChecks) {
@@ -747,11 +792,11 @@ function publicInfrastructureTarget(result) {
   };
 }
 
-function normalizeInfrastructureServiceResult(service, result, checkedAt, measuredLatency) {
+function normalizeInfrastructureServiceResult(service, result, checkedAt, measuredLatency, acknowledgements = null) {
   const serviceId = String(service.id || "").toLowerCase();
   const type = service?.type === "loki" ? "loki" : "portainer";
   const monitorId = `${type}-${serviceId}`;
-  const normalized = normalizeProbeResult(monitorId, result, checkedAt, measuredLatency);
+  const normalized = normalizeProbeResult(monitorId, result, checkedAt, measuredLatency, null, acknowledgements);
   const sourceChecks = Array.isArray(result?.checks) ? result.checks.slice(0, MAX_CHECKS_PER_SERVICE) : [];
   const sourceLabels = new Map();
   for (const source of sourceChecks) {
@@ -1163,6 +1208,7 @@ export class OperationsMonitor {
   #probeInfrastructureService;
   #hasInfrastructureServiceMonitoring;
   #incidentEngine;
+  #acknowledgements;
   #observeIncident;
   #retireIncident;
   #clock;
@@ -1217,6 +1263,10 @@ export class OperationsMonitor {
     this.#probeInfrastructureService = hasInfrastructureServiceProbe ? options.probeInfrastructureService : async () => null;
     this.#hasInfrastructureServiceMonitoring = hasInfrastructureServiceLoader;
     this.#incidentEngine = options.incidentEngine || new BasicIncidentAdapter();
+    this.#acknowledgements = options.acknowledgements
+      && typeof options.acknowledgements.has === "function"
+      ? options.acknowledgements
+      : null;
     this.#observeIncident = incidentObserver(this.#incidentEngine);
     this.#retireIncident = incidentRetirer(this.#incidentEngine);
     this.#clock = typeof options.now === "function" ? options.now : Date.now;
@@ -1275,6 +1325,16 @@ export class OperationsMonitor {
     const requested = this.refresh();
     requested.catch(() => {});
     return requested;
+  }
+
+  /**
+   * Returns a snapshot produced entirely after the caller's change (such as an
+   * acknowledgement). A cycle already in flight started before the change, so
+   * it is allowed to finish and a fresh, cache-bypassing cycle follows.
+   */
+  async refreshAfterChange() {
+    if (this.#inFlight) await this.#inFlight.catch(() => {});
+    return this.refresh();
   }
 
   getSnapshot() {
@@ -1374,7 +1434,8 @@ export class OperationsMonitor {
             result,
             iso(completedAt),
             latency(completedAt - startedAt),
-            source.targetRevision
+            source.targetRevision,
+            this.#acknowledgements
           );
         } catch (error) {
           const completedAt = nowMs(this.#clock);
@@ -1522,7 +1583,8 @@ export class OperationsMonitor {
               source,
               probed,
               iso(completedAt),
-              latency(completedAt - startedAt)
+              latency(completedAt - startedAt),
+              this.#acknowledgements
             );
           } catch (error) {
             if (["TARGET_CHANGED", "INFRASTRUCTURE_TARGET_NOT_FOUND"].includes(error?.code)) {
@@ -1547,7 +1609,8 @@ export class OperationsMonitor {
               source,
               failed,
               iso(completedAt),
-              latency(completedAt - startedAt)
+              latency(completedAt - startedAt),
+              this.#acknowledgements
             );
           }
           this.#infrastructureCache.set(id, { targetRevision: source.targetRevision, result });
@@ -1675,7 +1738,8 @@ export class OperationsMonitor {
               source,
               probed,
               iso(completedAt),
-              latency(completedAt - startedAt)
+              latency(completedAt - startedAt),
+              this.#acknowledgements
             );
           } catch (error) {
             if (["TARGET_CHANGED", "INFRASTRUCTURE_SERVICE_NOT_FOUND"].includes(error?.code)) {
@@ -1698,7 +1762,8 @@ export class OperationsMonitor {
               source,
               failed,
               iso(completedAt),
-              latency(completedAt - startedAt)
+              latency(completedAt - startedAt),
+              this.#acknowledgements
             );
           }
           infrastructureServiceResults.push(result);
@@ -1788,8 +1853,25 @@ export class OperationsMonitor {
       events: eventsFromEngine(this.#incidentEngine),
       history: []
     };
+    this.#observeAcknowledgements([...services, ...infrastructureResults, ...infrastructureServiceResults]);
     this.#publish(snapshot);
     return this.getSnapshot();
+  }
+
+  #observeAcknowledgements(results) {
+    if (typeof this.#acknowledgements?.observe !== "function") return;
+    const seenIds = new Set();
+    for (const result of results) {
+      for (const check of result?.checks || []) {
+        for (const report of check.acknowledgedReports || []) seenIds.add(report.id);
+      }
+    }
+    try {
+      const pending = this.#acknowledgements.observe([...seenIds]);
+      if (pending && typeof pending.catch === "function") pending.catch(() => {});
+    } catch {
+      // Acknowledgement bookkeeping must never interrupt monitoring.
+    }
   }
 
   #publish(snapshot) {

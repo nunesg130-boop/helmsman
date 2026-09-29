@@ -26,6 +26,7 @@ import { createSeerrRequestMetadataEnricher } from "./seerr-request-metadata.mjs
 import { normalizeSeerrSeriesSeasons } from "./seerr-series-seasons.mjs";
 import { createOperationsMonitor } from "./monitor.mjs";
 import { createPersistentCache } from "./persistent-cache.mjs";
+import { createAcknowledgementStore } from "./acknowledgements.mjs";
 import { probeProxmox, probeProxmoxEndpoint } from "./proxmox-probes.mjs";
 import { probePortainer } from "./portainer-probes.mjs";
 import { probeService } from "./service-probes.mjs";
@@ -1475,6 +1476,14 @@ export async function createBroker(options = {}) {
     dataDir,
     guard: options.stateGuard
   });
+  let acknowledgements = options.acknowledgements || null;
+  if (!acknowledgements) {
+    try {
+      acknowledgements = await createAcknowledgementStore({ dataDir, guard: options.stateGuard });
+    } catch {
+      log("Helmsman ignored-warning storage is unavailable; every warning will count toward health.");
+    }
+  }
   let persistentCache = options.persistentCache || null;
   if (!persistentCache) {
     try {
@@ -2711,6 +2720,7 @@ export async function createBroker(options = {}) {
   controlPlane = await createControlPlane({
     stateStore: store,
     dataDir,
+    acknowledgements,
     version: VERSION,
     lookup,
     log,
@@ -3017,6 +3027,7 @@ export async function createBroker(options = {}) {
     intervalMs: options.monitorIntervalMs || 30_000,
     initialSnapshot: initialOperationsSnapshot,
     incidentEngine,
+    acknowledgements,
     loadServices: async () => controlPlane.listMonitorServices(),
     probe: async (service, context) => probeService(service.id, monitorRequest, {
       signal: context.signal,
