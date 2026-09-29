@@ -3,8 +3,14 @@ import test from "node:test";
 
 import { createHealthIncidentEngine } from "../server/health-engine.mjs";
 import { createOperationsMonitor } from "../server/monitor.mjs";
+import { reportFingerprint } from "../server/acknowledgements.mjs";
 
 const TARGET_ID = "12345678-1234-4234-8234-123456789abc";
+const nodesReportId = reportFingerprint(`proxmox-${TARGET_ID}`, "nodes", {
+  severity: "notice",
+  source: "Cluster",
+  message: "Both nodes are online."
+});
 const TARGET_REVISION = "87654321-4321-4321-8321-cba987654321";
 const START = Date.parse("2026-09-13T12:00:00.000Z");
 
@@ -90,7 +96,7 @@ test("publishes Proxmox targets in a separate bounded infrastructure snapshot", 
       latencyMs: 0,
       checkedAt: "2026-09-13T12:00:00.000Z",
       metrics: { nodeOnline: 2, nodeOffline: 0, nodeTotal: 2 },
-      reports: [{ severity: "notice", source: "Cluster", message: "Both nodes are online." }],
+      reports: [{ severity: "notice", source: "Cluster", message: "Both nodes are online.", id: nodesReportId }],
       label: "Node availability"
     }],
     metrics: { nodeOnline: 2, nodeOffline: 0, nodeTotal: 2 },
@@ -112,7 +118,8 @@ test("publishes Proxmox targets in a separate bounded infrastructure snapshot", 
       capability: "nodes",
       severity: "notice",
       source: "Cluster",
-      message: "Both nodes are online."
+      message: "Both nodes are online.",
+      id: nodesReportId
     }]
   });
   const serialized = JSON.stringify(snapshot.infrastructure);

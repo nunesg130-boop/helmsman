@@ -17,6 +17,7 @@ import {
   SessionAuthStore
 } from "./session-auth.mjs";
 import { tokenMatches } from "./state.mjs";
+import { isReportId } from "./acknowledgements.mjs";
 
 const MAX_JSON_BODY_BYTES = 64 * 1024;
 const SAFE_SECRET = /^[^\u0000-\u001f\u007f-\u009f]{1,4096}$/u;
@@ -1133,6 +1134,12 @@ export async function createControlPlane(options) {
   const fetchSeerrSeriesSeasons = typeof options.fetchSeerrSeriesSeasons === "function"
     ? options.fetchSeerrSeriesSeasons
     : null;
+  const acknowledgementStore = options.acknowledgements
+    && typeof options.acknowledgements.list === "function"
+    && typeof options.acknowledgements.add === "function"
+    && typeof options.acknowledgements.remove === "function"
+      ? options.acknowledgements
+      : null;
   const credentialStore = options.credentialStore || new CredentialStore(dataDir, {
     instanceId: stateStore.snapshot().instanceId,
     keyFilePath: options.keyFilePath,
@@ -4720,19 +4727,100 @@ export async function createControlPlane(options) {
     sendJson(response, 200, result);
   }
 
+  function operationsResponse(snapshot) {
+    return {
+      ...publicOperationsSnapshot(snapshot),
+      acknowledgements: acknowledgementStore ? acknowledgementStore.list() : []
+    };
+  }
+
   async function operations(request, response, action) {
     await authenticate(request, request.method !== "GET");
     if (!monitor) fail(503, "MONITOR_STARTING", "The operations monitor is still starting.");
     if (request.method === "GET" && action === "snapshot") {
-      sendJson(response, 200, publicOperationsSnapshot(monitor.getSnapshot()));
+      sendJson(response, 200, operationsResponse(monitor.getSnapshot()));
       return;
     }
     if (request.method === "POST" && action === "refresh") {
       const snapshot = await monitor.refresh();
-      sendJson(response, 200, publicOperationsSnapshot(snapshot));
+      sendJson(response, 200, operationsResponse(snapshot));
       return;
     }
     fail(405, "METHOD_NOT_ALLOWED", "That method is not allowed.");
+  }
+
+  // Locates a report in the current monitor snapshot. Only reports the
+  // monitor is actually producing can be acknowledged, and the stored text is
+  // taken from the server's own snapshot rather than from the request.
+  function findCurrentReport(snapshot, reportId) {
+    const groups = [
+      ...(Array.isArray(snapshot?.services) ? snapshot.services : []).map((service) => ({
+        monitor: service?.id,
+        label: service?.label,
+        checks: service?.checks
+      })),
+      ...(Array.isArray(snapshot?.infrastructure?.environments) ? snapshot.infrastructure.environments : [])
+        .map((target) => ({ monitor: `proxmox-${target?.id}`, label: target?.displayName, checks: target?.capabilities })),
+      ...(Array.isArray(snapshot?.infrastructure?.services) ? snapshot.infrastructure.services : [])
+        .map((service) => ({ monitor: `${service?.type}-${service?.id}`, label: service?.displayName, checks: service?.capabilities }))
+    ];
+    for (const group of groups) {
+      for (const check of Array.isArray(group.checks) ? group.checks : []) {
+        for (const report of [...(check?.reports || []), ...(check?.acknowledgedReports || [])]) {
+          if (report?.id !== reportId) continue;
+          return {
+            id: reportId,
+            monitor: group.monitor,
+            capability: check.id,
+            severity: report.severity,
+            source: report.source,
+            message: report.message,
+            ...(typeof group.label === "string" && group.label ? { label: group.label.slice(0, 80) } : {})
+          };
+        }
+      }
+    }
+    return null;
+  }
+
+  async function acknowledgementsApi(request, response, reportId) {
+    if (reportId === null && request.method === "GET") {
+      await authenticate(request, false);
+      sendJson(response, 200, { acknowledgements: acknowledgementStore ? acknowledgementStore.list() : [] });
+      return;
+    }
+    const adding = reportId === null && request.method === "POST";
+    const removing = reportId !== null && request.method === "DELETE";
+    if (!adding && !removing) fail(405, "METHOD_NOT_ALLOWED", "That method is not allowed.");
+    await authenticate(request, true);
+    if (!acknowledgementStore) {
+      fail(503, "ACKNOWLEDGEMENTS_UNAVAILABLE", "Ignoring warnings is temporarily unavailable.");
+    }
+    if (!monitor) fail(503, "MONITOR_STARTING", "The operations monitor is still starting.");
+    if (adding) {
+      const body = await readBoundedJson(request);
+      requireExactKeys(body, ["reportId"]);
+      if (!isReportId(body.reportId)) fail(400, "INVALID_REPORT", "Choose a current warning to ignore.");
+      const report = findCurrentReport(currentOperationsSnapshot(), body.reportId);
+      if (!report) {
+        fail(409, "REPORT_NOT_CURRENT", "That warning is no longer being reported. Refresh and try again.");
+      }
+      try {
+        await acknowledgementStore.add(report);
+      } catch (error) {
+        if (error?.code === "ACKNOWLEDGEMENT_LIMIT") fail(409, "ACKNOWLEDGEMENT_LIMIT", error.message);
+        fail(400, "INVALID_REPORT", "That warning cannot be ignored.");
+      }
+    } else {
+      if (!isReportId(reportId)) fail(404, "NOT_FOUND", "Not found.");
+      if (!await acknowledgementStore.remove(reportId)) {
+        fail(404, "ACKNOWLEDGEMENT_NOT_FOUND", "That warning is not currently ignored.");
+      }
+    }
+    const snapshot = typeof monitor.refreshAfterChange === "function"
+      ? await monitor.refreshAfterChange()
+      : await monitor.refresh();
+    sendJson(response, 200, operationsResponse(snapshot));
   }
 
   async function mediaSeriesSeasons(request, response, tmdbIdValue, url) {
@@ -4955,6 +5043,12 @@ export async function createControlPlane(options) {
       }
       if (url.pathname === "/api/v2/services" || serviceMatch) {
         await services(request, response, serviceMatch?.[1] || null);
+        return true;
+      }
+      const acknowledgementMatch = url.pathname.match(/^\/api\/v2\/acknowledgements\/([a-f0-9]{32})$/u);
+      if (url.pathname === "/api/v2/acknowledgements" || acknowledgementMatch) {
+        if (url.search) fail(404, "NOT_FOUND", "Not found.");
+        await acknowledgementsApi(request, response, acknowledgementMatch?.[1] || null);
         return true;
       }
       const operationMatch = url.pathname.match(/^\/api\/v2\/operations\/(snapshot|refresh)$/u);

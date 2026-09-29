@@ -589,7 +589,8 @@ test("current check reports are bounded, defensively sanitized, and never retain
   let snapshot = await monitor.refresh();
   const retained = snapshot.services[0].checks[0].reports;
   assert.equal(retained.length, 12);
-  assert.deepEqual(Object.keys(retained[0]).sort(), ["message", "severity", "source"]);
+  assert.deepEqual(Object.keys(retained[0]).sort(), ["id", "message", "severity", "source"]);
+  assert.match(retained[0].id, /^[a-f0-9]{32}$/u, "each report carries an opaque acknowledgement id");
   assert.equal(retained[0].severity, "notice");
   assert.equal(retained[0].source.includes("<"), false);
   assert.equal(retained[0].source.includes(">"), false);

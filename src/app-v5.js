@@ -9,6 +9,7 @@ import {
   renderInfrastructureOverview,
   renderOperationsOverview,
   renderOperationsReports,
+  renderReportIgnoreButton,
   serviceIconMarkup,
   workloadIconMarkup
 } from "./ui/operations-views.js";
@@ -2058,6 +2059,106 @@ function renderSystemHealthGauge(score, overall, healthy, total) {
   </div>`;
 }
 
+const REPORT_ID_PATTERN = /^[a-f0-9]{32}$/u;
+
+// Every warning or error the monitor is currently reporting, across media
+// services, Proxmox environments, and Portainer/Loki connections.
+function currentWarningReports() {
+  const snapshot = snapshotForUi();
+  const groups = [
+    ...(Array.isArray(snapshot.services) ? snapshot.services : []).map((service) => ({
+      name: service?.label || service?.id,
+      checks: service?.checks
+    })),
+    ...(Array.isArray(snapshot.infrastructure?.environments) ? snapshot.infrastructure.environments : [])
+      .map((target) => ({ name: target?.displayName, checks: target?.capabilities })),
+    ...(Array.isArray(snapshot.infrastructure?.services) ? snapshot.infrastructure.services : [])
+      .map((service) => ({ name: service?.displayName, checks: service?.capabilities }))
+  ];
+  const seen = new Set();
+  const warnings = [];
+  for (const group of groups) {
+    const name = safeSessionText(group.name, "Service", 80);
+    for (const check of Array.isArray(group.checks) ? group.checks : []) {
+      for (const report of normalizeOperationsReports(check?.reports, `${name} health`)) {
+        if (report.severity === "notice" || !report.id || seen.has(report.id)) continue;
+        seen.add(report.id);
+        warnings.push({ ...report, name });
+      }
+    }
+  }
+  return warnings.slice(0, 24);
+}
+
+function acknowledgedWarnings() {
+  const entries = Array.isArray(snapshotForUi().acknowledgements) ? snapshotForUi().acknowledgements : [];
+  return entries.flatMap((entry) => {
+    const id = typeof entry?.id === "string" && REPORT_ID_PATTERN.test(entry.id) ? entry.id : null;
+    const message = safeSessionText(entry?.message, "", 600);
+    if (!id || !message) return [];
+    const acknowledgedAt = Date.parse(entry.acknowledgedAt);
+    return [{
+      id,
+      message,
+      name: safeSessionText(entry.label, "", 80) || safeSessionText(entry.monitor, "Service", 80),
+      source: safeSessionText(entry.source, "", 96),
+      acknowledgedAt: Number.isFinite(acknowledgedAt) ? new Date(acknowledgedAt) : null
+    }];
+  }).slice(0, 200);
+}
+
+function renderSystemWarningsCard() {
+  const warnings = currentWarningReports();
+  const ignored = acknowledgedWarnings();
+  if (!warnings.length && !ignored.length) return "";
+  return `<section class="system-overview-card system-overview-card--warnings" aria-labelledby="system-warnings-title">
+    <header><div><span class="section-kicker">Needs attention</span><h3 id="system-warnings-title">Warnings</h3></div></header>
+    ${warnings.length
+      ? `<ul class="system-warning-list">${warnings.map((warning) => `<li class="system-warning is-${escapeHtml(warning.severity)}">
+          <i class="health-dot is-${warning.severity === "error" ? "degraded" : "limited"}" aria-hidden="true"></i>
+          <div><strong>${escapeHtml(warning.name)}</strong><p>${escapeHtml(warning.message)}</p><small>${escapeHtml(warning.source)}</small></div>
+          ${renderReportIgnoreButton(warning)}
+        </li>`).join("")}</ul>`
+      : `<p class="system-warnings-empty">No active warnings. Ignored warnings stay listed below until they clear.</p>`}
+    ${ignored.length
+      ? `<details class="system-ignored-warnings">
+          <summary>Ignored warnings <span>${ignored.length}</span></summary>
+          <p>These no longer affect system health. Each is restored automatically once it has been gone for 24 hours.</p>
+          <ul>${ignored.map((entry) => `<li>
+            <div><strong>${escapeHtml(entry.name)}</strong><p>${escapeHtml(entry.message)}</p><small>${escapeHtml(entry.source)}${entry.acknowledgedAt ? ` · ignored ${escapeHtml(entry.acknowledgedAt.toLocaleString([], { dateStyle: "medium", timeStyle: "short" }))}` : ""}</small></div>
+            <button class="operations-report__ignore is-restore" type="button" data-action="restore-acknowledgement" data-report-id="${escapeHtml(entry.id)}">Restore</button>
+          </li>`).join("")}</ul>
+        </details>`
+      : ""}
+  </section>`;
+}
+
+async function setReportAcknowledged(target, acknowledge) {
+  const reportId = String(target?.dataset?.reportId || "");
+  if (!REPORT_ID_PATTERN.test(reportId) || target.disabled) return;
+  target.disabled = true;
+  target.setAttribute("aria-busy", "true");
+  try {
+    const snapshot = acknowledge
+      ? await api("/api/v2/acknowledgements", { method: "POST", body: { reportId } })
+      : await api(`/api/v2/acknowledgements/${reportId}`, { method: "DELETE" });
+    // Supersede any snapshot request that started before this change.
+    state.operationsRequestGeneration += 1;
+    state.snapshot = snapshot;
+    state.lastMarkup = "";
+    renderPage({ force: true, preserveFocus: true });
+    updateVolatileOperationsUi();
+    showToast(acknowledge
+      ? "Warning ignored. It no longer affects system health."
+      : "Warning restored. It counts toward system health again.", "success");
+  } catch (error) {
+    if (error?.status === 401) await initialize();
+    else showToast(error?.message || "That change could not be saved.", "danger");
+    target.disabled = false;
+    target.removeAttribute("aria-busy");
+  }
+}
+
 function renderSystemOverview() {
   const media = mediaSnapshotForUi();
   const operations = normalizeOperationsSnapshot(mediaOnlyOperationsSnapshot(), []);
@@ -2133,6 +2234,7 @@ function renderSystemOverview() {
         <ol class="system-pipeline-list">${pipeline.map((stage) => `<li><span class="system-pipeline-marker">${icon(stage.icon)}</span><span><strong>${escapeHtml(stage.label)}</strong><small>${escapeHtml(stage.detail)}</small></span><em>${stage.count.toLocaleString()}</em></li>`).join("")}</ol>
       </section>
     </div>
+    ${renderSystemWarningsCard()}
   </div>`;
 }
 
@@ -7958,6 +8060,14 @@ document.addEventListener("click", async (event) => {
   }
   if (action === "cancel-control-confirm") {
     closeControlConfirmation(false);
+    return;
+  }
+  if (action === "acknowledge-report") {
+    await setReportAcknowledged(target, true);
+    return;
+  }
+  if (action === "restore-acknowledgement") {
+    await setReportAcknowledged(target, false);
     return;
   }
   if (action === "toggle-sidebar") toggleSidebar();
