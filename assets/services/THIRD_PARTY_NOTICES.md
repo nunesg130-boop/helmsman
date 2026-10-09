@@ -21,7 +21,7 @@ described separately and is not represented as an upstream-original file.
 | --- | --- | --- | --- |
 | Bazarr | `assets/services/bazarr.png` | 200 x 200 px | `aefd3aac28d67fd4d48b24dd2ae33b3b0a9f26e7950c2e1d34bef98cecf18876` |
 | Jellyfin | `assets/services/jellyfin.svg` | SVG viewBox `0 0 512 512` | `7f53cf083dbb3119ec8c5acbd8049c5033227617e461540f70591ac109124306` |
-| Portainer | `assets/services/portainer.svg` | SVG viewBox `0.72 0 168.18 218.62` | `5d1e07021683d15ea67225c60975729f4ee0ed380f3a0fb21ffb2ad00eb6e85b` |
+| Portainer | `assets/services/portainer.svg` | SVG viewBox `0.72 0 168.18 218.62` | `f59db5e3f454a80e316f63781f199c6990721645b837d81218d4c7b9fc8dcfd8` |
 | Prowlarr | `assets/services/prowlarr.png` | 460 x 460 px | `fe75eafc608e288c9736b740afe1c30c715eaf56dc284fec1926491d245fea52` |
 | Proxmox | `assets/services/proxmox.png` | 536 x 465 px | `aabecd536afb7f96b2916b88bd9b9cad8a0feb22a8ddf48f6504ba4b84b9d649` |
 | qBittorrent | `assets/services/qbittorrent.svg` | 1024 x 1024; SVG viewBox `0 0 1024 1024` | `f96f40f70830e245cc184291d1173aa705b68b0865970b44aa1ee63350bcb9c2` |
@@ -160,9 +160,11 @@ service. It is never used as Helmsman's application, company, or product mark.
 - Portainer repository license: <https://github.com/portainer/portainer/blob/develop/LICENSE>
 - Bundled repository license notice: [`licenses/Zlib-Portainer.txt`](licenses/Zlib-Portainer.txt)
 
-The black-and-pink `P.` mark corresponds to the identity documented by
-Portainer's March 5, 2026 rebrand announcement. Helmsman preserves the supplied
-SVG byte-for-byte and uses it only to identify a Portainer connector. The
+The `P.` mark corresponds to the identity documented by Portainer's
+March 5, 2026 rebrand announcement. Helmsman bundles the dark-background variant, a
+light `#F7F6F3` letterform with the pink `#FF80F2` square, so the mark reads on
+Helmsman's near-black surfaces without a light plate. Helmsman preserves the
+supplied SVG byte-for-byte and uses it only to identify a Portainer connector. The
 Portainer repository includes artwork under its zlib license, whose full notice
 is bundled for reference. The supplied file has not been established as
 byte-for-byte identical to the repository's `logo_alt.svg`, so Helmsman does

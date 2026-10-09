@@ -24,7 +24,7 @@ const serviceIconAssets = Object.freeze({
   qbittorrent: Object.freeze({ file: "qbittorrent.svg", width: 1024, height: 1024, hash: "f96f40f70830e245cc184291d1173aa705b68b0865970b44aa1ee63350bcb9c2", format: "svg", viewBox: "0 0 1024 1024" }),
   bazarr: Object.freeze({ file: "bazarr.png", width: 200, height: 200, hash: "aefd3aac28d67fd4d48b24dd2ae33b3b0a9f26e7950c2e1d34bef98cecf18876", format: "png", lightPlate: true }),
   proxmox: Object.freeze({ file: "proxmox.png", width: 536, height: 465, hash: "aabecd536afb7f96b2916b88bd9b9cad8a0feb22a8ddf48f6504ba4b84b9d649", format: "png" }),
-  portainer: Object.freeze({ file: "portainer.svg", width: 168, height: 219, hash: "5d1e07021683d15ea67225c60975729f4ee0ed380f3a0fb21ffb2ad00eb6e85b", format: "svg", viewBox: "0.72 0 168.18 218.62", lightPlate: true })
+  portainer: Object.freeze({ file: "portainer.svg", width: 168, height: 219, hash: "f59db5e3f454a80e316f63781f199c6990721645b837d81218d4c7b9fc8dcfd8", format: "svg", viewBox: "0.72 0 168.18 218.62" })
 });
 
 const pngSignature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);

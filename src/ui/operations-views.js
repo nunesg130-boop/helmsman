@@ -107,8 +107,7 @@ const SERVICE_ICON_ASSETS = Object.freeze({
   portainer: Object.freeze({
     path: "./assets/services/portainer.svg",
     width: 168,
-    height: 219,
-    lightPlate: true
+    height: 219
   })
 });
 
