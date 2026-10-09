@@ -27,6 +27,7 @@ import { normalizeSeerrSeriesSeasons } from "./seerr-series-seasons.mjs";
 import { createOperationsMonitor } from "./monitor.mjs";
 import { createPersistentCache } from "./persistent-cache.mjs";
 import { createAcknowledgementStore } from "./acknowledgements.mjs";
+import { createLaunchpadStore } from "./launchpad.mjs";
 import { probeProxmox, probeProxmoxEndpoint } from "./proxmox-probes.mjs";
 import { probePortainer } from "./portainer-probes.mjs";
 import { probeService } from "./service-probes.mjs";
@@ -41,7 +42,7 @@ import {
 } from "./network.mjs";
 import { generateSecretToken, hashToken, StateStore, tokenMatches } from "./state.mjs";
 
-const DEFAULT_VERSION = "1.3.4";
+const DEFAULT_VERSION = "1.4.0";
 const requestedVersion = String(process.env.HELMSMAN_VERSION || DEFAULT_VERSION);
 const VERSION = /^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/u.test(requestedVersion)
   ? requestedVersion
@@ -1484,6 +1485,14 @@ export async function createBroker(options = {}) {
       log("Helmsman ignored-warning storage is unavailable; every warning will count toward health.");
     }
   }
+  let launchpad = options.launchpad || null;
+  if (!launchpad) {
+    try {
+      launchpad = await createLaunchpadStore({ dataDir, guard: options.stateGuard });
+    } catch {
+      log("Helmsman Launchpad address storage is unavailable; the Launchpad will use connection addresses.");
+    }
+  }
   let persistentCache = options.persistentCache || null;
   if (!persistentCache) {
     try {
@@ -2721,6 +2730,7 @@ export async function createBroker(options = {}) {
     stateStore: store,
     dataDir,
     acknowledgements,
+    launchpad,
     version: VERSION,
     lookup,
     log,

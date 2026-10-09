@@ -4206,7 +4206,7 @@ async function portainerInfrastructureContract() {
     "Open infrastructure incidents. Connection health: Connected. Service health: Degraded."
   );
   assert.equal(environment.elements.get("#page-title").textContent, "Portainer");
-  assert.match(markup, /<img class="service-brand-icon service-brand-icon--portainer service-brand-icon--light-plate" src="\.\/assets\/services\/portainer\.svg"/u, "Portainer views must use the bundled Portainer mark");
+  assert.match(markup, /<img class="service-brand-icon service-brand-icon--portainer" src="\.\/assets\/services\/portainer\.svg"/u, "Portainer views must use the bundled Portainer mark");
   assert.match(markup, /Container Control/u);
   assert.match(markup, /Portainer 2\.45\.0/u);
   assert.match(markup, /Connected · Degraded/u, "a container-environment 403 must not erase verified Portainer identity");

@@ -119,7 +119,7 @@ const MEDIA_CONNECTION_CATEGORIES = Object.freeze([
   Object.freeze({ id: "subtitles", kicker: "Accessibility", title: "Subtitles", description: "Subtitle health and wanted-item backlog.", services: Object.freeze(["bazarr"]) })
 ]);
 const SHARED_ROUTES = new Set(["logs", "settings"]);
-const SYSTEM_ROUTES = new Set(["system", ...SHARED_ROUTES]);
+const SYSTEM_ROUTES = new Set(["system", "launchpad", ...SHARED_ROUTES]);
 const MEDIA_ROUTES = new Set(["overview", "discover", "library", "requests", "activity", "calendar", "health", "connections", ...SHARED_ROUTES]);
 const INFRASTRUCTURE_ROUTES = new Set(["overview", "connectors", "proxmox", "workloads", "portainer", "incidents", ...SHARED_ROUTES]);
 const ROUTES = new Set([...SYSTEM_ROUTES, ...MEDIA_ROUTES, ...INFRASTRUCTURE_ROUTES, "home", "pipeline", "services", "environments", "nodes"]);
@@ -254,6 +254,7 @@ const ROUTE_TITLES = Object.freeze({
   proxmox: "Proxmox",
   workloads: "Workloads",
   portainer: "Portainer",
+  launchpad: "Launchpad",
   logs: "Logs",
   settings: "Settings"
 });
@@ -302,6 +303,7 @@ const state = {
   sessionMutation: "",
   infrastructure: emptyInfrastructureState(),
   logging: emptyLoggingState(),
+  launchpad: { loaded: false, loading: false, links: [], filter: "", error: "" },
   media: {
     filters: {
       homeSearch: "",
@@ -4692,9 +4694,223 @@ function announcePortainerFilterResults() {
   });
 }
 
+const LAUNCHPAD_KINDS = new Set(["media", "environment", "service"]);
+
+function safeLaunchHref(value) {
+  if (typeof value !== "string" || !value || value.length > 2048) return "";
+  try {
+    const parsed = new URL(value);
+    if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password) return "";
+    return parsed.href;
+  } catch {
+    return "";
+  }
+}
+
+function launchHostLabel(href) {
+  try {
+    const parsed = new URL(href);
+    return `${parsed.host}${parsed.pathname !== "/" ? parsed.pathname.replace(/\/$/u, "") : ""}`;
+  } catch {
+    return href;
+  }
+}
+
+function savedLaunchAddress(kind, id) {
+  const link = state.launchpad.links.find((entry) => entry.kind === kind && entry.id === id);
+  return safeLaunchHref(link?.url || "");
+}
+
+function launchpadEntries() {
+  const operations = normalizeOperationsSnapshot(mediaOnlyOperationsSnapshot(), []);
+  const media = (state.config?.services || [])
+    .filter((service) => service.configured && SERVICE_ORDER.includes(service.id))
+    .sort((left, right) => SERVICE_ORDER.indexOf(left.id) - SERVICE_ORDER.indexOf(right.id))
+    .map((service) => {
+      const health = operations.services.find(({ id }) => id === service.id);
+      return {
+        kind: "media",
+        id: service.id,
+        provider: service.id,
+        name: service.name || service.id,
+        role: service.role || "Media service",
+        connectionUrl: safeLaunchHref(service.url),
+        state: statusClass(health?.state || "stale")
+      };
+    });
+  const infrastructure = configuredInfrastructureSnapshotForUi();
+  const environments = infrastructure.targets
+    .filter((target) => target.enabled !== false)
+    .map((target) => ({
+      kind: "environment",
+      id: target.id,
+      provider: "proxmox",
+      name: target.displayName || "Proxmox VE",
+      role: `Proxmox VE · ${target.environmentKind === "cluster" ? "Cluster" : "Virtualization"}`,
+      connectionUrl: safeLaunchHref(target.url),
+      state: statusClass(target.state)
+    }));
+  const portainers = configuredPortainerServicesForUi()
+    .filter((service) => service.enabled !== false)
+    .map((service) => ({
+      kind: "service",
+      id: service.id,
+      provider: "portainer",
+      name: service.displayName || "Portainer",
+      role: "Portainer · Containers",
+      connectionUrl: safeLaunchHref(service.url),
+      state: statusClass(service.state)
+    }));
+  return [...media, ...environments, ...portainers].map((entry) => {
+    const externalUrl = savedLaunchAddress(entry.kind, entry.id);
+    return { ...entry, externalUrl, href: externalUrl || entry.connectionUrl };
+  });
+}
+
+function renderLaunchpadTile(entry) {
+  const stateName = entry.state === "disabled" ? "disabled" : entry.state;
+  const host = entry.href ? launchHostLabel(entry.href) : "No address available";
+  const addressKind = entry.externalUrl ? "External" : "Local";
+  const mark = entry.provider === "proxmox"
+    ? `<span class="launchpad-tile__icon">${proxmoxBrandLinkMarkup()}</span>`
+    : `<span class="launchpad-tile__icon" aria-hidden="true">${serviceIconMarkup(entry.provider, entry.name.slice(0, 1))}</span>`;
+  const body = `<span class="launchpad-tile__copy"><strong>${escapeHtml(entry.name)}${entry.href ? icon("external") : ""}</strong><small>${escapeHtml(entry.role)}</small></span>
+      <span class="launchpad-tile__meta"><span class="launchpad-tile__state is-${escapeHtml(stateName)}"><i class="health-dot is-${escapeHtml(stateName)}" aria-hidden="true"></i>${escapeHtml(statusLabel(stateName))}</span><span class="launchpad-tile__host" title="${escapeHtml(entry.href || "")}"><em>${addressKind}</em>${escapeHtml(host)}</span></span>`;
+  const link = entry.href
+    ? `<a class="launchpad-tile__link" href="${escapeHtml(entry.href)}" target="_blank" rel="noopener noreferrer" aria-label="Open ${escapeHtml(entry.name)} (opens in a new tab)">${body}</a>`
+    : `<div class="launchpad-tile__link is-unavailable">${body}</div>`;
+  const searchText = `${entry.name} ${entry.role}`.toLowerCase();
+  const filter = state.launchpad.filter.trim().toLowerCase();
+  return `<li class="launchpad-tile" data-launchpad-search="${escapeHtml(searchText)}"${filter && !searchText.includes(filter) ? " hidden" : ""}>${link}${mark}<button class="icon-button launchpad-tile__edit" type="button" data-action="edit-launch-address" data-launch-kind="${escapeHtml(entry.kind)}" data-launch-id="${escapeHtml(entry.id)}" aria-label="Set the external address for ${escapeHtml(entry.name)}" title="External address">${icon("edit")}</button></li>`;
+}
+
+function renderLaunchpadGroup(title, entries, id) {
+  if (!entries.length) return "";
+  const filter = state.launchpad.filter.trim().toLowerCase();
+  const anyVisible = !filter || entries.some((entry) => `${entry.name} ${entry.role}`.toLowerCase().includes(filter));
+  return `<section class="launchpad-group" aria-labelledby="${id}"${anyVisible ? "" : " hidden"}>
+      <header><h3 id="${id}">${escapeHtml(title)}</h3><span class="launchpad-count">${entries.length}</span></header>
+      <ul class="launchpad-grid">${entries.map(renderLaunchpadTile).join("")}</ul>
+    </section>`;
+}
+
+function renderLaunchpadPage() {
+  const all = launchpadEntries();
+  const filter = state.launchpad.filter.trim().toLowerCase();
+  const anyVisible = !filter || all.some((entry) => `${entry.name} ${entry.role}`.toLowerCase().includes(filter));
+  const media = all.filter(({ kind }) => kind === "media");
+  const infrastructure = all.filter(({ kind }) => kind !== "media");
+  const count = all.length;
+  const content = !count
+    ? `<section class="launchpad-empty">${icon("launchpad")}<h3>No connected services yet</h3><p>Services appear here as soon as you connect them. Add media services under Media Connections, or Proxmox and Portainer under Infrastructure Connectors.</p><div class="button-row"><button class="button button--primary" type="button" data-action="switch-workspace" data-workspace="media" data-workspace-route="connections">Media connections</button><button class="button" type="button" data-action="switch-workspace" data-workspace="infrastructure" data-workspace-route="connectors">Infrastructure connectors</button></div></section>`
+    : `<section class="launchpad-empty launchpad-empty--filter" data-launchpad-no-match${anyVisible ? " hidden" : ""}>${icon("search")}<h3>No matching services</h3><p>No connected service matches that search.</p></section>${renderLaunchpadGroup("Media", media, "launchpad-media-title")}${renderLaunchpadGroup("Infrastructure", infrastructure, "launchpad-infrastructure-title")}`;
+  return `<div class="page launchpad-page">
+    <section class="page-intro launchpad-intro">
+      <div><span class="section-kicker">${count} connected service${count === 1 ? "" : "s"}</span><h2>Launchpad</h2><p>Open any connected service in a new tab. External addresses are used first, then the local connection address.</p></div>
+      ${count ? `<label class="launchpad-search">${icon("search")}<span class="sr-only">Find a service</span><input id="launchpad-search" type="search" data-launchpad-filter autocomplete="off" spellcheck="false" maxlength="80" placeholder="Find a service" value="${escapeHtml(state.launchpad.filter)}" /></label>` : ""}
+    </section>
+    ${state.launchpad.error ? `<p class="launchpad-notice" role="status">${escapeHtml(state.launchpad.error)}</p>` : ""}
+    ${content}
+  </div>`;
+}
+
+function applyLaunchpadFilter() {
+  const filter = state.launchpad.filter.trim().toLowerCase();
+  const page = main.querySelector(".launchpad-page");
+  if (!page) return;
+  let visibleCount = 0;
+  page.querySelectorAll(".launchpad-group").forEach((group) => {
+    let groupVisible = 0;
+    group.querySelectorAll(".launchpad-tile").forEach((tile) => {
+      const matches = !filter || String(tile.dataset.launchpadSearch || "").includes(filter);
+      tile.hidden = !matches;
+      if (matches) groupVisible += 1;
+    });
+    group.hidden = groupVisible === 0;
+    visibleCount += groupVisible;
+  });
+  const noMatch = page.querySelector("[data-launchpad-no-match]");
+  if (noMatch) noMatch.hidden = visibleCount > 0;
+}
+
+async function loadLaunchpadLinks({ render = true } = {}) {
+  if (!state.status?.authenticated || state.launchpad.loading) return;
+  state.launchpad.loading = true;
+  try {
+    const payload = await api("/api/v2/launchpad");
+    state.launchpad.links = Array.isArray(payload?.links)
+      ? payload.links.filter((link) => LAUNCHPAD_KINDS.has(link?.kind) && typeof link?.id === "string" && safeLaunchHref(link?.url))
+      : [];
+    state.launchpad.error = "";
+  } catch {
+    state.launchpad.error = "Saved external addresses could not be loaded, so local connection addresses are shown.";
+  } finally {
+    state.launchpad.loaded = true;
+    state.launchpad.loading = false;
+  }
+  if (render && currentRoute() === "launchpad") {
+    state.lastMarkup = "";
+    renderPage({ force: true, preserveFocus: true });
+  }
+}
+
+function openLaunchAddress(kind, id) {
+  const entry = launchpadEntries().find((candidate) => candidate.kind === kind && candidate.id === id);
+  if (!entry) return showToast("That connection is no longer available.", "danger");
+  openModal(`<section class="modal-card modal-card--launchpad" role="dialog" aria-modal="true" aria-labelledby="launch-address-title">
+    <header class="modal-card__header"><span class="launchpad-modal__icon">${entry.provider === "proxmox" ? proxmoxBrandLinkMarkup() : serviceIconMarkup(entry.provider, entry.name.slice(0, 1))}</span><div><span class="section-kicker">Launchpad</span><h2 id="launch-address-title" tabindex="-1">${escapeHtml(entry.name)}</h2><p>Set the address your browser should open.</p></div><button class="icon-button" type="button" data-action="close-modal" aria-label="Close">${icon("x")}</button></header>
+    <form id="launch-address-form" data-launch-kind="${escapeHtml(entry.kind)}" data-launch-id="${escapeHtml(entry.id)}" autocomplete="off" data-form-type="other">
+      <div class="modal-card__body">
+        <label><span>External address</span><input id="launch-address-url" name="url" type="url" inputmode="url" autocapitalize="off" spellcheck="false" maxlength="500" value="${escapeHtml(entry.externalUrl)}" placeholder="https://${escapeHtml(entry.provider)}.example.com" /><small>Used first, for example a reverse-proxy or VPN hostname. Helmsman never connects to this address; it only opens it in your browser.</small></label>
+        <div class="launchpad-fallback"><span>Local fallback</span><code>${escapeHtml(entry.connectionUrl || "No connection address")}</code></div>
+        <p class="form-error" id="launch-address-error" role="alert"></p>
+      </div>
+      <footer class="modal-card__footer">${entry.externalUrl ? `<button class="button button--danger" type="button" data-action="clear-launch-address" data-launch-kind="${escapeHtml(entry.kind)}" data-launch-id="${escapeHtml(entry.id)}">Use local address</button>` : "<span></span>"}<div class="modal-card__actions"><button class="button" type="button" data-action="close-modal">Cancel</button><button class="button button--primary" type="submit">Save address</button></div></footer>
+    </form>
+  </section>`, "#launch-address-url");
+}
+
+async function saveLaunchAddress(kind, id, url, form = null) {
+  if (!LAUNCHPAD_KINDS.has(kind) || !/^[a-z0-9-]{1,64}$/u.test(id)) return;
+  const error = form?.querySelector("#launch-address-error");
+  const submit = form?.querySelector("button[type='submit']");
+  if (error) error.textContent = "";
+  if (submit) {
+    submit.disabled = true;
+    submit.setAttribute("aria-busy", "true");
+  }
+  try {
+    const payload = await api(`/api/v2/launchpad/${kind}/${encodeURIComponent(id)}`, url
+      ? { method: "PUT", body: { url } }
+      : { method: "DELETE" });
+    state.launchpad.links = Array.isArray(payload?.links) ? payload.links : [];
+    state.launchpad.loaded = true;
+    state.launchpad.error = "";
+    closeModal();
+    state.lastMarkup = "";
+    renderPage({ force: true, preserveFocus: true });
+    showToast(url ? "External address saved." : "The Launchpad will use the local address.", "success");
+  } catch (caught) {
+    if (error) error.textContent = caught.message;
+    else showToast(caught.message, "danger");
+  } finally {
+    if (submit?.isConnected) {
+      submit.disabled = false;
+      submit.removeAttribute("aria-busy");
+    }
+  }
+}
+
+function submitLaunchAddress(form) {
+  if (!form.reportValidity()) return;
+  const url = String(new FormData(form).get("url") || "").trim();
+  saveLaunchAddress(form.dataset.launchKind, form.dataset.launchId, url, form);
+}
+
 function renderAuthenticatedRoute() {
   if (state.workspace === "system") {
     if (state.route === "system") return renderSystemOverview();
+    if (state.route === "launchpad") return renderLaunchpadPage();
     if (state.route === "logs") return renderLogsPage();
     return renderSettingsPage();
   }
@@ -8025,6 +8241,7 @@ async function initialize() {
     if (state.status.authenticated) {
       await loadAuthenticatedData();
       if (currentRoute() === "logs") await loadLoggingRouteData();
+      if (currentRoute() === "launchpad") await loadLaunchpadLinks({ render: false });
     }
     else {
       state.config = null;
@@ -8060,6 +8277,14 @@ document.addEventListener("click", async (event) => {
   }
   if (action === "cancel-control-confirm") {
     closeControlConfirmation(false);
+    return;
+  }
+  if (action === "edit-launch-address") {
+    openLaunchAddress(target.dataset.launchKind, target.dataset.launchId);
+    return;
+  }
+  if (action === "clear-launch-address") {
+    await saveLaunchAddress(target.dataset.launchKind, target.dataset.launchId, "", target.closest("form"));
     return;
   }
   if (action === "acknowledge-report") {
@@ -8231,6 +8456,11 @@ document.addEventListener("input", (event) => {
     syncLokiQueryControls(lokiQueryForm);
     invalidateLokiQueryResults({ inPlace: true });
   }
+  if (event.target?.matches?.("[data-launchpad-filter]")) {
+    state.launchpad.filter = String(event.target.value || "").slice(0, 80);
+    applyLaunchpadFilter();
+    return;
+  }
   if (event.target?.dataset?.journalFilter === "search") {
     state.logging.journal.filters.search = String(event.target.value || "").slice(0, 160);
     clearTimeout(loggingFilterTimer);
@@ -8315,6 +8545,7 @@ document.addEventListener("submit", (event) => {
   if (event.target.id === "proxmox-form") submitInfrastructureTarget(event.target);
   if (event.target.id === "proxmox-endpoint-form") submitInfrastructureEndpoint(event.target);
   if (event.target.id === "network-form") submitNetwork(event.target);
+  if (event.target.id === "launch-address-form") submitLaunchAddress(event.target);
 });
 
 window.addEventListener("hashchange", async () => {
@@ -8332,6 +8563,7 @@ window.addEventListener("hashchange", async () => {
     state.lastMarkup = "";
     renderPage({ force: true });
   }
+  if (currentRoute() === "launchpad" && state.status?.authenticated) await loadLaunchpadLinks();
   resetRouteScroll();
   main.focus({ preventScroll: true });
 });

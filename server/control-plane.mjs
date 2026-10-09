@@ -18,6 +18,7 @@ import {
 } from "./session-auth.mjs";
 import { tokenMatches } from "./state.mjs";
 import { isReportId } from "./acknowledgements.mjs";
+import { canonicalLaunchUrl, launchpadKey } from "./launchpad.mjs";
 
 const MAX_JSON_BODY_BYTES = 64 * 1024;
 const SAFE_SECRET = /^[^\u0000-\u001f\u007f-\u009f]{1,4096}$/u;
@@ -1139,6 +1140,12 @@ export async function createControlPlane(options) {
     && typeof options.acknowledgements.add === "function"
     && typeof options.acknowledgements.remove === "function"
       ? options.acknowledgements
+      : null;
+  const launchpadStore = options.launchpad
+    && typeof options.launchpad.list === "function"
+    && typeof options.launchpad.set === "function"
+    && typeof options.launchpad.remove === "function"
+      ? options.launchpad
       : null;
   const credentialStore = options.credentialStore || new CredentialStore(dataDir, {
     instanceId: stateStore.snapshot().instanceId,
@@ -4823,6 +4830,61 @@ export async function createControlPlane(options) {
     sendJson(response, 200, operationsResponse(snapshot));
   }
 
+  function launchpadTargetExists(state, kind, id) {
+    if (kind === "media") return Object.hasOwn(state.connections, id);
+    if (kind === "environment") return Object.hasOwn(state.infrastructureTargets, id);
+    if (kind === "service") return Object.hasOwn(state.infrastructureServices, id);
+    return false;
+  }
+
+  function currentLaunchpadLinks() {
+    if (!launchpadStore) return [];
+    const state = stateStore.snapshot();
+    return launchpadStore.list().filter((link) => launchpadTargetExists(state, link.kind, link.id));
+  }
+
+  // Optional browser-facing addresses for the Launchpad. Helmsman never
+  // requests these addresses; they are returned only to signed-in sessions.
+  async function launchpadApi(request, response, kind, id) {
+    if (kind === null && request.method === "GET") {
+      await authenticate(request, false);
+      sendJson(response, 200, { links: currentLaunchpadLinks() });
+      return;
+    }
+    if (kind === null || !["PUT", "DELETE"].includes(request.method)) {
+      fail(405, "METHOD_NOT_ALLOWED", "That method is not allowed.");
+    }
+    const authenticated = await authenticate(request, true);
+    if (!launchpadStore) fail(503, "LAUNCHPAD_UNAVAILABLE", "Saving Launchpad addresses is temporarily unavailable.");
+    if (!launchpadKey(kind, id)) fail(404, "NOT_FOUND", "Not found.");
+    let url = null;
+    if (request.method === "PUT") {
+      const body = await readBoundedJson(request);
+      requireExactKeys(body, ["url"]);
+      url = canonicalLaunchUrl(body.url);
+      if (!url) {
+        fail(400, "INVALID_LAUNCH_URL", "Enter an http or https address without a user name or password.");
+      }
+    }
+    await serializeServiceMutation(async () => {
+      await recheckMutationSession(request, authenticated);
+      if (!launchpadTargetExists(stateStore.snapshot(), kind, id)) {
+        fail(404, "LAUNCHPAD_TARGET_NOT_FOUND", "That connection no longer exists.");
+      }
+      if (url) {
+        try {
+          await launchpadStore.set(kind, id, url);
+        } catch (error) {
+          if (error?.code === "LAUNCHPAD_LIMIT") fail(409, "LAUNCHPAD_LIMIT", error.message);
+          fail(400, "INVALID_LAUNCH_URL", "Enter an http or https address without a user name or password.");
+        }
+      } else {
+        await launchpadStore.remove(kind, id);
+      }
+    });
+    sendJson(response, 200, { links: currentLaunchpadLinks() });
+  }
+
   async function mediaSeriesSeasons(request, response, tmdbIdValue, url) {
     if (request.method !== "GET") fail(405, "METHOD_NOT_ALLOWED", "That method is not allowed.");
     await authenticate(request, false);
@@ -5049,6 +5111,14 @@ export async function createControlPlane(options) {
       if (url.pathname === "/api/v2/acknowledgements" || acknowledgementMatch) {
         if (url.search) fail(404, "NOT_FOUND", "Not found.");
         await acknowledgementsApi(request, response, acknowledgementMatch?.[1] || null);
+        return true;
+      }
+      const launchpadMatch = url.pathname.match(
+        /^\/api\/v2\/launchpad\/(media|environment|service)\/([a-z0-9-]{1,64})$/u
+      );
+      if (url.pathname === "/api/v2/launchpad" || launchpadMatch) {
+        if (url.search) fail(404, "NOT_FOUND", "Not found.");
+        await launchpadApi(request, response, launchpadMatch?.[1] ?? null, launchpadMatch?.[2] ?? null);
         return true;
       }
       const operationMatch = url.pathname.match(/^\/api\/v2\/operations\/(snapshot|refresh)$/u);
