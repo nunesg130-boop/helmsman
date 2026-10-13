@@ -11,7 +11,9 @@ import {
 
 test("manual Markdown escapes raw HTML and unsafe links", () => {
   const html = renderManualInline("<img src=x onerror=alert(1)> **bold** `<b>` [ok](https://example.net) [bad](javascript:alert(1)) [mail](mailto:a@example.net)");
-  assert.doesNotMatch(html, /<img|<b>|javascript:|mailto:/u);
+  for (const unsafe of ["<img", "<b>", "javascript:", "mailto:"]) {
+    assert.equal(html.toLowerCase().includes(unsafe), false, `rendered HTML must not contain ${unsafe}`);
+  }
   assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/u);
   assert.match(html, /<strong>bold<\/strong>/u);
   assert.match(html, /<code>&lt;b&gt;<\/code>/u);
@@ -51,7 +53,7 @@ test("manual sections, tables, callouts and code are parsed into a searchable do
   assert.match(hosts.html, /<aside class="manual-callout is-warning"[^>]*><strong class="manual-callout__label">Mount rule<\/strong>/u);
   assert.match(hosts.html, /<pre class="manual-code"[^>]*><code>pvecm status &lt;x&gt;<\/code><\/pre>/u);
   const allHtml = [manual.intro.html, ...manual.sections.map(({ html }) => html)].join("");
-  assert.doesNotMatch(allHtml, /<script>/u, "rendered HTML never carries source markup");
+  assert.equal(allHtml.toLowerCase().includes("<script"), false, "rendered HTML never carries source markup");
   assert.equal(manual.entries.at(-1).text, "done", "task markers are not part of the search text");
 
   const results = searchManualEntries(manual.entries, "212");
