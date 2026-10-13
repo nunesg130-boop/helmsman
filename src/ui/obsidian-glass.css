@@ -371,10 +371,25 @@ body::after {
   right: 19px;
 }
 
+/* The base collapsed rule reserves a scrollbar gutter on both edges. With
+   classic (space-taking) scrollbars, such as Windows Chrome, that left a
+   22px column, clipping the workspace switch and squeezing the nav icons.
+   The rail still scrolls; it simply draws no scrollbar. */
+.app-shell.is-sidebar-collapsed .sidebar-scroll-region {
+  scrollbar-gutter: auto;
+  scrollbar-width: none;
+}
+
+.app-shell.is-sidebar-collapsed .sidebar-scroll-region::-webkit-scrollbar {
+  display: none;
+}
+
 .app-shell.is-sidebar-collapsed .world-switch {
-  width: 48px;
-  grid-template-columns: 1fr;
+  width: 100%;
+  max-width: 42px;
+  grid-template-columns: minmax(0, 1fr);
   margin: 34px auto 12px;
+  padding: 3px;
 }
 
 /* Header --------------------------------------------------------------- */
@@ -5112,4 +5127,165 @@ ul.manual-list > li.manual-task::before {
   border-color: rgba(92, 227, 149, 0.6);
   border-style: dashed;
   background: rgba(92, 227, 149, 0.04);
+}
+
+/* Manual formatting help and template */
+.manual-help {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--refresh-well);
+}
+
+.manual-help > summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+  padding: 0 12px;
+  color: #c2c2c8;
+  font-size: 12px;
+  font-weight: 600;
+  list-style: none;
+  cursor: pointer;
+  border-radius: 10px;
+}
+
+.manual-help > summary::-webkit-details-marker {
+  display: none;
+}
+
+.manual-help > summary:hover {
+  color: var(--text);
+}
+
+.manual-help > summary:focus-visible {
+  outline: 2px solid rgba(92, 227, 149, 0.78);
+  outline-offset: 2px;
+}
+
+.manual-help > summary svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  transition: transform 140ms ease;
+}
+
+.manual-help[open] > summary svg {
+  transform: rotate(90deg);
+}
+
+.manual-help__body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 2px 12px 12px;
+  border-top: 1px solid var(--line);
+}
+
+.manual-help__list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 6px 14px;
+  margin: 10px 0 0;
+}
+
+.manual-help__list > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.manual-help__list dt {
+  margin: 0;
+  min-width: 0;
+}
+
+.manual-help__list dt code {
+  display: block;
+  padding: 4px 6px;
+  border-radius: 5px;
+  background: #050506;
+  color: #ececef;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.manual-help__list dd {
+  margin: 0;
+  color: #a8a9b1;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.manual-help__states {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+}
+
+.manual-help__foot {
+  margin: 0;
+  color: var(--refresh-ink-quiet);
+  font-size: 11px;
+}
+
+.manual-help__foot a {
+  color: #7ff0ad;
+}
+
+.manual-editor__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.manual-editor__meta .button svg,
+.manual-empty .button svg {
+  width: 13px;
+  height: 13px;
+}
+
+.manual-empty .manual-empty__guide {
+  font-size: 12px;
+}
+
+/* The editor keeps its header and footer fixed and scrolls only its body,
+   so opening Formatting help never slides content under the buttons. */
+.modal-card--manual-editor {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.modal-card--manual-editor > .modal-card__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.modal-card--manual-editor > .modal-card__footer {
+  position: static;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+}
+
+.modal-card--manual-editor .manual-editor__input {
+  min-height: min(46dvh, 480px);
+}
+
+.manual-editor__body:has(.manual-help[open]) .manual-editor__input {
+  min-height: min(28dvh, 280px);
 }

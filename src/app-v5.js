@@ -14,6 +14,7 @@ import {
   workloadIconMarkup
 } from "./ui/operations-views.js";
 import {
+  MANUAL_TEMPLATE,
   manualSnippet,
   parseManual,
   searchManualEntries
@@ -4989,7 +4990,8 @@ function renderManualEmpty() {
         <li><code>&gt; [!WARNING]</code> makes a callout</li>
         <li>Cells reading Pending, Healthy or Critical become status badges</li>
       </ul>
-      <div class="button-row"><button class="button button--primary" type="button" data-action="edit-manual">${icon("edit")} ${state.manual.draft !== null && state.manual.draft !== state.manual.markdown ? "Continue editing" : "Write the manual"}</button>${renderManualImportControl()}</div>
+      <p class="manual-empty__guide">The editor's <strong>Formatting help</strong> lists everything the manual understands.</p>
+      <div class="button-row"><button class="button button--primary" type="button" data-action="edit-manual">${icon("edit")} ${state.manual.draft !== null && state.manual.draft !== state.manual.markdown ? "Continue editing" : "Write the manual"}</button>${renderManualImportControl()}<button class="button" type="button" data-action="manual-use-template">${icon("library")} Start from template</button></div>
     </section>`;
 }
 
@@ -5195,6 +5197,60 @@ function updateManualEditorStatus() {
   }
 }
 
+const MANUAL_FORMAT_GUIDE_URL = "https://github.com/nunesg130-boop/helmsman/blob/main/docs/MANUAL-FORMAT.md";
+
+function renderManualFormattingHelp() {
+  const rows = [
+    ["# Title", "Page title (the first heading)"],
+    ["## Heading", "New section and contents entry"],
+    ["### Heading", "Subheading inside a section"],
+    ["| A | B |\n|---|---|\n| 1 | 2 |", "Table; each row is a search result"],
+    ["| … | Pending |", "State word in a cell becomes a badge"],
+    ["| … | Pending — detail |", "Leading state word plus detail"],
+    ["- item\n1. step", "Bulleted and numbered lists"],
+    ["- [ ] task\n- [x] done", "Checklist items"],
+    ["> [!WARNING] Title\n> Text", "Callout: NOTE, TIP, IMPORTANT, WARNING, CAUTION"],
+    ["`code`  **bold**  *italic*", "Inline formatting"],
+    ["[text](https://…)", "Link (opens in a new tab)"],
+    ["```\ncommands\n```", "Code block"],
+    ["---", "Divider"]
+  ];
+  return `<details class="manual-help">
+      <summary>${icon("chevron")} Formatting help</summary>
+      <div class="manual-help__body">
+        <dl class="manual-help__list">${rows.map(([syntax, result]) => `<div><dt><code>${escapeHtml(syntax)}</code></dt><dd>${escapeHtml(result)}</dd></div>`).join("")}</dl>
+        <p class="manual-help__states"><span class="manual-state is-healthy"><i aria-hidden="true"></i>Healthy</span><span class="manual-state is-warning"><i aria-hidden="true"></i>Pending</span><span class="manual-state is-danger"><i aria-hidden="true"></i>Critical</span><span class="manual-state is-info"><i aria-hidden="true"></i>Documented</span><span class="manual-state"><i aria-hidden="true"></i>Planned</span></p>
+        <p class="manual-help__foot">Raw HTML and images are shown as text. Drop a .md or .txt file here to replace the text. <a href="${MANUAL_FORMAT_GUIDE_URL}" target="_blank" rel="noopener noreferrer">Full formatting guide</a></p>
+      </div>
+    </details>`;
+}
+
+async function useManualTemplate() {
+  if (!state.manual.loaded) return;
+  const editor = modalLayer.querySelector("#manual-editor");
+  const current = editor ? editor.value : state.manual.draft ?? state.manual.markdown;
+  if (current.trim() && current !== MANUAL_TEMPLATE) {
+    const replace = await confirmControl({
+      title: "Replace the editor text with the template?",
+      message: "The current text in the editor is replaced. Nothing is saved until you choose Save manual, and Discard changes restores the saved manual.",
+      confirmLabel: "Use template"
+    });
+    if (!replace) return;
+  }
+  state.manual.draft = MANUAL_TEMPLATE;
+  if (editor) {
+    editor.value = MANUAL_TEMPLATE;
+    modalLayer.querySelector(".manual-editor__notice")?.remove();
+    updateManualEditorStatus();
+    editor.focus();
+    editor.setSelectionRange(0, 0);
+    editor.scrollTop = 0;
+  } else {
+    openManualEditor();
+    modalLayer.querySelector(".manual-editor__notice")?.remove();
+  }
+}
+
 function openManualEditor() {
   if (!state.manual.loaded) return;
   const restoring = state.manual.draft !== null && state.manual.draft !== state.manual.markdown;
@@ -5206,9 +5262,9 @@ function openManualEditor() {
       ${restoring ? `<p class="manual-editor__notice" role="status">Your unsaved draft was restored.</p>` : ""}
       <label class="sr-only" for="manual-editor">Manual Markdown</label>
       <textarea id="manual-editor" class="manual-editor__input" spellcheck="false" autocomplete="off" autocapitalize="off" placeholder="# Homelab manual&#10;&#10;## Hosts&#10;| Host | Address | State |&#10;|---|---|---|&#10;| media-node | 10.20.0.10 | Healthy |">${escapeHtml(value)}</textarea>
-      <p class="manual-editor__hint">Drop a .md or .txt file here to replace the text. <code>##</code> sections · <code>| table |</code> rows · <code>&gt; [!WARNING]</code> callouts · <code>\`code\`</code> · <code>**bold**</code> · Pending, Healthy, Critical and similar cells become badges.</p>
+      ${renderManualFormattingHelp()}
     </div>
-    <footer class="modal-card__footer"><span class="manual-editor__status" data-manual-editor-status aria-live="polite"></span><div class="modal-card__actions"><button class="button button--danger" type="button" data-action="discard-manual-draft" hidden>Discard changes</button><button class="button" type="button" data-action="close-modal">Close</button><button class="button button--primary" type="button" data-action="save-manual">Save manual</button></div></footer>
+    <footer class="modal-card__footer"><div class="manual-editor__meta"><button class="button button--compact" type="button" data-action="manual-use-template">${icon("library")} Start from template</button><span class="manual-editor__status" data-manual-editor-status aria-live="polite"></span></div><div class="modal-card__actions"><button class="button button--danger" type="button" data-action="discard-manual-draft" hidden>Discard changes</button><button class="button" type="button" data-action="close-modal">Close</button><button class="button button--primary" type="button" data-action="save-manual">Save manual</button></div></footer>
   </section>`, "#manual-editor");
   updateManualEditorStatus();
 }
@@ -8934,6 +8990,10 @@ document.addEventListener("click", async (event) => {
   }
   if (action === "edit-manual") {
     openManualEditor();
+    return;
+  }
+  if (action === "manual-use-template") {
+    await useManualTemplate();
     return;
   }
   if (action === "save-manual") {

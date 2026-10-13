@@ -162,6 +162,7 @@ const requiredFiles = [
   ".github/workflows/container.yml",
   "deploy/DOCKER.md",
   "deploy/README.md",
+  "docs/MANUAL-FORMAT.md",
   "deploy/compose.hardened.yaml",
   "deploy/compose.upgrade-v0.5.yaml",
   "deploy/Caddyfile.container-edge.lan.example",
