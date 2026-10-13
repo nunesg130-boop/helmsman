@@ -15,20 +15,22 @@
 const MAX_SECTIONS = 200;
 const MAX_ENTRIES = 6000;
 
-const STATE_WORDS = new Map([
-  ...["healthy", "confirmed", "confirmed current", "resolved", "active", "running", "done", "complete", "completed",
-    "validated", "enabled", "preserved", "restored", "writable", "controlled", "hardened", "current", "migrated"]
-    .map((word) => [word, "healthy"]),
-  ...["pending", "pending verification", "pending confirmation", "limited", "degraded", "high", "open", "reconfirm",
-    "revalidate", "retest", "unverified", "unconfirmed", "unprotected", "in progress"]
-    .map((word) => [word, "warning"]),
-  ...["down", "critical", "failed", "not implemented", "blocked", "never available"]
-    .map((word) => [word, "danger"]),
-  ...["checking", "documented", "documented state", "repository release", "medium", "explained", "release", "completed migration"]
-    .map((word) => [word, "info"]),
-  ...["planned", "low", "rollback", "rollback copy", "source copy", "offline", "stopped", "retired", "legacy", "unknown"]
-    .map((word) => [word, "neutral"])
-]);
+// Table cells (and leading words of cells) that render as status badges.
+// docs/MANUAL-FORMAT.md documents this exact list; a test keeps them in step.
+export const MANUAL_STATE_GROUPS = Object.freeze({
+  healthy: Object.freeze(["healthy", "confirmed", "confirmed current", "resolved", "active", "running", "done", "complete",
+    "completed", "validated", "enabled", "preserved", "restored", "writable", "controlled", "hardened", "current", "migrated"]),
+  warning: Object.freeze(["pending", "pending verification", "pending confirmation", "limited", "degraded", "high", "open",
+    "reconfirm", "revalidate", "retest", "unverified", "unconfirmed", "unprotected", "in progress"]),
+  danger: Object.freeze(["down", "critical", "failed", "not implemented", "blocked", "never available"]),
+  info: Object.freeze(["checking", "documented", "documented state", "repository release", "medium", "explained", "release",
+    "completed migration"]),
+  neutral: Object.freeze(["planned", "low", "rollback", "rollback copy", "source copy", "offline", "stopped", "retired",
+    "legacy", "unknown"])
+});
+
+const STATE_WORDS = new Map(Object.entries(MANUAL_STATE_GROUPS)
+  .flatMap(([tone, words]) => words.map((word) => [word, tone])));
 
 const ALERTS = Object.freeze({
   NOTE: { tone: "info", label: "Note" },
@@ -37,6 +39,74 @@ const ALERTS = Object.freeze({
   WARNING: { tone: "warning", label: "Warning" },
   CAUTION: { tone: "danger", label: "Caution" }
 });
+
+// A generic starting point offered by the editor. It uses example names and
+// documentation-only addresses; it is replaced by the owner's own content.
+export const MANUAL_TEMPLATE = `# Homelab manual
+
+Owner, date last reviewed, and where the source copy of this manual is kept.
+
+> [!NOTE] Using this template
+> Replace the examples with your own hosts and procedures. The manual is stored unencrypted, so keep passwords, keys and tokens out of it.
+
+## Hosts
+
+| Host | Address | Role | State |
+|---|---|---|---|
+| hypervisor-01 | 10.20.0.2 | Proxmox node | Healthy |
+| media-node | 10.20.0.10 | Media VM | Healthy |
+| backup-nas | 10.20.0.30 | Backup storage | Pending — first restore test |
+
+## Network
+
+| Item | Value |
+|---|---|
+| Subnet | 10.20.0.0/24 |
+| Gateway | 10.20.0.1 |
+| DNS server | 10.20.0.53 |
+
+## Services
+
+| Service | Host | Port | Public address |
+|---|---|---|---|
+| Media server | media-node | 8096 | media.example.net |
+| Helmsman | media-node | 4180 | Internal only |
+
+## Storage and backups
+
+- Guest backups run nightly to \`backup-nas\`.
+- [ ] Test one restore every month.
+- [ ] Keep one copy off-site.
+
+> [!WARNING] Mount check
+> Confirm external disks are mounted before starting guests that write to them.
+
+## Runbooks
+
+### Restart a stuck container
+
+1. Open the container in Portainer.
+2. Read the last 100 log lines.
+3. Restart it and confirm the service responds.
+
+\`\`\`bash
+docker compose ps
+docker compose logs --tail=100
+\`\`\`
+
+## Known issues
+
+| Issue | State | Notes |
+|---|---|---|
+| Nightly backup is slow | Open | Check disk throughput |
+| Old VM templates | Planned | Remove after the next upgrade |
+
+## Change log
+
+| Date | Change |
+|---|---|
+| YYYY-MM-DD | First version |
+`;
 
 export function escapeManualHtml(value) {
   return String(value ?? "")
