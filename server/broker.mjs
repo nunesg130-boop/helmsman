@@ -28,6 +28,7 @@ import { createOperationsMonitor } from "./monitor.mjs";
 import { createPersistentCache } from "./persistent-cache.mjs";
 import { createAcknowledgementStore } from "./acknowledgements.mjs";
 import { createLaunchpadStore } from "./launchpad.mjs";
+import { createManualStore } from "./manual.mjs";
 import { probeProxmox, probeProxmoxEndpoint } from "./proxmox-probes.mjs";
 import { probePortainer } from "./portainer-probes.mjs";
 import { probeService } from "./service-probes.mjs";
@@ -1493,6 +1494,14 @@ export async function createBroker(options = {}) {
       log("Helmsman Launchpad address storage is unavailable; the Launchpad will use connection addresses.");
     }
   }
+  let manual = options.manual || null;
+  if (!manual) {
+    try {
+      manual = await createManualStore({ dataDir, guard: options.stateGuard });
+    } catch {
+      log("Helmsman manual storage is unavailable; the Manual page will be read-only and empty.");
+    }
+  }
   let persistentCache = options.persistentCache || null;
   if (!persistentCache) {
     try {
@@ -2731,6 +2740,7 @@ export async function createBroker(options = {}) {
     dataDir,
     acknowledgements,
     launchpad,
+    manual,
     version: VERSION,
     lookup,
     log,

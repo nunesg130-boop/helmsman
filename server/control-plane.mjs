@@ -19,8 +19,11 @@ import {
 import { tokenMatches } from "./state.mjs";
 import { isReportId } from "./acknowledgements.mjs";
 import { canonicalLaunchUrl, launchpadKey } from "./launchpad.mjs";
+import { MANUAL_LIMITS } from "./manual.mjs";
 
 const MAX_JSON_BODY_BYTES = 64 * 1024;
+// The owner manual is the one larger body: its Markdown limit plus JSON escaping headroom.
+const MAX_MANUAL_BODY_BYTES = MANUAL_LIMITS.markdownBytes * 2 + 1024;
 const SAFE_SECRET = /^[^\u0000-\u001f\u007f-\u009f]{1,4096}$/u;
 const LOGIN_WINDOW_MS = 10 * 60 * 1000;
 const MAX_LOGIN_ATTEMPTS_PER_WINDOW = 10;
@@ -264,7 +267,7 @@ function requireExactKeys(value, keys) {
   }
 }
 
-async function readBoundedJson(request) {
+async function readBoundedJson(request, maxBytes = MAX_JSON_BODY_BYTES) {
   const contentType = String(request.headers["content-type"] || "").toLowerCase();
   if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/u.test(contentType)) {
     fail(415, "JSON_REQUIRED", "Use an application/json request body.");
@@ -274,7 +277,7 @@ async function readBoundedJson(request) {
     fail(415, "CONTENT_ENCODING_NOT_ALLOWED", "Compressed request bodies are not accepted.");
   }
   const declared = request.headers["content-length"];
-  if (declared !== undefined && (!/^\d+$/u.test(String(declared)) || Number(declared) > MAX_JSON_BODY_BYTES)) {
+  if (declared !== undefined && (!/^\d+$/u.test(String(declared)) || Number(declared) > maxBytes)) {
     fail(413, "REQUEST_TOO_LARGE", "The request body exceeded its safety limit.");
   }
   const chunks = [];
@@ -284,7 +287,7 @@ async function readBoundedJson(request) {
     for await (const value of request) {
       const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
       total += chunk.length;
-      if (total > MAX_JSON_BODY_BYTES) {
+      if (total > maxBytes) {
         chunk.fill(0);
         request.resume();
         fail(413, "REQUEST_TOO_LARGE", "The request body exceeded its safety limit.");
@@ -1146,6 +1149,11 @@ export async function createControlPlane(options) {
     && typeof options.launchpad.set === "function"
     && typeof options.launchpad.remove === "function"
       ? options.launchpad
+      : null;
+  const manualStore = options.manual
+    && typeof options.manual.get === "function"
+    && typeof options.manual.save === "function"
+      ? options.manual
       : null;
   const credentialStore = options.credentialStore || new CredentialStore(dataDir, {
     instanceId: stateStore.snapshot().instanceId,
@@ -4885,6 +4893,41 @@ export async function createControlPlane(options) {
     sendJson(response, 200, { links: currentLaunchpadLinks() });
   }
 
+  // The owner's Markdown manual. Readable by any signed-in session; saving
+  // needs CSRF and the revision the editor started from.
+  async function manualApi(request, response) {
+    if (request.method === "GET") {
+      await authenticate(request, false);
+      if (!manualStore) fail(503, "MANUAL_UNAVAILABLE", "The manual is temporarily unavailable.");
+      sendJson(response, 200, { manual: manualStore.get() });
+      return;
+    }
+    if (request.method !== "PUT") fail(405, "METHOD_NOT_ALLOWED", "That method is not allowed.");
+    const authenticated = await authenticate(request, true);
+    if (!manualStore) fail(503, "MANUAL_UNAVAILABLE", "Saving the manual is temporarily unavailable.");
+    const body = await readBoundedJson(request, MAX_MANUAL_BODY_BYTES);
+    requireExactKeys(body, ["markdown", "revision"]);
+    let saved;
+    await serializeServiceMutation(async () => {
+      await recheckMutationSession(request, authenticated);
+      try {
+        saved = await manualStore.save(body.markdown, body.revision);
+      } catch (error) {
+        if (error?.code === "MANUAL_CONFLICT") fail(409, "MANUAL_CONFLICT", error.message);
+        if (error?.code === "INVALID_MANUAL") fail(400, "INVALID_MANUAL", error.message);
+        throw error;
+      }
+    });
+    recordEvent({
+      level: "info",
+      category: "configuration",
+      event: "manual_updated",
+      outcome: "changed",
+      service: "helmsman"
+    });
+    sendJson(response, 200, { manual: saved });
+  }
+
   async function mediaSeriesSeasons(request, response, tmdbIdValue, url) {
     if (request.method !== "GET") fail(405, "METHOD_NOT_ALLOWED", "That method is not allowed.");
     await authenticate(request, false);
@@ -5119,6 +5162,11 @@ export async function createControlPlane(options) {
       if (url.pathname === "/api/v2/launchpad" || launchpadMatch) {
         if (url.search) fail(404, "NOT_FOUND", "Not found.");
         await launchpadApi(request, response, launchpadMatch?.[1] ?? null, launchpadMatch?.[2] ?? null);
+        return true;
+      }
+      if (url.pathname === "/api/v2/manual") {
+        if (url.search) fail(404, "NOT_FOUND", "Not found.");
+        await manualApi(request, response);
         return true;
       }
       const operationMatch = url.pathname.match(/^\/api\/v2\/operations\/(snapshot|refresh)$/u);

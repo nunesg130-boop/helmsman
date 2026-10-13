@@ -13,6 +13,11 @@ import {
   serviceIconMarkup,
   workloadIconMarkup
 } from "./ui/operations-views.js";
+import {
+  manualSnippet,
+  parseManual,
+  searchManualEntries
+} from "./ui/manual-markdown.js";
 
 const main = document.querySelector("#main-content");
 const appShell = document.querySelector("#app");
@@ -119,7 +124,7 @@ const MEDIA_CONNECTION_CATEGORIES = Object.freeze([
   Object.freeze({ id: "subtitles", kicker: "Accessibility", title: "Subtitles", description: "Subtitle health and wanted-item backlog.", services: Object.freeze(["bazarr"]) })
 ]);
 const SHARED_ROUTES = new Set(["logs", "settings"]);
-const SYSTEM_ROUTES = new Set(["system", "launchpad", ...SHARED_ROUTES]);
+const SYSTEM_ROUTES = new Set(["system", "launchpad", "manual", ...SHARED_ROUTES]);
 const MEDIA_ROUTES = new Set(["overview", "discover", "library", "requests", "activity", "calendar", "health", "connections", ...SHARED_ROUTES]);
 const INFRASTRUCTURE_ROUTES = new Set(["overview", "connectors", "proxmox", "workloads", "portainer", "incidents", ...SHARED_ROUTES]);
 const ROUTES = new Set([...SYSTEM_ROUTES, ...MEDIA_ROUTES, ...INFRASTRUCTURE_ROUTES, "home", "pipeline", "services", "environments", "nodes"]);
@@ -255,6 +260,7 @@ const ROUTE_TITLES = Object.freeze({
   workloads: "Workloads",
   portainer: "Portainer",
   launchpad: "Launchpad",
+  manual: "Manual",
   logs: "Logs",
   settings: "Settings"
 });
@@ -304,6 +310,8 @@ const state = {
   infrastructure: emptyInfrastructureState(),
   logging: emptyLoggingState(),
   launchpad: { loaded: false, loading: false, links: [], filter: "", error: "" },
+  manual: emptyManualState(),
+  search: { query: "", open: false, active: 0, results: [] },
   media: {
     filters: {
       homeSearch: "",
@@ -4907,10 +4915,652 @@ function submitLaunchAddress(form) {
   saveLaunchAddress(form.dataset.launchKind, form.dataset.launchId, url, form);
 }
 
+// Manual ----------------------------------------------------------------
+// The owner's Markdown manual lives in the data volume. The page renders it
+// through the escaping subset in manual-markdown.js and keeps every edit in
+// a modal so monitor repaints of the page never touch an open draft.
+
+const MANUAL_MARKDOWN_LIMIT = 256 * 1024;
+
+function emptyManualState() {
+  return {
+    loaded: false,
+    loading: false,
+    error: "",
+    markdown: "",
+    revision: null,
+    updatedAt: null,
+    parsed: null,
+    filter: "",
+    draft: null,
+    saving: false,
+    pendingTarget: "",
+    pendingHighlight: ""
+  };
+}
+
+function manualDocument() {
+  if (!state.manual.parsed) state.manual.parsed = parseManual(state.manual.markdown);
+  return state.manual.parsed;
+}
+
+function applyManualPayload(manual) {
+  const markdown = typeof manual?.markdown === "string" ? manual.markdown : "";
+  state.manual.markdown = markdown;
+  state.manual.revision = typeof manual?.revision === "string" ? manual.revision : null;
+  state.manual.updatedAt = typeof manual?.updatedAt === "string" ? manual.updatedAt : null;
+  state.manual.parsed = null;
+  state.manual.loaded = true;
+  state.manual.error = "";
+}
+
+async function loadManual({ render = true } = {}) {
+  if (!state.status?.authenticated || state.manual.loading) return;
+  state.manual.loading = true;
+  try {
+    const payload = await api("/api/v2/manual");
+    applyManualPayload(payload?.manual);
+  } catch (error) {
+    state.manual.error = error?.code === "MANUAL_UNAVAILABLE"
+      ? "The manual is unavailable because Helmsman could not open its data volume file."
+      : "The manual could not be loaded. Check the Helmsman server and refresh.";
+  } finally {
+    state.manual.loading = false;
+  }
+  if (render && currentRoute() === "manual") {
+    state.lastMarkup = "";
+    renderPage({ force: true, preserveFocus: true });
+    applyManualFilter();
+  }
+}
+
+function formatManualBytes(bytes) {
+  return bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KiB`;
+}
+
+function renderManualEmpty() {
+  return `<section class="manual-empty">
+      ${icon("book")}
+      <h3>No manual yet</h3>
+      <p>Drop a Markdown or text file here, or write your infrastructure manual in Markdown: hosts, addresses, recovery steps, known issues. It is stored privately in <code>manual.json</code> in this server's data volume and becomes searchable from the top bar.</p>
+      <ul class="manual-empty__tips">
+        <li><code>## Heading</code> starts a section</li>
+        <li>Tables with <code>| a | b |</code> rows</li>
+        <li><code>&gt; [!WARNING]</code> makes a callout</li>
+        <li>Cells reading Pending, Healthy or Critical become status badges</li>
+      </ul>
+      <div class="button-row"><button class="button button--primary" type="button" data-action="edit-manual">${icon("edit")} ${state.manual.draft !== null && state.manual.draft !== state.manual.markdown ? "Continue editing" : "Write the manual"}</button>${renderManualImportControl()}</div>
+    </section>`;
+}
+
+function renderManualToc(documentModel) {
+  const items = documentModel.sections.map((section) => `<li data-manual-toc="${escapeHtml(section.id)}"><button type="button" data-action="manual-jump" data-manual-target="${escapeHtml(section.id)}">${escapeHtml(section.title)}</button></li>`).join("");
+  return `<nav class="manual-toc" aria-label="Manual sections">
+      <span class="section-kicker">Contents</span>
+      <ol>${items}</ol>
+    </nav>`;
+}
+
+function renderManualSections(documentModel) {
+  const intro = documentModel.intro.html
+    ? `<section class="manual-section manual-section--intro" id="${escapeHtml(documentModel.intro.id)}" data-manual-section="${escapeHtml(documentModel.intro.id)}"><div class="manual-body">${documentModel.intro.html}</div></section>`
+    : "";
+  const sections = documentModel.sections.map((section) => `<section class="manual-section" id="${escapeHtml(section.id)}" data-manual-section="${escapeHtml(section.id)}" aria-labelledby="${escapeHtml(section.id)}-title">
+      <header><h3 id="${escapeHtml(section.id)}-title">${escapeHtml(section.title)}</h3></header>
+      <div class="manual-body">${section.html || "<p class=\"manual-muted\">This section is empty.</p>"}</div>
+    </section>`).join("");
+  return intro + sections;
+}
+
+function renderManualPage() {
+  const manual = state.manual;
+  if (!manual.loaded && !manual.error) {
+    return `<div class="page manual-page"><section class="manual-empty manual-empty--loading">${icon("book")}<h3>Loading the manual</h3></section></div>`;
+  }
+  const documentModel = manual.loaded ? manualDocument() : null;
+  const hasContent = Boolean(manual.markdown.trim());
+  const draftPending = manual.draft !== null && manual.draft !== manual.markdown;
+  const updated = manual.updatedAt ? `Updated ${formatTime(manual.updatedAt)}` : "Not written yet";
+  const sectionCount = documentModel?.sections.length || 0;
+  const kicker = hasContent ? `${sectionCount} section${sectionCount === 1 ? "" : "s"} · ${updated}` : "Owner manual";
+  const title = documentModel?.title || "Manual";
+  const body = manual.error
+    ? `<p class="launchpad-notice" role="status">${escapeHtml(manual.error)}</p>`
+    : !hasContent
+      ? renderManualEmpty()
+      : `<div class="manual-layout">
+          ${renderManualToc(documentModel)}
+          <div class="manual-content">
+            <section class="launchpad-empty launchpad-empty--filter manual-no-match" data-manual-no-match hidden>${icon("search")}<h3>Nothing in the manual matches</h3><p>Try another word, an address or a VMID.</p><button class="button" type="button" data-action="clear-manual-filter">Clear search</button></section>
+            ${renderManualSections(documentModel)}
+          </div>
+        </div>`;
+  return `<div class="page manual-page">
+    ${manual.loaded ? `<div class="manual-drop-overlay" aria-hidden="true">${icon("book")}<strong>Drop to load into the editor</strong><span>Markdown or text, up to 256 KiB. Nothing is saved until you choose Save manual.</span></div>` : ""}
+    <section class="page-intro launchpad-intro manual-intro">
+      <div><span class="section-kicker">${escapeHtml(kicker)}</span><h2>${escapeHtml(title)}</h2><p>Your own operations manual, kept in the data volume. Press <kbd>/</kbd> anywhere to search it alongside pages, services and workloads.</p></div>
+      <div class="manual-intro__actions">
+        ${hasContent ? `<label class="launchpad-search manual-search">${icon("search")}<span class="sr-only">Find in the manual</span><input id="manual-filter" type="search" data-manual-filter autocomplete="off" spellcheck="false" maxlength="80" placeholder="Find in the manual" value="${escapeHtml(manual.filter)}" /></label>` : ""}
+        ${manual.loaded && hasContent ? `${renderManualImportControl()}<button class="button" type="button" data-action="edit-manual">${icon("edit")} ${draftPending ? "Continue editing" : "Edit"}</button>` : ""}
+      </div>
+    </section>
+    ${body}
+  </div>`;
+}
+
+// Highlight every occurrence of the query words inside an element by
+// splitting text nodes. Only text is created, never markup.
+function markManualMatches(root, words) {
+  if (!root || !words.length) return null;
+  const pattern = new RegExp(words.map((word) => word.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")).join("|"), "giu");
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode: (node) => (node.parentElement?.closest("mark, script, style") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT)
+  });
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  let first = null;
+  for (const node of nodes) {
+    const text = node.nodeValue;
+    pattern.lastIndex = 0;
+    if (!pattern.test(text)) continue;
+    pattern.lastIndex = 0;
+    const fragment = document.createDocumentFragment();
+    let index = 0;
+    for (const match of text.matchAll(pattern)) {
+      if (match.index > index) fragment.append(document.createTextNode(text.slice(index, match.index)));
+      const mark = document.createElement("mark");
+      mark.className = "manual-mark";
+      mark.textContent = match[0];
+      fragment.append(mark);
+      first ||= mark;
+      index = match.index + match[0].length;
+    }
+    if (index < text.length) fragment.append(document.createTextNode(text.slice(index)));
+    node.replaceWith(fragment);
+  }
+  return first;
+}
+
+function manualFilterWords(value) {
+  return String(value || "").toLowerCase().split(/\s+/u).filter(Boolean).slice(0, 8);
+}
+
+function applyManualFilter() {
+  const page = main.querySelector(".manual-page");
+  if (!page || !state.manual.loaded) return;
+  const documentModel = manualDocument();
+  const words = manualFilterWords(state.manual.filter);
+  const htmlById = new Map([[documentModel.intro.id, documentModel.intro.html], ...documentModel.sections.map(({ id, html }) => [id, html])]);
+  let visible = 0;
+  page.querySelectorAll("[data-manual-section]").forEach((section) => {
+    const id = section.dataset.manualSection;
+    const body = section.querySelector(".manual-body");
+    if (body && htmlById.has(id)) setMarkup(body, htmlById.get(id) || "");
+    const text = section.textContent.toLowerCase();
+    const matches = !words.length || words.every((word) => text.includes(word));
+    section.hidden = !matches;
+    if (matches) {
+      visible += 1;
+      if (words.length) markManualMatches(body, words);
+    }
+    const tocEntry = page.querySelector(`[data-manual-toc="${CSS.escape(id)}"]`);
+    if (tocEntry) tocEntry.hidden = !matches;
+  });
+  const noMatch = page.querySelector("[data-manual-no-match]");
+  if (noMatch) noMatch.hidden = visible > 0;
+  if (filterAnnouncer && words.length) {
+    filterAnnouncer.textContent = visible ? `${visible} manual section${visible === 1 ? "" : "s"} match.` : "No manual sections match.";
+  }
+}
+
+function setManualFilter(value, { rerenderInput = true } = {}) {
+  state.manual.filter = String(value || "").slice(0, 80);
+  if (rerenderInput) {
+    const input = main.querySelector("#manual-filter");
+    if (input) input.value = state.manual.filter;
+  }
+  applyManualFilter();
+}
+
+function scrollManualElementIntoView(element) {
+  if (!element) return;
+  const reduceMotion = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+  const block = element.matches("section, h3, h4") ? "start" : "center";
+  element.scrollIntoView({ block, behavior: reduceMotion ? "auto" : "smooth" });
+  element.classList.remove("is-manual-target");
+  // Restart the highlight animation on repeated jumps to the same element.
+  void element.offsetWidth;
+  element.classList.add("is-manual-target");
+  setTimeout(() => element.classList.remove("is-manual-target"), 2400);
+}
+
+function jumpToManualTarget(id) {
+  const targetId = String(id || "");
+  if (!targetId) return;
+  let element = document.getElementById(targetId);
+  if (element && element.closest("[data-manual-section]")?.hidden) {
+    setManualFilter("");
+    element = document.getElementById(targetId);
+  }
+  scrollManualElementIntoView(element);
+  const focusable = element?.matches("h3, h4, section") ? element : null;
+  if (focusable) {
+    focusable.setAttribute("tabindex", "-1");
+    focusable.focus({ preventScroll: true });
+  }
+}
+
+function revealManualTarget() {
+  const targetId = state.manual.pendingTarget;
+  const highlight = state.manual.pendingHighlight;
+  state.manual.pendingTarget = "";
+  state.manual.pendingHighlight = "";
+  if (!targetId || currentRoute() !== "manual") return;
+  if (state.manual.filter) setManualFilter("");
+  const element = document.getElementById(targetId);
+  if (!element) return;
+  const section = element.closest("[data-manual-section]");
+  if (highlight && section) markManualMatches(section.querySelector(".manual-body") || section, manualFilterWords(highlight));
+  scrollManualElementIntoView(element);
+}
+
+function manualEditorStatusText() {
+  const draft = state.manual.draft ?? state.manual.markdown;
+  const bytes = new TextEncoder().encode(draft).length;
+  const over = bytes > MANUAL_MARKDOWN_LIMIT;
+  const changed = draft !== state.manual.markdown;
+  return {
+    over,
+    changed,
+    text: `${formatManualBytes(bytes)} of 256 KiB${changed ? " · Unsaved changes" : " · Saved"}`
+  };
+}
+
+function updateManualEditorStatus() {
+  const status = modalLayer.querySelector("[data-manual-editor-status]");
+  const save = modalLayer.querySelector("[data-action='save-manual']");
+  const discard = modalLayer.querySelector("[data-action='discard-manual-draft']");
+  const details = manualEditorStatusText();
+  if (status) {
+    status.textContent = details.over ? `${details.text} · Too large to save` : details.text;
+    status.classList.toggle("is-over", details.over);
+  }
+  if (save) save.disabled = details.over || !details.changed || state.manual.saving;
+  if (discard) discard.hidden = !details.changed;
+  // Keep the page's button honest about a draft left open in the editor.
+  const pageButton = main.querySelector(".manual-intro__actions [data-action='edit-manual'], .manual-empty [data-action='edit-manual']");
+  const label = pageButton?.lastChild;
+  if (label?.nodeType === Node.TEXT_NODE) {
+    label.nodeValue = ` ${details.changed ? "Continue editing" : state.manual.markdown.trim() ? "Edit" : "Write the manual"}`;
+  }
+}
+
+function openManualEditor() {
+  if (!state.manual.loaded) return;
+  const restoring = state.manual.draft !== null && state.manual.draft !== state.manual.markdown;
+  const value = state.manual.draft ?? state.manual.markdown;
+  state.manual.draft = value;
+  openModal(`<section class="modal-card modal-card--manual-editor" role="dialog" aria-modal="true" aria-labelledby="manual-editor-title" aria-describedby="manual-editor-description">
+    <header class="modal-card__header"><span class="manual-editor__mark">${icon("book")}</span><div><span class="section-kicker">Manual</span><h2 id="manual-editor-title" tabindex="-1">Edit manual</h2><p id="manual-editor-description">Markdown, stored unencrypted in the data volume. Keep passwords, keys and tokens out of it.</p></div><button class="icon-button" type="button" data-action="close-modal" aria-label="Close">${icon("x")}</button></header>
+    <div class="modal-card__body manual-editor__body">
+      ${restoring ? `<p class="manual-editor__notice" role="status">Your unsaved draft was restored.</p>` : ""}
+      <label class="sr-only" for="manual-editor">Manual Markdown</label>
+      <textarea id="manual-editor" class="manual-editor__input" spellcheck="false" autocomplete="off" autocapitalize="off" placeholder="# Homelab manual&#10;&#10;## Hosts&#10;| Host | Address | State |&#10;|---|---|---|&#10;| media-node | 10.20.0.10 | Healthy |">${escapeHtml(value)}</textarea>
+      <p class="manual-editor__hint">Drop a .md or .txt file here to replace the text. <code>##</code> sections · <code>| table |</code> rows · <code>&gt; [!WARNING]</code> callouts · <code>\`code\`</code> · <code>**bold**</code> · Pending, Healthy, Critical and similar cells become badges.</p>
+    </div>
+    <footer class="modal-card__footer"><span class="manual-editor__status" data-manual-editor-status aria-live="polite"></span><div class="modal-card__actions"><button class="button button--danger" type="button" data-action="discard-manual-draft" hidden>Discard changes</button><button class="button" type="button" data-action="close-modal">Close</button><button class="button button--primary" type="button" data-action="save-manual">Save manual</button></div></footer>
+  </section>`, "#manual-editor");
+  updateManualEditorStatus();
+}
+
+function discardManualDraft() {
+  state.manual.draft = state.manual.markdown;
+  const editor = modalLayer.querySelector("#manual-editor");
+  if (editor) {
+    editor.value = state.manual.markdown;
+    editor.focus();
+  }
+  modalLayer.querySelector(".manual-editor__notice")?.remove();
+  updateManualEditorStatus();
+}
+
+async function saveManual() {
+  if (state.manual.saving) return;
+  const markdown = state.manual.draft ?? state.manual.markdown;
+  if (new TextEncoder().encode(markdown).length > MANUAL_MARKDOWN_LIMIT) {
+    showToast("The manual is over 256 KiB. Shorten it before saving.", "danger");
+    return;
+  }
+  state.manual.saving = true;
+  updateManualEditorStatus();
+  try {
+    const payload = await api("/api/v2/manual", { method: "PUT", body: { markdown, revision: state.manual.revision } });
+    applyManualPayload(payload?.manual);
+    state.manual.draft = null;
+    closeModal();
+    state.lastMarkup = "";
+    renderPage({ force: true, preserveFocus: true });
+    applyManualFilter();
+    refreshGlobalSearchResults();
+    showToast("Manual saved", "success");
+  } catch (error) {
+    if (error?.code === "MANUAL_CONFLICT") {
+      // Keep the draft, adopt the newer revision, and let the owner decide.
+      const draft = state.manual.draft;
+      await loadManual({ render: false });
+      state.manual.draft = draft;
+      state.lastMarkup = "";
+      renderPage({ force: true, preserveFocus: true });
+      showToast("The manual changed in another session. Your draft is kept; review it and save again to replace that version.", "danger");
+    } else {
+      showToast(error?.message || "The manual could not be saved.", "danger");
+    }
+  } finally {
+    state.manual.saving = false;
+    updateManualEditorStatus();
+  }
+}
+
+// Global search -----------------------------------------------------------
+// One field in the top bar searches pages, connected services, Proxmox
+// workloads and the manual. Results are built from data the dashboard
+// already holds; the only request is loading the manual once.
+
+const SEARCH_PAGES = Object.freeze([
+  { workspace: "system", route: "system", title: "Overview", area: "Overview", terms: "home system health dashboard" },
+  { workspace: "system", route: "launchpad", title: "Launchpad", area: "Overview", terms: "open links services bookmarks" },
+  { workspace: "system", route: "manual", title: "Manual", area: "Overview", terms: "docs documentation runbook notes" },
+  { workspace: "media", route: "overview", title: "Media overview", area: "Media", terms: "home" },
+  { workspace: "media", route: "discover", title: "Discover", area: "Media", terms: "search movies series find request" },
+  { workspace: "media", route: "library", title: "Library", area: "Media", terms: "movies series jellyfin" },
+  { workspace: "media", route: "requests", title: "Requests", area: "Media", terms: "seerr approvals" },
+  { workspace: "media", route: "activity", title: "Activity", area: "Media", terms: "downloads queue imports qbittorrent" },
+  { workspace: "media", route: "calendar", title: "Calendar", area: "Media", terms: "releases upcoming schedule" },
+  { workspace: "media", route: "health", title: "Media health", area: "Media", terms: "incidents warnings pipeline" },
+  { workspace: "media", route: "connections", title: "Media connections", area: "Media", terms: "services api keys setup" },
+  { workspace: "infrastructure", route: "overview", title: "Infrastructure overview", area: "Infrastructure", terms: "home" },
+  { workspace: "infrastructure", route: "connectors", title: "Connectors", area: "Infrastructure", terms: "proxmox portainer loki connections" },
+  { workspace: "infrastructure", route: "proxmox", title: "Proxmox", area: "Infrastructure", terms: "nodes cluster environments" },
+  { workspace: "infrastructure", route: "workloads", title: "Workloads", area: "Infrastructure", terms: "vms containers lxc qemu guests" },
+  { workspace: "infrastructure", route: "portainer", title: "Portainer", area: "Infrastructure", terms: "docker containers stacks" },
+  { workspace: "infrastructure", route: "incidents", title: "Incidents", area: "Infrastructure", terms: "alerts problems" },
+  { workspace: "system", route: "logs", title: "Logs", area: "Shared", terms: "journal loki events" },
+  { workspace: "system", route: "settings", title: "Settings", area: "Shared", terms: "sessions network security" }
+]);
+
+const SEARCH_GROUP_LIMITS = Object.freeze({ pages: 3, services: 4, workloads: 5, manual: 6 });
+
+function searchWords(query) {
+  return String(query || "").toLowerCase().split(/\s+/u).filter(Boolean).slice(0, 8);
+}
+
+function matchesAllWords(haystack, words) {
+  const value = haystack.toLowerCase();
+  return words.every((word) => value.includes(word));
+}
+
+function searchScore(name, words, query) {
+  const value = name.toLowerCase();
+  const phrase = query.trim().toLowerCase();
+  if (value === phrase) return 100;
+  if (value.startsWith(phrase)) return 80;
+  if (value.includes(phrase)) return 60;
+  return words.filter((word) => value.includes(word)).length * 10;
+}
+
+function buildGlobalSearchResults(query) {
+  const words = searchWords(query);
+  if (!words.length || !state.status?.authenticated) return [];
+  const results = [];
+  const ranked = (items) => items.sort((left, right) => right.score - left.score);
+
+  const pages = ranked(SEARCH_PAGES
+    .filter((page) => matchesAllWords(`${page.title} ${page.area} ${page.terms}`, words))
+    .map((page) => ({ group: "pages", kind: "page", title: page.title, meta: page.area, page, score: searchScore(page.title, words, query) })));
+  results.push(...pages.slice(0, SEARCH_GROUP_LIMITS.pages));
+
+  const services = ranked(launchpadEntries()
+    .filter((entry) => entry.href && matchesAllWords(`${entry.name} ${entry.role} ${entry.provider} ${entry.href}`, words))
+    .map((entry) => ({ group: "services", kind: "service", title: entry.name, meta: entry.role, state: entry.state, entry, score: searchScore(entry.name, words, query) })));
+  results.push(...services.slice(0, SEARCH_GROUP_LIMITS.services));
+
+  const workloads = ranked(infrastructureHealth().workloads
+    .filter((workload) => matchesAllWords(`${workload.name} ${workload.kind} ${workload.vmid ?? ""} ${workload.node} ${workload.environmentName} ${(workload.tags || []).join(" ")}`, words))
+    .map((workload) => ({
+      group: "workloads",
+      kind: "workload",
+      title: workload.name,
+      meta: `${workload.kind} ${workload.vmid ?? "—"} · ${workload.node} · ${workload.status}`,
+      workload,
+      score: searchScore(`${workload.name}`, words, query) + (String(workload.vmid ?? "") === query.trim() ? 90 : 0)
+    })));
+  results.push(...workloads.slice(0, SEARCH_GROUP_LIMITS.workloads));
+
+  if (state.manual.loaded && state.manual.markdown) {
+    for (const match of searchManualEntries(manualDocument().entries, query, SEARCH_GROUP_LIMITS.manual)) {
+      results.push({
+        group: "manual",
+        kind: "manual",
+        title: match.entry.kind === "section" ? match.entry.text : match.entry.sectionTitle || "Manual",
+        meta: match.entry.kind === "section" ? "Section" : "",
+        snippet: match.entry.kind === "section" ? null : manualSnippet(match.entry.text, match.matchStart, match.matchLength),
+        targetId: match.entry.id,
+        query
+      });
+    }
+  }
+  return results;
+}
+
+const SEARCH_GROUP_TITLES = Object.freeze({ pages: "Pages", services: "Services", workloads: "Workloads", manual: "Manual" });
+
+function renderSearchOption(result, index) {
+  const active = index === state.search.active;
+  const leading = result.kind === "service"
+    ? `<span class="helmsman-search__icon">${result.entry.provider === "proxmox" ? proxmoxBrandLinkMarkup() : serviceIconMarkup(result.entry.provider, result.title.slice(0, 1))}</span>`
+    : result.kind === "workload"
+      ? `<span class="helmsman-search__icon workload-type is-${escapeHtml(result.workload.type)}">${workloadIconMarkup(result.workload.type)}</span>`
+      : `<span class="helmsman-search__icon">${icon(result.kind === "manual" ? "book" : "chevron")}</span>`;
+  const snippet = result.snippet
+    ? `<span class="helmsman-search__snippet">${escapeHtml(result.snippet.before)}<mark>${escapeHtml(result.snippet.match)}</mark>${escapeHtml(result.snippet.after)}</span>`
+    : "";
+  const trailing = result.kind === "service" ? icon("external") : "";
+  return `<button class="helmsman-search__option${active ? " is-active" : ""}" type="button" role="option" id="helmsman-search-option-${index}" aria-selected="${active ? "true" : "false"}" data-action="helmsman-search-select" data-search-index="${index}" tabindex="-1">
+      ${leading}
+      <span class="helmsman-search__copy"><strong>${escapeHtml(result.title)}</strong>${result.meta ? `<small>${escapeHtml(result.meta)}</small>` : ""}${snippet}</span>
+      ${trailing}
+    </button>`;
+}
+
+function renderGlobalSearchPanel() {
+  const panel = document.querySelector("#helmsman-search-results");
+  const input = document.querySelector("#helmsman-search-input");
+  if (!panel || !input) return;
+  const { query, results, open } = state.search;
+  panel.hidden = !open;
+  input.setAttribute("aria-expanded", open ? "true" : "false");
+  if (!open) {
+    input.removeAttribute("aria-activedescendant");
+    return;
+  }
+  if (!query.trim()) {
+    setMarkup(panel, `<p class="helmsman-search__hint">Search pages, services, workloads${state.manual.markdown ? " and your manual" : ""}. Try a name, an address or a VMID.</p>`);
+    input.removeAttribute("aria-activedescendant");
+    return;
+  }
+  if (!results.length) {
+    setMarkup(panel, `<p class="helmsman-search__hint">Nothing matches “${escapeHtml(query.trim())}”.${state.manual.loading ? " The manual is still loading." : ""}</p>`);
+    input.removeAttribute("aria-activedescendant");
+    return;
+  }
+  let index = 0;
+  const groups = Object.keys(SEARCH_GROUP_TITLES).map((group) => {
+    const members = results.filter((result) => result.group === group);
+    if (!members.length) return "";
+    const options = members.map((result) => renderSearchOption(result, index++)).join("");
+    return `<div class="helmsman-search__group" role="group" aria-labelledby="helmsman-search-group-${group}"><span class="helmsman-search__group-title" id="helmsman-search-group-${group}">${SEARCH_GROUP_TITLES[group]}</span>${options}</div>`;
+  }).join("");
+  setMarkup(panel, groups);
+  input.setAttribute("aria-activedescendant", `helmsman-search-option-${state.search.active}`);
+}
+
+function orderedSearchResults(results) {
+  const order = Object.keys(SEARCH_GROUP_TITLES);
+  return [...results].sort((left, right) => order.indexOf(left.group) - order.indexOf(right.group));
+}
+
+function updateGlobalSearch(value) {
+  state.search.query = String(value || "").slice(0, 120);
+  state.search.results = orderedSearchResults(buildGlobalSearchResults(state.search.query));
+  state.search.active = 0;
+  state.search.open = true;
+  renderGlobalSearchPanel();
+}
+
+function refreshGlobalSearchResults() {
+  if (!state.search.open) return;
+  state.search.results = orderedSearchResults(buildGlobalSearchResults(state.search.query));
+  state.search.active = Math.min(state.search.active, Math.max(0, state.search.results.length - 1));
+  renderGlobalSearchPanel();
+}
+
+async function ensureManualForSearch() {
+  if (!state.status?.authenticated || state.manual.loaded || state.manual.loading) return;
+  await loadManual({ render: false });
+  refreshGlobalSearchResults();
+}
+
+function openGlobalSearch() {
+  const container = document.querySelector("#helmsman-search");
+  const input = document.querySelector("#helmsman-search-input");
+  if (!container || !input || container.hidden) return;
+  container.classList.add("is-expanded");
+  input.focus();
+  input.select();
+}
+
+function closeGlobalSearch({ clear = false, blur = false } = {}) {
+  const input = document.querySelector("#helmsman-search-input");
+  state.search.open = false;
+  if (clear) {
+    state.search.query = "";
+    state.search.results = [];
+    if (input) input.value = "";
+  }
+  renderGlobalSearchPanel();
+  document.querySelector("#helmsman-search")?.classList.remove("is-expanded");
+  if (blur) input?.blur();
+}
+
+async function activateSearchResult(index) {
+  const result = state.search.results[index];
+  if (!result) return;
+  closeGlobalSearch({ clear: true, blur: true });
+  if (result.kind === "page") {
+    const { workspace, route } = result.page;
+    if (workspace === state.workspace) location.hash = route === "logs" ? canonicalLoggingHash() : `#/${route}`;
+    else await switchWorkspace(workspace, route);
+    return;
+  }
+  if (result.kind === "service") {
+    globalThis.open?.(result.entry.href, "_blank", "noopener,noreferrer");
+    return;
+  }
+  if (result.kind === "workload") {
+    if (state.workspace !== "infrastructure" || currentRoute() !== "workloads") {
+      await switchWorkspace("infrastructure", "workloads");
+    }
+    openInfrastructureWorkload(result.workload.id);
+    return;
+  }
+  if (result.kind === "manual") {
+    state.manual.pendingTarget = result.targetId;
+    state.manual.pendingHighlight = result.query;
+    if (state.workspace === "system" && currentRoute() === "manual") {
+      revealManualTarget();
+    } else if (state.workspace === "system") {
+      location.hash = "#/manual";
+    } else {
+      await switchWorkspace("system", "manual");
+    }
+  }
+}
+
+function handleGlobalSearchKeydown(event) {
+  const { results } = state.search;
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault();
+    if (!state.search.open) {
+      updateGlobalSearch(event.target.value);
+      return;
+    }
+    if (!results.length) return;
+    const step = event.key === "ArrowDown" ? 1 : -1;
+    state.search.active = (state.search.active + step + results.length) % results.length;
+    renderGlobalSearchPanel();
+    document.querySelector(`#helmsman-search-option-${state.search.active}`)?.scrollIntoView({ block: "nearest" });
+    return;
+  }
+  if (event.key === "Enter") {
+    event.preventDefault();
+    activateSearchResult(state.search.active);
+    return;
+  }
+  if (event.key === "Escape") {
+    event.preventDefault();
+    event.stopPropagation();
+    if (state.search.query) closeGlobalSearch({ clear: true });
+    else closeGlobalSearch({ blur: true });
+  }
+}
+
+function isTypingTarget(element) {
+  return Boolean(element?.closest?.("input, textarea, select, [contenteditable='true'], [contenteditable='']"));
+}
+
+function initializeGlobalSearch() {
+  const container = document.querySelector("#helmsman-search");
+  const input = document.querySelector("#helmsman-search-input");
+  if (!container || !input) return;
+  input.addEventListener("focus", () => {
+    container.classList.add("is-expanded");
+    state.search.open = true;
+    state.search.results = orderedSearchResults(buildGlobalSearchResults(state.search.query));
+    renderGlobalSearchPanel();
+    ensureManualForSearch();
+  });
+  input.addEventListener("keydown", handleGlobalSearchKeydown);
+  // Keep focus in the field while a result is clicked.
+  container.addEventListener("mousedown", (event) => {
+    if (event.target.closest(".helmsman-search__option")) event.preventDefault();
+  });
+  container.addEventListener("focusout", (event) => {
+    if (!container.contains(event.relatedTarget)) closeGlobalSearch();
+  });
+  window.addEventListener("keydown", (event) => {
+    const key = String(event.key || "");
+    const overlayOpen = Boolean(document.body?.classList?.contains("has-overlay"));
+    const shortcut = (key === "/" && !event.ctrlKey && !event.metaKey && !event.altKey && !isTypingTarget(event.target))
+      || (key.toLowerCase() === "k" && (event.ctrlKey || event.metaKey) && !event.altKey);
+    if (!shortcut || overlayOpen || container.hidden) return;
+    event.preventDefault?.();
+    openGlobalSearch();
+  });
+}
+
+function updateGlobalSearchChrome() {
+  const container = document.querySelector("#helmsman-search");
+  if (!container) return;
+  const available = Boolean(state.status?.authenticated);
+  if (container.hidden === available) container.hidden = !available;
+  if (!available && state.search.open) closeGlobalSearch({ clear: true });
+}
+
 function renderAuthenticatedRoute() {
   if (state.workspace === "system") {
     if (state.route === "system") return renderSystemOverview();
     if (state.route === "launchpad") return renderLaunchpadPage();
+    if (state.route === "manual") return renderManualPage();
     if (state.route === "logs") return renderLogsPage();
     return renderSettingsPage();
   }
@@ -5205,6 +5855,7 @@ function updateChrome() {
     element.hidden = infrastructureCount === 0;
   });
   const authenticated = Boolean(state.status?.authenticated);
+  updateGlobalSearchChrome();
   modeBadge.textContent = authenticated ? statusLabel(overall) : "Helmsman server";
   modeBadge.dataset.state = statusClass(overall);
   const infrastructureTime = latestInfrastructureCheck(infrastructure.targets, portainers);
@@ -8242,12 +8893,14 @@ async function initialize() {
       await loadAuthenticatedData();
       if (currentRoute() === "logs") await loadLoggingRouteData();
       if (currentRoute() === "launchpad") await loadLaunchpadLinks({ render: false });
+      if (currentRoute() === "manual") await loadManual({ render: false });
     }
     else {
       state.config = null;
       state.snapshot = null;
       state.sessions = { loaded: false, currentSessionId: "", items: [], error: "" };
       state.sessionMutation = "";
+      state.manual = emptyManualState();
       state.infrastructure = emptyInfrastructureState();
       state.media.seasonGeneration += 1;
       state.media.seasonDetails.clear();
@@ -8277,6 +8930,34 @@ document.addEventListener("click", async (event) => {
   }
   if (action === "cancel-control-confirm") {
     closeControlConfirmation(false);
+    return;
+  }
+  if (action === "edit-manual") {
+    openManualEditor();
+    return;
+  }
+  if (action === "save-manual") {
+    await saveManual();
+    return;
+  }
+  if (action === "discard-manual-draft") {
+    discardManualDraft();
+    return;
+  }
+  if (action === "manual-jump") {
+    jumpToManualTarget(target.dataset.manualTarget);
+    return;
+  }
+  if (action === "clear-manual-filter") {
+    setManualFilter("");
+    return;
+  }
+  if (action === "helmsman-search-select") {
+    await activateSearchResult(Number(target.dataset.searchIndex));
+    return;
+  }
+  if (action === "open-helmsman-search") {
+    openGlobalSearch();
     return;
   }
   if (action === "edit-launch-address") {
@@ -8456,6 +9137,19 @@ document.addEventListener("input", (event) => {
     syncLokiQueryControls(lokiQueryForm);
     invalidateLokiQueryResults({ inPlace: true });
   }
+  if (event.target?.matches?.("[data-manual-filter]")) {
+    setManualFilter(event.target.value, { rerenderInput: false });
+    return;
+  }
+  if (event.target?.id === "manual-editor") {
+    state.manual.draft = String(event.target.value || "");
+    updateManualEditorStatus();
+    return;
+  }
+  if (event.target?.id === "helmsman-search-input") {
+    updateGlobalSearch(event.target.value);
+    return;
+  }
   if (event.target?.matches?.("[data-launchpad-filter]")) {
     state.launchpad.filter = String(event.target.value || "").slice(0, 80);
     applyLaunchpadFilter();
@@ -8564,8 +9258,10 @@ window.addEventListener("hashchange", async () => {
     renderPage({ force: true });
   }
   if (currentRoute() === "launchpad" && state.status?.authenticated) await loadLaunchpadLinks();
+  if (currentRoute() === "manual" && state.status?.authenticated) await loadManual();
   resetRouteScroll();
   main.focus({ preventScroll: true });
+  if (currentRoute() === "manual") revealManualTarget();
 });
 
 window.addEventListener("keydown", (event) => {
@@ -8624,6 +9320,121 @@ skipLink?.addEventListener("click", (event) => {
   main.focus({ preventScroll: false });
 });
 
+// In-manual anchor links scroll within the page instead of changing the
+// hash, which Helmsman uses for routing.
+document.addEventListener("click", (event) => {
+  if (state.route !== "manual") return;
+  const link = event.target?.closest?.(".manual-body a[href^='#']");
+  if (!link || typeof link.getAttribute !== "function") return;
+  event.preventDefault?.();
+  const fragment = String(link.getAttribute("href") || "").slice(1);
+  const candidates = [fragment, `manual-${fragment}`];
+  const targetId = candidates.find((candidate) => candidate && document.getElementById(candidate)?.closest(".manual-page"));
+  if (targetId) jumpToManualTarget(targetId);
+});
+
+// Manual import: a dropped or chosen .md/.txt file is read in the browser and
+// placed in the editor as a draft. Nothing reaches the server until the owner
+// presses Save manual.
+const MANUAL_IMPORT_EXTENSIONS = /\.(?:md|markdown|txt)$/iu;
+let manualDragDepth = 0;
+
+function renderManualImportControl() {
+  return `<label class="button manual-import" for="manual-import-input">${icon("download")} Import file<input id="manual-import-input" class="sr-only" type="file" accept=".md,.markdown,.txt,text/markdown,text/plain" data-manual-import /></label>`;
+}
+
+function manualFileFromTransfer(dataTransfer) {
+  const files = [...(dataTransfer?.files || [])];
+  return files.length === 1 ? files[0] : files.length > 1 ? false : null;
+}
+
+function transferHasFiles(event) {
+  return [...(event.dataTransfer?.types || [])].includes("Files");
+}
+
+async function importManualFile(file) {
+  if (!file || !state.manual.loaded) return;
+  if (!MANUAL_IMPORT_EXTENSIONS.test(String(file.name || ""))) {
+    showToast("Import a .md, .markdown or .txt file.", "danger");
+    return;
+  }
+  if (file.size > MANUAL_MARKDOWN_LIMIT) {
+    showToast("That file is over 256 KiB. Shorten it before importing.", "danger");
+    return;
+  }
+  let text;
+  try {
+    text = await file.text();
+  } catch {
+    showToast("That file could not be read.", "danger");
+    return;
+  }
+  if (text.includes("\u0000")) {
+    showToast("That file is not plain text.", "danger");
+    return;
+  }
+  state.manual.draft = text.replace(/^\uFEFF/u, "").replace(/\r\n?/gu, "\n");
+  const editor = modalLayer.querySelector("#manual-editor");
+  if (editor) {
+    editor.value = state.manual.draft;
+    modalLayer.querySelector(".manual-editor__notice")?.remove();
+    updateManualEditorStatus();
+    editor.focus();
+  } else {
+    openManualEditor();
+    modalLayer.querySelector(".manual-editor__notice")?.remove();
+  }
+  showToast(`Loaded ${String(file.name).slice(0, 80)}. Review it, then save`);
+}
+
+function setManualDragging(active) {
+  main.querySelector(".manual-page")?.classList.toggle("is-dragging", active);
+  modalLayer.querySelector(".modal-card--manual-editor")?.classList.toggle("is-dragging", active);
+}
+
+function manualDropAvailable() {
+  return Boolean(state.status?.authenticated && state.manual.loaded && currentRoute() === "manual");
+}
+
+document.addEventListener("dragenter", (event) => {
+  if (!manualDropAvailable() || !transferHasFiles(event)) return;
+  manualDragDepth += 1;
+  setManualDragging(true);
+});
+
+document.addEventListener("dragover", (event) => {
+  if (!manualDropAvailable() || !transferHasFiles(event)) return;
+  event.preventDefault?.();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+});
+
+document.addEventListener("dragleave", (event) => {
+  if (!manualDropAvailable() || !transferHasFiles(event)) return;
+  manualDragDepth = Math.max(0, manualDragDepth - 1);
+  if (!manualDragDepth) setManualDragging(false);
+});
+
+document.addEventListener("drop", (event) => {
+  if (!manualDropAvailable() || !transferHasFiles(event)) return;
+  event.preventDefault?.();
+  manualDragDepth = 0;
+  setManualDragging(false);
+  const file = manualFileFromTransfer(event.dataTransfer);
+  if (file === false) {
+    showToast("Drop one file at a time.", "danger");
+    return;
+  }
+  importManualFile(file);
+});
+
+document.addEventListener("change", (event) => {
+  if (!event.target?.matches?.("[data-manual-import]")) return;
+  const file = event.target.files?.[0];
+  event.target.value = "";
+  importManualFile(file);
+});
+
+initializeGlobalSearch();
 if (!location.hash || !ROUTES.has(rawRoute())) location.replace(`#/${workspaceLandingRoute(state.workspace)}`);
 initialize();
 
