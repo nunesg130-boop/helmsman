@@ -141,7 +141,7 @@ test("saving the manual requires a session, CSRF and the current revision", asyn
     assert.equal(invalid.status, 400);
     assert.equal(invalid.json.code, "INVALID_MANUAL");
 
-    const markdown = `# Manual\n\n${"Row | 192.168.0.7 | Jelly-Arr\n".repeat(3000)}`;
+    const markdown = `# Manual\n\n${"Row | 10.20.0.10 | media-node\n".repeat(3000)}`;
     assert.ok(Buffer.byteLength(markdown) > 64 * 1024, "the manual body may exceed the default JSON limit");
     const saved = await request(context.port, "/api/v2/manual", {
       method: "PUT",

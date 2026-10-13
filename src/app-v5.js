@@ -4982,14 +4982,14 @@ function renderManualEmpty() {
   return `<section class="manual-empty">
       ${icon("book")}
       <h3>No manual yet</h3>
-      <p>Write your infrastructure manual in Markdown: hosts, addresses, recovery steps, known issues. It is stored privately in <code>manual.json</code> in the data volume and becomes searchable from the top bar.</p>
+      <p>Drop a Markdown or text file here, or write your infrastructure manual in Markdown: hosts, addresses, recovery steps, known issues. It is stored privately in <code>manual.json</code> in this server's data volume and becomes searchable from the top bar.</p>
       <ul class="manual-empty__tips">
         <li><code>## Heading</code> starts a section</li>
         <li>Tables with <code>| a | b |</code> rows</li>
         <li><code>&gt; [!WARNING]</code> makes a callout</li>
         <li>Cells reading Pending, Healthy or Critical become status badges</li>
       </ul>
-      <div class="button-row"><button class="button button--primary" type="button" data-action="edit-manual">${icon("edit")} ${state.manual.draft !== null && state.manual.draft !== state.manual.markdown ? "Continue editing" : "Write the manual"}</button></div>
+      <div class="button-row"><button class="button button--primary" type="button" data-action="edit-manual">${icon("edit")} ${state.manual.draft !== null && state.manual.draft !== state.manual.markdown ? "Continue editing" : "Write the manual"}</button>${renderManualImportControl()}</div>
     </section>`;
 }
 
@@ -5036,11 +5036,12 @@ function renderManualPage() {
           </div>
         </div>`;
   return `<div class="page manual-page">
+    ${manual.loaded ? `<div class="manual-drop-overlay" aria-hidden="true">${icon("book")}<strong>Drop to load into the editor</strong><span>Markdown or text, up to 256 KiB. Nothing is saved until you choose Save manual.</span></div>` : ""}
     <section class="page-intro launchpad-intro manual-intro">
       <div><span class="section-kicker">${escapeHtml(kicker)}</span><h2>${escapeHtml(title)}</h2><p>Your own operations manual, kept in the data volume. Press <kbd>/</kbd> anywhere to search it alongside pages, services and workloads.</p></div>
       <div class="manual-intro__actions">
         ${hasContent ? `<label class="launchpad-search manual-search">${icon("search")}<span class="sr-only">Find in the manual</span><input id="manual-filter" type="search" data-manual-filter autocomplete="off" spellcheck="false" maxlength="80" placeholder="Find in the manual" value="${escapeHtml(manual.filter)}" /></label>` : ""}
-        ${manual.loaded && hasContent ? `<button class="button" type="button" data-action="edit-manual">${icon("edit")} ${draftPending ? "Continue editing" : "Edit"}</button>` : ""}
+        ${manual.loaded && hasContent ? `${renderManualImportControl()}<button class="button" type="button" data-action="edit-manual">${icon("edit")} ${draftPending ? "Continue editing" : "Edit"}</button>` : ""}
       </div>
     </section>
     ${body}
@@ -5204,8 +5205,8 @@ function openManualEditor() {
     <div class="modal-card__body manual-editor__body">
       ${restoring ? `<p class="manual-editor__notice" role="status">Your unsaved draft was restored.</p>` : ""}
       <label class="sr-only" for="manual-editor">Manual Markdown</label>
-      <textarea id="manual-editor" class="manual-editor__input" spellcheck="false" autocomplete="off" autocapitalize="off" placeholder="# Jellofin manual&#10;&#10;## Hosts&#10;| Host | IP | State |&#10;|---|---|---|&#10;| Main | 192.168.0.4 | Healthy |">${escapeHtml(value)}</textarea>
-      <p class="manual-editor__hint"><code>##</code> sections · <code>| table |</code> rows · <code>&gt; [!WARNING]</code> callouts · <code>\`code\`</code> · <code>**bold**</code> · Pending, Healthy, Critical and similar cells become badges.</p>
+      <textarea id="manual-editor" class="manual-editor__input" spellcheck="false" autocomplete="off" autocapitalize="off" placeholder="# Homelab manual&#10;&#10;## Hosts&#10;| Host | Address | State |&#10;|---|---|---|&#10;| media-node | 10.20.0.10 | Healthy |">${escapeHtml(value)}</textarea>
+      <p class="manual-editor__hint">Drop a .md or .txt file here to replace the text. <code>##</code> sections · <code>| table |</code> rows · <code>&gt; [!WARNING]</code> callouts · <code>\`code\`</code> · <code>**bold**</code> · Pending, Healthy, Critical and similar cells become badges.</p>
     </div>
     <footer class="modal-card__footer"><span class="manual-editor__status" data-manual-editor-status aria-live="polite"></span><div class="modal-card__actions"><button class="button button--danger" type="button" data-action="discard-manual-draft" hidden>Discard changes</button><button class="button" type="button" data-action="close-modal">Close</button><button class="button button--primary" type="button" data-action="save-manual">Save manual</button></div></footer>
   </section>`, "#manual-editor");
@@ -9330,6 +9331,107 @@ document.addEventListener("click", (event) => {
   const candidates = [fragment, `manual-${fragment}`];
   const targetId = candidates.find((candidate) => candidate && document.getElementById(candidate)?.closest(".manual-page"));
   if (targetId) jumpToManualTarget(targetId);
+});
+
+// Manual import: a dropped or chosen .md/.txt file is read in the browser and
+// placed in the editor as a draft. Nothing reaches the server until the owner
+// presses Save manual.
+const MANUAL_IMPORT_EXTENSIONS = /\.(?:md|markdown|txt)$/iu;
+let manualDragDepth = 0;
+
+function renderManualImportControl() {
+  return `<label class="button manual-import" for="manual-import-input">${icon("download")} Import file<input id="manual-import-input" class="sr-only" type="file" accept=".md,.markdown,.txt,text/markdown,text/plain" data-manual-import /></label>`;
+}
+
+function manualFileFromTransfer(dataTransfer) {
+  const files = [...(dataTransfer?.files || [])];
+  return files.length === 1 ? files[0] : files.length > 1 ? false : null;
+}
+
+function transferHasFiles(event) {
+  return [...(event.dataTransfer?.types || [])].includes("Files");
+}
+
+async function importManualFile(file) {
+  if (!file || !state.manual.loaded) return;
+  if (!MANUAL_IMPORT_EXTENSIONS.test(String(file.name || ""))) {
+    showToast("Import a .md, .markdown or .txt file.", "danger");
+    return;
+  }
+  if (file.size > MANUAL_MARKDOWN_LIMIT) {
+    showToast("That file is over 256 KiB. Shorten it before importing.", "danger");
+    return;
+  }
+  let text;
+  try {
+    text = await file.text();
+  } catch {
+    showToast("That file could not be read.", "danger");
+    return;
+  }
+  if (text.includes("\u0000")) {
+    showToast("That file is not plain text.", "danger");
+    return;
+  }
+  state.manual.draft = text.replace(/^\uFEFF/u, "").replace(/\r\n?/gu, "\n");
+  const editor = modalLayer.querySelector("#manual-editor");
+  if (editor) {
+    editor.value = state.manual.draft;
+    modalLayer.querySelector(".manual-editor__notice")?.remove();
+    updateManualEditorStatus();
+    editor.focus();
+  } else {
+    openManualEditor();
+    modalLayer.querySelector(".manual-editor__notice")?.remove();
+  }
+  showToast(`Loaded ${String(file.name).slice(0, 80)}. Review it, then save`);
+}
+
+function setManualDragging(active) {
+  main.querySelector(".manual-page")?.classList.toggle("is-dragging", active);
+  modalLayer.querySelector(".modal-card--manual-editor")?.classList.toggle("is-dragging", active);
+}
+
+function manualDropAvailable() {
+  return Boolean(state.status?.authenticated && state.manual.loaded && currentRoute() === "manual");
+}
+
+document.addEventListener("dragenter", (event) => {
+  if (!manualDropAvailable() || !transferHasFiles(event)) return;
+  manualDragDepth += 1;
+  setManualDragging(true);
+});
+
+document.addEventListener("dragover", (event) => {
+  if (!manualDropAvailable() || !transferHasFiles(event)) return;
+  event.preventDefault?.();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+});
+
+document.addEventListener("dragleave", (event) => {
+  if (!manualDropAvailable() || !transferHasFiles(event)) return;
+  manualDragDepth = Math.max(0, manualDragDepth - 1);
+  if (!manualDragDepth) setManualDragging(false);
+});
+
+document.addEventListener("drop", (event) => {
+  if (!manualDropAvailable() || !transferHasFiles(event)) return;
+  event.preventDefault?.();
+  manualDragDepth = 0;
+  setManualDragging(false);
+  const file = manualFileFromTransfer(event.dataTransfer);
+  if (file === false) {
+    showToast("Drop one file at a time.", "danger");
+    return;
+  }
+  importManualFile(file);
+});
+
+document.addEventListener("change", (event) => {
+  if (!event.target?.matches?.("[data-manual-import]")) return;
+  const file = event.target.files?.[0];
+  event.target.value = "";
+  importManualFile(file);
 });
 
 initializeGlobalSearch();

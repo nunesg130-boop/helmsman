@@ -25,14 +25,14 @@ test("manual Markdown escapes raw HTML and unsafe links", () => {
 
 test("manual sections, tables, callouts and code are parsed into a searchable document", () => {
   const manual = parseManual([
-    "# Jellofin",
+    "# Homelab",
     "Intro <script>x</script>",
     "",
     "## Hosts",
     "| Host | IP | State |",
     "|---|---|---|",
-    "| Frigate | 192.168.0.212 | Pending |",
-    "| Main | 192.168.0.4 | Healthy — after recovery |",
+    "| nvr | 10.20.0.42 | Pending |",
+    "| media-node | 10.20.0.10 | Healthy — after recovery |",
     "",
     "> [!WARNING] Mount rule",
     "> Validate the UUID mount.",
@@ -44,7 +44,7 @@ test("manual sections, tables, callouts and code are parsed into a searchable do
     "## Hosts",
     "- [x] done"
   ].join("\n"));
-  assert.equal(manual.title, "Jellofin");
+  assert.equal(manual.title, "Homelab");
   assert.match(manual.intro.html, /Intro &lt;script&gt;x&lt;\/script&gt;/u);
   assert.deepEqual(manual.sections.map(({ id }) => id), ["manual-hosts", "manual-hosts-2"]);
   const [hosts] = manual.sections;
@@ -56,11 +56,11 @@ test("manual sections, tables, callouts and code are parsed into a searchable do
   assert.equal(allHtml.toLowerCase().includes("<script"), false, "rendered HTML never carries source markup");
   assert.equal(manual.entries.at(-1).text, "done", "task markers are not part of the search text");
 
-  const results = searchManualEntries(manual.entries, "212");
+  const results = searchManualEntries(manual.entries, "42");
   assert.equal(results[0].entry.kind, "row");
   assert.equal(results[0].entry.sectionTitle, "Hosts");
   const snippet = manualSnippet(results[0].entry.text, results[0].matchStart, results[0].matchLength);
-  assert.equal(snippet.match, "212");
+  assert.equal(snippet.match, "42");
   assert.equal(searchManualEntries(manual.entries, "hosts")[0].entry.kind, "section");
   assert.deepEqual(searchManualEntries(manual.entries, "   "), []);
   assert.ok(searchManualEntries(manual.entries, "hosts uuid").length > 0, "a section title can satisfy part of the query");
@@ -71,5 +71,5 @@ test("state words map to fixed tones", () => {
   assert.equal(manualStateTone("**Healthy**"), "healthy");
   assert.equal(manualStateTone("Critical"), "danger");
   assert.equal(manualStateTone("Planned"), "neutral");
-  assert.equal(manualStateTone("Jelly-Arr"), null);
+  assert.equal(manualStateTone("media-node"), null);
 });

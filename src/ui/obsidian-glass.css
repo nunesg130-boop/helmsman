@@ -5043,3 +5043,73 @@ ul.manual-list > li.manual-task::before {
     min-height: var(--refresh-touch);
   }
 }
+
+/* Manual import and drop target */
+.manual-page {
+  position: relative;
+}
+
+.manual-import {
+  position: relative;
+  cursor: pointer;
+}
+
+.manual-import:focus-within {
+  outline: 2px solid rgba(92, 227, 149, 0.78);
+  outline-offset: 2px;
+}
+
+.manual-empty .button-row {
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+
+.manual-drop-overlay {
+  position: absolute;
+  z-index: 5;
+  inset: 8px;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+  border: 2px dashed rgba(92, 227, 149, 0.55);
+  border-radius: var(--radius-lg);
+  background: rgba(7, 7, 8, 0.86);
+  color: #ececef;
+  text-align: center;
+  pointer-events: none;
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}
+
+.manual-drop-overlay svg {
+  width: 30px;
+  height: 30px;
+  fill: none;
+  stroke: #7ff0ad;
+  stroke-width: 1.6;
+}
+
+.manual-drop-overlay strong {
+  font-size: 15px;
+  font-weight: 610;
+}
+
+.manual-drop-overlay span {
+  max-width: 360px;
+  color: var(--refresh-ink-quiet);
+  font-size: 12px;
+}
+
+.manual-page.is-dragging .manual-drop-overlay {
+  display: flex;
+}
+
+.modal-card--manual-editor.is-dragging .manual-editor__input {
+  border-color: rgba(92, 227, 149, 0.6);
+  border-style: dashed;
+  background: rgba(92, 227, 149, 0.04);
+}
