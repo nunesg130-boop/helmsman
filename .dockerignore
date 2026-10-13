@@ -34,6 +34,7 @@
 !src/app-v5.js
 !src/ui
 !src/ui/operations-views.js
+!src/ui/manual-markdown.js
 !src/ui/operations.css
 !src/ui/control.css
 !src/ui/retro.css
@@ -46,6 +47,7 @@
 !server/health-engine.mjs
 !server/index.mjs
 !server/lock.mjs
+!server/manual.mjs
 !server/loki.mjs
 !server/loki-probes.mjs
 !server/loki-transport.mjs

@@ -15,6 +15,10 @@ This Helmsman is the media and infrastructure dashboard in this repository. It
 is not affiliated with or derived from the existing Kubernetes project also
 named [Helmsman](https://github.com/mkubaczyk/helmsman).
 
+## Unreleased
+
+This change adds a **Manual** to the Overview workspace and a **Search Helmsman** field to the top bar. The Manual, between Launchpad and Logs, holds your own operations manual written in Markdown: sections, tables, lists, code blocks and `> [!WARNING]`-style callouts, with table cells such as Pending, Healthy or Critical shown as status badges. It is edited in place, stored privately in `manual.json` in the data volume, and saved only against the revision the editor opened, so two sessions cannot silently overwrite each other. Helmsman ships with no manual content, renders the Markdown through an escaping subset that never passes HTML or script through, and limits a manual to 256 KiB. The manual is not encrypted, so keep passwords, keys and tokens out of it. Search Helmsman (press `/` or Ctrl/⌘ K) finds pages, connected services, Proxmox workloads and manual sections or table rows in one list, and opening a manual result scrolls to that row and highlights the match.
+
 ## v1.4.0
 
 This release finishes the Obsidian Glass visual refresh and adds the **Launchpad**. The refresh raises the near-black canvas with one sheet for the header and content, turns rows into quiet tiles, restyles the System Health gauge as a 28-segment arc, gives every button, chip, tab and filter one compact desktop scale with 44px touch targets on phones and coarse pointers, and restyles Calendar, Logs, filters, dialogs and phone layouts. The Launchpad, in the Overview workspace between Overview and Logs, opens every connected media service, Proxmox environment and Portainer server in a new tab. Each tile uses an optional external address first and the connection address as the fallback. External addresses are stored privately in `launchpad.json` in the data volume, accept only plain http(s) links, and are never requested by Helmsman. The bundled Portainer mark is now the dark-background variant and the favicon helmet fills its icon.
