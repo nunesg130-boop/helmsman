@@ -138,6 +138,37 @@ fence is allowed but not used for colouring. Code is searchable.
 - Control characters other than tab and line feed. Windows line endings are
   converted automatically.
 
+## Writing it with an AI assistant
+
+Gather what the assistant needs, with secrets removed: notes on your hosts,
+network and services, and output from read-only commands such as `ip -br addr`,
+`docker ps`, `pvecm status` or `pvesh get /cluster/resources --type vm`. If you
+already have a manual, paste it so the assistant updates it instead of starting
+over. Then use this prompt:
+
+> Write a Helmsman operations manual in Markdown following the format guide
+> below.
+>
+> - Start with a `# Title` line, then use `##` headings for sections: Hosts,
+>   Network, Services, Storage and backups, Runbooks, Known issues and Change
+>   log, plus any others my notes need.
+> - Put inventories in tables with a header row and a `|---|` divider.
+> - Put the status in its own table column and use only the badge words in the
+>   guide, optionally followed by ` — ` and a short detail, for example
+>   `Pending — disk recheck`.
+> - Use `> [!WARNING]` callouts for things that can cause damage if skipped.
+> - Don't use HTML, images, footnotes or nested lists.
+> - Never include passwords, API keys, tokens or private keys, even if they
+>   appear in what I paste. Tell me where you saw one so I can rotate it.
+> - Don't invent addresses, ports or versions. Write `TBD` and list your
+>   questions after the manual.
+>
+> [paste this guide]
+> [paste notes, command output and any existing manual]
+
+Paste the result into the editor or save it as a `.md` file and import it,
+then check it and choose **Save manual**.
+
 ## Search
 
 Press `/` or Ctrl/⌘ K anywhere in Helmsman to search pages, connected services,

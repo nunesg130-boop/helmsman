@@ -577,7 +577,7 @@ async function setupClaimJellyfinFlowContract() {
   const claim = environment.requestLog.find(({ path }) => path === "/api/v2/setup/claim");
   assert.ok(claim, "first-time setup must use the claim route");
   assert.equal(claim.options.credentials, "same-origin");
-  assert.equal(claim.options.headers.has("X-Jellofin-CSRF"), false, "claim must not require an existing CSRF token");
+  assert.equal(claim.options.headers.has("X-Helmsman-CSRF"), false, "claim must not require an existing CSRF token");
   assert.deepEqual(JSON.parse(claim.options.body), {
     setupToken,
     deviceName: "Runtime test",
@@ -655,7 +655,7 @@ async function jellyfinEnrollmentContract() {
   await waitFor(() => passwordInput.value === "", "enrollment password clearing");
 
   const request = environment.requestLog.find(({ path }) => path === "/api/v2/auth/jellyfin/enroll");
-  assert.equal(request.options.headers.get("X-Jellofin-CSRF"), csrfToken);
+  assert.equal(request.options.headers.get("X-Helmsman-CSRF"), csrfToken);
   assert.deepEqual(JSON.parse(request.options.body), {
     username: ownerName,
     password,
@@ -729,7 +729,7 @@ async function jellyfinLoginContract() {
   await waitFor(() => environment.main.innerHTML.includes("operations-page"), "successful Jellyfin login");
   const login = environment.requestLog.filter(({ path }) => path === "/api/v2/auth/jellyfin/login").at(-1);
   assert.equal(login.options.credentials, "same-origin");
-  assert.equal(login.options.headers.has("X-Jellofin-CSRF"), false, "login must not require an existing CSRF token");
+  assert.equal(login.options.headers.has("X-Helmsman-CSRF"), false, "login must not require an existing CSRF token");
   assert.deepEqual(JSON.parse(login.options.body), {
     username,
     password: acceptedPassword,
@@ -845,7 +845,7 @@ async function networkPolicyInteractionContract() {
   );
   const exactSave = environment.requestLog.find(({ path, options }) => path === "/api/v2/config" && options.method === "PUT");
   assert.equal(exactSave.options.credentials, "same-origin");
-  assert.equal(exactSave.options.headers.get("X-Jellofin-CSRF"), csrfToken);
+  assert.equal(exactSave.options.headers.get("X-Helmsman-CSRF"), csrfToken);
   assert.deepEqual(JSON.parse(exactSave.options.body), { allowedCidrs: [], allowPublicHttps: true });
   await waitFor(() => environment.main.innerHTML.includes('name="allowPublicHttps" checked'), "saved public HTTPS opt-in");
 
@@ -1841,7 +1841,7 @@ async function mediaSemanticsContract() {
     resourceId: 106,
     targetRevision: seerrRevision
   }, "media resource IDs must be sent as JSON numbers");
-  assert.equal(retryCall.options.headers.get("X-Jellofin-CSRF"), "media-semantics-csrf");
+  assert.equal(retryCall.options.headers.get("X-Helmsman-CSRF"), "media-semantics-csrf");
   assert.equal(
     environment.requestLog.filter(({ path }) => path === "/api/v2/operations/refresh").length,
     refreshesBeforeRetry + 1,
@@ -2267,7 +2267,7 @@ async function seriesSeasonControlsContract() {
     detailRevision: refreshedDetailRevision
   });
   assert.equal(actionCalls[2].options.credentials, "same-origin");
-  assert.equal(actionCalls[2].options.headers.get("X-Jellofin-CSRF"), "season-controls-csrf");
+  assert.equal(actionCalls[2].options.headers.get("X-Helmsman-CSRF"), "season-controls-csrf");
   assert.equal(environment.requestLog.filter(({ path }) => path === "/api/v2/operations/refresh").length, 4);
   assert.equal(
     environment.requestLog.filter(({ path }) => path === `/api/v2/media/series/990001/seasons?targetRevision=${seerrRevision}`).length,
@@ -2862,7 +2862,7 @@ async function serviceDialogInteractionContract() {
   const connectionTestCall = environment.requestLog.find(({ path }) => path === "/api/v2/services/jellyfin/test");
   assert.equal(connectionTestCall.options.method, "POST");
   assert.equal(connectionTestCall.options.credentials, "same-origin");
-  assert.equal(connectionTestCall.options.headers.get("X-Jellofin-CSRF"), csrfToken);
+  assert.equal(connectionTestCall.options.headers.get("X-Helmsman-CSRF"), csrfToken);
   assert.deepEqual(JSON.parse(connectionTestCall.options.body), {
     url: config.services[0].url,
     authMode: "token",
@@ -3654,7 +3654,7 @@ async function infrastructureWorkspaceContract() {
   const draftTestCall = environment.requestLog.find(({ path }) => path === "/api/v2/infrastructure/environments/test");
   assert.equal(draftTestCall.options.method, "POST");
   assert.equal(draftTestCall.options.credentials, "same-origin");
-  assert.equal(draftTestCall.options.headers.get("X-Jellofin-CSRF"), csrfToken);
+  assert.equal(draftTestCall.options.headers.get("X-Helmsman-CSRF"), csrfToken);
   assert.deepEqual(JSON.parse(draftTestCall.options.body), {
     type: "proxmox",
     url: targetUrl,
@@ -3687,7 +3687,7 @@ async function infrastructureWorkspaceContract() {
     ({ path, options }) => path === "/api/v2/infrastructure/environments" && options.method === "POST"
   );
   assert.equal(createCall.options.credentials, "same-origin");
-  assert.equal(createCall.options.headers.get("X-Jellofin-CSRF"), csrfToken);
+  assert.equal(createCall.options.headers.get("X-Helmsman-CSRF"), csrfToken);
   assert.deepEqual(JSON.parse(createCall.options.body), {
     type: "proxmox",
     displayName: "Example Proxmox",
@@ -3713,7 +3713,7 @@ async function infrastructureWorkspaceContract() {
   const createRefreshCall = environment.requestLog.find(({ path }) => path === "/api/v2/operations/refresh");
   assert.ok(createRefreshCall, "saving Proxmox must request an immediate operations refresh");
   assert.equal(createRefreshCall.options.method, "POST");
-  assert.equal(createRefreshCall.options.headers.get("X-Jellofin-CSRF"), csrfToken);
+  assert.equal(createRefreshCall.options.headers.get("X-Helmsman-CSRF"), csrfToken);
   assert.deepEqual(JSON.parse(createRefreshCall.options.body), {});
 
   environment.location.hash = "#/overview";
@@ -3886,7 +3886,7 @@ async function infrastructureWorkspaceContract() {
     operation: "start",
     targetRevision: targetId
   });
-  assert.equal(startCall.options.headers.get("X-Jellofin-CSRF"), csrfToken);
+  assert.equal(startCall.options.headers.get("X-Helmsman-CSRF"), csrfToken);
   assert.equal(
     environment.requestLog.filter(({ path }) => path === "/api/v2/operations/refresh").length,
     refreshesBeforeWorkloadAction + 1,
@@ -4278,7 +4278,7 @@ async function portainerInfrastructureContract() {
     operation: "restart",
     targetRevision: serviceId
   });
-  assert.equal(restartCall.options.headers.get("X-Jellofin-CSRF"), "portainer-csrf");
+  assert.equal(restartCall.options.headers.get("X-Helmsman-CSRF"), "portainer-csrf");
   assert.equal(
     environment.requestLog.filter(({ path }) => path === "/api/v2/operations/refresh").length,
     refreshesBeforeContainerAction + 1,
@@ -4856,13 +4856,13 @@ async function authenticatedRuntimeContract() {
   assert.equal(mutations.length, 2);
   for (const mutation of mutations) {
     assert.equal(mutation.options.credentials, "same-origin", `${mutation.path} must send only same-origin browser credentials`);
-    assert.equal(mutation.options.headers.get("X-Jellofin-CSRF"), csrfToken, `${mutation.path} must carry the authenticated CSRF token`);
+    assert.equal(mutation.options.headers.get("X-Helmsman-CSRF"), csrfToken, `${mutation.path} must carry the authenticated CSRF token`);
     assert.equal(mutation.options.method, mutation.path.startsWith("/api/v2/sessions/") ? "DELETE" : "POST");
   }
 
   await environment.dispatchDocument("click", { target: actionTarget("logout") });
   const logout = environment.requestLog.find(({ path }) => path === "/api/v2/session");
-  assert.equal(logout.options.headers.get("X-Jellofin-CSRF"), csrfToken);
+  assert.equal(logout.options.headers.get("X-Helmsman-CSRF"), csrfToken);
   assert.match(environment.main.innerHTML, /Sign in with Jellyfin/u, "signing out must return to Jellyfin login");
 }
 

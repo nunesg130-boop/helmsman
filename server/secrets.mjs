@@ -287,6 +287,9 @@ function validateDocument(value, expectedInstanceId) {
   return value;
 }
 
+// These "jellofin-command/..." strings are authenticated-data labels bound into
+// every stored ciphertext. They predate the Helmsman name and must not change:
+// a different label makes every existing encrypted credential unreadable.
 function valueAad(instanceId, service, field, record) {
   return Buffer.from(JSON.stringify([
     "jellofin-command/credential",

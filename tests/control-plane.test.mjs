@@ -91,7 +91,7 @@ function jsonRequest(context, pathname, method, payload, options = {}) {
       Origin: options.origin ?? context.origin,
       "Content-Type": "application/json",
       ...(options.cookie ? { Cookie: options.cookie } : {}),
-      ...(options.csrf ? { "X-Jellofin-Csrf": options.csrf } : {}),
+      ...(options.csrf ? { "X-Helmsman-Csrf": options.csrf } : {}),
       ...(options.headers || {})
     },
     body: JSON.stringify(payload)
@@ -780,7 +780,7 @@ test("v2 control plane keeps browser and service secrets out of public and persi
         headers: {
           Origin: context.origin,
           Cookie: authentication.cookie,
-          "X-Jellofin-Csrf": authentication.csrf
+          "X-Helmsman-Csrf": authentication.csrf
         }
       });
       assert.equal(logout.status, 204);
@@ -863,7 +863,7 @@ test("owner enrollment cannot commit after its authorizing bootstrap session is 
         headers: {
           Origin: context.origin,
           Cookie: browserBCookie,
-          "X-Jellofin-Csrf": browserB.csrfToken
+          "X-Helmsman-Csrf": browserB.csrfToken
         }
       }
     );
@@ -1208,7 +1208,7 @@ test("Jellyfin sign-in accepts only the exact enabled administrator and revocati
       headers: {
         Origin: context.origin,
         Cookie: enrolledAuthentication.cookie,
-        "X-Jellofin-Csrf": enrolledAuthentication.csrf
+        "X-Helmsman-Csrf": enrolledAuthentication.csrf
       }
     });
     assert.equal(revoked.status, 204);

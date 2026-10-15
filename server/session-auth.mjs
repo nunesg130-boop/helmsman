@@ -18,7 +18,10 @@ const UUID_PATTERN = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a
 const COOKIE_NAME_PATTERN = /^[A-Za-z0-9_.-]{1,80}$/u;
 const CONTROL_CHARACTERS = /[\u0000-\u0020\u007f-\u009f/@?#\\]/u;
 const DEFAULT_COOKIE_NAME = "JFC_SESSION";
-const DEFAULT_CSRF_HEADER = "x-jellofin-csrf";
+// The CSRF header uses the x-helmsman- prefix. x-jellofin-csrf is the
+// pre-rename spelling and stays accepted for one compatibility window.
+const DEFAULT_CSRF_HEADER = "x-helmsman-csrf";
+const LEGACY_CSRF_HEADER = "x-jellofin-csrf";
 const JELLYFIN_PROVIDER = "jellyfin";
 const PREPARED_OWNER_SESSION_PLANS = new WeakMap();
 
@@ -398,6 +401,9 @@ export function expiredSessionCookie(options) {
   return attributes.join("; ");
 }
 
+// "jellofin-command-csrf-v1" predates the Helmsman name. It is the HMAC domain
+// label for CSRF tokens; changing it would invalidate every open session's
+// token, so it stays as-is.
 function csrfForRecord(record) {
   return createHmac("sha256", Buffer.from(record.tokenHash, "hex"))
     .update(`jellofin-command-csrf-v1\0${record.id}`, "utf8")
@@ -405,7 +411,10 @@ function csrfForRecord(record) {
 }
 
 function requireCsrf(request, record, headerName) {
-  const presented = request?.headers?.[headerName];
+  const headers = request?.headers || {};
+  const presented = headers[headerName] !== undefined
+    ? headers[headerName]
+    : headerName === DEFAULT_CSRF_HEADER ? headers[LEGACY_CSRF_HEADER] : undefined;
   if (typeof presented !== "string") {
     fail(403, "CSRF_TOKEN_REQUIRED", "A CSRF token is required for this request.");
   }
