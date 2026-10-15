@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
+  MANUAL_STATE_GROUPS,
+  MANUAL_TEMPLATE,
   manualSnippet,
   manualStateTone,
   parseManual,
@@ -72,4 +75,31 @@ test("state words map to fixed tones", () => {
   assert.equal(manualStateTone("Critical"), "danger");
   assert.equal(manualStateTone("Planned"), "neutral");
   assert.equal(manualStateTone("media-node"), null);
+});
+
+test("the starter template is generic and renders every block type", () => {
+  const manual = parseManual(MANUAL_TEMPLATE);
+  assert.equal(manual.title, "Homelab manual");
+  assert.deepEqual(manual.sections.map(({ title }) => title), [
+    "Hosts", "Network", "Services", "Storage and backups", "Runbooks", "Known issues", "Change log"
+  ]);
+  const html = manual.sections.map(({ html }) => html).join("");
+  for (const fragment of ["manual-state is-healthy", "manual-state is-warning", "manual-callout is-warning", "manual-code", "manual-task", "<ol"]) {
+    assert.ok(html.includes(fragment), `template renders ${fragment}`);
+  }
+  assert.ok(Buffer.byteLength(MANUAL_TEMPLATE) < 4096, "template stays small");
+});
+
+test("the formatting guide documents every badge word and renders in the Manual", async () => {
+  const guide = await readFile(new URL("../docs/MANUAL-FORMAT.md", import.meta.url), "utf8");
+  const colours = { healthy: "Green", warning: "Yellow", danger: "Red", info: "Blue", neutral: "Grey" };
+  for (const [tone, words] of Object.entries(MANUAL_STATE_GROUPS)) {
+    const row = guide.split("\n").find((line) => line.startsWith(`| ${colours[tone]} |`));
+    assert.ok(row, `guide has a ${colours[tone]} row`);
+    const listed = row.split("|")[2].split(",").map((word) => word.trim());
+    assert.deepEqual(listed, [...words], `guide lists the ${tone} words exactly`);
+  }
+  const rendered = parseManual(guide);
+  assert.equal(rendered.title, "Manual formatting guide");
+  assert.ok(rendered.sections.length >= 8);
 });
