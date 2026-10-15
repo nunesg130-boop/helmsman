@@ -4,6 +4,7 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypt
 import { isIP } from "node:net";
 import path from "node:path";
 import { parseServiceUrl } from "./network.mjs";
+import { STORED_LIMIT_CEILINGS } from "./limits.mjs";
 
 const STATE_VERSION = 5;
 const MAX_STATE_BYTES = 1024 * 1024;
@@ -12,14 +13,16 @@ const TOKEN_HASH = /^[a-f0-9]{64}$/u;
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u;
 const SERVICE_IDS = new Set(["jellyfin", "seerr", "radarr", "sonarr", "prowlarr", "bazarr", "qbittorrent"]);
 const MAX_APPROVED_HOST_CIDRS = 32;
-// Seven media connectors, 25 Proxmox endpoint records, and eight infrastructure
-// services can all be duplicated once during an atomic
-// policy/credential-binding migration without exceeding the encrypted store's
-// 96-namespace ceiling.
-const MAX_INFRASTRUCTURE_TARGETS = 25;
-const MAX_INFRASTRUCTURE_ENDPOINTS = 25;
-const MAX_ENDPOINTS_PER_ENVIRONMENT = 4;
-const MAX_INFRASTRUCTURE_SERVICES = 8;
+// Every credential-bearing connection can be duplicated once during an atomic
+// policy/credential-binding migration; limits.mjs keeps their total inside the
+// encrypted store's budget.
+// Stored state is checked against fixed ceilings rather than the configured
+// limits, so lowering a limit never stops an existing volume from loading.
+// The configured limits are enforced when records are added (control-plane).
+const MAX_INFRASTRUCTURE_TARGETS = STORED_LIMIT_CEILINGS.proxmoxEnvironments;
+const MAX_INFRASTRUCTURE_ENDPOINTS = STORED_LIMIT_CEILINGS.proxmoxEndpoints;
+const MAX_ENDPOINTS_PER_ENVIRONMENT = STORED_LIMIT_CEILINGS.endpointsPerEnvironment;
+const MAX_INFRASTRUCTURE_SERVICES = STORED_LIMIT_CEILINGS.infrastructureServices;
 const INFRASTRUCTURE_TYPES = new Set(["proxmox"]);
 const INFRASTRUCTURE_SERVICE_TYPES = new Set(["portainer", "loki"]);
 const LOKI_AUTH_MODES = new Set(["none", "basic", "bearer"]);

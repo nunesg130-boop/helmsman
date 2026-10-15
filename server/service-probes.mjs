@@ -2,6 +2,7 @@ import {
   inventoryFromProbeBody,
   normalizeServiceMediaInventory
 } from "./media-model.mjs";
+import { resolveLimits } from "./limits.mjs";
 
 export const SERVICE_PROBE_SCHEMA = 1;
 
@@ -15,8 +16,6 @@ const MAX_REPORTS_PER_CHECK = 12;
 const MAX_REPORT_SOURCE_CODEPOINTS = 96;
 const MAX_REPORT_MESSAGE_CODEPOINTS = 600;
 const REPORT_REDACTION = "[REDACTED]";
-const CALENDAR_PAST_DAYS = 1;
-const CALENDAR_FUTURE_DAYS = 35;
 
 function deepFreeze(value) {
   if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
@@ -181,6 +180,14 @@ export function serviceAuthMetadata(service) {
   return SERVICE_AUTH_SCHEMA.services[serviceId(service)];
 }
 
+let cachedLimits = null;
+function configuredLimits() {
+  // Resolved once per process. index.mjs validates the same variables at
+  // startup, so a bad value stops the server before any probe runs.
+  cachedLimits ??= resolveLimits();
+  return cachedLimits;
+}
+
 export function buildProbePlan(service, options = {}) {
   const id = serviceId(service);
   const includeOptional = options.includeOptional !== false;
@@ -194,8 +201,9 @@ export function buildProbePlan(service, options = {}) {
     date.setUTCDate(date.getUTCDate() + offsetDays);
     return date.toISOString().slice(0, 10);
   };
+  const configured = options.limits || configuredLimits();
   const calendarPath = id === "radarr" || id === "sonarr"
-    ? `/api/v3/calendar?start=${calendarDate(-CALENDAR_PAST_DAYS)}&end=${calendarDate(CALENDAR_FUTURE_DAYS)}${id === "sonarr" ? "&includeSeries=true" : ""}`
+    ? `/api/v3/calendar?start=${calendarDate(-configured.calendarPastDays)}&end=${calendarDate(configured.calendarFutureDays)}${id === "sonarr" ? "&includeSeries=true" : ""}`
     : null;
   return PROBE_PLANS[id]
     .filter((entry) => includeOptional || entry.importance !== "optional")

@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { randomUUID } from "node:crypto";
 import { StateStore } from "../server/state.mjs";
+import { STORED_LIMIT_CEILINGS } from "../server/limits.mjs";
 
 function target(id = randomUUID()) {
   const now = new Date().toISOString();
@@ -220,7 +221,7 @@ test("state v4 migration preserves existing Portainer records exactly", async ()
   }
 });
 
-test("state accepts eight canonical Portainer services and rejects unsafe shapes", async () => {
+test("state accepts canonical Portainer services up to the stored ceiling and rejects unsafe shapes", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "helmsman-state-infrastructure-services-"));
   try {
     const store = new StateStore(root);
@@ -247,7 +248,7 @@ test("state accepts eight canonical Portainer services and rejects unsafe shapes
     );
 
     await store.mutate((state) => {
-      while (Object.keys(state.infrastructureServices).length < 8) {
+      while (Object.keys(state.infrastructureServices).length < STORED_LIMIT_CEILINGS.infrastructureServices) {
         const entry = infrastructureService();
         state.infrastructureServices[entry.id] = entry;
       }
@@ -259,7 +260,7 @@ test("state accepts eight canonical Portainer services and rejects unsafe shapes
       }),
       /Malformed broker infrastructure service state/u
     );
-    assert.equal(Object.keys(store.snapshot().infrastructureServices).length, 8);
+    assert.equal(Object.keys(store.snapshot().infrastructureServices).length, STORED_LIMIT_CEILINGS.infrastructureServices);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -344,7 +345,7 @@ test("state accepts bounded canonical Proxmox targets and rejects unsafe shapes"
     assert.equal(Object.keys(store.snapshot().infrastructureTargets).length, 1);
 
     await store.mutate((state) => {
-      while (Object.keys(state.infrastructureTargets).length < 25) {
+      while (Object.keys(state.infrastructureTargets).length < STORED_LIMIT_CEILINGS.proxmoxEnvironments) {
         const entry = target();
         state.infrastructureTargets[entry.id] = entry;
       }
@@ -356,7 +357,7 @@ test("state accepts bounded canonical Proxmox targets and rejects unsafe shapes"
       }),
       /Malformed broker infrastructure target state/u
     );
-    assert.equal(Object.keys(store.snapshot().infrastructureTargets).length, 25);
+    assert.equal(Object.keys(store.snapshot().infrastructureTargets).length, STORED_LIMIT_CEILINGS.proxmoxEnvironments);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

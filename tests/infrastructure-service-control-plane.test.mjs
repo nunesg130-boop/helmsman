@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { createControlPlane, ControlPlaneError } from "../server/control-plane.mjs";
 import { StateStore } from "../server/state.mjs";
+import { DEFAULT_LIMITS } from "../server/limits.mjs";
 
 const ACCESS_TOKEN = "ptr_access-token-that-must-remain-encrypted";
 const FINGERPRINT = Array.from({ length: 32 }, () => "cd").join(":");
@@ -42,7 +43,7 @@ function request(port, pathname, options = {}) {
   });
 }
 
-async function start() {
+async function start(extra = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "helmsman-infrastructure-service-control-"));
   const store = new StateStore(root);
   await store.initialize();
@@ -52,6 +53,7 @@ async function start() {
     stateStore: store,
     dataDir: root,
     version: "test",
+    ...extra,
     lookup: async (hostname) => {
       assert.match(hostname, /^portainer-[12]\.test$/u);
       return [{ address: hostname === "portainer-1.test" ? "10.20.30.50" : "10.20.30.51", family: 4 }];
@@ -322,6 +324,31 @@ test("Portainer infrastructure services require HTTPS, coherent TLS trust, and a
     });
     assert.equal(missingCredential.status, 400);
     assert.equal(missingCredential.json.code, "CREDENTIAL_REQUIRED");
+  } finally {
+    await stop(context);
+  }
+});
+
+test("a configured infrastructure service limit is enforced when adding", async () => {
+  const context = await start({ limits: { ...DEFAULT_LIMITS, infrastructureServices: 1 } });
+  try {
+    const authentication = await claim(context);
+    const body = (index) => ({
+      type: "portainer",
+      displayName: `Portainer ${index}`,
+      url: `https://portainer-${index}.test:9443`,
+      enabled: true,
+      monitoringEnabled: false,
+      tlsMode: "system",
+      certificateFingerprint: "",
+      credentials: { accessToken: `token-${index}` }
+    });
+    const first = await request(context.port, "/api/v2/infrastructure/services", { method: "POST", ...authentication, body: body(1) });
+    assert.equal(first.status, 201, JSON.stringify(first.json));
+    const second = await request(context.port, "/api/v2/infrastructure/services", { method: "POST", ...authentication, body: body(2) });
+    assert.equal(second.status, 409, JSON.stringify(second.json));
+    assert.match(second.json.message, /No more than 1 infrastructure services/u);
+    assert.equal(Object.keys(context.store.snapshot().infrastructureServices).length, 1);
   } finally {
     await stop(context);
   }
