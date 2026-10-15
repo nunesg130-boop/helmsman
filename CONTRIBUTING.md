@@ -12,10 +12,27 @@ focused feature proposals are welcome.
 - Replace live topology, hostnames, addresses, media titles, account names,
   credentials, tokens, cookies, and raw service responses with synthetic data.
 
+## Trying Helmsman without a homelab
+
+```sh
+npm run demo
+```
+
+This starts the real Helmsman server on `http://127.0.0.1:4180` against
+built-in fake services: Jellyfin, Seerr, Radarr, Sonarr, Prowlarr, Bazarr,
+qBittorrent, a two-node Proxmox cluster and Portainer. It sets itself up and
+fills in a sample manual and network map. Sign in with `demo` / `demo`.
+
+The data is temporary unless you pass `--data ./demo-data`. Use
+`--port 5000` for another port. The demo lives in `scripts/`, which the
+container image does not include. When a change alters what a service
+returns, update its fake in `scripts/demo.mjs`; `tests/demo.test.mjs` fails if
+the demo stops coming up healthy.
+
 ## Development workflow
 
 1. Fork the repository and create a focused branch from current `main`.
-2. Use Node.js `>=24.19.0 <25`.
+2. Use Node.js `>=24.19.0 <25`. There are no npm dependencies to install.
 3. Make the smallest cohesive change and add or update tests for behavior.
 4. Run the required checks:
 
@@ -28,6 +45,13 @@ focused feature proposals are welcome.
    headless shell.
 6. Open a pull request with the problem, design, security impact, test results,
    and screenshots for meaningful visual changes.
+
+To add a service, follow [docs/ADDING-A-CONNECTOR.md](docs/ADDING-A-CONNECTOR.md),
+which lists every file a connector touches.
+
+`Publish-Helmsman.ps1` and `scripts/Publish-HelmsmanRelease.ps1` are the
+maintainer's release tooling. Contributors never need PowerShell or Windows;
+`npm test` covers everything a pull request is checked against.
 
 The repository intentionally has no general upstream API proxy, shell, Docker
 socket, host mount, arbitrary request body, or destructive action surface.

@@ -482,7 +482,7 @@ async function jellyfinGateContract() {
   assert.match(environment.main.innerHTML, /name="username" type="text" autocomplete="username"/u);
   assert.match(environment.main.innerHTML, /name="password" type="password" autocomplete="current-password"/u);
   assert.match(environment.main.innerHTML, /HTTP does not encrypt this password between Helmsman and Jellyfin/u);
-  assert.doesNotMatch(environment.main.innerHTML, /Gabriel/u);
+  assert.doesNotMatch(environment.main.innerHTML, /Avery/u);
   assert.doesNotMatch(environment.main.innerHTML, /name="(?:deviceName|accessKey|serverId|userId)"/iu);
   assert.doesNotMatch(environment.main.innerHTML, /rotate-access-key|Server ID|User ID/iu);
 }
@@ -671,7 +671,7 @@ async function jellyfinEnrollmentContract() {
 async function jellyfinLoginContract() {
   const rejectedPassword = "rejected-jellyfin-password";
   const acceptedPassword = "accepted-jellyfin-password";
-  const username = "Gabriel";
+  const username = "Avery";
   const csrfToken = "login-csrf-token";
   const config = { policy: { allowedCidrs: [], allowPublicHttps: false }, services: [] };
   const snapshot = minimalOperationsSnapshot();
@@ -2351,7 +2351,7 @@ async function seriesSeasonControlsContract() {
     if (path === "/api/v2/status") {
       statusCalls += 1;
       return jsonResponse(statusCalls === 1
-        ? { setupRequired: false, authenticated: true, authentication: { provider: "jellyfin", configured: true, ownerName: "Gabriel", legacyAccessKeyAvailable: false }, csrfToken: "expired-season-csrf", session: { name: "Expiring Browser" } }
+        ? { setupRequired: false, authenticated: true, authentication: { provider: "jellyfin", configured: true, ownerName: "Avery", legacyAccessKeyAvailable: false }, csrfToken: "expired-season-csrf", session: { name: "Expiring Browser" } }
         : { setupRequired: false, authenticated: false, authentication: { provider: "jellyfin", configured: true, ownerName: null, legacyAccessKeyAvailable: false } });
     }
     if (path === "/api/v2/config") return jsonResponse({
@@ -2388,7 +2388,7 @@ async function seriesSeasonControlsContract() {
     if (path === "/api/v2/status") return jsonResponse({
       setupRequired: false,
       authenticated: true,
-      authentication: { provider: "jellyfin", configured: true, ownerName: "Gabriel", legacyAccessKeyAvailable: false },
+      authentication: { provider: "jellyfin", configured: true, ownerName: "Avery", legacyAccessKeyAvailable: false },
       csrfToken: "season-race-csrf",
       session: { name: "Season Race Browser" }
     });
@@ -4169,7 +4169,7 @@ async function portainerInfrastructureContract() {
     const method = String(options.method || "GET").toUpperCase();
     if (path === "/api/v2/status") return sessionExpired
       ? jsonResponse({ setupRequired: false, authenticated: false, authentication: { provider: "jellyfin", configured: true, ownerName: null, legacyAccessKeyAvailable: false } })
-      : jsonResponse({ setupRequired: false, authenticated: true, authentication: { provider: "jellyfin", configured: true, ownerName: "Gabriel", legacyAccessKeyAvailable: false }, csrfToken: "portainer-csrf", session: { name: "Portainer Browser" } });
+      : jsonResponse({ setupRequired: false, authenticated: true, authentication: { provider: "jellyfin", configured: true, ownerName: "Avery", legacyAccessKeyAvailable: false }, csrfToken: "portainer-csrf", session: { name: "Portainer Browser" } });
     if (path === "/api/v2/config") return jsonResponse(clone(config));
     if (path === "/api/v2/operations/snapshot") return sessionExpired
       ? jsonResponse({ code: "AUTHENTICATION_REQUIRED", message: "The browser session expired." }, 401)
@@ -4567,7 +4567,7 @@ async function authenticatedRuntimeContract() {
       return jsonResponse({
         setupRequired: false,
         authenticated: true,
-        authentication: { provider: "jellyfin", configured: true, ownerName: "Gabriel", legacyAccessKeyAvailable: false },
+        authentication: { provider: "jellyfin", configured: true, ownerName: "Avery", legacyAccessKeyAvailable: false },
         csrfToken,
         session: { id: currentSessionId, name: "Runtime Browser" },
         storage: { credentialsEncrypted: true, externalKey: false }
@@ -4717,7 +4717,7 @@ async function authenticatedRuntimeContract() {
   assert.match(environment.main.innerHTML, /name="allowedCidrs"[^>]*required/u, "manual mode must require its CIDR textarea");
   assert.doesNotMatch(environment.main.innerHTML, /name="allowedCidrs"[^>]*disabled/u, "manual mode must enable its CIDR textarea");
   assert.match(environment.main.innerHTML, /Jellyfin owner authentication/u);
-  assert.match(environment.main.innerHTML, /Gabriel enrolled/u);
+  assert.match(environment.main.innerHTML, /Avery enrolled/u);
   assert.doesNotMatch(environment.main.innerHTML, /id="jellyfin-enroll-form"/u, "an enrolled owner must not be replaceable through the enrollment-only endpoint");
   assert.match(environment.main.innerHTML, /data-action="refresh-sessions"/u);
   assert.doesNotMatch(environment.main.innerHTML, /data-action="rotate-access-key"|Server ID|User ID/iu);

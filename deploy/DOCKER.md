@@ -263,6 +263,31 @@ Authenticated browsers may also receive current live health reports built only f
 
 For probe compatibility, Radarr, Sonarr, and Prowlarr `Notice` health entries remain informational rather than making a service Limited. Helmsman handles Prowlarr's blocked-indexer endpoint and Seerr's current status, authenticated-identity, and request-count routes explicitly. Proxmox, Portainer, and Loki use separate fixed route allowlists; none accepts an API path supplied by the browser. Portainer 3.x status is checked first, and the legacy status route is used only when the newer route returns HTTP 404.
 
+## Capacity limits
+
+The defaults suit most homelabs. To change them, set any of these in `.env`
+beside `compose.yaml` and run `docker compose up -d` again:
+
+| Variable | Default | Range | What it limits |
+|---|---|---|---|
+| `HELMSMAN_MAX_PROXMOX_ENVIRONMENTS` | 25 | 1–40 | Proxmox environments (a standalone server or a cluster) |
+| `HELMSMAN_MAX_PROXMOX_ENDPOINTS` | 25 | 1–40 | Proxmox API endpoints across all environments |
+| `HELMSMAN_MAX_ENDPOINTS_PER_ENVIRONMENT` | 4 | 1–8 | Endpoints in one environment |
+| `HELMSMAN_MAX_INFRASTRUCTURE_SERVICES` | 8 | 1–24 | Portainer and Loki connections together |
+| `HELMSMAN_CALENDAR_PAST_DAYS` | 1 | 0–14 | How far back the release calendar asks Radarr and Sonarr |
+| `HELMSMAN_CALENDAR_FUTURE_DAYS` | 35 | 7–90 | How far ahead the release calendar asks |
+
+Proxmox endpoints plus infrastructure services may total at most 40, which
+keeps every encrypted credential inside the credential store's migration
+budget. If a value is malformed, out of range, or over that total, Helmsman
+refuses to start and the log names the variable.
+
+Lowering a limit never removes anything. Existing environments and services
+keep working; you just can't add more until the count is under the new limit.
+If you raise a limit and add more than the old default allows, an older
+Helmsman image started against that volume will refuse to load it, so keep the
+pre-upgrade `/data` backup as usual.
+
 ## Built-in logging
 
 Helmsman's operational event journal is enabled by default and needs no
@@ -547,7 +572,7 @@ docker compose -f compose.yaml -f deploy/compose.upgrade-v0.5.yaml -f deploy/com
 unset HELMSMAN_MASTER_KEY
 ```
 
-Registered service URLs, v0.5 browser sessions, and v0.5 encrypted credentials remain valid when the same volume, external key, and browser origin are retained. Use a migrated browser session to configure Jellyfin and enroll the exact administrator under Settings; if no migrated session remains usable, follow the `reset-access --confirm` recovery procedure above. The server accepts legacy `JELLOFIN_COMMAND_*` runtime variables during this transition, but `HELMSMAN_*` takes precedence. Users of the hardened key must reuse the exact old key; copy its bytes to the new Helmsman key path or continue reading the old file rather than generating a replacement.
+Registered service URLs, v0.5 browser sessions, and v0.5 encrypted credentials remain valid when the same volume, external key, and browser origin are retained. Use a migrated browser session to configure Jellyfin and enroll the exact administrator under Settings; if no migrated session remains usable, follow the `reset-access --confirm` recovery procedure above. The server accepts legacy `JELLOFIN_COMMAND_*` runtime variables during this transition, but `HELMSMAN_*` takes precedence; they are deprecated and will be removed in a future release. Request headers have also moved from `X-Jellofin-*` to `X-Helmsman-*`. The old header names are still accepted, so an existing reverse-proxy rule keeps working, but a rule that strips or sets them should cover both prefixes; the bundled Authentik Caddyfile example does. Users of the hardened key must reuse the exact old key; copy its bytes to the new Helmsman key path or continue reading the old file rather than generating a replacement.
 
 v0.4 credentials lived only in the browser vault and cannot be taken by the container automatically; enter them once in Helmsman. If the instance is claimed but no current session exists, use `reset-access --confirm`; it preserves connections and policy, and the next start prints a one-time setup token.
 
