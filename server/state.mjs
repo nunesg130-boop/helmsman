@@ -6,7 +6,7 @@ import path from "node:path";
 import { parseServiceUrl } from "./network.mjs";
 import { STORED_LIMIT_CEILINGS } from "./limits.mjs";
 
-const STATE_VERSION = 5;
+const STATE_VERSION = 6;
 const MAX_STATE_BYTES = 1024 * 1024;
 const TOKEN_BYTES = 32;
 const TOKEN_HASH = /^[a-f0-9]{64}$/u;
@@ -23,6 +23,7 @@ const MAX_INFRASTRUCTURE_TARGETS = STORED_LIMIT_CEILINGS.proxmoxEnvironments;
 const MAX_INFRASTRUCTURE_ENDPOINTS = STORED_LIMIT_CEILINGS.proxmoxEndpoints;
 const MAX_ENDPOINTS_PER_ENVIRONMENT = STORED_LIMIT_CEILINGS.endpointsPerEnvironment;
 const MAX_INFRASTRUCTURE_SERVICES = STORED_LIMIT_CEILINGS.infrastructureServices;
+const MAX_MEDIA_CONNECTIONS = STORED_LIMIT_CEILINGS.mediaConnections;
 const INFRASTRUCTURE_TYPES = new Set(["proxmox"]);
 const INFRASTRUCTURE_SERVICE_TYPES = new Set(["portainer", "loki"]);
 const LOKI_AUTH_MODES = new Set(["none", "basic", "bearer"]);
@@ -123,10 +124,82 @@ function migrateLoadedState(value) {
     // Version 5 adds Loki as an infrastructure service. Existing Portainer
     // records deliberately retain their exact shape so their destination-bound
     // encrypted credential namespaces remain stable across the migration.
+    value.version = 5;
+    changed = true;
+  }
+  if (value.version === 5) {
+    // Version 6 stores media connections by their own id instead of by
+    // service name, so a later release can hold more than one connection of
+    // the same service. Each existing connection gets a new id and keeps every
+    // other field unchanged, so its encrypted credential namespace (derived
+    // from the service name, URL and target revision) is unaffected.
+    if (!isPlainObject(value.connections)) throw new Error("Malformed broker device or connection state.");
+    const mediaConnections = {};
+    for (const [service, connection] of Object.entries(value.connections)) {
+      if (!isPlainObject(connection)) throw new Error("Malformed broker connection state.");
+      mediaConnections[randomUUID()] = { type: service, ...connection };
+    }
+    delete value.connections;
+    value.mediaConnections = mediaConnections;
     value.version = STATE_VERSION;
     changed = true;
   }
   return { state: value, changed };
+}
+
+// state.json (version 6) keeps media connections in `mediaConnections`, keyed
+// by connection id with a `type` field. The running server still works with
+// one connection per service, so in memory they are keyed by service name in
+// `connections`, exactly as before, and the ids are held by the StateStore.
+// These two functions translate between the forms when the file is read and
+// written.
+function fromDisk(value) {
+  if (!isPlainObject(value)
+    || value.version !== STATE_VERSION
+    || Object.hasOwn(value, "connections")
+    || !isPlainObject(value.mediaConnections)) {
+    throw new Error("Unsupported or malformed broker state.");
+  }
+  if (Object.keys(value.mediaConnections).length > MAX_MEDIA_CONNECTIONS) {
+    throw new Error("Malformed broker connection state.");
+  }
+  const connections = {};
+  const connectionIds = {};
+  for (const [id, record] of Object.entries(value.mediaConnections)) {
+    if (!UUID.test(id) || !isPlainObject(record) || typeof record.type !== "string" || !SERVICE_IDS.has(record.type)) {
+      throw new Error("Malformed broker connection state.");
+    }
+    if (Object.hasOwn(connections, record.type)) {
+      throw new Error(
+        `This data volume holds more than one ${record.type} connection, which this Helmsman release cannot use. `
+        + "Start the newer Helmsman release that created it, or restore the backup taken before that upgrade."
+      );
+    }
+    const { type, ...connection } = record;
+    connections[type] = connection;
+    connectionIds[type] = id;
+  }
+  const { mediaConnections, ...rest } = value;
+  return { state: { ...rest, connections }, connectionIds };
+}
+
+function toDisk(state, connectionIds) {
+  const mediaConnections = {};
+  for (const [service, connection] of Object.entries(state.connections)) {
+    mediaConnections[connectionIds[service]] = { type: service, ...connection };
+  }
+  const { connections, ...rest } = state;
+  return { ...rest, mediaConnections };
+}
+
+// Keeps a stable id for every service that still has a connection, gives new
+// connections a fresh id, and forgets ids of connections that were removed.
+function reconcileConnectionIds(connections, previousIds) {
+  const next = {};
+  for (const service of Object.keys(connections)) {
+    next[service] = previousIds[service] || randomUUID();
+  }
+  return next;
 }
 
 function isIsoDate(value) {
@@ -431,6 +504,7 @@ async function atomicWriteJson(dataDir, filePath, value) {
 
 export class StateStore {
   #state = null;
+  #connectionIds = {};
   #writeChain = Promise.resolve();
   #guard;
 
@@ -451,13 +525,16 @@ export class StateStore {
       const metadata = await stat(this.filePath);
       if (!metadata.isFile()) throw new Error("Broker state path is not a regular file.");
       const loaded = migrateLoadedState(await secureReadJson(this.filePath));
-      this.#state = validateLoadedState(loaded.state);
-      if (loaded.changed) await atomicWriteJson(this.dataDir, this.filePath, this.#state);
+      const { state, connectionIds } = fromDisk(loaded.state);
+      this.#state = validateLoadedState(state);
+      this.#connectionIds = connectionIds;
+      if (loaded.changed) await atomicWriteJson(this.dataDir, this.filePath, toDisk(this.#state, this.#connectionIds));
       await chmod(this.filePath, 0o600);
     } catch (error) {
       if (error?.code !== "ENOENT") throw error;
       this.#state = initialState();
-      await atomicWriteJson(this.dataDir, this.filePath, this.#state);
+      this.#connectionIds = {};
+      await atomicWriteJson(this.dataDir, this.filePath, toDisk(this.#state, this.#connectionIds));
     }
     return this.snapshot();
   }
@@ -476,12 +553,24 @@ export class StateStore {
         const result = await mutator(next);
         next.revision += 1;
         validateLoadedState(next);
-        await atomicWriteJson(this.dataDir, this.filePath, next);
+        const connectionIds = reconcileConnectionIds(next.connections, this.#connectionIds);
+        await atomicWriteJson(this.dataDir, this.filePath, toDisk(next, connectionIds));
         this.#state = next;
+        this.#connectionIds = connectionIds;
         return result;
       });
     this.#writeChain = operation.then(() => {}, () => {});
     return operation;
+  }
+
+  /**
+   * The stored id of each media connection, keyed by service name. Ids are
+   * stable while a connection exists and are replaced when a connection is
+   * removed and added again.
+   */
+  connectionIds() {
+    if (!this.#state) throw new Error("Broker state is not initialized.");
+    return { ...this.#connectionIds };
   }
 
   async rotateUnclaimedSetupToken() {

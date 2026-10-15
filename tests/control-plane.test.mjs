@@ -13,6 +13,7 @@ import { connectionAuthorizationBoundaryHash } from "../server/network.mjs";
 import { CredentialStore } from "../server/secrets.mjs";
 import { SessionAuthError } from "../server/session-auth.mjs";
 import { StateStore } from "../server/state.mjs";
+import { diskConnection } from "./helpers/state-file.mjs";
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PRIVATE_POLICY = Object.freeze({
@@ -1939,18 +1940,18 @@ test("offline Jellyfin destination tampering fails startup before an encrypted b
     const statePath = path.join(dataDir, "state.json");
     const sessionsPath = path.join(dataDir, "sessions.json");
     const tamperedState = JSON.parse(await readFile(statePath, "utf8"));
-    tamperedState.connections.jellyfin = {
-      ...tamperedState.connections.jellyfin,
+    const tamperedJellyfin = Object.assign(diskConnection(tamperedState, "jellyfin"), {
       url: "http://attacker.test:8096",
       targetRevision: "88888888-8888-4888-8888-888888888888",
       approvedHostCidrs: ["10.66.66.66/32"]
-    };
+    });
+    const { type: _tamperedType, ...tamperedJellyfinConnection } = tamperedJellyfin;
     const tamperedSessions = JSON.parse(await readFile(sessionsPath, "utf8"));
     const tamperedPrincipal = tamperedSessions.sessions[sessionId].principal;
-    tamperedPrincipal.jellyfinUrl = tamperedState.connections.jellyfin.url;
-    tamperedPrincipal.targetRevision = tamperedState.connections.jellyfin.targetRevision;
+    tamperedPrincipal.jellyfinUrl = tamperedJellyfin.url;
+    tamperedPrincipal.targetRevision = tamperedJellyfin.targetRevision;
     tamperedPrincipal.boundaryHash = connectionAuthorizationBoundaryHash(
-      tamperedState.connections.jellyfin,
+      tamperedJellyfinConnection,
       tamperedState.policy
     );
     await writeFile(statePath, `${JSON.stringify(tamperedState)}\n`, { mode: 0o600 });
@@ -2025,12 +2026,11 @@ test("a state-only Jellyfin destination rewrite cannot send fresh owner credenti
     const sessionsPath = path.join(dataDir, "sessions.json");
     const sealedSessionsText = await readFile(sessionsPath, "utf8");
     const tamperedState = JSON.parse(await readFile(statePath, "utf8"));
-    tamperedState.connections.jellyfin = {
-      ...tamperedState.connections.jellyfin,
+    Object.assign(diskConnection(tamperedState, "jellyfin"), {
       url: "http://attacker.test:8096",
       targetRevision: "77777777-7777-4777-8777-777777777777",
       approvedHostCidrs: ["10.66.66.66/32"]
-    };
+    });
     await writeFile(statePath, `${JSON.stringify(tamperedState)}\n`, { mode: 0o600 });
     assert.equal(
       await readFile(sessionsPath, "utf8"),
@@ -2645,7 +2645,7 @@ test("service credentials are bound to their exact target and rotate with target
     // encryption key remains unavailable to the attacker.
     const statePath = path.join(dataDir, "state.json");
     const tamperedState = JSON.parse(await readFile(statePath, "utf8"));
-    tamperedState.connections.radarr.url = "http://media.test:7880";
+    diskConnection(tamperedState, "radarr").url = "http://media.test:7880";
     await writeFile(statePath, `${JSON.stringify(tamperedState)}\n`, { mode: 0o600 });
 
     context = await startBroker(dataDir, []);
@@ -3002,7 +3002,7 @@ test("reset-access revokes sessions while preserving targets and encrypted crede
     assert.equal(resetState.claimed, false);
     assert.equal(resetState.setupTokenHash, null);
     assert.equal(resetState.instanceId, originalInstanceId);
-    assert.equal(resetState.connections.radarr.url, "http://media.test:7878");
+    assert.equal(diskConnection(resetState, "radarr").url, "http://media.test:7878");
     assert.equal(resetSessions.version, 4);
     assert.equal(resetSessions.accessKeyHash, null);
     assert.equal(resetSessions.owner, null);
@@ -3766,7 +3766,7 @@ test("offline network-authorization edits cannot unlock an existing encrypted cr
         const statePath = path.join(dataDir, "state.json");
         const tamperedState = JSON.parse(await readFile(statePath, "utf8"));
         if (scenario === "approved host pin") {
-          tamperedState.connections.radarr.approvedHostCidrs = ["10.20.30.41/32"];
+          diskConnection(tamperedState, "radarr").approvedHostCidrs = ["10.20.30.41/32"];
         } else {
           tamperedState.policy.allowedCidrs = ["10.0.0.0/8"];
           tamperedState.policy.revision += 1;

@@ -478,7 +478,7 @@ if (existsSync(join(root, "server/state.mjs"))
   const proxmoxProbes = read("server/proxmox-probes.mjs");
   const proxmoxRouteBlock = routes.match(/const PROXMOX_ROUTES = Object\.freeze\(\{[\s\S]*?\n\}\);/u)?.[0] || "";
   record(
-    /const STATE_VERSION = 5;/u.test(state)
+    /const STATE_VERSION = 6;/u.test(state)
       && /infrastructureTargets:\s*\{\}/u.test(state)
       && /infrastructureServices:\s*\{\}/u.test(state)
       && /value\.version === 1/u.test(state)
@@ -486,6 +486,8 @@ if (existsSync(join(root, "server/state.mjs"))
       && /value\.version === 3/u.test(state)
       && /value\.infrastructureServices = \{\}/u.test(state)
       && /value\.version === 4/u.test(state)
+      && /value\.version === 5/u.test(state)
+      && /value\.mediaConnections = mediaConnections/u.test(state)
       && /value\.version = STATE_VERSION/u.test(state)
       && /MAX_INFRASTRUCTURE_TARGETS = STORED_LIMIT_CEILINGS\.proxmoxEnvironments/u.test(state)
       && /MAX_INFRASTRUCTURE_SERVICES = STORED_LIMIT_CEILINGS\.infrastructureServices/u.test(state)
@@ -494,7 +496,7 @@ if (existsSync(join(root, "server/state.mjs"))
       && /CREDENTIAL_NAMESPACE_BUDGET = 56;/u.test(limits)
       && /INFRASTRUCTURE_TYPES = new Set\(\["proxmox"\]\)/u.test(state)
       && /INFRASTRUCTURE_SERVICE_TYPES = new Set\(\["portainer", "loki"\]\)/u.test(state),
-    "state schema 5 preserves existing records while adding bounded Loki infrastructure services"
+    "state schema 6 preserves existing records, Loki services and id-keyed media connections"
   );
   record(
     /export const PROXMOX_ROUTE_IDS/u.test(routes)
