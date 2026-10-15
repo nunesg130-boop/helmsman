@@ -99,7 +99,7 @@ function emptyLoggingState() {
   };
 }
 
-const renderPolicy = globalThis.trustedTypes?.createPolicy("jellofin-render", {
+const renderPolicy = globalThis.trustedTypes?.createPolicy("helmsman-render", {
   createHTML: (markup) => markup
 }) ?? null;
 
@@ -724,7 +724,7 @@ async function api(path, options = {}) {
   const headers = new Headers({ Accept: "application/json" });
   if (options.body !== undefined) headers.set("Content-Type", "application/json");
   if (!["GET", "HEAD"].includes(method) && state.csrfToken && options.csrf !== false) {
-    headers.set("X-Jellofin-CSRF", state.csrfToken);
+    headers.set("X-Helmsman-CSRF", state.csrfToken);
   }
   let response;
   try {

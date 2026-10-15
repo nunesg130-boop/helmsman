@@ -49,8 +49,18 @@ const requestedVersion = String(process.env.HELMSMAN_VERSION || DEFAULT_VERSION)
 const VERSION = /^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/u.test(requestedVersion)
   ? requestedVersion
   : DEFAULT_VERSION;
-const DEVICE_TOKEN_HEADER = "x-jellofin-device-token";
-const TARGET_REVISION_HEADER = "x-jellofin-target-revision";
+// Request headers use the x-helmsman- prefix. The x-jellofin- names are the
+// pre-rename spelling and stay accepted so existing proxies and scripts keep
+// working; when both are sent, the x-helmsman- value wins.
+const DEVICE_TOKEN_HEADER = "x-helmsman-device-token";
+const LEGACY_DEVICE_TOKEN_HEADER = "x-jellofin-device-token";
+const TARGET_REVISION_HEADER = "x-helmsman-target-revision";
+const LEGACY_TARGET_REVISION_HEADER = "x-jellofin-target-revision";
+
+function headerWithLegacy(request, name, legacyName) {
+  const current = request.headers[name];
+  return current !== undefined ? current : request.headers[legacyName];
+}
 const MAX_JSON_BODY_BYTES = 64 * 1024;
 const MAX_RELAY_BODY_BYTES = 64 * 1024;
 const DEFAULT_MAX_API_RESPONSE_BYTES = 8 * 1024 * 1024;
@@ -83,7 +93,7 @@ const MIME_TYPES = Object.freeze({
   ".webmanifest": "application/manifest+json; charset=utf-8"
 });
 
-const SHELL_CSP = "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self'; trusted-types jellofin-render; require-trusted-types-for 'script'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; media-src 'self' blob:; worker-src 'self'; manifest-src 'self'";
+const SHELL_CSP = "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self'; trusted-types helmsman-render; require-trusted-types-for 'script'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; media-src 'self' blob:; worker-src 'self'; manifest-src 'self'";
 const API_CSP = "default-src 'none'; frame-ancestors 'none'; sandbox";
 
 class BrokerError extends Error {
@@ -243,6 +253,8 @@ function sendJson(response, status, payload) {
 
 function sendError(response, error) {
   const safe = asBrokerError(error);
+  response.setHeader("X-Helmsman-Broker-Error", safe.code);
+  // Pre-rename spelling, kept for one compatibility window.
   response.setHeader("X-Jellofin-Broker-Error", safe.code);
   sendJson(response, safe.status, {
     code: safe.code,
@@ -383,7 +395,7 @@ function publicConfig(state) {
 
 function authenticateDevice(request, state) {
   if (!state.claimed) throw new BrokerError(409, "SETUP_REQUIRED", "Complete first-time setup before using the broker.");
-  const presented = request.headers[DEVICE_TOKEN_HEADER];
+  const presented = headerWithLegacy(request, DEVICE_TOKEN_HEADER, LEGACY_DEVICE_TOKEN_HEADER);
   if (typeof presented !== "string") {
     throw new BrokerError(401, "DEVICE_TOKEN_REQUIRED", "A valid device token is required.");
   }
@@ -3254,7 +3266,7 @@ export async function createBroker(options = {}) {
     enforceRequestOrigin(request, device, request.method === "POST");
     const connection = state.connections[route.service];
     if (!connection) throw new BrokerError(404, "CONNECTION_NOT_CONFIGURED", "That service has not been configured.");
-    const targetRevision = request.headers[TARGET_REVISION_HEADER];
+    const targetRevision = headerWithLegacy(request, TARGET_REVISION_HEADER, LEGACY_TARGET_REVISION_HEADER);
     if (typeof targetRevision !== "string" || targetRevision !== connection.targetRevision) {
       throw new BrokerError(409, "TARGET_REVISION_MISMATCH", "The service target changed; reload its connection before sending credentials.");
     }

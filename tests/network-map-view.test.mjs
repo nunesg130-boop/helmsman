@@ -9,11 +9,13 @@ import {
   NETWORK_LIMITS,
   addNodeWithGuests,
   buildLiveIndex,
+  describeImportReport,
   discoveredSources,
   freeCell,
   layoutNetworkMap,
   linkRoute,
   mapFromInventory,
+  normalizeImportedMap,
   projector,
   resolveItemStatus,
   slugId
@@ -145,4 +147,109 @@ test("the projector maps the origin to the viewport centre", () => {
   const top = projector({ rx: 0, rz: 0, zoom: 1, panX: 10, panY: -20 }, 1000, 600)(100, 50, 0);
   assert.equal(Math.round(top.x), 610);
   assert.equal(Math.round(top.y), 330);
+});
+
+test("a clean imported map is kept exactly and reports no changes", () => {
+  const map = {
+    zones: [{ id: "edge", title: "Edge", row: 0, order: 0 }],
+    items: [
+      { id: "router", name: "Router", kind: "router", zone: "edge", col: 0, row: 0, address: "10.20.0.1", role: "", notes: "", source: null, state: "online" },
+      { id: "switch", name: "Switch", kind: "switch", zone: "edge", col: 1, row: 0, address: "", role: "", notes: "", source: null, state: "unknown" }
+    ],
+    links: [{ id: "router-switch", from: "router", to: "switch", kind: "wired", label: "" }]
+  };
+  const { map: imported, report } = normalizeImportedMap(structuredClone(map));
+  assert.deepEqual(imported, map);
+  assert.deepEqual(report, { skippedZones: 0, skippedItems: 0, skippedLinks: 0, placedItems: 0 });
+  assert.equal(describeImportReport(report), "");
+  assert.deepEqual(canonicalNetworkMap(imported), canonicalNetworkMap(map));
+});
+
+test("imported items without a free cell are placed so the map saves", () => {
+  const input = {
+    zones: [
+      { id: "edge", title: "Edge", row: 0, order: 0 },
+      { id: "servers", title: "Servers", row: 1, order: 0 }
+    ],
+    items: [
+      { id: "router", name: "Router", kind: "router", zone: "edge" },
+      { id: "switch", name: "Switch", kind: "switch", zone: "edge" },
+      { id: "ap", name: "Access point", kind: "access-point", zone: "edge", col: 0, row: 0 },
+      { id: "pve", name: "pve", kind: "host", zone: "servers", col: 0, row: 0 },
+      { id: "nas", name: "NAS", kind: "storage", zone: "servers", col: 0, row: 0 },
+      { id: "far", name: "Far", kind: "device", zone: "servers", col: 99, row: -1 }
+    ],
+    links: [
+      { id: "a", from: "router", to: "switch", kind: "wired" },
+      { id: "b", from: "switch", to: "pve", kind: "wired" }
+    ]
+  };
+  const { map, report } = normalizeImportedMap(input);
+  assert.equal(map.items.length, 6);
+  assert.deepEqual(
+    map.items.filter(({ zone }) => zone === "edge").map(({ id, col, row }) => [id, col, row]),
+    [["router", 1, 0], ["switch", 2, 0], ["ap", 0, 0]],
+    "the item that gave a cell keeps it; the others fill free cells"
+  );
+  const pve = map.items.find(({ id }) => id === "pve");
+  assert.deepEqual([pve.col, pve.row], [0, 0]);
+  const cells = new Set(map.items.map(({ zone, col, row }) => `${zone}:${col}:${row}`));
+  assert.equal(cells.size, map.items.length);
+  assert.equal(report.placedItems, 4);
+  assert.equal(report.skippedItems, 0);
+  assert.doesNotThrow(() => canonicalNetworkMap(map));
+  assert.equal(describeImportReport(report), "4 items moved to a free grid cell.");
+});
+
+test("imported entries that cannot be used are skipped and counted", () => {
+  const input = {
+    zones: [
+      { id: "edge", title: "Edge", row: 0, order: 0 },
+      { id: "edge", title: "Duplicate", row: 0, order: 1 },
+      { id: "Bad Zone", title: "Bad", row: 0, order: 2 }
+    ],
+    items: [
+      { id: "router", name: "Router", kind: "router", zone: "edge", col: 0, row: 0 },
+      { id: "router", name: "Again", kind: "router", zone: "edge", col: 1, row: 0 },
+      { id: "Bad Id", name: "Bad", kind: "device", zone: "edge", col: 2, row: 0 },
+      { id: "lost", name: "Lost", kind: "device", zone: "nowhere", col: 0, row: 0 },
+      { id: "switch", name: "Switch", kind: "made-up", zone: "edge", col: 1, row: 0, state: "on fire" },
+      null
+    ],
+    links: [
+      { id: "ok", from: "router", to: "switch", kind: "wired" },
+      { id: "ok", from: "switch", to: "router", kind: "wifi" },
+      { id: "same-pair", from: "switch", to: "router", kind: "wired" },
+      { id: "self", from: "router", to: "router", kind: "wired" },
+      { id: "missing", from: "router", to: "lost", kind: "wired" },
+      { id: "odd-kind", from: "router", to: "switch", kind: "laser" }
+    ]
+  };
+  const { map, report } = normalizeImportedMap(input);
+  assert.deepEqual(map.zones.map(({ id }) => id), ["edge"]);
+  assert.deepEqual(map.items.map(({ id }) => id), ["router", "switch"]);
+  const switchItem = map.items.find(({ id }) => id === "switch");
+  assert.equal(switchItem.kind, "other");
+  assert.equal(switchItem.state, "unknown");
+  assert.deepEqual(map.links.map(({ id }) => id), ["ok"]);
+  assert.deepEqual(report, { skippedZones: 2, skippedItems: 4, skippedLinks: 5, placedItems: 0 });
+  assert.doesNotThrow(() => canonicalNetworkMap(map));
+  assert.equal(describeImportReport(report), "2 zones, 4 items, 5 connections skipped.");
+});
+
+test("imports keep at most the map's item limit", () => {
+  const items = [];
+  for (let row = 0; row < NETWORK_LIMITS.rows; row += 1) {
+    for (let col = 0; col < NETWORK_LIMITS.columns; col += 1) {
+      items.push({ id: `n-${col}-${row}`, name: "n", kind: "device", zone: "z", col, row });
+    }
+  }
+  items.length = NETWORK_LIMITS.items - 1;
+  // One slot is left; two more items arrive without a cell.
+  items.push({ id: "extra-1", name: "extra", kind: "device", zone: "z" });
+  items.push({ id: "extra-2", name: "extra", kind: "device", zone: "z" });
+  const { map, report } = normalizeImportedMap({ zones: [{ id: "z", title: "Z", row: 0, order: 0 }], items, links: [] });
+  assert.equal(map.items.length, NETWORK_LIMITS.items);
+  assert.equal(report.skippedItems, 1, "the item-count limit applies before placement");
+  assert.doesNotThrow(() => canonicalNetworkMap(map));
 });

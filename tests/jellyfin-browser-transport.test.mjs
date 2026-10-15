@@ -64,7 +64,7 @@ function jsonRequest(context, pathname, payload, authentication = {}) {
       Origin: context.origin,
       "Content-Type": "application/json",
       ...(authentication.cookie ? { Cookie: authentication.cookie } : {}),
-      ...(authentication.csrf ? { "X-Jellofin-Csrf": authentication.csrf } : {})
+      ...(authentication.csrf ? { "X-Helmsman-Csrf": authentication.csrf } : {})
     },
     body: JSON.stringify(payload)
   });
@@ -183,7 +183,7 @@ test("browser auth uses fixed Jellyfin capabilities, stable identity, and zeroed
         Origin: context.origin,
         "Content-Type": "application/json",
         Cookie: bootstrap.cookie,
-        "X-Jellofin-Csrf": bootstrap.csrf
+        "X-Helmsman-Csrf": bootstrap.csrf
       },
       body: JSON.stringify({
         url: "http://media.test:8096",
@@ -365,7 +365,7 @@ test("browser auth uses fixed Jellyfin capabilities, stable identity, and zeroed
       headers: {
         Origin: context.origin,
         Cookie: secondSession.cookie,
-        "X-Jellofin-Csrf": secondSession.csrf
+        "X-Helmsman-Csrf": secondSession.csrf
       }
     });
     assert.equal(loggedOut.status, 204);

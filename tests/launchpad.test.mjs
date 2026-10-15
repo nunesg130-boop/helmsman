@@ -23,7 +23,7 @@ function request(port, pathname, options = {}) {
         Host: `127.0.0.1:${port}`,
         ...(options.origin ? { Origin: options.origin } : {}),
         ...(options.cookie ? { Cookie: options.cookie } : {}),
-        ...(options.csrf ? { "X-Jellofin-Csrf": options.csrf } : {}),
+        ...(options.csrf ? { "X-Helmsman-Csrf": options.csrf } : {}),
         ...(body ? { "Content-Type": "application/json", "Content-Length": String(body.length) } : {})
       }
     }, (response) => {

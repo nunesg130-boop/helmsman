@@ -10,6 +10,7 @@ import { createBroker } from "../server/broker.mjs";
 import { CredentialStore } from "../server/secrets.mjs";
 import { SessionAuthStore } from "../server/session-auth.mjs";
 import { StateStore } from "../server/state.mjs";
+import { diskConnection } from "./helpers/state-file.mjs";
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SERVICE_SECRET = "recovery-test-secret-must-never-be-printed";
@@ -119,7 +120,7 @@ test("reset-access quarantines malformed sessions while preserving topology and 
     assert.equal(resetState.claimed, false);
     assert.equal(resetState.instanceId, instanceId);
     assert.deepEqual(resetState.policy.allowedCidrs, ["192.168.50.12/32"]);
-    assert.equal(resetState.connections.radarr.url, "http://192.168.50.12:7878");
+    assert.equal(diskConnection(resetState, "radarr").url, "http://192.168.50.12:7878");
     assert.equal(resetSessions.version, 4);
     assert.equal(resetSessions.accessKeyHash, null);
     assert.equal(resetSessions.owner, null);

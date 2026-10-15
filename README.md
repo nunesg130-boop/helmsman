@@ -689,6 +689,8 @@ v0.10 advances the state schema to 4 by adding an empty, bounded Infrastructure-
 
 v1.0.6 advances the state schema from 4 to 5 so Loki can be stored as a bounded Infrastructure observability service while preserving existing Portainer records exactly. Existing media connections, Proxmox environments, browser sessions, network approvals, and destination-bound encrypted credentials remain in place. Do not run v1.0.5 against state already migrated to schema 5; rollback requires restoring the `/data` volume backup taken before the v1.0.6 upgrade.
 
+The release after v1.4.0 advances the state schema from 5 to 6, storing media connections by their own id with a `type` field instead of by service name. Every connection keeps its other fields exactly, so encrypted credentials, sessions and approvals remain in place, and the interface still allows one connection per media service. Do not run v1.4.0 or older against state already migrated to schema 6; rollback requires restoring the `/data` volume backup taken before the upgrade.
+
 For v0.10.0-beta.8 specifically, an existing browser session can be used to configure Jellyfin and enroll the exact administrator under Settings. If no prior session remains usable, run the `reset-access --confirm` sequence under **Browser access and recovery**; it preserves configuration and encrypted monitoring credentials, and the next start supplies a new one-time setup token.
 
 ## Upgrade from Jellofin Command v0.4 or v0.5
