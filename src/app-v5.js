@@ -18,6 +18,7 @@ import {
   parseManual,
   searchManualEntries
 } from "./ui/manual-markdown.js";
+import { createNetworkMapController } from "./ui/network-map.js";
 
 const main = document.querySelector("#main-content");
 const appShell = document.querySelector("#app");
@@ -126,7 +127,7 @@ const MEDIA_CONNECTION_CATEGORIES = Object.freeze([
 const SHARED_ROUTES = new Set(["logs", "settings"]);
 const SYSTEM_ROUTES = new Set(["system", "launchpad", "manual", ...SHARED_ROUTES]);
 const MEDIA_ROUTES = new Set(["overview", "discover", "library", "requests", "activity", "calendar", "health", "connections", ...SHARED_ROUTES]);
-const INFRASTRUCTURE_ROUTES = new Set(["overview", "connectors", "proxmox", "workloads", "portainer", "incidents", ...SHARED_ROUTES]);
+const INFRASTRUCTURE_ROUTES = new Set(["overview", "connectors", "proxmox", "workloads", "portainer", "network", "incidents", ...SHARED_ROUTES]);
 const ROUTES = new Set([...SYSTEM_ROUTES, ...MEDIA_ROUTES, ...INFRASTRUCTURE_ROUTES, "home", "pipeline", "services", "environments", "nodes"]);
 const MEDIA_ROUTE_ALIASES = Object.freeze({ home: "overview", pipeline: "health", incidents: "health", services: "connections" });
 const INFRASTRUCTURE_ROUTE_ALIASES = Object.freeze({
@@ -259,6 +260,7 @@ const ROUTE_TITLES = Object.freeze({
   proxmox: "Proxmox",
   workloads: "Workloads",
   portainer: "Portainer",
+  network: "Network",
   launchpad: "Launchpad",
   manual: "Manual",
   logs: "Logs",
@@ -4915,6 +4917,61 @@ function submitLaunchAddress(form) {
   saveLaunchAddress(form.dataset.launchKind, form.dataset.launchId, url, form);
 }
 
+// Network ---------------------------------------------------------------
+// The 3D network model. Its markup is a stable shell; the controller in
+// network-map.js owns the scene and panel inside it, keeps the camera and
+// draft across repaints, and recolours items from each monitor snapshot.
+
+let networkMapController = null;
+
+function networkLiveInventory() {
+  const infrastructure = configuredInfrastructureSnapshotForUi();
+  const portainers = configuredPortainerServicesForUi();
+  const operations = normalizeOperationsSnapshot(snapshotForUi(), state.infrastructure.targets);
+  return {
+    nodes: infrastructure.nodes,
+    workloads: infrastructure.workloads,
+    environments: infrastructure.targets.map((target) => ({ id: target.id, name: target.displayName })),
+    containers: portainers.flatMap((service) => service.inventory?.containers || []),
+    portainerEnvironments: portainers.flatMap((service) => (service.inventory?.environments || [])
+      .map((environment) => ({ id: environment.id, name: environment.name, serverId: service.id, serverName: service.displayName }))),
+    services: operations.services
+      .filter((service) => !/^(proxmox|portainer)-/u.test(service.id))
+      .map((service) => ({ id: service.id, name: service.name, state: service.state, connectionState: service.connectionState }))
+  };
+}
+
+function networkController() {
+  if (!networkMapController) {
+    networkMapController = createNetworkMapController({
+      setMarkup,
+      escapeHtml,
+      icon,
+      toast: showToast,
+      live: networkLiveInventory,
+      loadMap: async () => (await api("/api/v2/network-map"))?.networkMap,
+      saveMap: async (map, revision) => (await api("/api/v2/network-map", { method: "PUT", body: { map, revision } }))?.networkMap
+    });
+  }
+  return networkMapController;
+}
+
+function renderNetworkPage() {
+  return `<div class="page network-page" data-network-root></div>`;
+}
+
+function syncNetworkPage({ live = false } = {}) {
+  const root = main?.querySelector?.("[data-network-root]");
+  const active = state.status?.authenticated && state.workspace === "infrastructure" && state.route === "network" && root;
+  if (!active) {
+    networkMapController?.unmount();
+    return;
+  }
+  const controller = networkController();
+  if (!controller.isMountedOn(root)) controller.mount(root);
+  else if (live) controller.refreshLive();
+}
+
 // Manual ----------------------------------------------------------------
 // The owner's Markdown manual lives in the data volume. The page renders it
 // through the escaping subset in manual-markdown.js and keeps every edit in
@@ -5283,6 +5340,7 @@ const SEARCH_PAGES = Object.freeze([
   { workspace: "infrastructure", route: "proxmox", title: "Proxmox", area: "Infrastructure", terms: "nodes cluster environments" },
   { workspace: "infrastructure", route: "workloads", title: "Workloads", area: "Infrastructure", terms: "vms containers lxc qemu guests" },
   { workspace: "infrastructure", route: "portainer", title: "Portainer", area: "Infrastructure", terms: "docker containers stacks" },
+  { workspace: "infrastructure", route: "network", title: "Network", area: "Infrastructure", terms: "map topology 3d diagram router switch lan" },
   { workspace: "infrastructure", route: "incidents", title: "Incidents", area: "Infrastructure", terms: "alerts problems" },
   { workspace: "system", route: "logs", title: "Logs", area: "Shared", terms: "journal loki events" },
   { workspace: "system", route: "settings", title: "Settings", area: "Shared", terms: "sessions network security" }
@@ -5591,6 +5649,7 @@ function renderAuthenticatedRoute() {
   if (state.route === "proxmox") return renderProxmoxPage();
   if (state.route === "workloads") return renderInfrastructureWorkloadsPage();
   if (state.route === "portainer") return renderPortainerPage();
+  if (state.route === "network") return renderNetworkPage();
   if (state.route === "logs") return renderLogsPage();
   return renderSettingsPage();
 }
@@ -5647,7 +5706,10 @@ function renderPage({ force = false, preserveFocus = false } = {}) {
           : routeTitle;
   document.title = `${viewTitle} · Helmsman`;
 
-  if (!force && markup === state.lastMarkup) return;
+  if (!force && markup === state.lastMarkup) {
+    syncNetworkPage();
+    return;
+  }
   const focusedReference = preserveFocus ? focusReference(document.activeElement) : null;
   const documentScrollTop = preserveFocus
     ? Number(globalThis.scrollY ?? document.documentElement?.scrollTop ?? document.body?.scrollTop ?? 0)
@@ -5674,6 +5736,7 @@ function renderPage({ force = false, preserveFocus = false } = {}) {
     else if (document.documentElement) document.documentElement.scrollTop = documentScrollTop;
   }
   applyMediaFiltersInPlace();
+  syncNetworkPage();
   updateChrome();
 }
 
@@ -6331,6 +6394,7 @@ function updateVolatileOperationsUi() {
   updateServiceModalVolatile(snapshot);
   updateInfrastructureVolatile();
   updatePortainerVolatile();
+  syncNetworkPage({ live: true });
   // Keep the render cache aligned with the DOM values patched above so a
   // later no-op render cannot resurrect an older timestamp or latency.
   state.lastMarkup = renderAuthenticatedRoute();

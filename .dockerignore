@@ -35,10 +35,12 @@
 !src/ui
 !src/ui/operations-views.js
 !src/ui/manual-markdown.js
+!src/ui/network-map.js
 !src/ui/operations.css
 !src/ui/control.css
 !src/ui/retro.css
 !src/ui/obsidian-glass.css
+!src/ui/network-map.css
 !src/ui/logging.css
 !server
 !server/broker.mjs
@@ -48,6 +50,7 @@
 !server/index.mjs
 !server/lock.mjs
 !server/manual.mjs
+!server/network-map.mjs
 !server/loki.mjs
 !server/loki-probes.mjs
 !server/loki-transport.mjs

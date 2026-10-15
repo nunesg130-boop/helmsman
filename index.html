@@ -21,6 +21,7 @@
     <link rel="stylesheet" href="./src/ui/logging.css" />
     <link rel="stylesheet" href="./src/ui/retro.css" />
     <link rel="stylesheet" href="./src/ui/obsidian-glass.css" />
+    <link rel="stylesheet" href="./src/ui/network-map.css" />
     <title>Helmsman</title>
   </head>
   <body av-disable="true">
@@ -97,6 +98,9 @@
           </a>
           <a class="nav-item workspace-infrastructure-only" hidden href="#/portainer" data-route="portainer" data-service-nav="portainer" aria-label="Portainer containers">
             <img src="./assets/services/portainer.svg" width="168" height="219" alt="" aria-hidden="true" /><span>Portainer</span>
+          </a>
+          <a class="nav-item workspace-infrastructure-only" hidden href="#/network" data-route="network" aria-label="Network model">
+            <svg aria-hidden="true"><use href="#icon-network"></use></svg><span>Network</span>
           </a>
           <a class="nav-item workspace-infrastructure-only" hidden href="#/incidents" data-route="incidents" aria-label="Infrastructure incidents">
             <svg aria-hidden="true"><use href="#icon-shield"></use></svg><span>Incidents</span>
@@ -210,6 +214,7 @@
         <a class="workspace-infrastructure-only" hidden href="#/proxmox" data-route="proxmox" data-service-nav="proxmox" aria-label="Proxmox"><img src="./assets/services/proxmox.png" width="536" height="465" alt="" aria-hidden="true" /><span>Proxmox</span></a>
         <a class="workspace-infrastructure-only" hidden href="#/workloads" data-route="workloads" data-service-nav="proxmox" aria-label="Workloads"><svg aria-hidden="true"><use href="#icon-library"></use></svg><span>Workloads</span></a>
         <a class="workspace-infrastructure-only" hidden href="#/portainer" data-route="portainer" data-service-nav="portainer" aria-label="Portainer containers"><img src="./assets/services/portainer.svg" width="168" height="219" alt="" aria-hidden="true" /><span>Portainer</span></a>
+        <a class="workspace-infrastructure-only" hidden href="#/network" data-route="network" aria-label="Network model"><svg aria-hidden="true"><use href="#icon-network"></use></svg><span>Network</span></a>
         <a class="workspace-infrastructure-only" hidden href="#/incidents" data-route="incidents" aria-label="Infrastructure incidents"><svg aria-hidden="true"><use href="#icon-shield"></use></svg><span>Incidents</span></a>
         <a class="workspace-system-only" hidden href="#/launchpad" data-route="launchpad" aria-label="Launchpad"><svg aria-hidden="true"><use href="#icon-launchpad"></use></svg><span>Launchpad</span></a>
         <a class="workspace-system-only" hidden href="#/manual" data-route="manual" aria-label="Manual"><svg aria-hidden="true"><use href="#icon-book"></use></svg><span>Manual</span></a>
@@ -246,6 +251,7 @@
       <symbol id="icon-lock" viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></symbol>
       <symbol id="icon-eye" viewBox="0 0 24 24"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></symbol>
       <symbol id="icon-server" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="6" rx="2"/><rect x="3" y="14" width="18" height="6" rx="2"/><path d="M7 7h.01M7 17h.01M11 7h6M11 17h6"/></symbol>
+      <symbol id="icon-network" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="5" rx="1.2"/><rect x="3" y="16" width="6" height="5" rx="1.2"/><rect x="15" y="16" width="6" height="5" rx="1.2"/><path d="M12 8v4M6 16v-4h12v4"/></symbol>
       <symbol id="icon-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.5.5l2-2a5 5 0 0 0-7-7l-1.1 1.1M14 11a5 5 0 0 0-7.5-.5l-2 2a5 5 0 0 0 7 7l1.1-1.1"/></symbol>
       <symbol id="icon-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
       <symbol id="icon-book" viewBox="0 0 24 24"><path d="M4 5.5A1.5 1.5 0 0 1 5.5 4H11v16H5.5A1.5 1.5 0 0 1 4 18.5v-13ZM13 4h5.5A1.5 1.5 0 0 1 20 5.5v13a1.5 1.5 0 0 1-1.5 1.5H13V4Z"/><path d="M6.5 8H9M6.5 11H9M15 8h2.5M15 11h2.5"/></symbol>

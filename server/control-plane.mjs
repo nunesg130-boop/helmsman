@@ -20,10 +20,13 @@ import { tokenMatches } from "./state.mjs";
 import { isReportId } from "./acknowledgements.mjs";
 import { canonicalLaunchUrl, launchpadKey } from "./launchpad.mjs";
 import { MANUAL_LIMITS } from "./manual.mjs";
+import { NETWORK_MAP_LIMITS } from "./network-map.mjs";
 
 const MAX_JSON_BODY_BYTES = 64 * 1024;
 // The owner manual is the one larger body: its Markdown limit plus JSON escaping headroom.
 const MAX_MANUAL_BODY_BYTES = MANUAL_LIMITS.markdownBytes * 2 + 1024;
+// The network map is the other: its canonical size limit plus JSON escaping headroom.
+const MAX_NETWORK_MAP_BODY_BYTES = NETWORK_MAP_LIMITS.bodyBytes * 2 + 1024;
 const SAFE_SECRET = /^[^\u0000-\u001f\u007f-\u009f]{1,4096}$/u;
 const LOGIN_WINDOW_MS = 10 * 60 * 1000;
 const MAX_LOGIN_ATTEMPTS_PER_WINDOW = 10;
@@ -1154,6 +1157,11 @@ export async function createControlPlane(options) {
     && typeof options.manual.get === "function"
     && typeof options.manual.save === "function"
       ? options.manual
+      : null;
+  const networkMapStore = options.networkMap
+    && typeof options.networkMap.get === "function"
+    && typeof options.networkMap.save === "function"
+      ? options.networkMap
       : null;
   const credentialStore = options.credentialStore || new CredentialStore(dataDir, {
     instanceId: stateStore.snapshot().instanceId,
@@ -4928,6 +4936,42 @@ export async function createControlPlane(options) {
     sendJson(response, 200, { manual: saved });
   }
 
+  // The owner's network map for the 3D Network page. Readable by any
+  // signed-in session; saving needs CSRF and the revision the editor started
+  // from, exactly like the manual.
+  async function networkMapApi(request, response) {
+    if (request.method === "GET") {
+      await authenticate(request, false);
+      if (!networkMapStore) fail(503, "NETWORK_MAP_UNAVAILABLE", "The network map is temporarily unavailable.");
+      sendJson(response, 200, { networkMap: networkMapStore.get() });
+      return;
+    }
+    if (request.method !== "PUT") fail(405, "METHOD_NOT_ALLOWED", "That method is not allowed.");
+    const authenticated = await authenticate(request, true);
+    if (!networkMapStore) fail(503, "NETWORK_MAP_UNAVAILABLE", "Saving the network map is temporarily unavailable.");
+    const body = await readBoundedJson(request, MAX_NETWORK_MAP_BODY_BYTES);
+    requireExactKeys(body, ["map", "revision"]);
+    let saved;
+    await serializeServiceMutation(async () => {
+      await recheckMutationSession(request, authenticated);
+      try {
+        saved = await networkMapStore.save(body.map, body.revision);
+      } catch (error) {
+        if (error?.code === "NETWORK_MAP_CONFLICT") fail(409, "NETWORK_MAP_CONFLICT", error.message);
+        if (error?.code === "INVALID_NETWORK_MAP") fail(400, "INVALID_NETWORK_MAP", error.message);
+        throw error;
+      }
+    });
+    recordEvent({
+      level: "info",
+      category: "configuration",
+      event: "network_map_updated",
+      outcome: "changed",
+      service: "helmsman"
+    });
+    sendJson(response, 200, { networkMap: saved });
+  }
+
   async function mediaSeriesSeasons(request, response, tmdbIdValue, url) {
     if (request.method !== "GET") fail(405, "METHOD_NOT_ALLOWED", "That method is not allowed.");
     await authenticate(request, false);
@@ -5167,6 +5211,11 @@ export async function createControlPlane(options) {
       if (url.pathname === "/api/v2/manual") {
         if (url.search) fail(404, "NOT_FOUND", "Not found.");
         await manualApi(request, response);
+        return true;
+      }
+      if (url.pathname === "/api/v2/network-map") {
+        if (url.search) fail(404, "NOT_FOUND", "Not found.");
+        await networkMapApi(request, response);
         return true;
       }
       const operationMatch = url.pathname.match(/^\/api\/v2\/operations\/(snapshot|refresh)$/u);

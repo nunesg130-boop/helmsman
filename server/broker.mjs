@@ -29,6 +29,7 @@ import { createPersistentCache } from "./persistent-cache.mjs";
 import { createAcknowledgementStore } from "./acknowledgements.mjs";
 import { createLaunchpadStore } from "./launchpad.mjs";
 import { createManualStore } from "./manual.mjs";
+import { createNetworkMapStore } from "./network-map.mjs";
 import { probeProxmox, probeProxmoxEndpoint } from "./proxmox-probes.mjs";
 import { probePortainer } from "./portainer-probes.mjs";
 import { probeService } from "./service-probes.mjs";
@@ -1502,6 +1503,14 @@ export async function createBroker(options = {}) {
       log("Helmsman manual storage is unavailable; the Manual page will be read-only and empty.");
     }
   }
+  let networkMap = options.networkMap || null;
+  if (!networkMap) {
+    try {
+      networkMap = await createNetworkMapStore({ dataDir, guard: options.stateGuard });
+    } catch {
+      log("Helmsman network map storage is unavailable; the Network page will be read-only and empty.");
+    }
+  }
   let persistentCache = options.persistentCache || null;
   if (!persistentCache) {
     try {
@@ -2741,6 +2750,7 @@ export async function createBroker(options = {}) {
     acknowledgements,
     launchpad,
     manual,
+    networkMap,
     version: VERSION,
     lookup,
     log,
