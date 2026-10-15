@@ -164,6 +164,147 @@ export function freeCell(map, zoneId, preferredColumns = 3) {
   return null;
 }
 
+// ---------------------------------------------------------------- import --
+
+function importText(value, fallback, max) {
+  const text = typeof value === "string" ? value : value === undefined || value === null ? "" : String(value);
+  return (text || fallback || "").slice(0, max);
+}
+
+function cellInBounds(item) {
+  return Number.isSafeInteger(item.col) && item.col >= 0 && item.col < NETWORK_LIMITS.columns
+    && Number.isSafeInteger(item.row) && item.row >= 0 && item.row < NETWORK_LIMITS.rows;
+}
+
+/**
+ * Turns pasted map JSON into a draft the editor can hold, and reports what had
+ * to change. Entries that cannot be used (a bad or repeated id, an item in a
+ * zone that does not exist, a link to a missing item or a repeated link) are
+ * skipped. Items with no grid cell, a cell outside the grid, or a cell another
+ * item already holds are moved to the next free cell in their zone, so a map
+ * written by hand or by an assistant does not fail on save over placement.
+ */
+export function normalizeImportedMap(input) {
+  const report = { skippedZones: 0, skippedItems: 0, skippedLinks: 0, placedItems: 0 };
+  const zoneIds = new Set();
+  const zones = [];
+  for (const zone of input.zones) {
+    if (!zone || !IDENTIFIER.test(zone.id) || zoneIds.has(zone.id) || zones.length >= NETWORK_LIMITS.zones) {
+      report.skippedZones += 1;
+      continue;
+    }
+    zoneIds.add(zone.id);
+    zones.push({
+      id: zone.id,
+      title: importText(zone.title, zone.id, NETWORK_LIMITS.nameLength),
+      row: Number.isSafeInteger(zone.row) ? clamp(zone.row, 0, NETWORK_LIMITS.zoneRows - 1) : 0,
+      order: Number.isSafeInteger(zone.order) ? clamp(zone.order, 0, 99) : 0
+    });
+  }
+
+  const itemIds = new Set();
+  const accepted = [];
+  for (const item of input.items) {
+    if (!item || !IDENTIFIER.test(item.id) || itemIds.has(item.id) || !zoneIds.has(item.zone)
+      || accepted.length >= NETWORK_LIMITS.items) {
+      report.skippedItems += 1;
+      continue;
+    }
+    itemIds.add(item.id);
+    accepted.push({
+      raw: item,
+      value: {
+        id: item.id,
+        name: importText(item.name, item.id, NETWORK_LIMITS.nameLength),
+        kind: KIND_LABELS.has(item.kind) ? item.kind : "other",
+        zone: item.zone,
+        col: 0,
+        row: 0,
+        address: importText(item.address, "", NETWORK_LIMITS.addressLength),
+        role: importText(item.role, "", NETWORK_LIMITS.roleLength),
+        notes: importText(item.notes, "", NETWORK_LIMITS.notesLength),
+        source: item.source && typeof item.source === "object" ? item.source : null,
+        state: MANUAL_STATES.some(([value]) => value === item.state) ? item.state : "unknown"
+      }
+    });
+  }
+
+  // Keep every valid, unclaimed cell first, in the order given, then place the
+  // rest. That way an item without a cell never pushes aside one that has one.
+  const placedMap = { zones, items: [], links: [] };
+  const occupied = new Set();
+  const needsCell = [];
+  for (const entry of accepted) {
+    const key = `${entry.raw.zone}:${entry.raw.col}:${entry.raw.row}`;
+    if (cellInBounds(entry.raw) && !occupied.has(key)) {
+      occupied.add(key);
+      entry.value.col = entry.raw.col;
+      entry.value.row = entry.raw.row;
+      placedMap.items.push(entry.value);
+    } else {
+      needsCell.push(entry);
+    }
+  }
+  const unplaceable = new Set();
+  for (const entry of needsCell) {
+    const cell = freeCell(placedMap, entry.value.zone);
+    if (!cell) {
+      unplaceable.add(entry.value.id);
+      report.skippedItems += 1;
+      continue;
+    }
+    entry.value.col = cell.col;
+    entry.value.row = cell.row;
+    placedMap.items.push(entry.value);
+    report.placedItems += 1;
+  }
+  const items = accepted.map(({ value }) => value).filter(({ id }) => !unplaceable.has(id));
+  const keptItemIds = new Set(items.map(({ id }) => id));
+
+  const linkIds = new Set();
+  const pairs = new Set();
+  const links = [];
+  for (const link of input.links) {
+    const kind = link && LINK_LABELS.has(link.kind) ? link.kind : "wired";
+    const pair = link ? `${[link.from, link.to].sort().join("|")}|${kind}` : "";
+    if (!link || !IDENTIFIER.test(link.id) || linkIds.has(link.id)
+      || !keptItemIds.has(link.from) || !keptItemIds.has(link.to) || link.from === link.to
+      || pairs.has(pair) || links.length >= NETWORK_LIMITS.links) {
+      report.skippedLinks += 1;
+      continue;
+    }
+    linkIds.add(link.id);
+    pairs.add(pair);
+    links.push({
+      id: link.id,
+      from: link.from,
+      to: link.to,
+      kind,
+      label: importText(link.label, "", NETWORK_LIMITS.labelLength)
+    });
+  }
+  return { map: { zones, items, links }, report };
+}
+
+function plural(count, singular, pluralForm = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : pluralForm}`;
+}
+
+/** One short sentence describing what an import changed, or "" when nothing did. */
+export function describeImportReport(report) {
+  if (!report) return "";
+  const parts = [];
+  if (report.placedItems) parts.push(`${plural(report.placedItems, "item")} moved to a free grid cell`);
+  const skipped = [];
+  if (report.skippedZones) skipped.push(plural(report.skippedZones, "zone"));
+  if (report.skippedItems) skipped.push(plural(report.skippedItems, "item"));
+  if (report.skippedLinks) skipped.push(plural(report.skippedLinks, "connection"));
+  if (skipped.length) parts.push(`${skipped.join(", ")} skipped`);
+  if (!parts.length) return "";
+  const sentence = parts.join("; ");
+  return `${sentence.charAt(0).toUpperCase()}${sentence.slice(1)}.`;
+}
+
 // ---------------------------------------------------------------- layout --
 
 export function boxFor(kind) {
@@ -1534,45 +1675,16 @@ export function createNetworkMapController(deps) {
       renderPanel();
       return;
     }
-    const zones = map.zones.filter((zone) => zone && IDENTIFIER.test(zone.id));
-    const zoneIds = new Set(zones.map(({ id }) => id));
-    const items = map.items.filter((item) => item && IDENTIFIER.test(item.id) && zoneIds.has(item.zone)).map((item) => ({
-      id: item.id,
-      name: String(item.name || item.id).slice(0, NETWORK_LIMITS.nameLength),
-      kind: KIND_LABELS.has(item.kind) ? item.kind : "other",
-      zone: item.zone,
-      col: Number.isSafeInteger(item.col) ? item.col : 0,
-      row: Number.isSafeInteger(item.row) ? item.row : 0,
-      address: String(item.address || "").slice(0, NETWORK_LIMITS.addressLength),
-      role: String(item.role || "").slice(0, NETWORK_LIMITS.roleLength),
-      notes: String(item.notes || "").slice(0, NETWORK_LIMITS.notesLength),
-      source: item.source && typeof item.source === "object" ? item.source : null,
-      state: MANUAL_STATES.some(([value]) => value === item.state) ? item.state : "unknown"
-    }));
-    const itemIds = new Set(items.map(({ id }) => id));
-    state.draft = {
-      zones: zones.map((zone) => ({
-        id: zone.id,
-        title: String(zone.title || zone.id).slice(0, NETWORK_LIMITS.nameLength),
-        row: Number.isSafeInteger(zone.row) ? clamp(zone.row, 0, NETWORK_LIMITS.zoneRows - 1) : 0,
-        order: Number.isSafeInteger(zone.order) ? clamp(zone.order, 0, 99) : 0
-      })),
-      items,
-      links: map.links.filter((link) => link && IDENTIFIER.test(link.id) && itemIds.has(link.from) && itemIds.has(link.to) && link.from !== link.to).map((link) => ({
-        id: link.id,
-        from: link.from,
-        to: link.to,
-        kind: LINK_LABELS.has(link.kind) ? link.kind : "wired",
-        label: String(link.label || "").slice(0, NETWORK_LIMITS.labelLength)
-      }))
-    };
+    const { map: draft, report } = normalizeImportedMap(map);
+    state.draft = draft;
     state.editing = true;
     state.importError = "";
     state.panelMode = "";
     state.selected = null;
     state.selectedZone = null;
     changed({ panel: true, fit: true });
-    deps.toast("Map loaded into the draft. Review it, then choose Save map", "info");
+    const adjustments = describeImportReport(report);
+    deps.toast(`Map loaded into the draft.${adjustments ? ` ${adjustments}` : ""} Review it, then choose Save map`, "info");
   }
 
   // ------------------------------------------------------------- events --

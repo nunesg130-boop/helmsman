@@ -71,18 +71,20 @@ An item is one thing on the map: a router, a host, a VM, a service.
 | `name` | Yes | Up to 64 characters, one line. |
 | `kind` | Yes | One of the kinds below. |
 | `zone` | Yes | The `id` of a zone in the same map. |
-| `col` | Yes | Whole number 0–23. Column inside the zone. |
-| `row` | Yes | Whole number 0–39. Row inside the zone. |
+| `col` | Recommended | Whole number 0–23. Column inside the zone. |
+| `row` | Recommended | Whole number 0–39. Row inside the zone. |
 | `address` | No | Up to 120 characters. Shown as text only; Helmsman never connects to it. |
 | `role` | No | Up to 80 characters, one line. |
 | `notes` | No | Up to 600 characters. Line breaks are allowed. |
 | `state` | No | One of the states below. Defaults to `unknown`. Ignored while a live source supplies the state. |
 | `source` | No | A live source, described below. |
 
-**Two items in the same zone can't share a `col` and `row`.** This is the rule
-hand-written and AI-written maps break most often. Give every item in a zone
-its own cell, for example by counting `col` up from 0 and starting a new `row`
-every four to six items.
+**Two items in the same zone can't share a `col` and `row`.** When you import,
+an item with no cell, a cell outside the grid, or a cell another item already
+holds is moved to the next free cell in its zone, and the import message says
+how many moved. Items that do give a free cell keep it. To control the layout
+yourself, give every item in a zone its own cell, for example by counting `col`
+up from 0 and starting a new `row` every four to six items.
 
 Up to 400 items.
 
@@ -160,6 +162,22 @@ A link is a line between two items.
 - Direction is for reading only; `from` and `to` draw the same line.
 - Two links between the same pair of items need different kinds.
 
+## What import fixes and what it skips
+
+Import loads as much of the JSON as it can and tells you what it changed:
+
+- Items without a usable grid cell are moved to a free cell.
+- An unknown item `kind` becomes `other`, an unknown `state` becomes
+  `unknown`, and an unknown link `kind` becomes `wired`.
+- Text longer than its limit is shortened.
+- These are skipped and counted: a zone, item or link with a missing, invalid
+  or repeated `id`; an item in a zone that doesn't exist; a link to an item
+  that doesn't exist, from an item to itself, or repeating another link's pair
+  and kind; anything past the map's size limits.
+
+A live `source` is checked when you save. If it isn't valid, the save message
+names the item so you can fix or remove it in the editor.
+
 Up to 1,000 links.
 
 ## A complete small example
@@ -199,8 +217,8 @@ Up to 1,000 links.
 1. List your zones first. A common layout is *Internet* (row 0), *Network edge*
    (row 1), then *Servers*, *Services*, *Clients* and *Cameras/IoT* side by
    side in later rows.
-2. List every item with a zone, then number `col` and `row` inside each zone so
-   no two items share a cell.
+2. List every item with a zone. Number `col` and `row` inside each zone if you
+   want a particular layout; otherwise leave them out and import places them.
 3. Add links last, using the item `id` values.
 4. Import, look at the result, move things in the editor, then **Save map**.
 
@@ -219,8 +237,8 @@ and optionally an **Export JSON** of the current map. Then use this prompt:
 > - Output only the JSON object with `zones`, `items` and `links`.
 > - Use only lower-case letters, digits and hyphens for every `id`.
 > - Every item's `zone` must be the `id` of a zone in the map.
-> - No two items in the same zone may share the same `col` and `row`.
->   Number them left to right, starting a new row every 5 items.
+> - Give each item its own `col` and `row` within its zone, numbering left
+>   to right and starting a new row every 5 items.
 > - Use only the `kind`, `state` and link `kind` values listed in the guide.
 > - Keep `name` to 64 characters, `role` to 80 and `notes` to 600.
 > - Use `source` only for Proxmox nodes, VMIDs, container names or media
@@ -233,5 +251,6 @@ and optionally an **Export JSON** of the current map. Then use this prompt:
 > [paste this guide]
 > [paste device list, wiring description, and existing export if any]
 
-Paste the JSON into **Import JSON**. If saving reports a problem, the message
-names the zone, item or connection to fix.
+Paste the JSON into **Import JSON**. The import message says if anything was
+moved or skipped. If saving reports a problem, the message names the zone,
+item or connection to fix.
