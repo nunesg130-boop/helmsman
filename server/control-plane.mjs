@@ -21,6 +21,7 @@ import { isReportId } from "./acknowledgements.mjs";
 import { canonicalLaunchUrl, launchpadKey } from "./launchpad.mjs";
 import { MANUAL_LIMITS } from "./manual.mjs";
 import { NETWORK_MAP_LIMITS } from "./network-map.mjs";
+import { resolveLimits } from "./limits.mjs";
 
 const MAX_JSON_BODY_BYTES = 64 * 1024;
 // The owner manual is the one larger body: its Markdown limit plus JSON escaping headroom.
@@ -48,13 +49,10 @@ const BROWSER_AUTH_STATE_NAMESPACE = "browser-auth-state";
 const BROWSER_AUTH_STATE_FIELD = "schema";
 const BROWSER_AUTH_STATE_VERSION = "4";
 const BACKGROUND_JELLYFIN_REVOCATION_TTL_MS = 6_000;
-// Keep enough encrypted-store headroom to stage every destination-bound
-// credential during an atomic network-policy migration (seven media
-// connectors, 25 Proxmox endpoints, and eight infrastructure services).
-const MAX_INFRASTRUCTURE_TARGETS = 25;
-const MAX_INFRASTRUCTURE_ENDPOINTS = 25;
-const MAX_ENDPOINTS_PER_ENVIRONMENT = 4;
-const MAX_INFRASTRUCTURE_SERVICES = 8;
+// Capacity limits come from server/limits.mjs (environment-adjustable, with
+// defaults of 25 Proxmox environments, 25 endpoints, 4 endpoints per
+// environment and 8 infrastructure services). Their combined total is kept
+// inside the encrypted store's staging budget there.
 const DEFAULT_INFRASTRUCTURE_MONITOR_INTERVAL_SECONDS = 60;
 const ACTION_INVENTORY_MAX_AGE_MS = 2 * 60 * 1000;
 const ACTION_COOLDOWN_MS = 30 * 1000;
@@ -1089,6 +1087,7 @@ function translateStoreError(error) {
 }
 
 export async function createControlPlane(options) {
+  const limits = options?.limits || resolveLimits();
   const stateStore = options?.stateStore;
   if (!stateStore || typeof stateStore.snapshot !== "function" || typeof stateStore.mutate !== "function") {
     throw new Error("The control plane requires an initialized state store.");
@@ -1365,17 +1364,17 @@ export async function createControlPlane(options) {
   function consumeJellyfinLoginAttempt(request, username, now = Date.now()) {
     pruneJellyfinLoginAttempts(now);
     const bucketKeys = jellyfinLoginBucketKeys(request, username);
-    const limits = new Map([
+    const attemptLimits = new Map([
       ["global", MAX_JELLYFIN_LOGIN_ATTEMPTS_GLOBAL],
       ...bucketKeys.map((bucket) => [bucket, MAX_JELLYFIN_LOGIN_ATTEMPTS_PER_BUCKET])
     ]);
-    for (const [bucket, limit] of limits) {
+    for (const [bucket, limit] of attemptLimits) {
       const current = jellyfinLoginAttempts.get(bucket);
       if (current && current.attempts >= limit) {
         fail(429, "JELLYFIN_LOGIN_RATE_LIMITED", "Too many sign-in attempts. Wait a few minutes and try again.");
       }
     }
-    for (const [bucket] of limits) {
+    for (const [bucket] of attemptLimits) {
       const current = jellyfinLoginAttempts.get(bucket);
       if (current) current.attempts += 1;
       else jellyfinLoginAttempts.set(bucket, { startedAt: now, attempts: 1 });
@@ -3063,8 +3062,8 @@ export async function createControlPlane(options) {
         if (id && !previous) {
           fail(404, "INFRASTRUCTURE_TARGET_NOT_FOUND", "That infrastructure target does not exist.");
         }
-        if (!id && Object.keys(state.infrastructureTargets || {}).length >= MAX_INFRASTRUCTURE_TARGETS) {
-          fail(409, "INFRASTRUCTURE_TARGET_LIMIT_REACHED", `No more than ${MAX_INFRASTRUCTURE_TARGETS} infrastructure targets may be configured.`);
+        if (!id && Object.keys(state.infrastructureTargets || {}).length >= limits.proxmoxEnvironments) {
+          fail(409, "INFRASTRUCTURE_TARGET_LIMIT_REACHED", `No more than ${limits.proxmoxEnvironments} infrastructure targets may be configured.`);
         }
 
         const type = normalizeInfrastructureType(body.type === undefined ? previous?.type : body.type);
@@ -3277,11 +3276,11 @@ export async function createControlPlane(options) {
           fail(409, "PRIMARY_ENDPOINT_MANAGED_BY_ENVIRONMENT", "Edit the primary endpoint from the environment connection dialog.");
         }
         const endpoints = infrastructureEndpoints(target);
-        if (!previous && endpoints.length >= MAX_ENDPOINTS_PER_ENVIRONMENT) {
-          fail(409, "INFRASTRUCTURE_ENDPOINT_LIMIT_REACHED", `No more than ${MAX_ENDPOINTS_PER_ENVIRONMENT} endpoints may be registered for one environment.`);
+        if (!previous && endpoints.length >= limits.endpointsPerEnvironment) {
+          fail(409, "INFRASTRUCTURE_ENDPOINT_LIMIT_REACHED", `No more than ${limits.endpointsPerEnvironment} endpoints may be registered for one environment.`);
         }
-        if (!previous && infrastructureEndpointCount(state) >= MAX_INFRASTRUCTURE_ENDPOINTS) {
-          fail(409, "INFRASTRUCTURE_ENDPOINT_LIMIT_REACHED", `No more than ${MAX_INFRASTRUCTURE_ENDPOINTS} Proxmox endpoints may be registered.`);
+        if (!previous && infrastructureEndpointCount(state) >= limits.proxmoxEndpoints) {
+          fail(409, "INFRASTRUCTURE_ENDPOINT_LIMIT_REACHED", `No more than ${limits.proxmoxEndpoints} Proxmox endpoints may be registered.`);
         }
         const label = safeInfrastructureEndpointLabel(body.label, previous?.label || `Endpoint ${endpoints.length + 1}`);
         const parsedTarget = parseInfrastructureTargetUrl(body.url === undefined ? previous?.url : body.url);
@@ -3734,11 +3733,11 @@ export async function createControlPlane(options) {
         if (id && !previous) {
           fail(404, "INFRASTRUCTURE_SERVICE_NOT_FOUND", "That infrastructure service does not exist.");
         }
-        if (!id && Object.keys(state.infrastructureServices || {}).length >= MAX_INFRASTRUCTURE_SERVICES) {
+        if (!id && Object.keys(state.infrastructureServices || {}).length >= limits.infrastructureServices) {
           fail(
             409,
             "INFRASTRUCTURE_SERVICE_LIMIT_REACHED",
-            `No more than ${MAX_INFRASTRUCTURE_SERVICES} infrastructure services may be configured.`
+            `No more than ${limits.infrastructureServices} infrastructure services may be configured.`
           );
         }
 

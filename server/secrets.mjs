@@ -12,11 +12,12 @@ const TAG_BYTES = 16;
 const MAX_KEY_FILE_BYTES = 256;
 const MAX_STORE_BYTES = 1024 * 1024;
 const MAX_SECRET_BYTES = 16 * 1024;
-// The control plane can stage a destination-bound replacement for all seven
-// media connectors, 25 Proxmox endpoints, and eight Portainer servers during
-// one policy migration (80 namespaces). Up to 64 browser sessions may also
-// hold a separately encrypted Jellyfin identity token. Keep bounded recovery
-// headroom while rejecting unexpectedly large credential documents.
+// The control plane can stage a destination-bound replacement for every
+// credential-bearing connection during one policy migration. limits.mjs keeps
+// those connections within a 56-namespace budget (112 staged), and up to 64
+// browser sessions may also hold a separately encrypted Jellyfin identity
+// token, leaving 16 namespaces of recovery headroom while still rejecting
+// unexpectedly large credential documents.
 const MAX_SERVICES = 192;
 const MAX_FIELDS_PER_SERVICE = 32;
 const DEFAULT_KEY_NAME = "credentials.key";
@@ -287,6 +288,9 @@ function validateDocument(value, expectedInstanceId) {
   return value;
 }
 
+// These "jellofin-command/..." strings are authenticated-data labels bound into
+// every stored ciphertext. They predate the Helmsman name and must not change:
+// a different label makes every existing encrypted credential unreadable.
 function valueAad(instanceId, service, field, record) {
   return Buffer.from(JSON.stringify([
     "jellofin-command/credential",

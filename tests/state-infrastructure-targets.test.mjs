@@ -5,6 +5,8 @@ import path from "node:path";
 import test from "node:test";
 import { randomUUID } from "node:crypto";
 import { StateStore } from "../server/state.mjs";
+import { STORED_LIMIT_CEILINGS } from "../server/limits.mjs";
+import { diskConnection, withLegacyConnections } from "./helpers/state-file.mjs";
 
 function target(id = randomUUID()) {
   const now = new Date().toISOString();
@@ -91,23 +93,24 @@ test("state v1 migrates atomically without losing media connections", async () =
         updatedAt: new Date().toISOString()
       };
     });
-    const legacy = JSON.parse(await readFile(path.join(root, "state.json"), "utf8"));
+    const legacy = withLegacyConnections(JSON.parse(await readFile(path.join(root, "state.json"), "utf8")));
     legacy.version = 1;
     delete legacy.infrastructureTargets;
     await writeFile(path.join(root, "state.json"), `${JSON.stringify(legacy)}\n`, { mode: 0o600 });
 
     const migrated = new StateStore(root);
     const snapshot = await migrated.initialize();
-    assert.equal(snapshot.version, 5);
+    assert.equal(snapshot.version, 6);
     assert.deepEqual(snapshot.infrastructureTargets, {});
     assert.deepEqual(snapshot.infrastructureServices, {});
     assert.equal(snapshot.connections.radarr.url, "http://10.20.30.40:7878");
 
     const durable = JSON.parse(await readFile(path.join(root, "state.json"), "utf8"));
-    assert.equal(durable.version, 5);
+    assert.equal(durable.version, 6);
     assert.deepEqual(durable.infrastructureTargets, {});
     assert.deepEqual(durable.infrastructureServices, {});
-    assert.equal(durable.connections.radarr.url, "http://10.20.30.40:7878");
+    assert.equal(diskConnection(durable, "radarr").url, "http://10.20.30.40:7878");
+    assert.equal(Object.hasOwn(durable, "connections"), false);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -130,7 +133,7 @@ test("state v2 keeps existing Proxmox targets separate while wrapping their prim
       state.infrastructureTargets[secondTarget.id] = secondTarget;
     });
 
-    const legacy = JSON.parse(await readFile(path.join(root, "state.json"), "utf8"));
+    const legacy = withLegacyConnections(JSON.parse(await readFile(path.join(root, "state.json"), "utf8")));
     legacy.version = 2;
     for (const entry of Object.values(legacy.infrastructureTargets)) {
       delete entry.primaryEndpointId;
@@ -141,7 +144,7 @@ test("state v2 keeps existing Proxmox targets separate while wrapping their prim
 
     const migratedStore = new StateStore(root);
     const migrated = await migratedStore.initialize();
-    assert.equal(migrated.version, 5);
+    assert.equal(migrated.version, 6);
     assert.deepEqual(migrated.infrastructureServices, {});
     assert.deepEqual(Object.keys(migrated.infrastructureTargets).sort(), [firstTarget.id, secondTarget.id].sort());
     assert.equal(migrated.infrastructureTargets[firstTarget.id].environmentIdentity, null);
@@ -164,7 +167,7 @@ test("state v2 keeps existing Proxmox targets separate while wrapping their prim
     assert.equal(migrated.infrastructureTargets[secondTarget.id].endpoints[0].url, secondTarget.url);
 
     const durable = JSON.parse(await readFile(path.join(root, "state.json"), "utf8"));
-    assert.equal(durable.version, 5);
+    assert.equal(durable.version, 6);
     assert.deepEqual(durable.infrastructureServices, {});
     assert.equal(Object.keys(durable.infrastructureTargets).length, 2);
     assert.equal(durable.infrastructureTargets[firstTarget.id].primaryEndpointId, firstTarget.id);
@@ -179,17 +182,17 @@ test("state v3 migration adds an independent infrastructure service collection",
   try {
     const first = new StateStore(root);
     await first.initialize();
-    const legacy = JSON.parse(await readFile(path.join(root, "state.json"), "utf8"));
+    const legacy = withLegacyConnections(JSON.parse(await readFile(path.join(root, "state.json"), "utf8")));
     legacy.version = 3;
     delete legacy.infrastructureServices;
     await writeFile(path.join(root, "state.json"), `${JSON.stringify(legacy)}\n`, { mode: 0o600 });
 
     const migratedStore = new StateStore(root);
     const migrated = await migratedStore.initialize();
-    assert.equal(migrated.version, 5);
+    assert.equal(migrated.version, 6);
     assert.deepEqual(migrated.infrastructureServices, {});
     const durable = JSON.parse(await readFile(path.join(root, "state.json"), "utf8"));
-    assert.equal(durable.version, 5);
+    assert.equal(durable.version, 6);
     assert.deepEqual(durable.infrastructureServices, {});
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -203,24 +206,24 @@ test("state v4 migration preserves existing Portainer records exactly", async ()
     await first.initialize();
     const saved = infrastructureService();
     await first.mutate((state) => { state.infrastructureServices[saved.id] = saved; });
-    const legacy = JSON.parse(await readFile(path.join(root, "state.json"), "utf8"));
+    const legacy = withLegacyConnections(JSON.parse(await readFile(path.join(root, "state.json"), "utf8")));
     legacy.version = 4;
     const before = structuredClone(legacy.infrastructureServices[saved.id]);
     await writeFile(path.join(root, "state.json"), `${JSON.stringify(legacy)}\n`, { mode: 0o600 });
 
     const migratedStore = new StateStore(root);
     const migrated = await migratedStore.initialize();
-    assert.equal(migrated.version, 5);
+    assert.equal(migrated.version, 6);
     assert.deepEqual(migrated.infrastructureServices[saved.id], before);
     const durable = JSON.parse(await readFile(path.join(root, "state.json"), "utf8"));
-    assert.equal(durable.version, 5);
+    assert.equal(durable.version, 6);
     assert.deepEqual(durable.infrastructureServices[saved.id], before);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("state accepts eight canonical Portainer services and rejects unsafe shapes", async () => {
+test("state accepts canonical Portainer services up to the stored ceiling and rejects unsafe shapes", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "helmsman-state-infrastructure-services-"));
   try {
     const store = new StateStore(root);
@@ -247,7 +250,7 @@ test("state accepts eight canonical Portainer services and rejects unsafe shapes
     );
 
     await store.mutate((state) => {
-      while (Object.keys(state.infrastructureServices).length < 8) {
+      while (Object.keys(state.infrastructureServices).length < STORED_LIMIT_CEILINGS.infrastructureServices) {
         const entry = infrastructureService();
         state.infrastructureServices[entry.id] = entry;
       }
@@ -259,7 +262,7 @@ test("state accepts eight canonical Portainer services and rejects unsafe shapes
       }),
       /Malformed broker infrastructure service state/u
     );
-    assert.equal(Object.keys(store.snapshot().infrastructureServices).length, 8);
+    assert.equal(Object.keys(store.snapshot().infrastructureServices).length, STORED_LIMIT_CEILINGS.infrastructureServices);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -344,7 +347,7 @@ test("state accepts bounded canonical Proxmox targets and rejects unsafe shapes"
     assert.equal(Object.keys(store.snapshot().infrastructureTargets).length, 1);
 
     await store.mutate((state) => {
-      while (Object.keys(state.infrastructureTargets).length < 25) {
+      while (Object.keys(state.infrastructureTargets).length < STORED_LIMIT_CEILINGS.proxmoxEnvironments) {
         const entry = target();
         state.infrastructureTargets[entry.id] = entry;
       }
@@ -356,7 +359,7 @@ test("state accepts bounded canonical Proxmox targets and rejects unsafe shapes"
       }),
       /Malformed broker infrastructure target state/u
     );
-    assert.equal(Object.keys(store.snapshot().infrastructureTargets).length, 25);
+    assert.equal(Object.keys(store.snapshot().infrastructureTargets).length, STORED_LIMIT_CEILINGS.proxmoxEnvironments);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -5,6 +5,7 @@ import { lstat, open, rename } from "node:fs/promises";
 import { isIP } from "node:net";
 import path from "node:path";
 import { createBroker, createHttpServer } from "./broker.mjs";
+import { resolveLimits } from "./limits.mjs";
 import { acquireDataDirLock } from "./lock.mjs";
 import { CredentialStore } from "./secrets.mjs";
 import { SessionAuthStore } from "./session-auth.mjs";
@@ -31,6 +32,9 @@ function configuredHost() {
 async function serve() {
   const port = configuredPort();
   const host = configuredHost();
+  // Fail before touching /data when a limit variable is malformed or the
+  // limits together exceed the encrypted store's budget.
+  resolveLimits();
   const dataDir = process.env.HELMSMAN_DATA_DIR || process.env.JELLOFIN_COMMAND_DATA_DIR || "/data";
   const lock = await acquireDataDirLock(dataDir);
   let broker;

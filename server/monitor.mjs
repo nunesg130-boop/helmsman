@@ -4,14 +4,17 @@ import {
 } from "./media-model.mjs";
 import { normalizePortainerInventory } from "./portainer-model.mjs";
 import { reportFingerprint } from "./acknowledgements.mjs";
+import { STORED_LIMIT_CEILINGS } from "./limits.mjs";
 
 const DEFAULT_INTERVAL_MS = 30_000;
 const MIN_INTERVAL_MS = 30_000;
 const MAX_INTERVAL_MS = 60_000;
 const DEFAULT_HISTORY_LIMIT = 120;
 const MAX_SERVICES = 64;
-const MAX_INFRASTRUCTURE_TARGETS = 32;
-const MAX_INFRASTRUCTURE_SERVICES = 8;
+// Monitor everything stored state may hold; the configured limits are enforced
+// when records are added.
+const MAX_INFRASTRUCTURE_TARGETS = STORED_LIMIT_CEILINGS.proxmoxEnvironments;
+const MAX_INFRASTRUCTURE_SERVICES = STORED_LIMIT_CEILINGS.infrastructureServices;
 const MAX_CHECKS_PER_SERVICE = 32;
 const MAX_REPORTS_PER_CHECK = 12;
 const MAX_REPORT_SOURCE_CODE_POINTS = 96;

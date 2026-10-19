@@ -31,6 +31,7 @@ helmsman.example.com {
 		reverse_proxy @authentikOutpost https://auth.example.com {
 			header_up Host {http.reverse_proxy.upstream.host}
 			header_up -Authorization
+			header_up -X-Helmsman-*
 			header_up -X-Jellofin-*
 			header_up -X-Api-Key
 			header_up -X-Emby-Token
@@ -44,6 +45,7 @@ helmsman.example.com {
 			header_up Host {http.reverse_proxy.upstream.host}
 			header_up X-Forwarded-Uri {http.request.uri.path}
 			header_up -Authorization
+			header_up -X-Helmsman-*
 			header_up -X-Jellofin-*
 			header_up -X-Api-Key
 			header_up -X-Emby-Token

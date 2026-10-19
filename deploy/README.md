@@ -36,6 +36,8 @@ Updates use the same `docker compose pull` and `docker compose up -d` commands a
 
 v1.0.6 migrates state schema 4 to schema 5 so Loki connections can be stored as bounded Infrastructure observability services while preserving existing Portainer records. Do not start v1.0.5 against a volume already migrated to schema 5. A rollback to v1.0.5 requires the `/data` backup taken before the v1.0.6 upgrade.
 
+The release after v1.4.0 migrates state schema 5 to schema 6, which stores media connections by id instead of by service name. Every connection, credential and approval is preserved. Do not start v1.4.0 or older against a volume already migrated to schema 6. A rollback requires the `/data` backup taken before the upgrade.
+
 ## v1.3.4 Obsidian Glass visual release
 
 v1.3.4 applies the compact near-black Obsidian Glass design system to every

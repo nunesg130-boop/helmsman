@@ -156,6 +156,26 @@ test("opaque sessions persist only hashes and authenticate with Origin plus CSRF
     assert.deepEqual(authenticated.session, issued.session);
     assert.equal(authenticated.csrfToken, issued.csrfToken);
 
+    assert.equal(CSRF_HEADER_NAME, "x-helmsman-csrf");
+    const legacyHeaderRequest = request({
+      host: "command.example.test",
+      origin: "https://command.example.test",
+      cookie: `${SESSION_COOKIE_NAME}=${token}`,
+      "x-jellofin-csrf": issued.csrfToken
+    });
+    const legacyAuthenticated = await store.authenticateRequest(legacyHeaderRequest, { requireCsrf: true });
+    assert.equal(legacyAuthenticated.csrfToken, issued.csrfToken, "the pre-rename CSRF header stays accepted");
+    await expectCodeAsync(
+      () => store.authenticateRequest(request({
+        host: "command.example.test",
+        origin: "https://command.example.test",
+        cookie: `${SESSION_COOKIE_NAME}=${token}`,
+        [CSRF_HEADER_NAME]: "b".repeat(43),
+        "x-jellofin-csrf": issued.csrfToken
+      }), { requireCsrf: true }),
+      "CSRF_TOKEN_INVALID"
+    );
+
     await expectCodeAsync(
       () => store.authenticateRequest(request({
         host: "command.example.test",
