@@ -38,6 +38,7 @@ function parseArguments(argv) {
     const argument = argv[index];
     if (argument === "--port") options.port = Number(argv[++index]);
     else if (argument === "--data") options.data = argv[++index];
+    else if (argument === "--outage") options.outage = true;
     else if (argument === "--help" || argument === "-h") options.help = true;
     else throw new Error(`Unknown option ${argument}. Try --help.`);
   }
@@ -58,7 +59,9 @@ const HOSTS = Object.freeze({
   "bazarr.helmsman-demo.test": "10.77.0.15",
   "qbittorrent.helmsman-demo.test": "10.77.0.16",
   "pve.helmsman-demo.test": "10.77.0.4",
-  "portainer.helmsman-demo.test": "10.77.0.20"
+  "portainer.helmsman-demo.test": "10.77.0.20",
+  "ai.helmsman-demo.test": "10.77.0.30",
+  "ha.helmsman-demo.test": "10.77.0.31"
 });
 
 const SERVER_ID = "d3m0d3m0d3m0d3m0d3m0d3m0d3m0d3m0";
@@ -293,6 +296,7 @@ function seerr(upstreamPath) {
 }
 
 function arr(service, upstreamPath) {
+  if (faults.has(service)) return { status: 503, json: {} };
   const movies = service === "radarr";
   const items = ALL.filter((item) => item.kind === (movies ? "movie" : "series"));
   if (upstreamPath === "/api/v3/system/status") {
@@ -525,9 +529,137 @@ function portainer(routeId) {
 }
 
 async function dispatchPortainer({ route }) {
+  if (route.actionId === "container") {
+    const container = CONTAINERS.find((entry) => entry.Id === route.containerId);
+    if (!container) return { status: 404, body: Buffer.alloc(0), contentType: "application/json" };
+    if (route.operation === "stop") {
+      container.State = "exited";
+      container.Status = "Exited (0) Less than a second ago";
+    } else {
+      repairContainer(container);
+    }
+    return { status: 204, body: Buffer.alloc(0), contentType: "application/json" };
+  }
   const result = portainer(route.routeId);
   if (!result) return { status: 404, body: Buffer.from("{}", "utf8"), contentType: "application/json" };
   return { status: 200, body: Buffer.from(JSON.stringify(result), "utf8"), contentType: "application/json" };
+}
+
+// ------------------------------------------------------ agent upstreams --
+//
+// A scripted stand-in for a local model, and a stand-in Home Assistant. The
+// fake model follows the OpenAI chat format with tool calls, so the agent's
+// real conversation loop, tools, proposals and notifications all run. Its
+// answers are templates, not intelligence.
+
+const DEMO_MODEL = "demo-model";
+const DEMO_HA_TOKEN = "demo-home-assistant-token";
+const DEMO_NOTIFY_SERVICE = "mobile_app_demo_phone";
+const notifications = [];
+
+function modelReply(content) {
+  return { choices: [{ index: 0, message: { role: "assistant", content }, finish_reason: "stop" }], usage: { prompt_tokens: 0, completion_tokens: 0 } };
+}
+
+function modelCall(messages, name, args) {
+  const count = messages.filter((message) => message.role === "tool").length;
+  return {
+    choices: [{
+      index: 0,
+      message: {
+        role: "assistant",
+        content: "",
+        tool_calls: [{ id: `call_${count + 1}`, type: "function", function: { name, arguments: JSON.stringify(args) } }]
+      },
+      finish_reason: "tool_calls"
+    }]
+  };
+}
+
+function fakeModel(body) {
+  const messages = Array.isArray(body?.messages) ? body.messages : [];
+  const tools = new Set((body?.tools || []).map((tool) => tool.function?.name));
+  const prompt = [...messages].reverse().find((message) => message.role === "user" && !message.content.startsWith("Answer now"))?.content || "";
+  const called = messages.filter((message) => message.tool_calls).flatMap((message) => message.tool_calls.map((call) => call.function.name));
+  const results = messages.filter((message) => message.role === "tool").map((message) => message.content);
+  const firstLines = (text, count) => String(text || "").split("\n").filter(Boolean).slice(0, count).join(" ");
+
+  const incident = /^A problem (?:just started|got worse) \(([^)]+)\)\.\nOpen incidents:\n- [^/]+ \/ ([^:]+): ([a-z_]+)( [A-Z_]+)?/u.exec(prompt);
+  if (incident) {
+    const [, name, capability, state, code = ""] = incident;
+    const id = name.trim().toLowerCase();
+    if (tools.has("list_workloads") && !called.includes("list_workloads")) return modelCall(messages, "list_workloads", { filter: id });
+    const containerLine = results.find((text) => text.includes(`container ${id} `)) || "";
+    const stopped = /: (exited|created)/u.test(containerLine);
+    if (stopped && tools.has("propose_action") && !called.includes("propose_action")) {
+      return modelCall(messages, "propose_action", { target: `container:${id}`, action: "start", reason: `${name.trim()} is down and its container is stopped.` });
+    }
+    return modelReply(`${name.trim()} is failing its ${capability.trim()} check (${state}${code}).${stopped ? ` Its container is stopped, which explains it. Next step: start the ${id} container and watch the next check.` : " Its container is running, so check the service's own logs next."}`);
+  }
+  if (prompt.startsWith("Write the owner's daily summary")) {
+    const overview = prompt.split("Current overview:\n")[1] || "";
+    return modelReply(`Good morning. ${firstLines(overview.split("\n").slice(1).join("\n"), 3)}`);
+  }
+  if (tools.has("overview") && !called.includes("overview")) return modelCall(messages, "overview", {});
+  return modelReply(`${firstLines(results.at(-1), 4)} (This demo answers with a scripted stand-in for a local model.)`);
+}
+
+function json(status, value) {
+  const bytes = value === undefined ? 0 : Buffer.byteLength(JSON.stringify(value));
+  return { status, json: status >= 200 && status < 300 ? value ?? null : null, bytes };
+}
+
+async function dispatchAgent({ targetResolution, method, path: requestPath, body, bearerToken }) {
+  const host = targetResolution?.target?.hostname;
+  if (host === "ai.helmsman-demo.test") {
+    if (method === "GET" && requestPath === "/v1/models") return json(200, { object: "list", data: [{ id: DEMO_MODEL }, { id: "qwen2.5:3b" }] });
+    if (method === "POST" && requestPath === "/v1/chat/completions") {
+      if (body?.model !== DEMO_MODEL && body?.model !== "qwen2.5:3b") return json(404, {});
+      return json(200, fakeModel(body));
+    }
+    return json(404, {});
+  }
+  if (host === "ha.helmsman-demo.test") {
+    if (bearerToken !== DEMO_HA_TOKEN) return json(401, {});
+    if (method === "GET" && requestPath === "/api/") return json(200, { message: "API running." });
+    if (method === "POST" && requestPath === `/api/services/notify/${DEMO_NOTIFY_SERVICE}`) {
+      notifications.push({ at: new Date().toISOString(), title: body?.title, message: body?.message });
+      if (notifications.length > 100) notifications.shift();
+      if (process.env.HELMSMAN_DEMO_VERBOSE || demoPrintNotifications) {
+        process.stdout.write(`\n  [phone] ${body?.title}\n          ${String(body?.message || "").replace(/\n/gu, "\n          ")}\n`);
+      }
+      return json(200, []);
+    }
+    if (method === "POST" && requestPath.startsWith("/api/services/notify/")) return json(400, {});
+    return json(404, {});
+  }
+  throw Object.assign(new Error("Not part of the demo."), { code: "UPSTREAM_UNREACHABLE", status: 502 });
+}
+
+let demoPrintNotifications = false;
+
+// ---------------------------------------------------------------- faults --
+//
+// `breakService("sonarr")` makes Sonarr's API fail and stops its container,
+// so the agent has something to notice. Starting the container again (by a
+// rule, an approved proposal or the Portainer button) fixes it.
+
+const faults = new Set();
+
+function breakService(name) {
+  if (!["sonarr", "radarr"].includes(name)) throw new Error("The demo can break sonarr or radarr.");
+  faults.add(name);
+  const container = CONTAINERS.find((entry) => entry.Names[0] === `/${name}`);
+  if (container) {
+    container.State = "exited";
+    container.Status = "Exited (137) Less than a second ago";
+  }
+}
+
+function repairContainer(container) {
+  container.State = "running";
+  container.Status = "Up Less than a second";
+  faults.delete(container.Names[0].slice(1));
 }
 
 async function lookup(hostname) {
@@ -694,6 +826,35 @@ async function configure(context) {
     revision: map.json?.networkMap?.revision ?? null
   }, owner), "Saving the sample network map");
 
+  await expectOk(apiRequest(context, "/api/v2/agent/ai", "PUT", {
+    url: "http://ai.helmsman-demo.test:11434",
+    model: DEMO_MODEL,
+    contextTokens: 4096,
+    timeoutSeconds: 30
+  }, owner), "Connecting the demo model");
+  await expectOk(apiRequest(context, "/api/v2/agent/notify", "PUT", {
+    url: "http://ha.helmsman-demo.test:8123",
+    service: DEMO_NOTIFY_SERVICE,
+    token: DEMO_HA_TOKEN
+  }, owner), "Connecting the demo Home Assistant");
+  const portainerServer = (await expectOk(apiRequest(context, "/api/v2/infrastructure/services", "GET", undefined, owner), "Reading Portainer"))
+    .json.services.find((service) => service.type === "portainer");
+  await expectOk(apiRequest(context, "/api/v2/agent/rules", "PUT", {
+    rules: [{
+      id: "restart-sonarr",
+      enabled: true,
+      when: { service: "sonarr", minutes: 1 },
+      then: { kind: "container", serviceId: portainerServer.id, containerName: "sonarr", operation: "restart" },
+      cooldownMinutes: 30,
+      maxPerDay: 3
+    }]
+  }, owner), "Adding the sample agent rule");
+  await expectOk(apiRequest(context, "/api/v2/agent/settings", "PUT", {
+    enabled: true,
+    timeZone: "America/New_York",
+    autonomy: context.autonomy !== false
+  }, owner), "Turning the agent on");
+
   await expectOk(apiRequest(context, "/api/v2/operations/refresh", "POST", {}, owner), "First monitoring cycle");
   // The setup browser session is not needed once everything is saved.
   await apiRequest(context, "/api/v2/session", "DELETE", {}, owner).catch(() => {});
@@ -725,6 +886,8 @@ export async function startDemo(options = {}) {
     dispatchMediaAction,
     dispatchProxmox,
     dispatchPortainer,
+    dispatchAgent,
+    ...(options.monitorIntervalMs ? { monitorIntervalMs: options.monitorIntervalMs } : {}),
     log: (message) => {
       if (process.env.HELMSMAN_DEMO_VERBOSE) process.stdout.write(`${message}\n`);
     }
@@ -735,7 +898,7 @@ export async function startDemo(options = {}) {
     server.listen(port, "127.0.0.1", resolve);
   });
   const actualPort = server.address().port;
-  const context = { broker, port: actualPort, origin: `http://127.0.0.1:${actualPort}` };
+  const context = { broker, port: actualPort, origin: `http://127.0.0.1:${actualPort}`, autonomy: options.autonomy };
 
   let stopped = null;
   const stop = () => {
@@ -754,23 +917,41 @@ export async function startDemo(options = {}) {
     await stop();
     throw error;
   }
-  return { ...context, dataDir, temporary, username: DEMO_USERNAME, password: DEMO_PASSWORD, stop };
+  return {
+    ...context,
+    dataDir,
+    temporary,
+    username: DEMO_USERNAME,
+    password: DEMO_PASSWORD,
+    stop,
+    breakService,
+    notifications,
+    printNotifications(value = true) { demoPrintNotifications = value; }
+  };
 }
 
 async function main() {
   const options = parseArguments(process.argv.slice(2));
   if (options.help) {
     process.stdout.write([
-      "Usage: npm run demo -- [--port 4180] [--data DIR]",
+      "Usage: npm run demo -- [--port 4180] [--data DIR] [--outage]",
       "",
       "Runs Helmsman against built-in fake services on http://127.0.0.1:PORT.",
       `Sign in with ${DEMO_USERNAME} / ${DEMO_PASSWORD}.`,
       "Without --data, a temporary data directory is created and removed on exit.",
+      "--outage stops Sonarr a minute after start so you can watch the agent react.",
       ""
     ].join("\n"));
     return;
   }
   const demo = await startDemo(options);
+  demo.printNotifications(true);
+  if (options.outage) {
+    setTimeout(() => {
+      demo.breakService("sonarr");
+      process.stdout.write("\n  Demo: Sonarr has been stopped. Watch for the agent's notifications.\n");
+    }, 60_000).unref();
+  }
   const shutdown = async () => {
     await demo.stop();
     process.exit(0);

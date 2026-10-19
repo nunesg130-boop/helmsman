@@ -518,6 +518,17 @@ need Grafana to provide its focused in-dashboard explorer. For upstream
 behavior, see Grafana's [Loki HTTP API](https://grafana.com/docs/loki/latest/reference/loki-http-api/)
 and [authentication guidance](https://grafana.com/docs/loki/latest/operations/authentication/).
 
+### Agent and local AI
+
+Helmsman can run an agent that watches for incidents, explains them with a
+small model on your own hardware through any OpenAI-compatible server
+(Ollama, LM Studio, llama.cpp, vLLM), sends notes to your phone through Home
+Assistant, writes a daily digest, and runs owner-written rules such as
+"restart the sonarr container when Sonarr has been down for 5 minutes".
+Rules are checked by Helmsman's code, never by the model; anything the model
+suggests waits for the owner's approval. It's off until configured. See
+[docs/LOCAL-AI.md](docs/LOCAL-AI.md).
+
 ## Credentials
 
 Use dedicated, least-privilege credentials where the service supports them:
