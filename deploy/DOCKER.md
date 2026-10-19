@@ -349,7 +349,9 @@ The named volume contains:
 - `credentials.key` — the automatically generated master key in easy local mode;
 - `logs/helmsman-events-*.jsonl` — the sanitized operational journal, with default 14-day and 20 MiB retention boundaries;
 - `cache/operations-v1.json` — the checksummed last successful normalized snapshot, retained for at most 30 days with transient service-authored reports removed;
-- `cache/artwork/*.art` — content-verified successful raster artwork, bounded to 2,048 entries, 512 MiB total, 4 MiB per image, and 30 days; and
+- `cache/artwork/*.art` — content-verified successful raster artwork, bounded to 2,048 entries, 512 MiB total, 4 MiB per image, and 30 days;
+- `agent.json` — the agent's model server and Home Assistant addresses, schedule and rules, sealed with an integrity tag from the master key (its API key and access token live in `credentials.json`); see [docs/LOCAL-AI.md](../docs/LOCAL-AI.md);
+- `agent-activity.json` — the agent's last 200 notes and action history; and
 - a process lock while the container is running.
 
 Raw upstream responses, credentials, authorization headers, passwords, Jellyfin session identity, service-authored reports, negative artwork results, and returned Loki query lines are intentionally absent from the cache. Cached normalized state is only a startup view and cannot authorize a control action.

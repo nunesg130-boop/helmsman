@@ -93,3 +93,47 @@ test("the demo configures itself and every fake service reports healthy", { time
     await demo.stop();
   }
 });
+
+test("the demo agent explains an outage, proposes a fix, and notifies once", { timeout: 60_000 }, async () => {
+  const demo = await startDemo({ port: 0, autonomy: false });
+  try {
+    const anonymous = await request(demo, "/api/v2/agent");
+    assert.equal(anonymous.status, 401);
+    const login = await request(demo, "/api/v2/auth/jellyfin/login", "POST", {
+      username: demo.username,
+      password: demo.password,
+      deviceName: "Agent test",
+      origin: demo.origin
+    });
+    const auth = { cookie: String(login.headers["set-cookie"][0]).split(";", 1)[0], csrf: login.json.csrfToken };
+    const noCsrf = await request(demo, "/api/v2/agent/settings", "PUT", { autonomy: true }, { cookie: auth.cookie });
+    assert.equal(noCsrf.status, 403);
+
+    const before = demo.notifications.length;
+    demo.breakService("sonarr");
+    for (let index = 0; index < 3; index += 1) await request(demo, "/api/v2/operations/refresh", "POST", {}, auth);
+    await demo.broker.agent.idle();
+    let agent = (await request(demo, "/api/v2/agent", "GET", undefined, auth)).json;
+    const incident = agent.notes.find((note) => note.kind === "incident");
+    assert.equal(incident.title, "Sonarr: down");
+    assert.equal(incident.model, "demo-model");
+    assert.deepEqual(incident.toolsUsed, ["list_workloads", "propose_action"]);
+    assert.equal(agent.proposals.length, 1);
+    assert.equal(agent.proposals[0].target, "container sonarr");
+    assert.deepEqual(demo.notifications.slice(before).map(({ title }) => title), ["Sonarr: down"]);
+
+    const approved = await request(demo, `/api/v2/agent/proposals/${agent.proposals[0].id}`, "POST", { decision: "approve" }, auth);
+    assert.equal(approved.status, 200, JSON.stringify(approved.json));
+    for (let index = 0; index < 2; index += 1) await request(demo, "/api/v2/operations/refresh", "POST", {}, auth);
+    await demo.broker.agent.idle();
+    agent = (await request(demo, "/api/v2/agent", "GET", undefined, auth)).json;
+    assert.equal(agent.notes[0].title, "Sonarr recovered");
+    assert.deepEqual(demo.notifications.slice(before).map(({ title }) => title), ["Sonarr: down", "Sonarr recovered"]);
+
+    const asked = await request(demo, "/api/v2/agent/ask", "POST", { question: "How is everything?" }, auth);
+    assert.equal(asked.status, 200);
+    assert.match(asked.json.answer, /Media: healthy/u);
+  } finally {
+    await demo.stop();
+  }
+});
