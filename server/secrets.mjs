@@ -16,8 +16,10 @@ const MAX_SECRET_BYTES = 16 * 1024;
 // credential-bearing connection during one policy migration. limits.mjs keeps
 // those connections within a 56-namespace budget (112 staged), and up to 64
 // browser sessions may also hold a separately encrypted Jellyfin identity
-// token, leaving 16 namespaces of recovery headroom while still rejecting
-// unexpectedly large credential documents.
+// token, leaving 16 namespaces of headroom while still rejecting unexpectedly
+// large credential documents. The agent uses up to 2 of them (its model
+// server key and Home Assistant token, which are not policy-bound and so are
+// never staged twice).
 const MAX_SERVICES = 192;
 const MAX_FIELDS_PER_SERVICE = 32;
 const DEFAULT_KEY_NAME = "credentials.key";
@@ -634,6 +636,32 @@ export class CredentialStore {
     try {
       return createHmac("sha256", derivedKey)
         .update("helmsman/session-state-integrity/v1\0", "utf8")
+        .update(payload)
+        .digest("hex");
+    } finally {
+      derivedKey.fill(0);
+    }
+  }
+
+  /**
+   * HMAC-SHA256 of `payload` under a key derived for `domain`, so a file kept
+   * beside the credential store can be checked for tampering. Different
+   * domains never produce interchangeable tags.
+   */
+  integrityTag(domain, payload) {
+    this.#assertInitialized();
+    if (typeof domain !== "string" || !/^[a-z][a-z0-9-]{0,47}$/u.test(domain)) {
+      throw failure("INVALID_INTEGRITY_DOMAIN", "The integrity domain is invalid.");
+    }
+    if (!Buffer.isBuffer(payload) || payload.length < 1 || payload.length > 1_024 * 1_024) {
+      throw failure("INVALID_INTEGRITY_PAYLOAD", "The integrity payload is invalid.");
+    }
+    const derivedKey = createHmac("sha256", this.#key)
+      .update(`helmsman/integrity-key/v1\0${domain}\0${this.instanceId}`, "utf8")
+      .digest();
+    try {
+      return createHmac("sha256", derivedKey)
+        .update(`helmsman/integrity/v1\0${domain}\0`, "utf8")
         .update(payload)
         .digest("hex");
     } finally {
