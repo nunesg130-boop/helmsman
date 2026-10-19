@@ -1,4 +1,4 @@
-# Helmsman Docker deployment — v1.4.0
+# Helmsman Docker deployment — v1.5.0
 
 > [!WARNING]
 > Back up the `/data` volume before every update, run only the newest published
@@ -31,7 +31,7 @@ authoritative.
 
 ## 1. Prepare
 
-The GitHub Release for `v1.4.0` publishes three deployment assets:
+The GitHub Release for `v1.5.0` publishes three deployment assets:
 
 - `compose.yaml` — the pull-only production service definition pinned to the released multi-architecture image digest;
 - `container.env.example` — the same digest-pinned image reference plus non-secret bind-address and port settings;
@@ -50,9 +50,9 @@ Download and verify the public release assets on Linux:
 ```sh
 sudo install -d -o "$(id -u)" -g "$(id -g)" -m 0755 /opt/helmsman
 cd /opt/helmsman
-curl -fLO https://github.com/nunesg130-boop/helmsman/releases/download/v1.4.0/compose.yaml
-curl -fLO https://github.com/nunesg130-boop/helmsman/releases/download/v1.4.0/container.env.example
-curl -fLO https://github.com/nunesg130-boop/helmsman/releases/download/v1.4.0/SHA256SUMS
+curl -fLO https://github.com/nunesg130-boop/helmsman/releases/download/v1.5.0/compose.yaml
+curl -fLO https://github.com/nunesg130-boop/helmsman/releases/download/v1.5.0/container.env.example
+curl -fLO https://github.com/nunesg130-boop/helmsman/releases/download/v1.5.0/SHA256SUMS
 sha256sum --strict --check SHA256SUMS
 ```
 
@@ -508,9 +508,9 @@ not only the image line:
 ```sh
 set -euo pipefail
 cd /opt/helmsman
-cp -- compose.yaml.before-1.4.0 compose.yaml
-if [ -f .env.before-1.4.0 ]; then
-  cp -- .env.before-1.4.0 .env
+cp -- compose.yaml.before-1.5.0 compose.yaml
+if [ -f .env.before-1.5.0 ]; then
+  cp -- .env.before-1.5.0 .env
   helmsman_env_file=.env
 else
   rm -f -- .env
@@ -534,7 +534,7 @@ v0.10 advances the state schema to 4 by adding an empty bounded Infrastructure-s
 
 v1.0.6 advances the state schema from 4 to 5 so Loki connections can be stored as bounded Infrastructure observability services while preserving existing Portainer records exactly. Existing media connections, Proxmox environments, browser sessions, network approvals, and destination-bound encrypted credentials remain in place. Do not run v1.0.5 against state already migrated to schema 5. To roll back to v1.0.5, restore both the deployment inputs and the `/data` volume backup taken before the v1.0.6 update.
 
-The release after v1.4.0 advances the state schema from 5 to 6. Media connections are now stored in `state.json` by their own id, with a `type` field naming the service, instead of by service name. This prepares for more than one connection of the same service in a later release; the interface still allows one connection per media service. Each connection keeps every other field exactly, so destination-bound encrypted credentials, Proxmox environments, browser sessions and network approvals remain in place. Do not run v1.4.0 or older against state already migrated to schema 6; it refuses to start rather than misreading the file. To roll back, restore both the deployment inputs and the `/data` volume backup taken before the update.
+v1.5.0 advances the state schema from 5 to 6. Media connections are now stored in `state.json` by their own id, with a `type` field naming the service, instead of by service name. This prepares for more than one connection of the same service in a later release; the interface still allows one connection per media service. Each connection keeps every other field exactly, so destination-bound encrypted credentials, Proxmox environments, browser sessions and network approvals remain in place. Do not run v1.4.0 or older against state already migrated to schema 6; it refuses to start rather than misreading the file. To roll back, restore both the deployment inputs and the `/data` volume backup taken before the update.
 
 When upgrading from v0.10.0-beta.8, use an existing browser session to configure Jellyfin and enroll the exact administrator under Settings. If no beta.8 browser session is still usable, stop the service and run `docker compose run --rm --no-deps helmsman reset-access --confirm` using the same Compose file stack. The next start emits a new one-time setup token while preserving configuration and encrypted monitoring credentials.
 
@@ -661,7 +661,7 @@ exactly `compose.yaml`, `container.env.example`, and `SHA256SUMS`. It downloads
 those assets into a new `helmsman-<version>-deployment-assets` directory beside
 the source folder, verifies both checksums, rejects placeholders, and requires
 the two configuration files to contain the same expected digest-pinned image.
-For v1.4.0, the workflow publishes Linux AMD64 and ARM64 images under the
+For v1.5.0, the workflow publishes Linux AMD64 and ARM64 images under the
 version, `latest`, and full-commit tags.
 
 The publisher deliberately does not execute candidate source while maintainer
@@ -682,7 +682,7 @@ The complete recovery and manual command sequence is in [GITHUB.md](../GITHUB.md
 After a successful release, verify that:
 
 - `ghcr.io/nunesg130-boop/helmsman:<version>` contains Linux AMD64 and ARM64 manifests;
-- the GitHub Release is stable for v1.4.0;
+- the GitHub Release is stable for v1.5.0;
 - `compose.yaml`, `container.env.example`, and `SHA256SUMS` are attached;
 - both downloaded deployment files contain the same
   `ghcr.io/nunesg130-boop/helmsman@sha256:...` manifest reference and no source

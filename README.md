@@ -1,4 +1,4 @@
-# Helmsman v1.4.0
+# Helmsman v1.5.0
 
 Helmsman is a self-hosted operations center for a homelab's media services and infrastructure. It runs as one portable Linux container on Docker Desktop, Linux, macOS, compatible NAS platforms, AMD64, and ARM64.
 
@@ -14,6 +14,16 @@ Helmsman is a self-hosted operations center for a homelab's media services and i
 This Helmsman is the media and infrastructure dashboard in this repository. It
 is not affiliated with or derived from the existing Kubernetes project also
 named [Helmsman](https://github.com/mkubaczyk/helmsman).
+
+## v1.5.0
+
+This release prepares Helmsman for homelabs other than the one it was built in. It has no visual changes.
+
+**Back up `/data` before updating.** The state file moves to schema 6, which stores media connections by their own id instead of by service name, so a later release can hold more than one connection of the same service. Every connection, encrypted credential, session and approval is kept, but v1.4.0 refuses to start on a migrated volume; rolling back means restoring the backup.
+
+Request headers are renamed from `X-Jellofin-*` to `X-Helmsman-CSRF`, `x-helmsman-device-token` and `x-helmsman-target-revision`. The old names are still accepted, so existing reverse-proxy rules keep working; a rule that strips them should cover both prefixes, as the Authentik Caddyfile example now does. Capacity limits (Proxmox environments and endpoints, endpoints per environment, and Portainer and Loki connections) and the release-calendar window can now be set with `HELMSMAN_*` environment variables; the defaults are unchanged and a bad value stops startup with the variable's name. See **Capacity limits** in [deploy/DOCKER.md](deploy/DOCKER.md).
+
+Network map import now moves items without a usable grid cell to a free one and reports what it moved or skipped, instead of failing on save. [docs/NETWORK-MAP-FORMAT.md](docs/NETWORK-MAP-FORMAT.md) documents the map JSON, and both it and [docs/MANUAL-FORMAT.md](docs/MANUAL-FORMAT.md) include a prompt for writing a map or manual with an AI assistant. For contributors, `npm run demo` runs the real server against built-in fake services, and [docs/ADDING-A-CONNECTOR.md](docs/ADDING-A-CONNECTOR.md) lists every file a new service touches.
 
 ## v1.4.0
 
@@ -182,7 +192,7 @@ Helmsman's project-owned logging mark. Original generic VM/container workload
 drawings are also bundled. See
 [the asset notices](assets/services/THIRD_PARTY_NOTICES.md).
 
-Helmsman v1.4.0 combines built-in logging, optional Loki search, Portainer monitoring, a private persistent state/artwork cache, and a small, fixed set of confirmed recovery actions under Infrastructure with targeted media recovery actions and Helmsman's cluster-aware Proxmox model:
+Helmsman v1.5.0 combines built-in logging, optional Loki search, Portainer monitoring, a private persistent state/artwork cache, and a small, fixed set of confirmed recovery actions under Infrastructure with targeted media recovery actions and Helmsman's cluster-aware Proxmox model:
 
 - Media and Infrastructure are separate workspaces inside the same authenticated application, and only the selected workspace's navigation is shown;
 - the desktop sidebar collapses to an icon rail, remembers that preference, keeps its navigation scrollable at high browser zoom, and places its 44 px collapse control on the content-side edge below the shared header rule;
@@ -228,7 +238,7 @@ Helmsman v1.4.0 combines built-in logging, optional Loki search, Portainer monit
 
 ## Deploy the published container
 
-Helmsman is distributed as the public Linux AMD64/ARM64 image `ghcr.io/nunesg130-boop/helmsman`. The `v1.4.0` Git tag runs the contracts and architecture smoke tests, publishes the version, `latest`, and full-commit image tags, and creates a GitHub Release containing ready-to-use `compose.yaml`, `container.env.example`, and `SHA256SUMS` assets. The release deployment files pin `ghcr.io/nunesg130-boop/helmsman` to the exact multi-architecture manifest digest (`@sha256:...`).
+Helmsman is distributed as the public Linux AMD64/ARM64 image `ghcr.io/nunesg130-boop/helmsman`. The `v1.5.0` Git tag runs the contracts and architecture smoke tests, publishes the version, `latest`, and full-commit image tags, and creates a GitHub Release containing ready-to-use `compose.yaml`, `container.env.example`, and `SHA256SUMS` assets. The release deployment files pin `ghcr.io/nunesg130-boop/helmsman` to the exact multi-architecture manifest digest (`@sha256:...`).
 
 Download those three files from the matching [GitHub Release](https://github.com/nunesg130-boop/helmsman/releases) into one directory, verify the two deployment files against `SHA256SUMS`, open a terminal there, and make sure Docker Desktop or Docker Engine is running. No source checkout, Dockerfile, Node.js installation, or server-side image build is required.
 
@@ -689,7 +699,7 @@ v0.10 advances the state schema to 4 by adding an empty, bounded Infrastructure-
 
 v1.0.6 advances the state schema from 4 to 5 so Loki can be stored as a bounded Infrastructure observability service while preserving existing Portainer records exactly. Existing media connections, Proxmox environments, browser sessions, network approvals, and destination-bound encrypted credentials remain in place. Do not run v1.0.5 against state already migrated to schema 5; rollback requires restoring the `/data` volume backup taken before the v1.0.6 upgrade.
 
-The release after v1.4.0 advances the state schema from 5 to 6, storing media connections by their own id with a `type` field instead of by service name. Every connection keeps its other fields exactly, so encrypted credentials, sessions and approvals remain in place, and the interface still allows one connection per media service. Do not run v1.4.0 or older against state already migrated to schema 6; rollback requires restoring the `/data` volume backup taken before the upgrade.
+v1.5.0 advances the state schema from 5 to 6, storing media connections by their own id with a `type` field instead of by service name. Every connection keeps its other fields exactly, so encrypted credentials, sessions and approvals remain in place, and the interface still allows one connection per media service. Do not run v1.4.0 or older against state already migrated to schema 6; rollback requires restoring the `/data` volume backup taken before the upgrade.
 
 For v0.10.0-beta.8 specifically, an existing browser session can be used to configure Jellyfin and enroll the exact administrator under Settings. If no prior session remains usable, run the `reset-access --confirm` sequence under **Browser access and recovery**; it preserves configuration and encrypted monitoring credentials, and the next start supplies a new one-time setup token.
 
