@@ -10,12 +10,14 @@ import {
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 
+import { redactLogRoute, redactLogText } from "./log-redaction.mjs";
+
 export const EVENT_JOURNAL_SCHEMA = 1;
 
 const DEFAULT_RETENTION_DAYS = 14;
-const DEFAULT_MAXIMUM_BYTES = 20 * 1024 * 1024;
+const DEFAULT_MAXIMUM_BYTES = 50 * 1024 * 1024;
 const DEFAULT_MAXIMUM_SEGMENT_BYTES = 1024 * 1024;
-const DEFAULT_MAXIMUM_EVENT_BYTES = 2 * 1024;
+const DEFAULT_MAXIMUM_EVENT_BYTES = 8 * 1024;
 const DEFAULT_MAXIMUM_QUERY_LIMIT = 200;
 const MAX_DIRECTORY_ENTRIES = 4_096;
 const SEGMENT_NAME = /^helmsman-events-(\d{4}-\d{2}-\d{2})-(\d{4})\.jsonl$/u;
@@ -36,7 +38,10 @@ const CATEGORIES = new Set([
   "connector",
   "health",
   "action",
-  "security"
+  "security",
+  "request",
+  "agent",
+  "server"
 ]);
 const OUTCOMES = new Set([
   "started",
@@ -44,7 +49,8 @@ const OUTCOMES = new Set([
   "failed",
   "denied",
   "changed",
-  "recovered"
+  "recovered",
+  "observed"
 ]);
 const INPUT_KEYS = new Set([
   "at",
@@ -58,8 +64,17 @@ const INPUT_KEYS = new Set([
   "code",
   "httpStatus",
   "targetType",
-  "targetId"
+  "targetId",
+  "message",
+  "detail",
+  "durationMs",
+  "route",
+  "source"
 ]);
+const MAX_MESSAGE_CHARS = 300;
+const MAX_DETAIL_CHARS = 2_000;
+const MAX_DURATION_MS = 3_600_000;
+const SOURCE = /^[a-z][a-z0-9-]{0,31}$/u;
 const STORED_KEYS = new Set(["schema", "id", ...INPUT_KEYS]);
 const QUERY_KEYS = new Set(["limit", "cursor", "level", "category", "service", "from", "to", "q"]);
 
@@ -146,6 +161,27 @@ function normalizeEvent(input, options = {}) {
   optionalPattern(output, input, "code", SAFE_CODE, "Event code");
   optionalPattern(output, input, "targetType", IDENTIFIER, "Event target type");
   optionalPattern(output, input, "targetId", TARGET_IDENTIFIER, "Event target id");
+  optionalPattern(output, input, "source", SOURCE, "Event source");
+  // Free text is scrubbed of anything that looks like a secret, on the way
+  // in and again when read back.
+  if (input.message !== undefined && input.message !== null && input.message !== "") {
+    if (typeof input.message !== "string") throw new TypeError("Event message must be text.");
+    const message = redactLogText(input.message, MAX_MESSAGE_CHARS);
+    if (message) output.message = message;
+  }
+  if (input.detail !== undefined && input.detail !== null && input.detail !== "") {
+    if (typeof input.detail !== "string") throw new TypeError("Event detail must be text.");
+    const detail = redactLogText(input.detail, MAX_DETAIL_CHARS, { multiline: true });
+    if (detail) output.detail = detail;
+  }
+  if (input.route !== undefined && input.route !== null && input.route !== "") {
+    const route = redactLogRoute(input.route);
+    if (route) output.route = route;
+  }
+  if (input.durationMs !== undefined && input.durationMs !== null) {
+    if (!Number.isFinite(input.durationMs) || input.durationMs < 0) throw new TypeError("Event duration must be a non-negative number.");
+    output.durationMs = Math.min(MAX_DURATION_MS, Math.round(input.durationMs));
+  }
   if (input.httpStatus !== undefined && input.httpStatus !== null) {
     if (!Number.isInteger(input.httpStatus) || input.httpStatus < 100 || input.httpStatus > 599) {
       throw new TypeError("Event HTTP status must be an integer from 100 through 599.");
@@ -241,7 +277,11 @@ function eventMatches(event, query) {
       event.operation,
       event.code,
       event.targetType,
-      event.targetId
+      event.targetId,
+      event.source,
+      event.route,
+      event.message,
+      event.detail
     ].filter(Boolean).join(" ").toLowerCase();
     if (!searchable.includes(query.text)) return false;
   }

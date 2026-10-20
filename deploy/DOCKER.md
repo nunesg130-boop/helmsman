@@ -1,4 +1,4 @@
-# Helmsman Docker deployment — v1.12.2
+# Helmsman Docker deployment — v1.13.0
 
 > [!WARNING]
 > Back up the `/data` volume before every update, run only the newest published
@@ -31,7 +31,7 @@ authoritative.
 
 ## 1. Prepare
 
-The GitHub Release for `v1.12.2` publishes three deployment assets:
+The GitHub Release for `v1.13.0` publishes three deployment assets:
 
 - `compose.yaml` — the pull-only production service definition pinned to the released multi-architecture image digest;
 - `container.env.example` — the same digest-pinned image reference plus non-secret bind-address and port settings;
@@ -50,9 +50,9 @@ Download and verify the public release assets on Linux:
 ```sh
 sudo install -d -o "$(id -u)" -g "$(id -g)" -m 0755 /opt/helmsman
 cd /opt/helmsman
-curl -fLO https://github.com/nunesg130-boop/helmsman/releases/download/v1.12.2/compose.yaml
-curl -fLO https://github.com/nunesg130-boop/helmsman/releases/download/v1.12.2/container.env.example
-curl -fLO https://github.com/nunesg130-boop/helmsman/releases/download/v1.12.2/SHA256SUMS
+curl -fLO https://github.com/nunesg130-boop/helmsman/releases/download/v1.13.0/compose.yaml
+curl -fLO https://github.com/nunesg130-boop/helmsman/releases/download/v1.13.0/container.env.example
+curl -fLO https://github.com/nunesg130-boop/helmsman/releases/download/v1.13.0/SHA256SUMS
 sha256sum --strict --check SHA256SUMS
 ```
 
@@ -293,7 +293,7 @@ pre-upgrade `/data` backup as usual.
 Helmsman's operational event journal is enabled by default and needs no
 external service. **Logs → Helmsman logs** reads bounded, allowlisted events
 from private JSONL segments under `/data/logs`. The default retention limits
-are 14 days and 20 MiB total; older segments are pruned when either boundary is
+are 14 days and 50 MiB total; older segments are pruned when either boundary is
 exceeded. The journal uses private directory and file permissions inside the
 container data volume.
 
@@ -347,7 +347,7 @@ The named volume contains:
 - `sessions.json` — the master-key-authenticated Jellyfin-owner binding and browser-session hashes, never a password or bearer token; a beta.2 access-key verifier can remain only until enrollment completes;
 - `credentials.json` — authenticated ciphertext for destination-bound connector credentials and separate per-session Jellyfin login tokens;
 - `credentials.key` — the automatically generated master key in easy local mode;
-- `logs/helmsman-events-*.jsonl` — the sanitized operational journal, with default 14-day and 20 MiB retention boundaries;
+- `logs/helmsman-events-*.jsonl` — the sanitized operational journal, with default 14-day and 50 MiB retention boundaries;
 - `cache/operations-v1.json` — the checksummed last successful normalized snapshot, retained for at most 30 days with transient service-authored reports removed;
 - `cache/artwork/*.art` — content-verified successful raster artwork, bounded to 2,048 entries, 512 MiB total, 4 MiB per image, and 30 days;
 - `agent.json` — the agent's model server and Home Assistant addresses, schedule and rules, sealed with an integrity tag from the master key (its API key and access token live in `credentials.json`); see [docs/LOCAL-AI.md](../docs/LOCAL-AI.md);
@@ -510,9 +510,9 @@ not only the image line:
 ```sh
 set -euo pipefail
 cd /opt/helmsman
-cp -- compose.yaml.before-1.12.2 compose.yaml
-if [ -f .env.before-1.12.2 ]; then
-  cp -- .env.before-1.12.2 .env
+cp -- compose.yaml.before-1.13.0 compose.yaml
+if [ -f .env.before-1.13.0 ]; then
+  cp -- .env.before-1.13.0 .env
   helmsman_env_file=.env
 else
   rm -f -- .env
@@ -663,7 +663,7 @@ exactly `compose.yaml`, `container.env.example`, and `SHA256SUMS`. It downloads
 those assets into a new `helmsman-<version>-deployment-assets` directory beside
 the source folder, verifies both checksums, rejects placeholders, and requires
 the two configuration files to contain the same expected digest-pinned image.
-For v1.12.2, the workflow publishes Linux AMD64 and ARM64 images under the
+For v1.13.0, the workflow publishes Linux AMD64 and ARM64 images under the
 version, `latest`, and full-commit tags.
 
 The publisher deliberately does not execute candidate source while maintainer
@@ -684,7 +684,7 @@ The complete recovery and manual command sequence is in [GITHUB.md](../GITHUB.md
 After a successful release, verify that:
 
 - `ghcr.io/nunesg130-boop/helmsman:<version>` contains Linux AMD64 and ARM64 manifests;
-- the GitHub Release is stable for v1.12.2;
+- the GitHub Release is stable for v1.13.0;
 - `compose.yaml`, `container.env.example`, and `SHA256SUMS` are attached;
 - both downloaded deployment files contain the same
   `ghcr.io/nunesg130-boop/helmsman@sha256:...` manifest reference and no source

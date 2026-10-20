@@ -1,4 +1,4 @@
-# Helmsman v1.12.2
+# Helmsman v1.13.0
 
 Helmsman is a self-hosted operations center for a homelab's media services and infrastructure. It runs as one portable Linux container on Docker Desktop, Linux, macOS, compatible NAS platforms, AMD64, and ARM64.
 
@@ -14,6 +14,21 @@ Helmsman is a self-hosted operations center for a homelab's media services and i
 This Helmsman is the media and infrastructure dashboard in this repository. It
 is not affiliated with or derived from the existing Kubernetes project also
 named [Helmsman](https://github.com/mkubaczyk/helmsman).
+
+## v1.13.0
+
+**In-depth logging.** Helmsman's log now records more than milestones:
+- **Always:** errors with their full message and where they happened, and a summary of each agent run (which model, which tools, whether it proposed anything).
+- **Debug logging**, under Settings → Logging, adds every health check, every request to your services with its route, status and timing, and every model and tool call the agent makes. It stays on for the hours you choose (four by default, at most a day) and switches itself off. Debug entries are capped per minute so a runaway loop can't fill storage.
+- **Server output:** Logs → Server output shows what Helmsman has printed since it started (what `docker logs` shows).
+- **Download:** Logs → Helmsman logs has a Download button that saves the filtered log as a JSON Lines file.
+- **Filters:** the list gains a Kind filter (health checks, service requests, agent, actions, errors and more), and level and kind are filtered on the server so debug entries can't crowd out the rest.
+
+Passwords, API keys, tokens, cookies, request and response bodies, and headers are never logged. Error messages and server output are scrubbed of anything that looks like a key, a password or a credential in a link before they are stored or shown. Log storage grows from 20 MB to 50 MB, still kept for 14 days. If you roll back to an earlier version, it skips the new, more detailed entries and shows a "log segment malformed" warning; the older entries stay readable.
+
+**Test Radarr's and Sonarr's indexers.** Their connection dialogs now list the indexers each app uses, with which ones are failing, and Test and Test all buttons that run the app's own indexer test. As with Prowlarr, the indexers' keys never leave Helmsman's server.
+
+**Tidier connection tests.** In the Test connection results, a check that expands with the service's own health report keeps its shape instead of stretching into an oval.
 
 ## v1.12.2
 
@@ -264,7 +279,7 @@ Helmsman's project-owned logging mark. Original generic VM/container workload
 drawings are also bundled. See
 [the asset notices](assets/services/THIRD_PARTY_NOTICES.md).
 
-Helmsman v1.12.2 combines built-in logging, optional Loki search, Portainer monitoring, a private persistent state/artwork cache, and a small, fixed set of confirmed recovery actions under Infrastructure with targeted media recovery actions and Helmsman's cluster-aware Proxmox model:
+Helmsman v1.13.0 combines built-in logging, optional Loki search, Portainer monitoring, a private persistent state/artwork cache, and a small, fixed set of confirmed recovery actions under Infrastructure with targeted media recovery actions and Helmsman's cluster-aware Proxmox model:
 
 - Media and Infrastructure are separate workspaces inside the same authenticated application, and only the selected workspace's navigation is shown;
 - the desktop sidebar collapses to an icon rail, remembers that preference, keeps its navigation scrollable at high browser zoom, and places its 44 px collapse control on the content-side edge below the shared header rule;
@@ -310,7 +325,7 @@ Helmsman v1.12.2 combines built-in logging, optional Loki search, Portainer moni
 
 ## Deploy the published container
 
-Helmsman is distributed as the public Linux AMD64/ARM64 image `ghcr.io/nunesg130-boop/helmsman`. The `v1.12.2` Git tag runs the contracts and architecture smoke tests, publishes the version, `latest`, and full-commit image tags, and creates a GitHub Release containing ready-to-use `compose.yaml`, `container.env.example`, and `SHA256SUMS` assets. The release deployment files pin `ghcr.io/nunesg130-boop/helmsman` to the exact multi-architecture manifest digest (`@sha256:...`).
+Helmsman is distributed as the public Linux AMD64/ARM64 image `ghcr.io/nunesg130-boop/helmsman`. The `v1.13.0` Git tag runs the contracts and architecture smoke tests, publishes the version, `latest`, and full-commit image tags, and creates a GitHub Release containing ready-to-use `compose.yaml`, `container.env.example`, and `SHA256SUMS` assets. The release deployment files pin `ghcr.io/nunesg130-boop/helmsman` to the exact multi-architecture manifest digest (`@sha256:...`).
 
 Download those three files from the matching [GitHub Release](https://github.com/nunesg130-boop/helmsman/releases) into one directory, verify the two deployment files against `SHA256SUMS`, open a terminal there, and make sure Docker Desktop or Docker Engine is running. No source checkout, Dockerfile, Node.js installation, or server-side image build is required.
 
@@ -482,7 +497,7 @@ There is no vendor cloud, hosted account, telemetry, analytics, advertising, tra
 | `/data/credentials.json` | AES-256-GCM ciphertext and authenticated metadata, including destination-bound connector credentials and separate per-session Jellyfin login tokens |
 | `/data/network-map.json` | The owner's Network page layout: zones, items, connections and optional live-source references by node name, VMID, container name or service id. Not encrypted and never contacted by Helmsman, so keep secrets out of item notes |
 | `/data/credentials.key` | Auto-generated local encryption key, unless the environment-sourced Docker secret is enabled |
-| `/data/logs/helmsman-events-*.jsonl` | Private, sanitized Helmsman operational events. The defaults retain no more than 14 days and 20 MiB across bounded segments |
+| `/data/logs/helmsman-events-*.jsonl` | Private, sanitized Helmsman operational events. The defaults retain no more than 14 days and 50 MiB across bounded segments |
 | `/data/cache/operations-v1.json` | The last successful bounded normalized operations snapshot, retained for no more than 30 days and marked read-only when restored; never raw responses or credentials |
 | `/data/cache/artwork/*.art` | Successful validated raster artwork only, keyed by connector revision and limited to 2,048 entries, 512 MiB total, 4 MiB per image, and 30 days |
 | In-memory operations snapshot | The current live or explicitly marked cached view model used by the UI; never raw responses |
@@ -568,10 +583,14 @@ The Portainer page reports online/offline environments, running/stopped/restarti
 
 ### Built-in logging and Loki
 
-The **Logs** workspace has three views: an overview, **Helmsman logs**, and
-**Loki Explorer**. The built-in view queries the sanitized journal stored in
+The **Logs** workspace has four views: an overview, **Helmsman logs**,
+**Server output** (what Helmsman has printed since it started, scrubbed of
+secrets), and **Loki Explorer**. Debug logging, switched on for a few hours
+under **Settings → Logging**, adds every health check, service request and
+agent step to the Helmsman log; the Download button saves the filtered log as
+JSON Lines. The built-in view queries the sanitized journal stored in
 `/data/logs`; it works without Loki, Grafana, or another database. The journal
-defaults to 14 days and 20 MiB total, rotates through bounded JSONL segments,
+defaults to 14 days and 50 MiB total, rotates through bounded JSONL segments,
 and prunes older segments when either retention boundary is exceeded.
 
 To add Loki, open **Infrastructure → Connectors → Observability**, select

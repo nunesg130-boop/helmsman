@@ -233,3 +233,77 @@ test("app files are cached by revalidation and compressed; API responses are not
     await demo.stop();
   }
 });
+
+async function demoLogin(demo) {
+  const login = await request(demo, "/api/v2/auth/jellyfin/login", "POST", { username: demo.username, password: demo.password, deviceName: "Demo test", origin: demo.origin });
+  assert.equal(login.status, 201);
+  return { cookie: String(login.headers["set-cookie"][0]).split(";", 1)[0], csrf: login.json.csrfToken };
+}
+
+test("Radarr and Sonarr indexers can be listed and tested without exposing their keys", { timeout: 60_000 }, async () => {
+  const demo = await startDemo({ port: 0 });
+  try {
+    const auth = await demoLogin(demo);
+    demo.failIndexer("Example Public Tracker");
+    await request(demo, "/api/v2/operations/refresh", "POST", {}, auth);
+    for (const service of ["radarr", "sonarr"]) {
+      const listed = await request(demo, `/api/v2/${service}/indexers`, "GET", undefined, auth);
+      assert.equal(listed.status, 200, JSON.stringify(listed.json));
+      assert.equal(listed.bytes.toString("utf8").includes(demo.demoIndexerSecret), false, "no indexer key reaches the browser");
+      assert.deepEqual(listed.json.indexers.map(({ name, failing }) => [name, failing]), [
+        ["Example Public Tracker (Prowlarr)", true],
+        ["Example Private Tracker (Prowlarr)", false],
+        ["Example Usenet (Prowlarr)", false]
+      ]);
+      const targetRevision = listed.json.targetRevision;
+      const single = await request(demo, "/api/v2/actions/arr-indexers", "POST", { service, operation: "testIndexer", indexerId: 1, targetRevision }, auth);
+      assert.equal(single.status, 200, JSON.stringify(single.json));
+      assert.equal(single.json.passed, false);
+      assert.match(single.json.message, /Unable to connect to indexer/u);
+      const all = await request(demo, "/api/v2/actions/arr-indexers", "POST", { service, operation: "testAllIndexers", targetRevision }, auth);
+      assert.deepEqual(all.json.results.map(({ id, ok }) => [id, ok]), [[1, false], [2, true], [3, true]]);
+      const forged = await request(demo, "/api/v2/actions/arr-indexers", "POST", { service, operation: "testAllIndexers", targetRevision }, { cookie: auth.cookie });
+      assert.equal(forged.status, 403, "CSRF is required");
+    }
+    const wrong = await request(demo, "/api/v2/actions/arr-indexers", "POST", { service: "prowlarr", operation: "testAllIndexers", targetRevision: "00000000-0000-4000-8000-000000000000" }, auth);
+    assert.equal(wrong.status, 400);
+    assert.equal((await request(demo, "/api/v2/bazarr/indexers", "GET", undefined, auth)).status, 404);
+  } finally {
+    await demo.stop();
+  }
+});
+
+test("debug logging records checks and requests, can be downloaded, and turns off", { timeout: 60_000 }, async () => {
+  const demo = await startDemo({ port: 0 });
+  try {
+    const auth = await demoLogin(demo);
+    assert.equal((await request(demo, "/api/v2/logs/settings", "GET", undefined, auth)).json.level, "normal");
+    assert.equal((await request(demo, "/api/v2/logs/settings", "PUT", { debug: true }, { cookie: auth.cookie })).status, 403);
+    assert.equal((await request(demo, "/api/v2/logs/settings", "PUT", { debug: true, hours: 0 }, auth)).status, 400);
+    const on = await request(demo, "/api/v2/logs/settings", "PUT", { debug: true, hours: 2 }, auth);
+    assert.equal(on.json.level, "debug");
+    await request(demo, "/api/v2/operations/refresh", "POST", {}, auth);
+    const requests = await request(demo, "/api/v2/logs?category=request&limit=200", "GET", undefined, auth);
+    assert.ok(requests.json.entries.length > 10, "service requests are logged");
+    assert.ok(requests.json.entries.every(({ level, route }) => level === "debug" && route.startsWith("/")));
+    const checks = await request(demo, "/api/v2/logs?category=health&level=debug", "GET", undefined, auth);
+    assert.ok(checks.json.entries.some(({ event }) => event === "check.completed"));
+    const exported = await request(demo, "/api/v2/logs/export?level=debug", "GET", undefined, auth);
+    assert.equal(exported.status, 200);
+    assert.match(exported.headers["content-disposition"], /^attachment; filename="helmsman-logs-\d{8}-\d{4}\.jsonl"$/u);
+    const lines = exported.bytes.toString("utf8").trim().split("\n").map((line) => JSON.parse(line));
+    assert.ok(lines.length > 10 && lines.every(({ level }) => level === "debug"));
+    assert.equal((await request(demo, "/api/v2/logs/export?limit=5", "GET", undefined, auth)).status, 400);
+    assert.equal((await request(demo, "/api/v2/logs/export")).status, 401, "sign-in required");
+    const output = await request(demo, "/api/v2/logs/output", "GET", undefined, auth);
+    assert.equal(output.status, 200);
+    assert.ok(Array.isArray(output.json.lines));
+    const off = await request(demo, "/api/v2/logs/settings", "PUT", { debug: false }, auth);
+    assert.equal(off.json.level, "normal");
+    const countBefore = (await request(demo, "/api/v2/logs?category=request&limit=200", "GET", undefined, auth)).json.entries.length;
+    await request(demo, "/api/v2/operations/refresh", "POST", {}, auth);
+    assert.equal((await request(demo, "/api/v2/logs?category=request&limit=200", "GET", undefined, auth)).json.entries.length, countBefore, "nothing more at the normal level");
+  } finally {
+    await demo.stop();
+  }
+});

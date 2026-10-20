@@ -299,7 +299,11 @@ const policies = {
         "/api/v3/calendar",
         "/api/v3/queue",
         "/api/v3/movie",
-        "/api/v3/moviefile"
+        "/api/v3/moviefile",
+        "/api/v3/indexerstatus",
+        // Internal only (see ARR_INDEXER_CONFIGURATION): indexer records
+        // carry API keys, so only the server reads them.
+        "/api/v3/indexer"
       ]),
       patterns: [ARR_ARTWORK_PATH]
     }
@@ -313,7 +317,11 @@ const policies = {
         "/api/v3/queue",
         "/api/v3/series",
         "/api/v3/episode",
-        "/api/v3/episodefile"
+        "/api/v3/episodefile",
+        "/api/v3/indexerstatus",
+        // Internal only (see ARR_INDEXER_CONFIGURATION): indexer records
+        // carry API keys, so only the server reads them.
+        "/api/v3/indexer"
       ]),
       patterns: [ARR_ARTWORK_PATH]
     }
@@ -508,6 +516,7 @@ function validateFixedCapabilityQuery(service, upstreamPath, url) {
 }
 
 const PROWLARR_CONFIGURATION = new Set(["/api/v1/indexer", "/api/v1/indexerstats", "/api/v1/applications"]);
+const ARR_INDEXER_CONFIGURATION = new Set(["/api/v3/indexer"]);
 
 export function authorizeBridgeRoute(serviceValue, methodValue, requestUrl) {
   const service = canonicalServiceId(serviceValue);
@@ -582,7 +591,10 @@ export function authorizeBridgeRoute(serviceValue, methodValue, requestUrl) {
     upstreamPathAndQuery: `${upstreamPath}${url.search}`,
     isArtwork,
     isLogin,
-    internalOnly: isLogin || isJellyfinAuthentication || (service === "prowlarr" && PROWLARR_CONFIGURATION.has(upstreamPath))
+    internalOnly: isLogin
+      || isJellyfinAuthentication
+      || (service === "prowlarr" && PROWLARR_CONFIGURATION.has(upstreamPath))
+      || ((service === "radarr" || service === "sonarr") && ARR_INDEXER_CONFIGURATION.has(upstreamPath))
   };
 }
 

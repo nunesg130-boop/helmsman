@@ -41,9 +41,16 @@ The built-in operational journal writes private JSONL segments under
 `/data/logs`. It uses an allowlisted event schema and excludes credentials,
 cookies, authorization headers, request bodies, upstream response bodies, raw
 LogQL, and Loki result lines. Its default retention boundaries are 14 days and
-20 MiB total. Sanitization reduces exposure but does not make the journal
-public: timestamps, service names, bounded identifiers, action names, and safe
-failure codes can still reveal deployment details. Protect these files and
+50 MiB total. Since v1.13.0 entries may also carry free text (an error
+message and trimmed stack, or a short description) and a request path without
+its query string; this text is scrubbed of anything resembling a key,
+password, token or credential in a link before it is stored. Debug logging,
+off by default and limited to at most 24 hours at a time, adds each health
+check and each request route to a connected service. The in-memory server
+output shown under Logs is scrubbed the same way. Sanitization reduces exposure
+but does not make the journal public: timestamps, service names, request
+paths, bounded identifiers, action names, error messages and safe failure
+codes can still reveal deployment details. Protect these files and
 their backups, and sanitize copied entries before reporting an issue.
 
 The journal is an operational history, not a forensic or per-user audit trail.
