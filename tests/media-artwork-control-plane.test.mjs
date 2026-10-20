@@ -239,7 +239,7 @@ test("serves same-origin private artwork with stable ETag, conditional GET, and 
   assert.equal(first.headers["content-type"], "image/png");
   assert.equal(first.headers.etag, expectedEtag);
   assert.equal(first.headers["content-length"], String(body.length));
-  assert.equal(first.headers["cache-control"], "private, max-age=86400, stale-while-revalidate=604800, stale-if-error=604800");
+  assert.equal(first.headers["cache-control"], "private, max-age=604800, stale-while-revalidate=2592000, stale-if-error=2592000");
   assert.equal(first.headers["cross-origin-resource-policy"], "same-origin");
   assert.equal(first.headers["x-content-type-options"], "nosniff");
   assert.equal(first.headers.pragma, undefined);
@@ -253,7 +253,7 @@ test("serves same-origin private artwork with stable ETag, conditional GET, and 
   assert.equal(notModified.status, 304);
   assert.equal(notModified.bytes.length, 0);
   assert.equal(notModified.headers.etag, expectedEtag);
-  assert.equal(notModified.headers["cache-control"], "private, max-age=86400, stale-while-revalidate=604800, stale-if-error=604800");
+  assert.equal(notModified.headers["cache-control"], "private, max-age=604800, stale-while-revalidate=2592000, stale-if-error=2592000");
 
   const head = await request(context.port, ARTWORK_PATH, {
     method: "HEAD",

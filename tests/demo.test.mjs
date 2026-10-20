@@ -187,3 +187,49 @@ test("Prowlarr indexers can be listed and tested without exposing their settings
     await demo.stop();
   }
 });
+
+test("app files are cached by revalidation and compressed; API responses are not", { timeout: 60_000 }, async () => {
+  const { gunzipSync } = await import("node:zlib");
+  const { readFile } = await import("node:fs/promises");
+  const demo = await startDemo({ port: 0 });
+  const get = (pathname, headers = {}) => new Promise((resolve, reject) => {
+    const outgoing = http.request({ hostname: "127.0.0.1", port: demo.port, path: pathname, method: "GET", headers: { Host: `127.0.0.1:${demo.port}`, ...headers } }, (response) => {
+      const chunks = [];
+      response.on("data", (chunk) => chunks.push(chunk));
+      response.on("end", () => resolve({ status: response.statusCode, headers: response.headers, bytes: Buffer.concat(chunks) }));
+    });
+    outgoing.on("error", reject);
+    outgoing.end();
+  });
+  try {
+    const original = await readFile(new URL("../src/app-v5.js", import.meta.url));
+    const compressed = await get("/src/app-v5.js", { "Accept-Encoding": "gzip, deflate, br" });
+    assert.equal(compressed.status, 200);
+    assert.equal(compressed.headers["content-encoding"], "gzip");
+    assert.equal(compressed.headers["cache-control"], "private, no-cache");
+    assert.equal(compressed.headers.vary, "Accept-Encoding");
+    assert.ok(compressed.bytes.length < original.length / 2, "compressed to well under half");
+    assert.deepEqual(gunzipSync(compressed.bytes), original);
+    assert.ok(compressed.headers["content-security-policy"], "security headers stay");
+
+    const unchanged = await get("/src/app-v5.js", { "Accept-Encoding": "gzip", "If-None-Match": compressed.headers.etag });
+    assert.equal(unchanged.status, 304);
+    assert.equal(unchanged.bytes.length, 0);
+
+    const plain = await get("/src/app-v5.js");
+    assert.equal(plain.headers["content-encoding"], undefined);
+    assert.notEqual(plain.headers.etag, compressed.headers.etag, "each encoding has its own ETag");
+    assert.deepEqual(plain.bytes, original);
+    assert.equal((await get("/src/app-v5.js", { "Accept-Encoding": "gzip;q=0" })).headers["content-encoding"], undefined, "gzip refused by q=0");
+
+    const image = await get("/assets/helmsman-logo.png", { "Accept-Encoding": "gzip" });
+    assert.equal(image.headers["content-encoding"], undefined, "images are not recompressed");
+    assert.equal((await get("/assets/services/sonarr.svg", { "Accept-Encoding": "gzip" })).headers["cache-control"], "private, max-age=86400");
+
+    const api = await get("/api/v2/status", { "Accept-Encoding": "gzip" });
+    assert.match(api.headers["cache-control"], /no-store/u);
+    assert.equal(api.headers["content-encoding"], undefined, "API responses, which can carry tokens, are never compressed");
+  } finally {
+    await demo.stop();
+  }
+});

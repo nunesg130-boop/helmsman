@@ -2242,11 +2242,11 @@ function renderSystemOverview() {
       </section>
       <section class="system-overview-card system-overview-card--media" aria-labelledby="system-media-title">
         <header><div><span class="section-kicker">Media operations</span><h3 id="system-media-title">Service health</h3></div>${systemOverviewRouteButton("media", "health", "Open media")}</header>
-        ${mediaServices.length ? `<ul class="system-service-list">${mediaServices.slice(0, 7).map((service) => `<li><span class="system-service-icon">${serviceIconMarkup(service.id, service.name.slice(0, 1))}</span><span><strong>${escapeHtml(service.name)}</strong><small>${escapeHtml(mediaHomeServiceSummary(service))}</small></span><span class="system-service-state is-${escapeHtml(statusClass(service.state))}"><i class="health-dot is-${escapeHtml(statusClass(service.state))}"></i>${escapeHtml(statusLabel(service.state))}</span></li>`).join("")}</ul>` : renderMediaEmpty("No monitored media services", "Add a media connection to begin collecting health signals.", "shield")}
+        ${mediaServices.length ? `<ul class="system-service-list">${mediaServices.slice(0, 7).map((service) => `<li><button class="system-service-row" type="button" data-action="open-overview-service" data-overview-kind="media" data-overview-id="${escapeHtml(service.id)}" aria-label="${escapeHtml(`Open ${service.name} in Media health: ${statusLabel(service.state)}`)}"><span class="system-service-icon">${serviceIconMarkup(service.id, service.name.slice(0, 1))}</span><span><strong>${escapeHtml(service.name)}</strong><small>${escapeHtml(mediaHomeServiceSummary(service))}</small></span><span class="system-service-state is-${escapeHtml(statusClass(service.state))}"><i class="health-dot is-${escapeHtml(statusClass(service.state))}"></i>${escapeHtml(statusLabel(service.state))}</span></button></li>`).join("")}</ul>` : renderMediaEmpty("No monitored media services", "Add a media connection to begin collecting health signals.", "shield")}
       </section>
       <section class="system-overview-card system-overview-card--infrastructure" aria-labelledby="system-infrastructure-title">
         <header><div><span class="section-kicker">Infrastructure operations</span><h3 id="system-infrastructure-title">Connections</h3></div>${systemOverviewRouteButton("infrastructure", "overview", "Open infrastructure")}</header>
-        ${infrastructureEntries.length ? `<ul class="system-service-list">${infrastructureEntries.slice(0, 7).map((entry) => `<li><span class="system-service-icon">${serviceIconMarkup(entry.provider, entry.name.slice(0, 1))}</span><span><strong>${escapeHtml(entry.name)}</strong><small>${escapeHtml(entry.detail)}</small></span><span class="system-service-state is-${escapeHtml(entry.state)}"><i class="health-dot is-${escapeHtml(entry.state)}"></i>${escapeHtml(statusLabel(entry.state))}</span></li>`).join("")}</ul>` : renderMediaEmpty("No infrastructure connections", "Connect Proxmox or Portainer to add infrastructure health.", "server")}
+        ${infrastructureEntries.length ? `<ul class="system-service-list">${infrastructureEntries.slice(0, 7).map((entry) => `<li><button class="system-service-row" type="button" data-action="open-overview-service" data-overview-kind="${escapeHtml(entry.provider)}" data-overview-id="${escapeHtml(entry.id)}" aria-label="${escapeHtml(`Open ${entry.name}: ${statusLabel(entry.state)}`)}"><span class="system-service-icon">${serviceIconMarkup(entry.provider, entry.name.slice(0, 1))}</span><span><strong>${escapeHtml(entry.name)}</strong><small>${escapeHtml(entry.detail)}</small></span><span class="system-service-state is-${escapeHtml(entry.state)}"><i class="health-dot is-${escapeHtml(entry.state)}"></i>${escapeHtml(statusLabel(entry.state))}</span></button></li>`).join("")}</ul>` : renderMediaEmpty("No infrastructure connections", "Connect Proxmox or Portainer to add infrastructure health.", "server")}
       </section>
       <section class="system-overview-card system-overview-card--pipeline" aria-labelledby="system-pipeline-title">
         <header><div><span class="section-kicker">End-to-end signal</span><h3 id="system-pipeline-title">Media pipeline</h3></div>${systemOverviewRouteButton("media", "activity", "Open activity")}</header>
@@ -5749,7 +5749,7 @@ function renderInfrastructureEnvironmentDetail(environment) {
       <section class="inventory-detail-section"><header><div><span class="section-kicker">Virtual layer</span><h3>Workloads</h3></div><a class="button button--compact" href="#/workloads" data-action="close-modal">View all</a></header>${workloads.length ? `<div class="inventory-compact-list">${workloads.slice(0, 12).map((workload) => `<button type="button" data-action="open-infrastructure-workload" data-infrastructure-workload-id="${escapeHtml(workload.id)}"><i class="workload-type is-${escapeHtml(workload.type)}">${workloadIconMarkup(workload.type)}</i><span><strong>${escapeHtml(workload.name)}</strong><small>${escapeHtml(workload.kind)} ${workload.vmid ?? "—"} · ${escapeHtml(workload.node)}</small></span><span class="workload-state is-${escapeHtml(workload.status)}"><i></i>${escapeHtml(workload.status)}</span>${icon("chevron")}</button>`).join("")}</div>` : `<div class="empty-state"><span>No workloads are currently visible.</span></div>`}</section>
 
       <div class="inventory-detail-columns"><section class="inventory-detail-section"><header><div><span class="section-kicker">Capacity</span><h3>Storage</h3></div></header>${environment.storage.length ? `<div class="storage-detail-list">${environment.storage.map((storage) => `<article><div><strong>${escapeHtml(storage.name)}</strong><small>${escapeHtml(storage.node)}${storage.shared ? " · Shared" : ""}${storage.type ? ` · ${escapeHtml(storage.type)}` : ""}</small></div><span>${storage.usagePercent === null ? "—" : `${storage.usagePercent}%`}</span><small>${storage.usedBytes === null ? escapeHtml(storage.status) : `${formatMetricBytes(storage.usedBytes)} of ${formatMetricBytes(storage.totalBytes)}`}</small></article>`).join("")}</div>` : `<div class="empty-state"><span>No storage inventory is available.</span></div>`}</section>
-      <section class="inventory-detail-section"><header><div><span class="section-kicker">Bounded history</span><h3>Recent activity</h3></div></header>${environment.activity.length ? `<div class="activity-detail-list">${environment.activity.slice(0, 12).map((entry) => `<article><i class="health-dot is-${entry.status === "success" ? "healthy" : "down"}"></i><div><strong>${escapeHtml(entry.type)}</strong><small>${escapeHtml([entry.node, entry.vmid === null ? "" : `VMID ${entry.vmid}`].filter(Boolean).join(" · "))}</small></div><time>${escapeHtml(formatTime(entry.endedAt))}</time></article>`).join("")}</div>` : `<div class="empty-state"><span>No recent task activity is available.</span></div>`}</section></div>
+      <section class="inventory-detail-section" id="environment-recent-activity"><header><div><span class="section-kicker">Bounded history</span><h3>Recent activity</h3></div></header>${environment.activity.length ? `<div class="activity-detail-list">${environment.activity.slice(0, 12).map((entry) => `<article><i class="health-dot is-${entry.status === "success" ? "healthy" : "down"}"></i><div><strong>${escapeHtml(entry.type)}</strong><small>${escapeHtml([entry.node, entry.vmid === null ? "" : `VMID ${entry.vmid}`].filter(Boolean).join(" · "))}</small></div><time>${escapeHtml(formatTime(entry.endedAt))}</time></article>`).join("")}</div>` : `<div class="empty-state"><span>No recent task activity is available.</span></div>`}</section></div>
       ${environment.reports.length ? `<section class="inventory-detail-section"><header><div><span class="section-kicker">Service reports</span><h3>Warnings</h3></div></header>${renderOperationsReports(environment.reports, environment.displayName)}</section>` : ""}
     </div>
     <footer class="modal-card__footer"><button class="button" type="button" data-action="open-infrastructure-target" data-infrastructure-target-id="${escapeHtml(environment.id)}">Connection settings</button><button class="button button--primary" type="button" data-action="close-modal">Done</button></footer>
@@ -6765,6 +6765,78 @@ function setManualFilter(value, { rerenderInput = true } = {}) {
     if (input) input.value = state.manual.filter;
   }
   applyManualFilter();
+}
+
+// Overview rows and signal tiles lead to the page that holds the detail.
+// Pages can render after data arrives, so the target is looked for over a
+// few frames before giving up quietly.
+function revealWhenRendered(find, { attempts = 40, onFound = null } = {}) {
+  const tick = (remaining) => {
+    const element = find();
+    if (element) {
+      scrollManualElementIntoView(element);
+      onFound?.(element);
+      // A refresh that lands right after navigation can replace the page;
+      // follow the target into the new markup.
+      setTimeout(() => {
+        if (!element.isConnected && remaining > 0) tick(remaining - 1);
+      }, 400);
+      return;
+    }
+    if (remaining > 0) setTimeout(() => tick(remaining - 1), 50);
+  };
+  requestAnimationFrame(() => tick(attempts));
+}
+
+async function openOverviewService(kind, id) {
+  const serviceId = String(id || "");
+  if (!serviceId) return;
+  if (kind === "media") {
+    await switchWorkspace("media", "health");
+    revealWhenRendered(() => [...main.querySelectorAll(".operations-service[data-service-id]")]
+      .find((element) => element.dataset.serviceId === serviceId)?.closest("li") || null);
+    return;
+  }
+  if (kind === "proxmox") {
+    await switchWorkspace("infrastructure", "proxmox");
+    openInfrastructureEnvironmentDetail(serviceId);
+    return;
+  }
+  if (kind === "portainer") {
+    rememberPortainerInstance(serviceId, true);
+    await switchWorkspace("infrastructure", "portainer");
+    revealWhenRendered(() => [...main.querySelectorAll(".portainer-instance")]
+      .find((element) => element.dataset.portainerInstance === serviceId) || null, {
+      onFound: (element) => { element.open = true; }
+    });
+  }
+}
+
+// The environment whose recent activity explains a failed-task or backup
+// signal: the first one reporting failures, otherwise the first one.
+function environmentForActivitySignal(signal) {
+  const environments = infrastructureHealth().targets || [];
+  const failing = environments.find((environment) => (environment.activity || []).some((entry) => (
+    entry.status !== "success" && (signal !== "backups" || /vzdump|backup/iu.test(String(entry.type || "")))
+  )));
+  return failing || environments[0] || null;
+}
+
+async function openInfrastructureSignal(signal) {
+  if (signal === "guests") {
+    await switchWorkspace("infrastructure", "workloads");
+    return;
+  }
+  if (signal === "tasks" || signal === "backups") {
+    const environment = environmentForActivitySignal(signal);
+    if (!environment) return showToast("No Proxmox environment is reporting activity yet.", "info");
+    openInfrastructureEnvironmentDetail(environment.id);
+    revealWhenRendered(() => document.querySelector("#environment-recent-activity"));
+    return;
+  }
+  const sectionId = signal === "storage" ? "proxmox-storage-title" : "proxmox-nodes-title";
+  await switchWorkspace("infrastructure", "proxmox");
+  revealWhenRendered(() => document.getElementById(sectionId)?.closest("section") || null);
 }
 
 function scrollManualElementIntoView(element) {
@@ -10753,6 +10825,8 @@ document.addEventListener("click", async (event) => {
   if (action === "toggle-sidebar") toggleSidebar();
   if (action === "switch-workspace") await switchWorkspace(target.dataset.workspace, target.dataset.workspaceRoute);
   if (action === "open-service") openService(target.dataset.serviceId);
+  if (action === "open-overview-service") await openOverviewService(target.dataset.overviewKind, target.dataset.overviewId);
+  if (action === "open-infrastructure-signal") await openInfrastructureSignal(target.dataset.infrastructureSignal);
   if (action === "open-media-detail") openMediaDrawer(target.dataset.mediaId);
   if (action === "close-media-drawer") closeMediaDrawer();
   if (action === "retry-season-details") await loadSeasonDetailsForMedia(String(target.dataset.mediaId || ""), { force: true });
