@@ -522,6 +522,7 @@ function qbitTorrentMetrics(body) {
   let errored = 0;
   let paused = 0;
   let completed = 0;
+  let seeding = 0;
   for (const item of entries) {
     const entry = record(item) || {};
     const state = lowercaseToken(own(entry, "state"));
@@ -530,6 +531,7 @@ function qbitTorrentMetrics(body) {
     if (state === "stalleddl") stalled += 1;
     if (["downloading", "forceddl", "metadl", "queueddl", "checkingdl", "moving", "allocating"].includes(state)) downloading += 1;
     if (["pauseddl", "pausedup"].includes(state)) paused += 1;
+    if (["uploading", "forcedup"].includes(state)) seeding += 1;
     if (Number.isFinite(progress) && progress >= 1
       || ["uploading", "forcedup", "stalledup", "queuedup", "checkingup", "pausedup"].includes(state)) completed += 1;
   }
@@ -540,7 +542,8 @@ function qbitTorrentMetrics(body) {
       stalled,
       errored,
       paused,
-      completed
+      completed,
+      seeding
     },
     state: errored || stalled ? "degraded" : "healthy"
   };
@@ -876,6 +879,15 @@ export function deriveSanitizedServiceProbe(service, observations, options = {})
     const active = boundedInteger((metrics.downloading || 0) + (metrics.stalled || 0));
     if (transfer?.state === "limited" && metrics.connectionStatus === "disconnected" && active > 0) {
       transfer.state = "degraded";
+    }
+    // qBittorrent reports "firewalled" until a peer connects in to it, so an
+    // idle client with nothing downloading or seeding always looks
+    // firewalled even when its port is open. Only flag it while something
+    // is actually looking for peers.
+    if (transfer?.state === "limited" && metrics.connectionStatus === "firewalled"
+      && torrents?.state && torrents.state !== "stale" && Number.isInteger(metrics.torrentsTotal)
+      && active + (metrics.seeding || 0) === 0) {
+      transfer.state = "healthy";
     }
     if (torrents?.state === "healthy" && ((metrics.errored || 0) > 0 || (metrics.stalled || 0) > 0)) {
       torrents.state = "degraded";

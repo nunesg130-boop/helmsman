@@ -892,7 +892,11 @@ function capabilityEvidence(check) {
   if (metric.errored) evidence.push(countLabel(metric.errored, "errored download"));
   if (metric.stalled) evidence.push(countLabel(metric.stalled, "stalled download"));
   if (check.connectionStatus && check.connectionStatus !== "connected") {
-    evidence.push(`Transfer ${check.connectionStatus}`);
+    // Idle qBittorrent shows "firewalled" until a peer connects in; the
+    // server marks that healthy, so say why instead of sounding an alarm.
+    evidence.push(check.connectionStatus === "firewalled" && check.state === "healthy"
+      ? "Firewalled while idle (normal until a peer connects)"
+      : `Transfer ${check.connectionStatus}`);
   }
   if (check.code
     && !(check.code === "HEALTH_WARNING" && metric.healthWarnings)
