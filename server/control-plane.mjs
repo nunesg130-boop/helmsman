@@ -5155,7 +5155,7 @@ export async function createControlPlane(options) {
       setApiHeaders(response);
       response.removeHeader("Pragma");
       response.removeHeader("Expires");
-      response.setHeader("Cache-Control", "private, max-age=86400, stale-while-revalidate=604800, stale-if-error=604800");
+      response.setHeader("Cache-Control", "private, max-age=604800, stale-while-revalidate=2592000, stale-if-error=2592000");
       response.setHeader("Cross-Origin-Resource-Policy", "same-origin");
       response.setHeader("Content-Type", contentType);
       response.setHeader("ETag", etag);

@@ -1515,3 +1515,11 @@ test("returns a complete empty model when media services are absent", () => {
   assert.equal(media.metrics.activeDownloadTotal, 0);
   assert.equal(media.metrics.nowPlayingTotal, 0);
 });
+
+test("qBittorrent's no-ETA value and finished torrents have no ETA", () => {
+  const eta = (torrent) => inventoryFromProbeBody("qbittorrent", "torrents", [{ hash: HASH, name: "Signal.2026", state: "downloading", ...torrent }]).activity[0].etaSeconds;
+  assert.equal(eta({ progress: 0.4, eta: 320 }), 320);
+  assert.equal(eta({ progress: 0.4, eta: 8_640_000 }), null, "8640000 is qBittorrent's 'infinite'");
+  assert.equal(eta({ progress: 1, eta: 0, state: "uploading" }), null, "finished torrents have no ETA");
+  assert.equal(eta({ progress: 0.4 }), null);
+});

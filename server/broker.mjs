@@ -2,7 +2,8 @@ import http from "node:http";
 import https from "node:https";
 import tls from "node:tls";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
-import { readFile, realpath } from "node:fs/promises";
+import { open, realpath } from "node:fs/promises";
+import { gzipSync } from "node:zlib";
 import { isIP } from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -54,7 +55,7 @@ import {
 } from "./network.mjs";
 import { generateSecretToken, hashToken, StateStore, tokenMatches } from "./state.mjs";
 
-const DEFAULT_VERSION = "1.12.0";
+const DEFAULT_VERSION = "1.12.1";
 const requestedVersion = String(process.env.HELMSMAN_VERSION || DEFAULT_VERSION);
 const VERSION = /^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/u.test(requestedVersion)
   ? requestedVersion
@@ -1438,6 +1439,52 @@ function safeStaticRelativePath(pathname) {
   return null;
 }
 
+// Static files rarely change, so their bytes, ETag and gzip form are kept in
+// memory per file version (path, size and modification time).
+const STATIC_COMPRESSIBLE = new Set([".html", ".js", ".mjs", ".css", ".svg", ".json", ".webmanifest", ".md", ".txt"]);
+const staticCache = new Map();
+const MAX_STATIC_CACHE_ENTRIES = 128;
+
+async function staticFile(realCandidate) {
+  // One open handle for both the size check and the read, so the file
+  // checked is the file served.
+  const handle = await open(realCandidate, "r");
+  try {
+    const metadata = await handle.stat();
+    if (!metadata.isFile() || metadata.size > MAX_STATIC_BYTES) return null;
+    const version = `${metadata.size}:${metadata.mtimeMs}`;
+    const cached = staticCache.get(realCandidate);
+    if (cached?.version === version) return cached;
+    const bytes = await handle.readFile();
+    if (bytes.length > MAX_STATIC_BYTES) return null;
+    const entry = {
+      version,
+      bytes,
+      etag: `"${createHash("sha256").update(bytes).digest("base64url")}"`,
+      gzip: null
+    };
+    staticCache.delete(realCandidate);
+    staticCache.set(realCandidate, entry);
+    while (staticCache.size > MAX_STATIC_CACHE_ENTRIES) staticCache.delete(staticCache.keys().next().value);
+    return entry;
+  } finally {
+    await handle.close();
+  }
+}
+
+// True when Accept-Encoding allows gzip with a non-zero quality.
+function acceptsGzip(header) {
+  for (const part of String(header || "").slice(0, 512).split(",").slice(0, 16)) {
+    const [coding, ...params] = part.split(";").map((value) => value.trim().toLowerCase());
+    if (coding !== "gzip") continue;
+    const quality = params.find((param) => param.startsWith("q="));
+    if (!quality) return true;
+    const value = Number(quality.slice(2));
+    return Number.isFinite(value) && value > 0;
+  }
+  return false;
+}
+
 async function serveStatic(request, response, rootDir, pathname) {
   if (!["GET", "HEAD"].includes(request.method || "GET")) {
     throw new BrokerError(405, "METHOD_NOT_ALLOWED", "That method is not allowed.");
@@ -1455,27 +1502,40 @@ async function serveStatic(request, response, rootDir, pathname) {
   if (realCandidate !== realRoot && !realCandidate.startsWith(`${realRoot}${path.sep}`)) {
     throw new BrokerError(404, "NOT_FOUND", "Not found.");
   }
-  const bytes = await readFile(realCandidate);
-  if (bytes.length > MAX_STATIC_BYTES) throw new BrokerError(404, "NOT_FOUND", "Not found.");
+  const file = await staticFile(realCandidate).catch(() => null);
+  if (!file) throw new BrokerError(404, "NOT_FOUND", "Not found.");
+  const extension = path.extname(realCandidate).toLowerCase();
   setCommonSecurityHeaders(response);
   response.setHeader("Content-Security-Policy", SHELL_CSP);
   response.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()");
-  response.setHeader("Content-Type", MIME_TYPES[path.extname(realCandidate).toLowerCase()] || "application/octet-stream");
-  if (relative.startsWith("assets/services/") || relative.startsWith("assets/workloads/")) {
-    const etag = `"${createHash("sha256").update(bytes).digest("base64url")}"`;
-    response.removeHeader("Pragma");
-    response.removeHeader("Expires");
-    response.setHeader("Cache-Control", "private, max-age=86400");
-    response.setHeader("ETag", etag);
-    if (request.headers["if-none-match"] === etag) {
-      response.statusCode = 304;
-      response.end();
-      return;
-    }
+  response.setHeader("Content-Type", MIME_TYPES[extension] || "application/octet-stream");
+  response.removeHeader("Pragma");
+  response.removeHeader("Expires");
+  // Service icons never change between releases. Everything else may, so
+  // the browser keeps a copy but checks it on every load: an unchanged file
+  // costs a 304 instead of a full download, and a release shows at once.
+  response.setHeader("Cache-Control", relative.startsWith("assets/services/") || relative.startsWith("assets/workloads/")
+    ? "private, max-age=86400"
+    : "private, no-cache");
+  const gzip = STATIC_COMPRESSIBLE.has(extension) && file.bytes.length > 1_024
+    && acceptsGzip(request.headers["accept-encoding"]);
+  const etag = gzip ? `${file.etag.slice(0, -1)}-gz"` : file.etag;
+  if (STATIC_COMPRESSIBLE.has(extension)) response.setHeader("Vary", "Accept-Encoding");
+  response.setHeader("ETag", etag);
+  if (request.headers["if-none-match"] === etag) {
+    response.statusCode = 304;
+    response.end();
+    return;
   }
-  response.setHeader("Content-Length", String(bytes.length));
+  let body = file.bytes;
+  if (gzip) {
+    file.gzip ||= gzipSync(file.bytes, { level: 6 });
+    body = file.gzip;
+    response.setHeader("Content-Encoding", "gzip");
+  }
+  response.setHeader("Content-Length", String(body.length));
   response.statusCode = 200;
-  response.end(request.method === "HEAD" ? undefined : bytes);
+  response.end(request.method === "HEAD" ? undefined : body);
 }
 
 export async function createBroker(options = {}) {

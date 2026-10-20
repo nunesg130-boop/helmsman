@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 
-const DEFAULT_POSITIVE_TTL_MS = 24 * 60 * 60 * 1_000;
+// Artwork addresses include the source image's own version, so a cached
+// image only goes stale if the source changes it without a new version.
+const DEFAULT_POSITIVE_TTL_MS = 7 * 24 * 60 * 60 * 1_000;
 const DEFAULT_NEGATIVE_TTL_MS = 15 * 60 * 1_000;
 const DEFAULT_ARR_NEGATIVE_TTL_MS = 30 * 1_000;
 const DEFAULT_MAX_ENTRIES = 512;
