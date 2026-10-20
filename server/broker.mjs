@@ -29,6 +29,7 @@ import { createPersistentCache } from "./persistent-cache.mjs";
 import { createAcknowledgementStore } from "./acknowledgements.mjs";
 import { createLaunchpadStore } from "./launchpad.mjs";
 import { createManualStore } from "./manual.mjs";
+import { createAgent } from "./agent.mjs";
 import { createNetworkMapStore } from "./network-map.mjs";
 import { probeProxmox, probeProxmoxEndpoint } from "./proxmox-probes.mjs";
 import { probePortainer } from "./portainer-probes.mjs";
@@ -44,7 +45,7 @@ import {
 } from "./network.mjs";
 import { generateSecretToken, hashToken, StateStore, tokenMatches } from "./state.mjs";
 
-const DEFAULT_VERSION = "1.5.0";
+const DEFAULT_VERSION = "1.6.0";
 const requestedVersion = String(process.env.HELMSMAN_VERSION || DEFAULT_VERSION);
 const VERSION = /^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/u.test(requestedVersion)
   ? requestedVersion
@@ -3118,6 +3119,34 @@ export async function createBroker(options = {}) {
   });
   controlPlane.setMonitor(monitor);
   monitor.subscribe((snapshot) => persistentCache?.writeSnapshot?.(snapshot));
+
+  // The agent watches the snapshot, explains incidents with the owner's
+  // local model, runs owner-written rules and sends Home Assistant
+  // notifications. It is idle until the owner configures and enables it.
+  let agent = null;
+  let agentStopping = null;
+  try {
+    agent = await createAgent({
+      dataDir,
+      credentialStore: controlPlane.credentialStore,
+      lookup,
+      policy: () => controlPlane.currentPolicy(),
+      snapshot: () => monitor.getSnapshot(),
+      subscribe: (callback) => monitor.subscribe(callback),
+      performAction: (kind, body) => controlPlane.performAction(kind, body),
+      manual: () => manual?.get?.().markdown || "",
+      events: (query) => eventJournal.query(query),
+      recordEvent: (event) => { recordEvent(event); },
+      ...(typeof options.dispatchAgent === "function" ? { send: options.dispatchAgent } : {}),
+      log,
+      guard: options.stateGuard,
+      version: VERSION
+    });
+    controlPlane.setAgent(agent);
+    agent.start();
+  } catch {
+    log("Helmsman agent storage is unavailable; the agent is disabled for this run.");
+  }
   void monitor.start().catch(() => {
     recordEvent({
       level: "error",
@@ -3362,6 +3391,7 @@ export async function createBroker(options = {}) {
     if (shuttingDown) return;
     shuttingDown = true;
     monitor.stop();
+    agentStopping = agent?.stop() || null;
     seerrRequestMetadata.close();
     mediaArtwork.close();
     seerrSeriesSeasonCache.clear();
@@ -3372,6 +3402,7 @@ export async function createBroker(options = {}) {
   let closePromise = null;
   const drain = async (options = {}) => {
     if (activeHandlers !== 0) await new Promise((resolve) => drainWaiters.add(resolve));
+    await agentStopping?.catch?.(() => {});
     let controlPlaneError = null;
     try {
       closePromise ||= controlPlane.close();
@@ -3403,6 +3434,7 @@ export async function createBroker(options = {}) {
     recordEvent,
     setupToken,
     version: VERSION,
+    agent,
     beginShutdown,
     drain
   };

@@ -24,7 +24,8 @@ qBittorrent, a two-node Proxmox cluster and Portainer. It sets itself up and
 fills in a sample manual and network map. Sign in with `demo` / `demo`.
 
 The data is temporary unless you pass `--data ./demo-data`. Use
-`--port 5000` for another port. The demo lives in `scripts/`, which the
+`--port 5000` for another port, and `--outage` to stop Sonarr a minute after
+start and watch the agent react: its notifications print in the terminal. The demo lives in `scripts/`, which the
 container image does not include. When a change alters what a service
 returns, update its fake in `scripts/demo.mjs`; `tests/demo.test.mjs` fails if
 the demo stops coming up healthy.

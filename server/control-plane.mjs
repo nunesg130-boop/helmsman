@@ -1277,6 +1277,7 @@ export async function createControlPlane(options) {
   await cleanupOrphanBrowserCredentials();
 
   let monitor = options.monitor || null;
+  let agent = null;
   const loginAttempts = new Map();
   const accessLoginAttempts = new Map();
   const jellyfinLoginAttempts = new Map();
@@ -4380,7 +4381,15 @@ export async function createControlPlane(options) {
     if (request.method !== "POST") fail(405, "METHOD_NOT_ALLOWED", "That method is not allowed.");
     await authenticate(request, true);
     if (!executePortainerContainerAction) fail(503, "ACTIONS_UNAVAILABLE", "Portainer controls are temporarily unavailable.");
-    const body = await readBoundedJson(request);
+    sendJson(response, 200, await performPortainerContainerAction(await readBoundedJson(request)));
+  }
+
+  // Validates and runs one Portainer container action. Shared by the browser
+  // route above and by the agent (owner-approved proposals and owner rules),
+  // so every caller gets the same current-inventory and revision checks.
+  async function performPortainerContainerAction(body) {
+    if (!executePortainerContainerAction) fail(503, "ACTIONS_UNAVAILABLE", "Portainer controls are temporarily unavailable.");
+    requirePlainObject(body);
     requireExactKeys(body, ["serviceId", "environmentId", "containerId", "operation", "targetRevision"]);
     const serviceId = typeof body.serviceId === "string" && UUID.test(body.serviceId) ? body.serviceId : null;
     const environmentId = requiredActionInteger(body.environmentId, "Portainer environment");
@@ -4458,14 +4467,21 @@ export async function createControlPlane(options) {
       targetType: "container",
       targetId: containerId
     });
-    sendJson(response, 200, result);
+    return result;
   }
 
   async function proxmoxWorkloadAction(request, response) {
     if (request.method !== "POST") fail(405, "METHOD_NOT_ALLOWED", "That method is not allowed.");
     await authenticate(request, true);
     if (!executeProxmoxWorkloadAction) fail(503, "ACTIONS_UNAVAILABLE", "Proxmox controls are temporarily unavailable.");
-    const body = await readBoundedJson(request);
+    sendJson(response, 200, await performProxmoxWorkloadAction(await readBoundedJson(request)));
+  }
+
+  // Validates and runs one Proxmox guest power action; shared like the
+  // Portainer action above.
+  async function performProxmoxWorkloadAction(body) {
+    if (!executeProxmoxWorkloadAction) fail(503, "ACTIONS_UNAVAILABLE", "Proxmox controls are temporarily unavailable.");
+    requirePlainObject(body);
     requireExactKeys(body, ["environmentId", "node", "type", "vmid", "operation", "targetRevision"]);
     const environmentId = typeof body.environmentId === "string" && UUID.test(body.environmentId)
       ? body.environmentId
@@ -4550,7 +4566,7 @@ export async function createControlPlane(options) {
       targetType: type,
       targetId: String(vmid)
     });
-    sendJson(response, 200, result);
+    return result;
   }
 
   async function mediaRecoveryAction(request, response) {
@@ -4900,6 +4916,25 @@ export async function createControlPlane(options) {
     sendJson(response, 200, { links: currentLaunchpadLinks() });
   }
 
+  // The Helmsman agent's settings, notes, questions and proposals. Every
+  // route needs a signed-in session, and anything but GET needs CSRF.
+  async function agentApi(request, response, url) {
+    await authenticate(request, request.method !== "GET");
+    if (!agent) fail(503, "AGENT_UNAVAILABLE", "The agent is still starting.");
+    try {
+      await agent.handleApi(request, response, url, {
+        readJson: (incoming) => readBoundedJson(incoming),
+        sendJson
+      });
+    } catch (error) {
+      if (error instanceof ControlPlaneError) throw error;
+      if (typeof error?.status === "number" && typeof error?.code === "string") {
+        throw new ControlPlaneError(error.status, error.code, error.message);
+      }
+      throw error;
+    }
+  }
+
   // The owner's Markdown manual. Readable by any signed-in session; saving
   // needs CSRF and the revision the editor started from.
   async function manualApi(request, response) {
@@ -5207,6 +5242,10 @@ export async function createControlPlane(options) {
         await launchpadApi(request, response, launchpadMatch?.[1] ?? null, launchpadMatch?.[2] ?? null);
         return true;
       }
+      if (url.pathname === "/api/v2/agent" || url.pathname.startsWith("/api/v2/agent/")) {
+        await agentApi(request, response, url);
+        return true;
+      }
       if (url.pathname === "/api/v2/manual") {
         if (url.search) fail(404, "NOT_FOUND", "Not found.");
         await manualApi(request, response);
@@ -5259,6 +5298,15 @@ export async function createControlPlane(options) {
     useInfrastructureCredentials,
     useInfrastructureServiceCredentials,
     setMonitor(value) { monitor = value; },
+    setAgent(value) { agent = value; },
+    // Runs a control action with the same checks as the browser routes. Used
+    // by the agent for owner-approved proposals and owner-written rules.
+    performAction(kind, body) {
+      if (kind === "portainer") return performPortainerContainerAction(body);
+      if (kind === "proxmox") return performProxmoxWorkloadAction(body);
+      return Promise.reject(new ControlPlaneError(400, "INVALID_ACTION_TARGET", "That action is not supported."));
+    },
+    currentPolicy: () => structuredClone(stateStore.snapshot().policy),
     close: async () => {
       await closeBrowserRevocations();
       await credentialStore.close();
