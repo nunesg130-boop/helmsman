@@ -1,4 +1,4 @@
-# Helmsman v1.5.0
+# Helmsman v1.6.0
 
 Helmsman is a self-hosted operations center for a homelab's media services and infrastructure. It runs as one portable Linux container on Docker Desktop, Linux, macOS, compatible NAS platforms, AMD64, and ARM64.
 
@@ -14,6 +14,14 @@ Helmsman is a self-hosted operations center for a homelab's media services and i
 This Helmsman is the media and infrastructure dashboard in this repository. It
 is not affiliated with or derived from the existing Kubernetes project also
 named [Helmsman](https://github.com/mkubaczyk/helmsman).
+
+## v1.6.0
+
+This release adds the **Helmsman agent**, an optional assistant built for a small model on your own hardware, such as a 3–4B model on a 4 GB GPU, through any OpenAI-compatible server (Ollama, LM Studio, llama.cpp, vLLM). It stays off until you configure it, and it has no screens yet; [docs/LOCAL-AI.md](docs/LOCAL-AI.md) sets it up from the browser console. Nothing else changes, and the state file stays on schema 6.
+
+The agent wakes up when something changes instead of polling: an incident opens or gets worse, a service recovers, the daily digest is due at your local time, or a periodic check-in is due. It looks into the problem with read-only tools and writes a short note (what is wrong, the likely cause, the next step), and it can send notes to your phone through a Home Assistant notify service. One outage gives one note and one notification. Without a model it still notifies you, using Helmsman's own facts.
+
+It changes things only through rules you write, such as "restart the sonarr container when Sonarr has been down for 5 minutes", which Helmsman's code checks, never the model. Rules can only start or restart containers and start or reboot guests, fire only for an incident on the service they name, run once per incident with a cooldown, a daily limit and a cap of 10 actions a day across all rules, and only while the autonomy switch is on (off by default). Anything the model suggests waits for your approval and runs through the dashboard's own action checks. The agent's settings are kept in `agent.json`, sealed with an integrity tag from the master key; its model-server key and Home Assistant token are encrypted with your other credentials. `npm run demo -- --outage` shows the whole loop with a scripted stand-in model.
 
 ## v1.5.0
 
@@ -192,7 +200,7 @@ Helmsman's project-owned logging mark. Original generic VM/container workload
 drawings are also bundled. See
 [the asset notices](assets/services/THIRD_PARTY_NOTICES.md).
 
-Helmsman v1.5.0 combines built-in logging, optional Loki search, Portainer monitoring, a private persistent state/artwork cache, and a small, fixed set of confirmed recovery actions under Infrastructure with targeted media recovery actions and Helmsman's cluster-aware Proxmox model:
+Helmsman v1.6.0 combines built-in logging, optional Loki search, Portainer monitoring, a private persistent state/artwork cache, and a small, fixed set of confirmed recovery actions under Infrastructure with targeted media recovery actions and Helmsman's cluster-aware Proxmox model:
 
 - Media and Infrastructure are separate workspaces inside the same authenticated application, and only the selected workspace's navigation is shown;
 - the desktop sidebar collapses to an icon rail, remembers that preference, keeps its navigation scrollable at high browser zoom, and places its 44 px collapse control on the content-side edge below the shared header rule;
@@ -238,7 +246,7 @@ Helmsman v1.5.0 combines built-in logging, optional Loki search, Portainer monit
 
 ## Deploy the published container
 
-Helmsman is distributed as the public Linux AMD64/ARM64 image `ghcr.io/nunesg130-boop/helmsman`. The `v1.5.0` Git tag runs the contracts and architecture smoke tests, publishes the version, `latest`, and full-commit image tags, and creates a GitHub Release containing ready-to-use `compose.yaml`, `container.env.example`, and `SHA256SUMS` assets. The release deployment files pin `ghcr.io/nunesg130-boop/helmsman` to the exact multi-architecture manifest digest (`@sha256:...`).
+Helmsman is distributed as the public Linux AMD64/ARM64 image `ghcr.io/nunesg130-boop/helmsman`. The `v1.6.0` Git tag runs the contracts and architecture smoke tests, publishes the version, `latest`, and full-commit image tags, and creates a GitHub Release containing ready-to-use `compose.yaml`, `container.env.example`, and `SHA256SUMS` assets. The release deployment files pin `ghcr.io/nunesg130-boop/helmsman` to the exact multi-architecture manifest digest (`@sha256:...`).
 
 Download those three files from the matching [GitHub Release](https://github.com/nunesg130-boop/helmsman/releases) into one directory, verify the two deployment files against `SHA256SUMS`, open a terminal there, and make sure Docker Desktop or Docker Engine is running. No source checkout, Dockerfile, Node.js installation, or server-side image build is required.
 
