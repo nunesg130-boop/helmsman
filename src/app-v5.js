@@ -4120,6 +4120,7 @@ function emptyAgentState() {
     data: null,
     chat: [],
     draft: "",
+    helperDraft: "",
     asking: false,
     busy: ""
   };
@@ -4145,6 +4146,7 @@ async function loadAgent({ render = false } = {}) {
     state.agent.error = safeSessionText(error?.message, "The agent could not be reached.", 180);
   }
   state.agent.loaded = true;
+  syncAgentHelper();
   if (render && previous !== agentFingerprint(state.agent.data) && ["system", "settings"].includes(currentRoute())) {
     state.lastMarkup = "";
     renderPage({ force: true, preserveFocus: true });
@@ -4155,6 +4157,7 @@ async function loadAgent({ render = false } = {}) {
 function rerenderAgent() {
   state.lastMarkup = "";
   renderPage({ force: true, preserveFocus: true });
+  syncAgentHelper();
 }
 
 function agentStatus(data) {
@@ -4198,18 +4201,21 @@ function renderAgentNote(note) {
   </li>`;
 }
 
+function renderAgentChatMessages(ready, proposalPlace) {
+  const messages = state.agent.chat;
+  return `${messages.length ? messages.map((message) => `<li class="agent-chat__message is-${message.role}${message.error ? " is-error" : ""}">
+        <p>${escapeHtml(message.content)}</p>
+        ${message.proposals?.length ? `<small>Suggested an action. Approve or decline it ${escapeHtml(proposalPlace)}.</small>` : ""}
+      </li>`).join("") : `<li class="agent-chat__empty">${ready ? "Ask how things look, why something is failing, or what changed today. Answers come from your own model and Helmsman's live data." : "Connect a model server in Settings to ask questions."}</li>`}
+      ${state.agent.asking ? `<li class="agent-chat__message is-assistant is-thinking"><p>Thinking…</p></li>` : ""}`;
+}
+
 function renderAgentChat(data) {
   const ready = Boolean(data?.config?.ai);
   const messages = state.agent.chat;
   return `<section class="agent-chat" aria-labelledby="agent-chat-title">
     <header><h4 id="agent-chat-title">Ask the agent</h4>${messages.length ? `<button class="agent-text-button" type="button" data-action="agent-chat-clear">Clear</button>` : ""}</header>
-    <ol class="agent-chat__messages" aria-live="polite">
-      ${messages.length ? messages.map((message) => `<li class="agent-chat__message is-${message.role}${message.error ? " is-error" : ""}">
-        <p>${escapeHtml(message.content)}</p>
-        ${message.proposals?.length ? `<small>Suggested an action. Approve or decline it under Reports.</small>` : ""}
-      </li>`).join("") : `<li class="agent-chat__empty">${ready ? "Ask how things look, why something is failing, or what changed today. Answers come from your own model and Helmsman's live data." : "Connect a model server in Settings to ask questions."}</li>`}
-      ${state.agent.asking ? `<li class="agent-chat__message is-assistant is-thinking"><p>Thinking…</p></li>` : ""}
-    </ol>
+    <ol class="agent-chat__messages" aria-live="polite">${renderAgentChatMessages(ready, "under Reports")}</ol>
     <form class="agent-chat__form" id="agent-ask-form">
       <label class="sr-only" for="agent-ask-input">Question for the agent</label>
       <textarea id="agent-ask-input" name="question" rows="2" maxlength="${AGENT_QUESTION_LIMIT}" placeholder="${ready ? "How is everything looking?" : "Set up the agent first"}" ${ready ? "" : "disabled"}>${escapeHtml(state.agent.draft)}</textarea>
@@ -4398,6 +4404,8 @@ function renderAgentBehaviorCard(data) {
       <h4>Acting on its own</h4>
       <label class="check-row agent-autonomy"><input name="autonomy" type="checkbox" ${settings.autonomy ? "checked" : ""}/><span><strong>Let rules act</strong><small>Rules below run only while this is on. Everything the model suggests still waits for your approval.</small></span></label>
       <div class="button-row"><button class="button button--primary" type="submit">Save behavior</button></div>
+      <h4>In this browser</h4>
+      ${renderAgentHelperSetting()}
     </div>
   </form>`;
 }
@@ -4733,15 +4741,21 @@ async function runAgentJob(job) {
   }
 }
 
-async function askAgent() {
-  const question = state.agent.draft.trim().slice(0, AGENT_QUESTION_LIMIT);
+async function askAgent(source = "page") {
+  const fromHelper = source === "helper";
+  const question = (fromHelper ? state.agent.helperDraft : state.agent.draft).trim().slice(0, AGENT_QUESTION_LIMIT);
   if (!question || state.agent.asking) return;
   const history = state.agent.chat
     .filter((message) => !message.error)
     .slice(-AGENT_CHAT_LIMIT)
     .map(({ role, content }) => ({ role, content: content.slice(0, 1_500) }));
   state.agent.chat.push({ role: "user", content: question });
-  state.agent.draft = "";
+  if (fromHelper) {
+    state.agent.helperDraft = "";
+    const helperInput = document.getElementById("agent-helper-input");
+    if (helperInput) helperInput.value = "";
+  }
+  else state.agent.draft = "";
   state.agent.asking = true;
   rerenderAgent();
   try {
@@ -4758,9 +4772,412 @@ async function askAgent() {
     state.agent.asking = false;
     state.agent.chat = state.agent.chat.slice(-AGENT_CHAT_LIMIT * 2);
     rerenderAgent();
-    document.getElementById("agent-ask-input")?.focus({ preventScroll: true });
+    document.getElementById(fromHelper ? "agent-helper-input" : "agent-ask-input")?.focus({ preventScroll: true });
   }
 }
+
+// Floating agent helper ------------------------------------------------
+// A small character that floats over every page. Drag it anywhere; click
+// it and it glides to the right edge and opens a mini chat beside itself.
+// It lives outside #main-content, so page renders never replace it. Each
+// browser can turn it off; the choice is a local display preference only.
+
+const AGENT_HELPER_KEY = "helmsman.agentHelper";
+const AGENT_HELPER_HOME_KEY = "helmsman.agentHelperHome";
+const AGENT_HELPER_SEEN_KEY = "helmsman.agentHelperSeenNote";
+const AGENT_HELPER_MARGIN = 16;
+
+const helper = {
+  root: null,
+  buddy: null,
+  panel: null,
+  bubble: null,
+  open: false,
+  x: 0,
+  y: 0,
+  home: null,
+  drag: null,
+  suppressClick: false,
+  wanderTimer: 0,
+  bubbleTimer: 0,
+  renderedKey: "",
+  announcedNote: "",
+  baselineNote: undefined
+};
+
+function readHelperStorage(key) {
+  try {
+    return globalThis.localStorage?.getItem(key) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function writeHelperStorage(key, value) {
+  try {
+    if (value === null) globalThis.localStorage?.removeItem(key);
+    else globalThis.localStorage?.setItem(key, value);
+  } catch {
+    // Storage may be blocked; the helper still works for this visit.
+  }
+}
+
+function agentHelperEnabled() {
+  return readHelperStorage(AGENT_HELPER_KEY) !== "off";
+}
+
+function helperReducedMotion() {
+  return Boolean(globalThis.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches);
+}
+
+function helperSize() {
+  const rect = helper.buddy?.getBoundingClientRect?.();
+  return { width: rect?.width || 96, height: rect?.height || 88 };
+}
+
+function helperViewport() {
+  return { width: globalThis.innerWidth || 1280, height: globalThis.innerHeight || 800 };
+}
+
+// Space taken by the phone tab bar at the bottom, when it is showing.
+function helperBottomInset() {
+  const nav = document.querySelector(".mobile-nav");
+  const rect = nav?.getBoundingClientRect?.();
+  if (!rect || !rect.height || getComputedStyle(nav).display === "none") return 0;
+  return Math.max(0, helperViewport().height - rect.top);
+}
+
+function clampHelper(x, y) {
+  const { width, height } = helperSize();
+  const viewport = helperViewport();
+  const bottom = viewport.height - height - AGENT_HELPER_MARGIN - helperBottomInset();
+  return {
+    x: Math.min(Math.max(AGENT_HELPER_MARGIN, x), Math.max(AGENT_HELPER_MARGIN, viewport.width - width - AGENT_HELPER_MARGIN)),
+    y: Math.min(Math.max(AGENT_HELPER_MARGIN + 56, y), Math.max(AGENT_HELPER_MARGIN, bottom))
+  };
+}
+
+function helperDefaultHome() {
+  const { width, height } = helperSize();
+  const viewport = helperViewport();
+  return { x: viewport.width - width - 28, y: viewport.height - height - 110 };
+}
+
+// The home position is saved as fractions of the window, so it stays in a
+// sensible place when the window is resized.
+function loadHelperHome() {
+  try {
+    const saved = JSON.parse(readHelperStorage(AGENT_HELPER_HOME_KEY) || "null");
+    if (saved && Number.isFinite(saved.fx) && Number.isFinite(saved.fy)) {
+      const viewport = helperViewport();
+      return clampHelper(saved.fx * viewport.width, saved.fy * viewport.height);
+    }
+  } catch {
+    // Fall back to the default corner.
+  }
+  const fallback = helperDefaultHome();
+  return clampHelper(fallback.x, fallback.y);
+}
+
+function saveHelperHome() {
+  if (!helper.home) return;
+  const viewport = helperViewport();
+  writeHelperStorage(AGENT_HELPER_HOME_KEY, JSON.stringify({ fx: helper.home.x / viewport.width, fy: helper.home.y / viewport.height }));
+}
+
+function placeHelper(x, y, { glide = false } = {}) {
+  const position = clampHelper(x, y);
+  helper.x = position.x;
+  helper.y = position.y;
+  if (!helper.root) return;
+  helper.root.classList.toggle("is-gliding", glide && !helperReducedMotion());
+  helper.root.style.setProperty("--helper-x", `${Math.round(position.x)}px`);
+  helper.root.style.setProperty("--helper-y", `${Math.round(position.y)}px`);
+  helper.root.style.setProperty("--helper-bottom-inset", `${Math.round(helperBottomInset())}px`);
+  helper.root.classList.toggle("is-left-half", position.x + helperSize().width / 2 < helperViewport().width / 2);
+}
+
+function helperDockPosition() {
+  const { width, height } = helperSize();
+  const viewport = helperViewport();
+  return { x: viewport.width - width - AGENT_HELPER_MARGIN, y: viewport.height - height - AGENT_HELPER_MARGIN - helperBottomInset() };
+}
+
+function scheduleHelperWander() {
+  clearTimeout(helper.wanderTimer);
+  if (!helper.root || helperReducedMotion()) return;
+  helper.wanderTimer = setTimeout(() => {
+    if (helper.root && !helper.open && !helper.drag && document.visibilityState === "visible" && helper.home) {
+      // Drift a little around home, never far from where the owner put it.
+      const dx = (Math.random() - 0.5) * 160;
+      const dy = (Math.random() - 0.5) * 100;
+      placeHelper(helper.home.x + dx, helper.home.y + dy, { glide: true });
+      helper.root.classList.toggle("is-facing-left", dx < 0);
+    }
+    scheduleHelperWander();
+  }, 9_000 + Math.random() * 8_000);
+}
+
+function createAgentHelper() {
+  const root = document.createElement("div");
+  root.className = "agent-helper";
+  root.id = "agent-helper";
+  setMarkup(root, `
+    <div class="agent-helper__bubble" role="status" hidden></div>
+    <button class="agent-helper__buddy" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="agent-helper-panel" aria-label="Open the agent chat. Drag to move.">
+      <span class="agent-helper__float"><img src="./assets/agent-helper.png" alt="" width="360" height="327" draggable="false" /></span>
+      <span class="agent-helper__badge" hidden></span>
+    </button>
+    <section class="agent-helper__panel" id="agent-helper-panel" role="dialog" aria-labelledby="agent-helper-title" hidden>
+      <header>
+        <div><h2 id="agent-helper-title">Agent</h2><span class="agent-helper__status"></span></div>
+        <div class="agent-helper__tools">
+          <button class="agent-helper__tool" type="button" data-action="switch-workspace" data-workspace="system" data-workspace-route="system" title="Open the full view on the Overview">${icon("external")}<span class="sr-only">Open the full view</span></button>
+          <button class="agent-helper__tool" type="button" data-helper-action="hide" title="Hide the helper in this browser">${icon("eye")}<span class="sr-only">Hide the helper</span></button>
+          <button class="agent-helper__tool" type="button" data-helper-action="close" title="Close">${icon("x")}<span class="sr-only">Close the chat</span></button>
+        </div>
+      </header>
+      <div class="agent-helper__proposals"></div>
+      <ol class="agent-chat__messages agent-helper__messages" aria-live="polite"></ol>
+      <form class="agent-chat__form" id="agent-helper-form">
+        <label class="sr-only" for="agent-helper-input">Question for the agent</label>
+        <textarea id="agent-helper-input" name="question" rows="2" maxlength="${AGENT_QUESTION_LIMIT}"></textarea>
+        <button class="button button--primary" type="submit">Ask</button>
+      </form>
+    </section>`);
+  document.body.append(root);
+  helper.root = root;
+  helper.buddy = root.querySelector(".agent-helper__buddy");
+  helper.panel = root.querySelector(".agent-helper__panel");
+  helper.bubble = root.querySelector(".agent-helper__bubble");
+  helper.renderedKey = "";
+
+  helper.buddy.addEventListener("pointerdown", startHelperDrag);
+  helper.buddy.addEventListener("click", () => {
+    if (helper.suppressClick) {
+      helper.suppressClick = false;
+      return;
+    }
+    toggleAgentHelper();
+  });
+  helper.bubble.addEventListener("click", () => openAgentHelper());
+  root.addEventListener("click", (event) => {
+    const action = event.target.closest?.("[data-helper-action]")?.dataset.helperAction;
+    if (action === "close") closeAgentHelper();
+    if (action === "hide") {
+      setAgentHelperEnabled(false);
+      showToast("Helper hidden. Turn it back on under Settings → Agent.", "info");
+    }
+  });
+  root.querySelector("#agent-helper-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    askAgent("helper");
+  });
+  root.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && helper.open) {
+      event.stopPropagation();
+      closeAgentHelper();
+      helper.buddy?.focus({ preventScroll: true });
+    }
+  });
+
+  helper.home = loadHelperHome();
+  placeHelper(helper.home.x, helper.home.y);
+  requestAnimationFrame(() => root.classList.add("is-ready"));
+  scheduleHelperWander();
+}
+
+function removeAgentHelper() {
+  clearTimeout(helper.wanderTimer);
+  clearTimeout(helper.bubbleTimer);
+  helper.root?.remove();
+  Object.assign(helper, { root: null, buddy: null, panel: null, bubble: null, open: false, drag: null, renderedKey: "" });
+}
+
+function startHelperDrag(event) {
+  if (event.button !== 0 && event.pointerType === "mouse") return;
+  helper.drag = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, originX: helper.x, originY: helper.y, moved: false };
+  helper.buddy.setPointerCapture?.(event.pointerId);
+  helper.buddy.addEventListener("pointermove", moveHelperDrag);
+  helper.buddy.addEventListener("pointerup", endHelperDrag);
+  helper.buddy.addEventListener("pointercancel", endHelperDrag);
+}
+
+function moveHelperDrag(event) {
+  const drag = helper.drag;
+  if (!drag || event.pointerId !== drag.pointerId) return;
+  const dx = event.clientX - drag.startX;
+  const dy = event.clientY - drag.startY;
+  if (!drag.moved && Math.hypot(dx, dy) < 6) return;
+  if (!drag.moved) {
+    drag.moved = true;
+    helper.root.classList.add("is-dragging");
+    if (helper.open) closeAgentHelper({ returnHome: false });
+  }
+  placeHelper(drag.originX + dx, drag.originY + dy);
+  helper.root.classList.toggle("is-facing-left", dx < 0);
+}
+
+function endHelperDrag(event) {
+  const drag = helper.drag;
+  if (!drag || event.pointerId !== drag.pointerId) return;
+  helper.buddy.releasePointerCapture?.(event.pointerId);
+  helper.buddy.removeEventListener("pointermove", moveHelperDrag);
+  helper.buddy.removeEventListener("pointerup", endHelperDrag);
+  helper.buddy.removeEventListener("pointercancel", endHelperDrag);
+  helper.drag = null;
+  helper.root.classList.remove("is-dragging");
+  if (drag.moved) {
+    helper.suppressClick = true;
+    helper.home = { x: helper.x, y: helper.y };
+    saveHelperHome();
+    scheduleHelperWander();
+  }
+}
+
+function toggleAgentHelper() {
+  if (helper.open) closeAgentHelper();
+  else openAgentHelper();
+}
+
+function openAgentHelper() {
+  if (!helper.root || helper.open) return;
+  helper.open = true;
+  clearTimeout(helper.wanderTimer);
+  hideHelperBubble();
+  const dock = helperDockPosition();
+  placeHelper(dock.x, dock.y, { glide: true });
+  helper.root.classList.add("is-open");
+  // Docked on the right, he turns toward the chat beside him.
+  helper.root.classList.add("is-facing-left");
+  helper.buddy.setAttribute("aria-expanded", "true");
+  helper.panel.hidden = false;
+  markHelperNotesSeen();
+  syncAgentHelper({ force: true });
+  const input = helper.root.querySelector("#agent-helper-input");
+  setTimeout(() => {
+    if (helper.open && !input.disabled) input.focus({ preventScroll: true });
+    const messages = helper.root?.querySelector(".agent-helper__messages");
+    if (messages) messages.scrollTop = messages.scrollHeight;
+  }, helperReducedMotion() ? 0 : 420);
+}
+
+function closeAgentHelper({ returnHome = true } = {}) {
+  if (!helper.root || !helper.open) return;
+  helper.open = false;
+  helper.root.classList.remove("is-open");
+  helper.buddy.setAttribute("aria-expanded", "false");
+  helper.panel.hidden = true;
+  if (returnHome && helper.home) placeHelper(helper.home.x, helper.home.y, { glide: true });
+  scheduleHelperWander();
+}
+
+function setAgentHelperEnabled(enabled) {
+  writeHelperStorage(AGENT_HELPER_KEY, enabled ? null : "off");
+  syncAgentHelper({ force: true });
+  const toggle = document.getElementById("agent-helper-toggle");
+  if (toggle) toggle.checked = enabled;
+}
+
+function markHelperNotesSeen() {
+  const newest = agentData()?.notes?.[0]?.id;
+  if (newest) writeHelperStorage(AGENT_HELPER_SEEN_KEY, newest);
+}
+
+function hideHelperBubble() {
+  clearTimeout(helper.bubbleTimer);
+  if (helper.bubble) helper.bubble.hidden = true;
+}
+
+// A new incident or rule action gets a short speech bubble, once.
+function announceHelperNote(note) {
+  if (!helper.bubble || helper.open || !note || helper.announcedNote === note.id) return;
+  helper.announcedNote = note.id;
+  if (!["incident", "rule-action", "recovery"].includes(note.kind)) return;
+  helper.bubble.textContent = note.title || "New report";
+  helper.bubble.hidden = false;
+  clearTimeout(helper.bubbleTimer);
+  helper.bubbleTimer = setTimeout(hideHelperBubble, 9_000);
+}
+
+function syncAgentHelper({ force = false } = {}) {
+  const visible = Boolean(state.status?.authenticated && state.agent.loaded && agentData() && agentHelperEnabled());
+  if (!visible) {
+    if (helper.root) removeAgentHelper();
+    return;
+  }
+  if (!helper.root) createAgentHelper();
+  const data = agentData();
+  const ready = Boolean(data.config?.ai);
+  const proposals = data.proposals || [];
+  const newest = data.notes?.[0] || null;
+  const seen = readHelperStorage(AGENT_HELPER_SEEN_KEY);
+  const unseen = Boolean(newest && newest.id !== seen && !helper.open);
+  const badge = helper.root.querySelector(".agent-helper__badge");
+  badge.hidden = !(proposals.length || unseen);
+  badge.textContent = proposals.length ? String(proposals.length) : "";
+  badge.classList.toggle("is-dot", !proposals.length);
+  helper.buddy.setAttribute("aria-label", `Open the agent chat${proposals.length ? `, ${proposals.length} waiting for approval` : unseen ? ", new report" : ""}. Drag to move.`);
+  // Reports that arrive while the page is open get a speech bubble; the
+  // ones already there when it loaded only get the badge.
+  if (helper.baselineNote === undefined) helper.baselineNote = newest?.id || "";
+  else if (newest && newest.id !== helper.baselineNote) announceHelperNote(newest);
+  if (seen === null && newest) writeHelperStorage(AGENT_HELPER_SEEN_KEY, newest.id);
+  if (helper.open) markHelperNotesSeen();
+
+  const key = JSON.stringify([ready, agentStatus(data).label, proposals.map(({ id }) => id), state.agent.busy, state.agent.asking, state.agent.chat.length, state.agent.chat.at(-1)?.content]);
+  if (!force && key === helper.renderedKey) return;
+  helper.renderedKey = key;
+  const status = agentStatus(data);
+  const statusElement = helper.root.querySelector(".agent-helper__status");
+  statusElement.className = `agent-helper__status system-service-state is-${status.tone}`;
+  setMarkup(statusElement, `<i class="health-dot is-${status.tone}"></i>${escapeHtml(status.label)}`);
+  setMarkup(helper.root.querySelector(".agent-helper__proposals"), proposals.length
+    ? `<span class="section-kicker">Waiting for your approval</span><ul>${proposals.map(renderAgentProposal).join("")}</ul>`
+    : "");
+  const messages = helper.root.querySelector(".agent-helper__messages");
+  setMarkup(messages, ready
+    ? renderAgentChatMessages(true, "above")
+    : `<li class="agent-chat__empty">Connect a model running on your own hardware to chat here. <button class="agent-text-button" type="button" data-action="switch-workspace" data-workspace="system" data-workspace-route="settings">Set up the agent</button></li>`);
+  messages.scrollTop = messages.scrollHeight;
+  const input = helper.root.querySelector("#agent-helper-input");
+  input.disabled = !ready;
+  input.placeholder = ready ? "Ask about your homelab…" : "Set up the agent first";
+  if (input.value !== state.agent.helperDraft && document.activeElement !== input) input.value = state.agent.helperDraft;
+  const submit = helper.root.querySelector("#agent-helper-form button[type='submit']");
+  submit.disabled = !ready || state.agent.asking;
+  submit.textContent = state.agent.asking ? "Asking…" : "Ask";
+}
+
+function renderAgentHelperSetting() {
+  return `<label class="check-row agent-helper-setting"><input id="agent-helper-toggle" type="checkbox" ${agentHelperEnabled() ? "checked" : ""}/><span><strong>Show the floating helper</strong><small>A small character that floats over every page. Drag it anywhere; click it to chat. This setting is for this browser only.</small></span></label>`;
+}
+
+globalThis.addEventListener?.("resize", () => {
+  if (!helper.root) return;
+  if (helper.open) {
+    const dock = helperDockPosition();
+    placeHelper(dock.x, dock.y);
+  } else {
+    helper.home = loadHelperHome();
+    placeHelper(helper.home.x, helper.home.y);
+  }
+});
+
+document.addEventListener("change", (event) => {
+  if (event.target?.id === "agent-helper-toggle") setAgentHelperEnabled(Boolean(event.target.checked));
+});
+
+document.addEventListener("input", (event) => {
+  if (event.target?.id === "agent-helper-input") state.agent.helperDraft = String(event.target.value || "").slice(0, AGENT_QUESTION_LIMIT);
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.target?.id !== "agent-helper-input" || event.key !== "Enter" || event.shiftKey || event.isComposing) return;
+  event.preventDefault();
+  askAgent("helper");
+});
 
 function renderSettingsPage() {
   const policy = state.config?.policy || { allowedCidrs: [], allowPublicHttps: false };
@@ -6464,6 +6881,7 @@ function renderPage({ force = false, preserveFocus = false } = {}) {
   applyMediaFiltersInPlace();
   syncNetworkPage();
   updateChrome();
+  syncAgentHelper();
 }
 
 function resetRouteScroll() {
@@ -9662,7 +10080,8 @@ function schedulePolling() {
     if (document.visibilityState === "visible" && state.status?.authenticated) {
       try {
         await loadOperations();
-        if (currentRoute() === "system") await loadAgent({ render: true });
+        // Keeps the helper's badge current on every page; only the Overview re-renders.
+        await loadAgent({ render: currentRoute() === "system" });
       } catch {
         // The next interval or a manual check retries without replacing the UI.
       }
@@ -10098,7 +10517,7 @@ window.addEventListener("hashchange", async () => {
   }
   if (currentRoute() === "launchpad" && state.status?.authenticated) await loadLaunchpadLinks();
   if (currentRoute() === "manual" && state.status?.authenticated) await loadManual();
-  if (["system", "settings"].includes(currentRoute()) && state.status?.authenticated) void loadAgent({ render: true });
+  if (state.status?.authenticated) void loadAgent({ render: ["system", "settings"].includes(currentRoute()) });
   resetRouteScroll();
   main.focus({ preventScroll: true });
   if (currentRoute() === "manual") revealManualTarget();
