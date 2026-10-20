@@ -184,6 +184,11 @@ On the **Overview** (Overview workspace):
   Enter sends; Shift+Enter adds a line. The last few turns are sent along so
   follow-up questions work.
 
+The **floating helper** offers the same chat on every page. Drag it anywhere;
+click it and it moves to the right edge and opens a mini chat. A badge means
+something is waiting for approval or there's a new report. Hide it with the
+eye button in its chat, or under **Settings → Agent → In this browser**.
+
 To stop all rules at once, turn off **Let rules act**. To stop the agent,
 turn off **Agent on**.
 
