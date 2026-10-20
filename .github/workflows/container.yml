@@ -123,8 +123,7 @@ jobs:
         run: |
           set -o pipefail
           if ! npm test > ci-out.log 2>&1; then
-            grep -nE "not ok|Error|expected|actual|FAIL|failureType|error:" ci-out.log | head -60 | while IFS= read -r line; do echo "::error::${line}"; done
-            tail -30 ci-out.log | while IFS= read -r line; do echo "::warning::${line}"; done
+            echo "::error::$(tail -60 ci-out.log | grep -v '^PASS' | tail -40 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
             exit 1
           fi
 
