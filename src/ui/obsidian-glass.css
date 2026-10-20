@@ -6795,3 +6795,211 @@ body.has-agent-helper .main-content > :is(.page, .detail-page, .media-health-sta
     opacity: 0.55;
   }
 }
+
+/* In-depth logging --------------------------------------------------------- */
+.logging-toolbar {
+  grid-template-columns: minmax(220px, 1fr) repeat(4, minmax(120px, 0.3fr)) auto;
+}
+
+.logging-download {
+  display: inline-flex;
+  min-height: 42px;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+}
+
+.logging-download svg {
+  width: 14px;
+  height: 14px;
+}
+
+.logging-debug-notice {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--refresh-tile);
+  color: var(--refresh-ink-quiet);
+  font-size: 12px;
+}
+
+.logging-debug-notice svg {
+  width: 15px;
+  height: 15px;
+}
+
+.logging-debug-notice.is-on {
+  border-color: rgba(255, 196, 92, 0.32);
+  background: rgba(255, 196, 92, 0.07);
+  color: var(--text);
+}
+
+.logging-debug-notice strong {
+  color: var(--text);
+}
+
+.logging-entry__content pre {
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.logging-debug-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 10px;
+}
+
+.logging-debug-form label {
+  display: grid;
+  gap: 6px;
+  color: var(--refresh-ink-quiet);
+  font-size: 11px;
+}
+
+.logging-debug-form select {
+  min-width: 140px;
+}
+
+.server-output-list {
+  display: grid;
+  max-height: 70vh;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+}
+
+.server-output-list li {
+  display: grid;
+  grid-template-columns: 150px 32px minmax(0, 1fr);
+  gap: 10px;
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.server-output-list time {
+  color: var(--refresh-ink-quiet);
+}
+
+.server-output-list span {
+  color: var(--refresh-ink-quiet);
+  text-transform: uppercase;
+}
+
+.server-output-list li.is-stderr span,
+.server-output-list li.is-stderr code {
+  color: var(--refresh-ink-bad);
+}
+
+.server-output-list code {
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+@media (max-width: 1100px) {
+  .logging-toolbar {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .logging-toolbar .logging-search {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 760px) {
+  .logging-toolbar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .logging-debug-notice {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .logging-debug-notice > .button {
+    grid-column: 2;
+    width: fit-content;
+  }
+
+  .server-output-list li {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .server-output-list code {
+    grid-column: 1 / -1;
+  }
+}
+
+/* Connection test rows: a rounded rectangle, not a pill, so a row that
+   expands with the service's own health report keeps its shape. */
+.connection-capability {
+  border-radius: 12px;
+}
+
+.connection-capability:has(.operations-reports) {
+  align-items: start;
+}
+
+.connection-capability:has(.operations-reports) > .health-dot {
+  margin-top: 4px;
+}
+
+.connection-capability:has(.operations-reports) > .connection-capability__state {
+  padding-top: 1px;
+}
+
+/* Radarr and Sonarr indexers in their connection dialog. */
+.arr-indexers {
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.arr-indexers > header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.arr-indexers h3 {
+  margin: 2px 0 0;
+  font-size: 14px;
+}
+
+.arr-indexers .prowlarr-indexers {
+  margin: 0;
+}
+
+.arr-indexers__note {
+  margin: 0;
+  color: var(--refresh-ink-quiet);
+  font-size: 11px;
+}
+
+.connection-capability__copy .operations-reports {
+  justify-self: stretch;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.connection-capability__copy .operations-report p {
+  margin: 0;
+}
+
+.connection-capability__copy .operations-report small {
+  margin-top: 2px;
+}

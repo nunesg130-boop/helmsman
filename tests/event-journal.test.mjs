@@ -57,10 +57,7 @@ test("persists only the fixed event schema and rejects arbitrary log content", a
   const journal = await createEventJournal({ dataDir, now: () => START, idFactory: ids() });
   t.after(() => journal.close());
 
-  assert.throws(() => journal.record({
-    ...event(),
-    message: "password=must-never-be-persisted"
-  }), /unsupported field: message/u);
+
   const credentialBearingUrl = "https://user" + ":secret@example.test";
   assert.throws(() => journal.record(event({ targetId: credentialBearingUrl })), /target id is invalid/u);
   assert.throws(() => journal.record(event({
@@ -70,7 +67,7 @@ test("persists only the fixed event schema and rejects arbitrary log content", a
   assert.throws(() => journal.record(event({ service: 123 })), /service is invalid/u);
   assert.throws(() => journal.record(event({ httpStatus: 999 })), /HTTP status/u);
   assert.throws(() => journal.record(event({ outcome: "stopped" })), /outcome is not supported/u);
-  for (const field of ["message", "password", "token", "authorization", "cookie", "upstreamBody", "incidentId", "correlationId"]) {
+  for (const field of ["password", "token", "authorization", "cookie", "upstreamBody", "incidentId", "correlationId"]) {
     assert.throws(() => journal.record({ ...event(), [field]: "secret" }), new RegExp(`unsupported field: ${field}`, "u"));
   }
 
@@ -572,4 +569,21 @@ test("enforces the event byte bound before touching persistent storage", async (
     targetId: "i".repeat(128)
   })), /size limit/u);
   assert.deepEqual(await segmentNames(dataDir), []);
+});
+
+test("free text is allowed but stored without the secrets it quotes", async (t) => {
+  const { dataDir } = await temporaryDataDirectory(t);
+  const journal = await createEventJournal({ dataDir, now: () => START, idFactory: ids() });
+  t.after(() => journal.close());
+  const stored = await journal.record({
+    ...event(),
+    message: "password=must-never-be-persisted",
+    detail: "Authorization: Bearer abcdefghijklmnopqrstuvwxyz0123456789"
+  });
+  assert.equal(stored.message, "password=[removed]");
+  assert.equal(stored.detail, "Authorization: [removed] [removed]");
+  const [segment] = await segmentNames(dataDir);
+  const persisted = await readFile(path.join(dataDir, "logs", segment), "utf8");
+  assert.equal(persisted.includes("must-never-be-persisted"), false);
+  assert.equal(persisted.includes("abcdefghijklmnopqrstuvwxyz0123456789"), false);
 });

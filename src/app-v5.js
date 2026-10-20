@@ -76,11 +76,14 @@ function emptyLoggingState() {
       filters: {
         search: "",
         level: "all",
+        kind: "all",
         source: "all",
         range: "24h"
       },
       requestGeneration: 0
     },
+    settings: { loaded: false, loading: false, saving: false, error: "", level: "normal", debugUntil: null, defaultHours: 4, maximumHours: 24 },
+    output: { loaded: false, loading: false, error: "", lines: [], capturing: false },
     loki: {
       loading: false,
       error: "",
@@ -323,6 +326,7 @@ const state = {
   logging: emptyLoggingState(),
   agent: emptyAgentState(),
   prowlarr: emptyProwlarrState(),
+  arrIndexers: {},
   launchpad: { loaded: false, loading: false, links: [], filter: "", error: "" },
   manual: emptyManualState(),
   search: { query: "", open: false, active: 0, results: [] },
@@ -566,7 +570,7 @@ function rawRoute() {
     .split("?", 1)[0];
 }
 
-const LOGGING_VIEWS = new Set(["overview", "helmsman", "loki"]);
+const LOGGING_VIEWS = new Set(["overview", "helmsman", "output", "loki"]);
 const LOGGING_CONTEXT_IDENTIFIER = /^[a-z0-9][a-z0-9_.:-]{0,99}$/u;
 const LOGGING_CONTEXT_CODE = /^[A-Z][A-Z0-9_]{0,63}$/u;
 
@@ -3022,13 +3026,16 @@ function normalizeJournalEntry(value, index) {
     category: safeSessionText(source.category || source.event || source.type, "application", 80),
     message: mediaText(source.message || source.summary || [event, outcome].filter(Boolean).join(" · ") || source.code, "Application event", 1_000),
     evidence: [
+      source.message ? [event, outcome].filter(Boolean).join(" · ") : "",
       mediaText(source.capability, "", 80),
       mediaText(source.operation, "", 80),
+      mediaText(source.route, "", 200),
       code,
       status === null ? "" : `HTTP ${status}`,
+      Number.isFinite(source.durationMs) ? `${Math.round(source.durationMs).toLocaleString()} ms` : "",
       safeSessionText(source.correlationId, "", 120)
     ].filter(Boolean).join(" · "),
-    details: safeLogDetails(source.details || source.metadata || source.context)
+    details: typeof source.detail === "string" ? source.detail.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/gu, " ").slice(0, 4_000) : safeLogDetails(source.details || source.metadata || source.context)
   };
 }
 
@@ -3099,7 +3106,7 @@ async function loadJournalLogs({ append = false, render = true } = {}) {
   }
   try {
     const cursor = append && journal.nextCursor ? `&cursor=${encodeURIComponent(journal.nextCursor)}` : "";
-    const payload = normalizeJournalPayload(await api(`/api/v2/logs?limit=200${cursor}`));
+    const payload = normalizeJournalPayload(await api(`/api/v2/logs?limit=200${journalServerFilters()}${cursor}`));
     if (generation !== journal.requestGeneration) return false;
     if (append) {
       const seen = new Set(journal.entries.map(journalEntryKey));
@@ -3129,6 +3136,7 @@ function loggingSubnavigation(view) {
   return `<nav class="logging-subnav" aria-label="Logging sections">
     <a href="#/logs" ${view === "overview" ? "aria-current=\"page\" class=\"is-active\"" : ""}>Overview</a>
     <a href="#/logs?view=helmsman" ${view === "helmsman" ? "aria-current=\"page\" class=\"is-active\"" : ""}>Helmsman logs</a>
+    <a href="#/logs?view=output" ${view === "output" ? "aria-current=\"page\" class=\"is-active\"" : ""}>Server output</a>
     <a href="#/logs?view=loki" ${view === "loki" ? "aria-current=\"page\" class=\"is-active\"" : ""}>Loki Explorer</a>
   </nav>`;
 }
@@ -3221,8 +3229,162 @@ function renderJournalEntry(entry) {
     <time datetime="${escapeHtml(entry.at)}">${escapeHtml(formatTime(entry.at, "Unknown time"))}</time>
     <span class="log-level is-${escapeHtml(entry.level)}">${escapeHtml(entry.level)}</span>
     <span class="logging-entry__source">${escapeHtml(sourceLabel)}</span>
-    <div class="logging-entry__content"><strong>${escapeHtml(entry.message)}</strong><small>${escapeHtml([entry.category, entry.evidence].filter(Boolean).join(" · "))}</small>${entry.details ? `<details><summary>Structured details</summary><pre>${escapeHtml(entry.details)}</pre></details>` : ""}</div>
+    <div class="logging-entry__content"><strong>${escapeHtml(entry.message)}</strong><small>${escapeHtml([entry.category, entry.evidence].filter(Boolean).join(" · "))}</small>${entry.details ? `<details><summary>Full detail</summary><pre>${escapeHtml(entry.details)}</pre></details>` : ""}</div>
   </article>`;
+}
+
+const JOURNAL_KINDS = Object.freeze([
+  ["all", "Everything"],
+  ["health", "Health checks"],
+  ["request", "Service requests"],
+  ["agent", "Agent"],
+  ["action", "Actions"],
+  ["application", "Errors and app events"],
+  ["authentication", "Sign-ins"],
+  ["configuration", "Settings changes"],
+  ["connector", "Connections"],
+  ["security", "Security"]
+]);
+
+function journalServerFilters() {
+  const filters = state.logging.journal.filters;
+  const params = new URLSearchParams();
+  if (["debug", "info", "warn", "error"].includes(filters.level)) params.set("level", filters.level);
+  if (JOURNAL_KINDS.some(([value]) => value === filters.kind && value !== "all")) params.set("category", filters.kind);
+  const text = params.toString();
+  return text ? `&${text}` : "";
+}
+
+// The download uses the same level, kind, time and search as the list.
+function journalExportUrl() {
+  const filters = state.logging.journal.filters;
+  const params = new URLSearchParams(journalServerFilters().slice(1));
+  const cutoff = journalRangeStart(filters.range);
+  if (cutoff) params.set("from", new Date(cutoff).toISOString());
+  const search = filters.search.trim().replace(/[\u0000-\u001f\u007f]/gu, "").slice(0, 100);
+  if (search) params.set("q", search);
+  const text = params.toString();
+  return `/api/v2/logs/export${text ? `?${text}` : ""}`;
+}
+
+function debugLoggingActive() {
+  const settings = state.logging.settings;
+  return settings.level === "debug" && Boolean(settings.debugUntil) && Date.parse(settings.debugUntil) > Date.now();
+}
+
+function renderDebugLoggingNotice() {
+  if (!state.logging.settings.loaded) return "";
+  return debugLoggingActive()
+    ? `<div class="logging-debug-notice is-on">${icon("logs")}<span><strong>Debug logging is on</strong> until ${escapeHtml(formatTime(state.logging.settings.debugUntil, "later"))}: every health check, service request and agent step is recorded.</span><a class="button button--compact" href="#/settings" data-settings-tab="logging">Change</a></div>`
+    : `<div class="logging-debug-notice">${icon("logs")}<span>Normal logging. Turn on debug logging in Settings to record every health check, service request and agent step for a few hours.</span><a class="button button--compact" href="#/settings" data-settings-tab="logging">Settings</a></div>`;
+}
+
+async function loadLoggingSettings({ render = true } = {}) {
+  const settings = state.logging.settings;
+  if (!state.status?.authenticated || settings.loading) return;
+  settings.loading = true;
+  try {
+    const payload = await api("/api/v2/logs/settings");
+    Object.assign(settings, {
+      level: payload?.level === "debug" ? "debug" : "normal",
+      debugUntil: safeLogTimestamp(payload?.debugUntil) || null,
+      defaultHours: Number.isSafeInteger(payload?.defaultHours) ? payload.defaultHours : 4,
+      maximumHours: Number.isSafeInteger(payload?.maximumHours) ? payload.maximumHours : 24,
+      error: ""
+    });
+  } catch (error) {
+    settings.error = safeSessionText(error?.message, "Logging settings could not be loaded.", 200);
+  } finally {
+    settings.loading = false;
+    settings.loaded = true;
+    if (render && ["logs", "settings"].includes(currentRoute())) {
+      state.lastMarkup = "";
+      renderPage({ force: true, preserveFocus: true });
+    }
+  }
+}
+
+async function saveLoggingSettings(debug, hours) {
+  const settings = state.logging.settings;
+  if (settings.saving) return;
+  settings.saving = true;
+  settings.error = "";
+  state.lastMarkup = "";
+  renderPage({ force: true, preserveFocus: true });
+  try {
+    const payload = await api("/api/v2/logs/settings", { method: "PUT", body: debug ? { debug: true, hours } : { debug: false } });
+    settings.level = payload?.level === "debug" ? "debug" : "normal";
+    settings.debugUntil = safeLogTimestamp(payload?.debugUntil) || null;
+    showToast(debug ? `Debug logging is on for ${hours} hour${hours === 1 ? "" : "s"}.` : "Debug logging is off.", "success");
+  } catch (error) {
+    settings.error = safeSessionText(error?.message, "Logging settings could not be saved.", 200);
+  } finally {
+    settings.saving = false;
+    state.lastMarkup = "";
+    renderPage({ force: true, preserveFocus: true });
+  }
+}
+
+function renderLoggingSettings() {
+  const settings = state.logging.settings;
+  if (!settings.loaded && !settings.loading) void loadLoggingSettings();
+  const active = debugLoggingActive();
+  const hourOptions = [1, 2, 4, 8, 12, 24].filter((hours) => hours <= settings.maximumHours);
+  return `<header class="detail-hero"><div><span class="section-kicker">Diagnostics</span><h2>Logging</h2><p>Helmsman always records sign-ins, setting changes, actions, outages and errors with their full detail. Debug logging adds every health check, every request to your services and every agent step, for a few hours at a time.</p></div></header>
+    <div class="settings-grid-v5">
+      <section class="glass-panel settings-card-v5 logging-settings-card" aria-labelledby="logging-level-title"><header><div><span class="section-kicker">Detail level</span><h3 id="logging-level-title">Debug logging</h3></div>${icon("logs")}</header><div class="settings-card-v5__body">
+        <div class="security-note ${active ? "security-note--good" : ""}">${icon(active ? "check" : "logs")}<div><strong>${active ? "Debug logging is on" : "Normal logging"}</strong><span>${active ? `Switches back to normal at ${escapeHtml(formatTime(settings.debugUntil, "the set time"))}, or when Helmsman restarts.` : "Milestones, errors with full detail, and a summary of each agent run."}</span></div></div>
+        ${active
+          ? `<div class="button-row"><button class="button" type="button" data-action="logging-debug-off" ${settings.saving ? "disabled" : ""}>Turn off now</button></div>`
+          : `<form class="logging-debug-form" id="logging-debug-form"><label><span>Keep it on for</span><select name="hours">${hourOptions.map((hours) => `<option value="${hours}" ${hours === settings.defaultHours ? "selected" : ""}>${hours} hour${hours === 1 ? "" : "s"}</option>`).join("")}</select></label><button class="button button--primary" type="submit" ${settings.saving ? "disabled" : ""}>Turn on debug logging</button></form>`}
+        ${settings.error ? `<p class="form-error" role="alert">${escapeHtml(settings.error)}</p>` : ""}
+        <p class="settings-help">Debug entries take more space. Helmsman keeps a fixed amount of log storage (50 MB by default, up to 14 days) and deletes the oldest entries first.</p>
+      </div></section>
+      <section class="glass-panel settings-card-v5" aria-labelledby="logging-privacy-title"><header><div><span class="section-kicker">Privacy</span><h3 id="logging-privacy-title">What is never logged</h3></div>${icon("shield")}</header><div class="settings-card-v5__body">
+        <p>Passwords, API keys, tokens, cookies, request and response bodies, and headers are never written to the log. Error messages and server output are scrubbed of anything that looks like a key, a password or a credential in a link before they are stored or shown.</p>
+        <div class="button-row"><a class="button" href="#/logs?view=helmsman">Open Helmsman logs</a><a class="button" href="#/logs?view=output">Server output</a></div>
+      </div></section>
+    </div>`;
+}
+
+async function loadServerOutput({ render = true } = {}) {
+  const output = state.logging.output;
+  if (!state.status?.authenticated || output.loading) return;
+  output.loading = true;
+  if (render) {
+    state.lastMarkup = "";
+    renderPage({ force: true, preserveFocus: true });
+  }
+  try {
+    const payload = await api("/api/v2/logs/output?limit=1000");
+    output.lines = (Array.isArray(payload?.lines) ? payload.lines : []).slice(-1_000).map((line) => ({
+      at: safeLogTimestamp(line?.at) || "",
+      stream: line?.stream === "stderr" ? "stderr" : "stdout",
+      text: safeSessionText(line?.text, "", 500)
+    }));
+    output.capturing = payload?.capturing === true;
+    output.error = "";
+  } catch (error) {
+    output.error = safeSessionText(error?.message, "Server output could not be loaded.", 200);
+  } finally {
+    output.loading = false;
+    output.loaded = true;
+    if (render && currentRoute() === "logs") {
+      state.lastMarkup = "";
+      renderPage({ force: true, preserveFocus: true });
+    }
+  }
+}
+
+function renderServerOutput() {
+  const output = state.logging.output;
+  const lines = [...output.lines].reverse();
+  return `${loggingSubnavigation("output")}
+    <section class="logging-status-strip is-${output.error ? "down" : "healthy"}"><span class="health-dot is-${output.error ? "down" : "healthy"}"></span><div><strong>${escapeHtml(output.error || (output.capturing || lines.length ? "Helmsman's recent server output" : "Server output is shown when Helmsman runs as its container"))}</strong><small>The most recent ${lines.length.toLocaleString()} lines since Helmsman started, newest first. The full history stays in docker logs.</small></div><button class="button button--compact" type="button" data-action="refresh-server-output" ${output.loading ? "disabled aria-busy=\"true\"" : ""}>${icon("refresh")} ${output.loading ? "Loading…" : "Refresh"}</button></section>
+    <section class="logging-results" aria-labelledby="server-output-title"><header><div><span class="section-kicker">stdout and stderr</span><h3 id="server-output-title">Server output</h3></div><span class="count-pill">${lines.length}</span></header>
+      ${lines.length ? `<ol class="server-output-list">${lines.map((line) => `<li class="is-${line.stream}"><time datetime="${escapeHtml(line.at)}">${escapeHtml(formatTime(line.at, ""))}</time><span>${line.stream === "stderr" ? "err" : "out"}</span><code>${escapeHtml(line.text)}</code></li>`).join("")}</ol>` : `<div class="logging-empty">${icon("logs")}<strong>${output.loading ? "Loading output" : "No output yet"}</strong><span>${output.capturing ? "Helmsman has not printed anything since it started." : "Run Helmsman from its container to see its output here."}</span></div>`}
+    </section>
+    <div class="logging-privacy">${icon("shield")}<div><strong>Scrubbed before display</strong><p>Anything that looks like a key, password, token or one-time setup token is replaced with [removed].</p></div></div>`;
 }
 
 function renderHelmsmanLogs() {
@@ -3236,9 +3398,12 @@ function renderHelmsmanLogs() {
     <div class="logging-toolbar">
       <label class="logging-search" for="journal-search">${icon("search")}<span class="sr-only">Search Helmsman logs</span><input id="journal-search" type="search" value="${escapeHtml(filters.search)}" placeholder="Search messages, services, or codes" data-journal-filter="search" autocomplete="off" /></label>
       <label><span>Level</span><select data-journal-filter="level"><option value="all">All levels</option>${["error", "warn", "info", "debug"].map((level) => `<option value="${level}" ${filters.level === level ? "selected" : ""}>${level === "warn" ? "Warnings" : `${level[0].toUpperCase()}${level.slice(1)}`}</option>`).join("")}</select></label>
+      <label><span>Kind</span><select data-journal-filter="kind">${JOURNAL_KINDS.map(([value, label]) => `<option value="${value}" ${filters.kind === value ? "selected" : ""}>${label}</option>`).join("")}</select></label>
       <label><span>Source</span><select data-journal-filter="source"><option value="all">All sources</option>${sources.map((source) => `<option value="${escapeHtml(source)}" ${filters.source === source ? "selected" : ""}>${escapeHtml(source)}</option>`).join("")}</select></label>
       <label><span>Time</span><select data-journal-filter="range">${[["1h", "Last hour"], ["6h", "Last 6 hours"], ["24h", "Last 24 hours"], ["7d", "Last 7 days"], ["all", "All loaded"]].map(([value, label]) => `<option value="${value}" ${filters.range === value ? "selected" : ""}>${label}</option>`).join("")}</select></label>
+      <a class="button logging-download" href="${escapeHtml(journalExportUrl())}" download>${icon("download")} Download</a>
     </div>
+    ${renderDebugLoggingNotice()}
     <section class="logging-results" aria-labelledby="helmsman-log-results-title"><header><div><span class="section-kicker">Newest first</span><h3 id="helmsman-log-results-title">Helmsman events</h3></div><span class="count-pill">${entries.length}</span></header>
       <div class="logging-entry-list">${journal.loading && !journal.loaded ? `<div class="logging-empty">${icon("refresh")}<strong>Loading journal</strong><span>Reading bounded events from Helmsman's protected data volume.</span></div>` : journal.error ? `<div class="logging-empty is-error">${icon("x")}<strong>Journal unavailable</strong><span>${escapeHtml(journal.error)}</span></div>` : entries.length ? entries.map(renderJournalEntry).join("") : `<div class="logging-empty">${icon("logs")}<strong>No matching events</strong><span>Adjust the filters or wait for Helmsman to record an application event.</span></div>`}</div>
       ${journal.nextCursor ? `<footer class="logging-pagination"><button class="button" type="button" data-action="load-more-journal" ${journal.loading ? "disabled" : ""}>Load older events</button></footer>` : ""}
@@ -3489,7 +3654,7 @@ function renderLokiExplorer() {
 
 function renderLogsPage() {
   const view = loggingRouteContext().view;
-  const content = view === "helmsman" ? renderHelmsmanLogs() : view === "loki" ? renderLokiExplorer() : renderLoggingOverview();
+  const content = view === "helmsman" ? renderHelmsmanLogs() : view === "output" ? renderServerOutput() : view === "loki" ? renderLokiExplorer() : renderLoggingOverview();
   return `<section class="detail-page logging-page"><header class="detail-hero"><div><span class="section-kicker">Built-in and connected sources</span><h2>Logging</h2><p>Use Helmsman's persistent sanitized journal by default, or query a connected Loki server from the dedicated explorer.</p></div></header>${content}</section>`;
 }
 
@@ -5593,6 +5758,7 @@ const SETTINGS_TABS = Object.freeze([
   Object.freeze({ id: "agent", label: "Agent" }),
   Object.freeze({ id: "notifications", label: "Notifications" }),
   Object.freeze({ id: "automation", label: "Automation" }),
+  Object.freeze({ id: "logging", label: "Logging" }),
   Object.freeze({ id: "about", label: "About" })
 ]);
 const SETTINGS_TAB_KEY = "helmsman.settingsTab";
@@ -5659,6 +5825,7 @@ function renderSettingsPage() {
     agent: renderAgentSettings(),
     notifications: renderAgentNotificationsTab(),
     automation: renderAgentAutomationTab(),
+    logging: renderLoggingSettings(),
     about: `<div class="settings-grid-v5"><section class="glass-panel settings-card-v5"><header><div><span class="section-kicker">About</span><h3>Helmsman release</h3></div>${icon("logs")}</header><div class="settings-card-v5__body app-version-v5"><p>Include this exact version when reporting a problem or checking release notes.</p><dl><div><dt>Version</dt><dd data-app-version>${escapeHtml(appVersion)}</dd></div></dl><nav class="button-row app-version-v5__links" aria-label="Helmsman project resources"><a class="button button--compact" href="https://github.com/nunesg130-boop/helmsman" target="_blank" rel="noopener noreferrer" aria-label="Source code (opens in a new tab)">Source</a><a class="button button--compact" href="https://github.com/nunesg130-boop/helmsman/blob/main/LICENSE" target="_blank" rel="noopener noreferrer" aria-label="AGPL-3.0 license (opens in a new tab)">AGPL-3.0 License</a><a class="button button--compact" href="https://github.com/nunesg130-boop/helmsman/blob/main/assets/services/THIRD_PARTY_NOTICES.md" target="_blank" rel="noopener noreferrer" aria-label="Third-party icon notices (opens in a new tab)">Third-party icon notices</a></nav></div></section></div>`
   };
   return `
@@ -8500,6 +8667,7 @@ function renderServiceModal(service) {
         <div class="credential-state ${service.credentialConfigured ? "is-configured" : ""}">${icon(service.credentialConfigured ? "check" : "lock")}<div><strong>${service.credentialConfigured ? "Encrypted credential saved" : "No credential saved"}</strong><span>Saved values are write-only and cannot be displayed by this interface.</span></div></div>
         ${health ? `<div class="service-health-inline" aria-label="Saved monitor status"><span class="health-dot is-${savedMonitorTone(health)}" data-monitor-dot aria-hidden="true"></span><div class="service-health-inline__copy"><small>Saved monitor</small><strong data-monitor-state>${escapeHtml(savedMonitorLabel(health))}</strong></div><span data-monitor-latency>${escapeHtml(healthLatency)}</span><span data-monitor-checked>${escapeHtml(formatTime(healthCheckedAt))}</span></div>` : ""}
         <div class="service-monitor-reports" data-monitor-reports data-report-fingerprint="${escapeHtml(reportsFingerprint)}" aria-live="polite"${reports.length ? "" : " hidden"}>${renderOperationsReports(reports, service.name)}</div>
+        ${ARR_INDEXER_SERVICES.includes(service.id) && service.configured ? `<section class="arr-indexers" data-arr-indexers="${escapeHtml(service.id)}" aria-labelledby="arr-indexers-title">${renderArrIndexers(service.id)}</section>` : ""}
         <div class="connection-test-result" id="service-test-result" role="status" aria-live="polite" hidden><span class="health-dot is-checking" aria-hidden="true"></span><div><span class="connection-test-result__kicker">Current connection test</span><strong data-test-title></strong><small data-test-detail></small><div data-test-capabilities></div><small class="connection-test-result__note" data-test-note></small></div></div>
         <p class="form-error" id="service-error" role="alert"></p>
       </div>
@@ -8513,7 +8681,115 @@ function openService(serviceId) {
   if (service) {
     openModal(renderServiceModal(service), "input[name='url']");
     syncServiceAuthFields(modalLayer.querySelector("#service-form"));
+    if (ARR_INDEXER_SERVICES.includes(service.id) && service.configured) void loadArrIndexers(service.id);
   }
+}
+
+// ------------------------------------------- Radarr and Sonarr indexers --
+// Each app's own indexer list, read by the server without the indexers'
+// keys, with Test and Test all, as in the Prowlarr panel.
+const ARR_INDEXER_SERVICES = Object.freeze(["radarr", "sonarr"]);
+const ARR_INDEXER_LABELS = Object.freeze({ radarr: "Radarr", sonarr: "Sonarr" });
+
+function arrIndexerState(service) {
+  state.arrIndexers[service] ||= { loaded: false, loading: false, error: "", data: null, busy: "", results: new Map() };
+  return state.arrIndexers[service];
+}
+
+function rerenderArrIndexers(service) {
+  const section = modalLayer?.querySelector?.(`[data-arr-indexers="${service}"]`);
+  if (section) setMarkup(section, renderArrIndexers(service));
+}
+
+async function loadArrIndexers(service) {
+  const current = arrIndexerState(service);
+  if (current.loading || !state.status?.authenticated) return;
+  current.loading = true;
+  rerenderArrIndexers(service);
+  try {
+    current.data = await api(`/api/v2/${service}/indexers`);
+    current.error = "";
+  } catch (error) {
+    current.error = safeSessionText(error?.message, `${ARR_INDEXER_LABELS[service]}'s indexers could not be read.`, 200);
+  } finally {
+    current.loading = false;
+    current.loaded = true;
+    rerenderArrIndexers(service);
+  }
+}
+
+async function runArrIndexerTest(service, indexerId = null) {
+  const current = arrIndexerState(service);
+  if (!current.data?.targetRevision || current.busy) return;
+  const single = Number.isSafeInteger(indexerId);
+  current.busy = single ? `test:${indexerId}` : "test-all";
+  rerenderArrIndexers(service);
+  try {
+    const result = await api("/api/v2/actions/arr-indexers", {
+      method: "POST",
+      body: single
+        ? { service, operation: "testIndexer", indexerId, targetRevision: current.data.targetRevision }
+        : { service, operation: "testAllIndexers", targetRevision: current.data.targetRevision }
+    });
+    const at = new Date().toISOString();
+    if (single) {
+      current.results.set(indexerId, { ok: result?.passed === true, message: safeSessionText(result?.message, "The test failed.", 240), at });
+    } else {
+      for (const entry of Array.isArray(result?.results) ? result.results : []) {
+        if (Number.isSafeInteger(entry?.id)) current.results.set(entry.id, { ok: entry.ok === true, message: safeSessionText(entry.message, "The test failed.", 240), at });
+      }
+      const failed = [...current.results.values()].filter((entry) => !entry.ok).length;
+      showToast(failed ? `${failed} indexer${failed === 1 ? "" : "s"} failed the test in ${ARR_INDEXER_LABELS[service]}.` : `Every ${ARR_INDEXER_LABELS[service]} indexer passed.`, failed ? "danger" : "success");
+    }
+  } catch (error) {
+    showToast(safeSessionText(error?.message, "The indexer test could not run.", 200), "danger");
+  } finally {
+    current.busy = "";
+    rerenderArrIndexers(service);
+    void loadArrIndexers(service);
+  }
+}
+
+function renderArrIndexers(service) {
+  const current = arrIndexerState(service);
+  const label = ARR_INDEXER_LABELS[service];
+  const indexers = current.data?.indexers || [];
+  const failing = indexers.filter((indexer) => indexer.failing && indexer.enabled).length;
+  const disabled = Boolean(current.busy) || !current.data;
+  const body = !current.loaded || (current.loading && !current.data)
+    ? `<p class="agent-empty">Reading ${escapeHtml(label)}'s indexers…</p>`
+    : current.error && !current.data
+      ? `<div class="empty-state"><strong>Indexers unavailable</strong><span>${escapeHtml(current.error)}</span></div>`
+      : !indexers.length
+        ? `<p class="agent-empty">${escapeHtml(label)} has no indexers.</p>`
+        : `<ul class="prowlarr-indexers">${indexers.map((indexer) => {
+          const result = current.results.get(indexer.id);
+          const busy = current.busy === `test:${indexer.id}`;
+          const tone = !indexer.enabled ? "disabled" : indexer.failing ? "degraded" : "healthy";
+          const status = !indexer.enabled ? `Disabled in ${label}`
+            : indexer.failing ? `Failing${indexer.failingSince ? ` since ${prowlarrTime(indexer.failingSince)}` : ""}${indexer.disabledUntil ? ` · paused until ${prowlarrTime(indexer.disabledUntil)}` : ""}` : "Working";
+          const uses = [indexer.rss ? "RSS" : "", indexer.search ? "Search" : ""].filter(Boolean).join(" + ");
+          const protocol = { torrent: "Torrent", usenet: "Usenet" }[indexer.protocol] || "";
+          return `<li class="prowlarr-indexer${indexer.failing ? " is-failing" : ""}">
+            <i class="health-dot is-${tone}" aria-hidden="true"></i>
+            <div class="prowlarr-indexer__main">
+              <strong>${escapeHtml(indexer.name)}</strong>
+              <small>${escapeHtml([status, protocol, uses].filter(Boolean).join(" · "))}</small>
+              ${result ? `<small class="prowlarr-indexer__result is-${result.ok ? "ok" : "bad"}">${result.ok ? "Passed its test" : `Failed its test: ${escapeHtml(result.message)}`} · ${escapeHtml(prowlarrTime(result.at))}</small>` : ""}
+            </div>
+            <button class="button button--compact" type="button" data-action="arr-indexer-test" data-arr-service="${escapeHtml(service)}" data-indexer-id="${indexer.id}" ${disabled ? "disabled" : ""}${busy ? ' aria-busy="true"' : ""}>${busy ? "Testing…" : "Test"}</button>
+          </li>`;
+        }).join("")}</ul>`;
+  return `<header>
+      <div><span class="section-kicker">${escapeHtml(label)}</span><h3 id="arr-indexers-title">Indexers</h3></div>
+      <div class="prowlarr-panel__actions">
+        ${current.data ? `<span class="prowlarr-panel__summary">${failing ? `<b>${failing} failing</b> · ` : ""}${indexers.length} indexer${indexers.length === 1 ? "" : "s"}</span>` : ""}
+        <button class="button button--compact" type="button" data-action="arr-indexer-test-all" data-arr-service="${escapeHtml(service)}" ${disabled || !indexers.length ? "disabled" : ""}${current.busy === "test-all" ? ' aria-busy="true"' : ""}>${current.busy === "test-all" ? "Testing…" : "Test all"}</button>
+        <button class="button button--compact" type="button" data-action="arr-indexer-refresh" data-arr-service="${escapeHtml(service)}" ${current.loading ? 'disabled aria-busy="true"' : ""}>${icon("refresh")}<span class="sr-only">Refresh indexers</span></button>
+      </div>
+    </header>
+    ${body}
+    <p class="arr-indexers__note">Tests run in ${escapeHtml(label)} itself, with its own settings. Indexer keys never leave Helmsman's server.</p>`;
 }
 
 function normalizedFingerprint(value) {
@@ -10498,7 +10774,8 @@ async function refreshEverything({ announce = true } = {}) {
       loadAgent({ render: false })
     ];
     if (route === "health") tasks.push(loadProwlarr({ render: false }));
-    if (route === "logs") tasks.push(loadJournalLogs({ render: false }));
+    if (route === "logs") tasks.push(loadJournalLogs({ render: false }), loadLoggingSettings({ render: false }));
+    if (route === "logs" && loggingRouteContext().view === "output") tasks.push(loadServerOutput({ render: false }));
     if (route === "launchpad") tasks.push(loadLaunchpadLinks({ render: false }));
     if (route === "settings") tasks.push(loadSessions({ render: false }));
     const [operations] = await Promise.allSettled(tasks);
@@ -10715,6 +10992,8 @@ function applyLoggingRouteContext() {
 async function loadLoggingRouteData({ contextualQuery = true } = {}) {
   if (!state.status?.authenticated || currentRoute() !== "logs") return;
   applyLoggingRouteContext();
+  if (!state.logging.settings.loaded) void loadLoggingSettings({ render: true });
+  if (loggingRouteContext().view === "output") await loadServerOutput({ render: false });
   if (!state.logging.journal.loaded) await loadJournalLogs({ render: false });
   const context = loggingRouteContext();
   const hasContext = Boolean(context.service || context.code || context.from || context.containerId || context.node || context.workloadId);
@@ -10951,6 +11230,11 @@ document.addEventListener("click", async (event) => {
   if (action === "retry-startup") initialize();
   if (action === "refresh-live" || action === "global-refresh") await refreshEverything();
   if (action === "refresh-journal") await loadJournalLogs();
+  if (action === "logging-debug-off") await saveLoggingSettings(false);
+  if (action === "arr-indexer-test" && ARR_INDEXER_SERVICES.includes(target.dataset.arrService)) await runArrIndexerTest(target.dataset.arrService, Number(target.dataset.indexerId));
+  if (action === "arr-indexer-test-all" && ARR_INDEXER_SERVICES.includes(target.dataset.arrService)) await runArrIndexerTest(target.dataset.arrService);
+  if (action === "arr-indexer-refresh" && ARR_INDEXER_SERVICES.includes(target.dataset.arrService)) await loadArrIndexers(target.dataset.arrService);
+  if (action === "refresh-server-output") await loadServerOutput();
   if (action === "load-more-journal") await loadJournalLogs({ append: true });
   if (action === "test-service") testService(target.closest("#service-form"), target);
   if (action === "delete-service") await deleteService(target.dataset.serviceId, target);
@@ -11004,10 +11288,17 @@ document.addEventListener("change", (event) => {
     invalidateLokiQueryResults({ inPlace: true });
   }
   const journalFilter = event.target?.dataset?.journalFilter;
-  if (journalFilter && journalFilter !== "search" && ["level", "source", "range"].includes(journalFilter)) {
+  if (journalFilter && journalFilter !== "search" && ["level", "kind", "source", "range"].includes(journalFilter)) {
     state.logging.journal.filters[journalFilter] = String(event.target.value || "all");
-    state.lastMarkup = "";
-    renderPage({ force: true, preserveFocus: true });
+    if (["level", "kind"].includes(journalFilter)) {
+      // Level and kind are filtered by the server so debug entries cannot
+      // crowd the rest out of the loaded page.
+      state.logging.journal.nextCursor = "";
+      void loadJournalLogs();
+    } else {
+      state.lastMarkup = "";
+      renderPage({ force: true, preserveFocus: true });
+    }
   }
   const portainerFilter = event.target?.dataset?.portainerFilter;
   if (portainerFilter && portainerFilter !== "search") {
@@ -11179,6 +11470,10 @@ document.addEventListener("submit", (event) => {
   if (event.target.id === "agent-health-form") submitAgentHealth(event.target);
   if (event.target.id === "agent-downloads-form") submitAgentDownloads(event.target);
   if (event.target.id === "agent-indexers-form") submitAgentIndexers(event.target);
+  if (event.target.id === "logging-debug-form") {
+    const hours = Number(new FormData(event.target).get("hours"));
+    void saveLoggingSettings(true, Number.isSafeInteger(hours) && hours >= 1 ? hours : state.logging.settings.defaultHours);
+  }
   if (event.target.id === "agent-settings-form") submitAgentSettings(event.target);
   if (event.target.id === "agent-notify-form") submitAgentNotify(event.target);
   if (event.target.id === "agent-rule-form") submitAgentRule(event.target);

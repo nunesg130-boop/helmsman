@@ -244,6 +244,7 @@ export async function createAgent(options) {
     manual = () => "",
     events = null,
     recordEvent = () => {},
+    diagnostics = null,
     send = performOutboundJsonRequest,
     clock = Date.now,
     log = () => {},
@@ -673,11 +674,28 @@ export async function createAgent(options) {
       for (let round = 0; round <= MAX_TOOL_ROUNDS; round += 1) {
         if (!fitToBudget(messages, budget)) throw new AgentError(409, "CONTEXT_TOO_SMALL", "The model's context size is too small for this request.");
         const finalRound = round === MAX_TOOL_ROUNDS || nudged;
-        const result = await chatCompletion(sender, {
-          model: ai.model,
-          messages: messages.map(({ historic, ...message }) => message),
-          tools: finalRound ? [] : tools,
-          maxTokens: maxReplyTokens
+        const callStartedAt = clock();
+        let result;
+        try {
+          result = await chatCompletion(sender, {
+            model: ai.model,
+            messages: messages.map(({ historic, ...message }) => message),
+            tools: finalRound ? [] : tools,
+            maxTokens: maxReplyTokens
+          });
+        } catch (caught) {
+          diagnostics?.debug({
+            category: "agent", event: "agent.model_call", outcome: "failed", service: "helmsman", source: "agent",
+            code: typeof caught?.code === "string" ? caught.code : undefined,
+            durationMs: clock() - callStartedAt,
+            message: `Model ${ai.model}, round ${round + 1}: ${caught?.message || "request failed"}`
+          });
+          throw caught;
+        }
+        diagnostics?.debug({
+          category: "agent", event: "agent.model_call", outcome: "succeeded", service: "helmsman", source: "agent",
+          durationMs: clock() - callStartedAt,
+          message: `Model ${ai.model}, round ${round + 1}: ${result.toolCalls.length ? `asked for ${result.toolCalls.map((call) => call.name).join(", ")}` : result.content ? `answered (${result.content.length} characters)` : "empty reply"}`
         });
         if (!result.toolCalls.length && !result.content && !finalRound) {
           // An empty reply with neither text nor a tool call: ask once more
@@ -698,7 +716,14 @@ export async function createAgent(options) {
         for (const call of result.toolCalls) {
           toolsUsed.push(call.name);
           const before = new Set(proposals.keys());
+          const toolStartedAt = clock();
           const output = await runTool(call.name, call.arguments, toolContext);
+          diagnostics?.debug({
+            category: "agent", event: "agent.tool", outcome: "succeeded", service: "helmsman", source: "agent",
+            capability: String(call.name || "").toLowerCase().replace(/[^a-z0-9.-]/gu, "-").slice(0, 60) || undefined,
+            durationMs: clock() - toolStartedAt,
+            message: `Tool ${call.name} returned ${String(output || "").length} characters.`
+          });
           for (const id of proposals.keys()) if (!before.has(id)) proposalIds.push(id);
           messages.push({ role: "tool", tool_call_id: call.id, content: output });
         }
@@ -771,6 +796,18 @@ export async function createAgent(options) {
         log(`Agent model request failed (${error}).`);
       }
     }
+    diagnostics?.record({
+      level: error ? "warn" : "info",
+      category: "agent",
+      event: "agent.run",
+      outcome: error ? "failed" : "succeeded",
+      service: "helmsman",
+      source: "agent",
+      code: error || undefined,
+      message: result
+        ? `${kind} note written with ${config().ai?.model}; tools: ${result.toolsUsed?.join(", ") || "none"}; ${result.proposals?.length || 0} proposal(s).`
+        : error ? `${kind} note fell back to Helmsman's own facts because the model request failed (${error}).` : `${kind} note written from Helmsman's own facts (no model, or the hourly model limit was reached).`
+    });
     let text = result?.text || fallback;
     if (result?.proposals?.length) {
       const labels = result.proposals.map((id) => proposals.get(id)).filter(Boolean)

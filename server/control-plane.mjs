@@ -22,6 +22,7 @@ import { canonicalLaunchUrl, launchpadKey } from "./launchpad.mjs";
 import { MANUAL_LIMITS } from "./manual.mjs";
 import { NETWORK_MAP_LIMITS } from "./network-map.mjs";
 import { resolveLimits } from "./limits.mjs";
+import { DIAGNOSTICS_LIMITS, recentOutput } from "./diagnostics.mjs";
 
 const MAX_JSON_BODY_BYTES = 64 * 1024;
 // The owner manual is the one larger body: its Markdown limit plus JSON escaping headroom.
@@ -1120,6 +1121,7 @@ export async function createControlPlane(options) {
   const executeLokiRead = typeof options.executeLokiRead === "function"
     ? options.executeLokiRead
     : null;
+  const diagnostics = options.diagnostics && typeof options.diagnostics.settings === "function" ? options.diagnostics : null;
   const eventJournal = options.eventJournal
     && typeof options.eventJournal.query === "function"
     && typeof options.eventJournal.record === "function"
@@ -1140,6 +1142,8 @@ export async function createControlPlane(options) {
   const fetchSeerrSeriesSeasons = typeof options.fetchSeerrSeriesSeasons === "function"
     ? options.fetchSeerrSeriesSeasons
     : null;
+  const executeArrIndexerAction = typeof options.executeArrIndexerAction === "function" ? options.executeArrIndexerAction : null;
+  const readArrIndexers = typeof options.readArrIndexers === "function" ? options.readArrIndexers : null;
   const executeProwlarrAction = typeof options.executeProwlarrAction === "function"
     ? options.executeProwlarrAction
     : null;
@@ -4156,6 +4160,73 @@ export async function createControlPlane(options) {
     return query;
   }
 
+  // The debug switch: on for a few hours, then back to normal by itself.
+  async function loggingSettings(request, response, url) {
+    if (url.search) fail(404, "NOT_FOUND", "Not found.");
+    if (request.method === "GET") {
+      await authenticate(request, { requireCsrf: false, requireFresh: false });
+      sendJson(response, 200, { available: Boolean(diagnostics), ...(diagnostics?.settings() || { level: "normal", debugUntil: null, defaultHours: DIAGNOSTICS_LIMITS.defaultDebugHours, maximumHours: DIAGNOSTICS_LIMITS.maximumDebugHours }) });
+      return;
+    }
+    if (request.method !== "PUT") fail(405, "METHOD_NOT_ALLOWED", "That method is not allowed.");
+    await authenticate(request, true);
+    if (!diagnostics) fail(503, "LOGGING_UNAVAILABLE", "Logging settings are unavailable right now.");
+    const body = await readBoundedJson(request);
+    requireExactKeys(body, Object.hasOwn(body || {}, "hours") ? ["debug", "hours"] : ["debug"]);
+    if (typeof body.debug !== "boolean") fail(400, "INVALID_LOGGING_SETTINGS", "Choose whether debug logging is on.");
+    let hours = DIAGNOSTICS_LIMITS.defaultDebugHours;
+    if (Object.hasOwn(body, "hours")) {
+      if (!Number.isSafeInteger(body.hours) || body.hours < 1 || body.hours > DIAGNOSTICS_LIMITS.maximumDebugHours) {
+        fail(400, "INVALID_LOGGING_SETTINGS", `Debug logging can stay on for 1 to ${DIAGNOSTICS_LIMITS.maximumDebugHours} hours.`);
+      }
+      hours = body.hours;
+    }
+    sendJson(response, 200, { available: true, ...diagnostics.setDebug(body.debug, hours) });
+  }
+
+  // Recent server output (stdout and stderr), scrubbed of secrets.
+  async function serverOutput(request, response, url) {
+    if (request.method !== "GET") fail(405, "METHOD_NOT_ALLOWED", "That method is not allowed.");
+    await authenticate(request, { requireCsrf: false, requireFresh: false });
+    const options = {};
+    for (const [key, value] of url.searchParams) {
+      if (!["limit", "after"].includes(key) || !/^[0-9]{1,9}$/u.test(value)) fail(400, "INVALID_LOG_QUERY", "The output query is invalid.");
+      options[key === "after" ? "afterSeq" : "limit"] = Number(value);
+    }
+    sendJson(response, 200, recentOutput(options));
+  }
+
+  // The filtered journal as a JSON Lines download, newest first, at most
+  // 10,000 entries.
+  async function exportLogs(request, response, url) {
+    if (request.method !== "GET") fail(405, "METHOD_NOT_ALLOWED", "That method is not allowed.");
+    await authenticate(request, { requireCsrf: false, requireFresh: false });
+    if (!eventJournal) fail(503, "LOG_JOURNAL_UNAVAILABLE", "Helmsman's log is unavailable right now.");
+    const query = eventLogQuery(url);
+    if (query.cursor !== undefined || query.limit !== undefined) fail(400, "INVALID_LOG_QUERY", "Exports always start from the newest entry.");
+    const lines = [];
+    let cursor = null;
+    try {
+      for (let page = 0; page < 50; page += 1) {
+        const result = await eventJournal.query({ ...query, limit: 200, ...(cursor ? { cursor } : {}) });
+        for (const entry of result.entries) lines.push(JSON.stringify(entry));
+        cursor = result.nextCursor;
+        if (!cursor) break;
+      }
+    } catch (error) {
+      if (error instanceof TypeError || error instanceof RangeError) fail(400, "INVALID_LOG_QUERY", "The log query is invalid or no longer available.");
+      throw error;
+    }
+    const body = Buffer.from(lines.length ? `${lines.join("\n")}\n` : "", "utf8");
+    const stamp = new Date().toISOString().slice(0, 16).replace(/[-:]/gu, "").replace("T", "-");
+    setApiHeaders(response);
+    response.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
+    response.setHeader("Content-Disposition", `attachment; filename="helmsman-logs-${stamp}.jsonl"`);
+    response.setHeader("Content-Length", String(body.length));
+    response.statusCode = 200;
+    response.end(body);
+  }
+
   async function eventLogs(request, response, url) {
     if (request.method !== "GET") fail(405, "METHOD_NOT_ALLOWED", "That method is not allowed.");
     await authenticate(request, { requireCsrf: false, requireFresh: false });
@@ -4787,6 +4858,84 @@ export async function createControlPlane(options) {
     return connection;
   }
 
+  const ARR_INDEXER_LABELS = Object.freeze({ radarr: "Radarr", sonarr: "Sonarr" });
+
+  function currentArrConnection(service, targetRevision = undefined) {
+    const label = ARR_INDEXER_LABELS[service];
+    if (!label) fail(404, "NOT_FOUND", "Not found.");
+    const connection = stateStore.snapshot().connections[service];
+    if (!connection || connection.monitoringEnabled === false) {
+      fail(409, "CONNECTION_NOT_CONFIGURED", `Connect ${label} under Media → Connections first.`);
+    }
+    if (targetRevision !== undefined && connection.targetRevision !== targetRevision) {
+      fail(409, "TARGET_CHANGED", `The ${label} connection changed; refresh it before trying again.`);
+    }
+    return connection;
+  }
+
+  // Radarr's and Sonarr's own indexers, read by the server without their keys.
+  async function arrIndexers(request, response, service) {
+    if (request.method !== "GET") fail(405, "METHOD_NOT_ALLOWED", "That method is not allowed.");
+    await authenticate(request, false);
+    if (!readArrIndexers) fail(503, "INDEXERS_UNAVAILABLE", "Indexers are temporarily unavailable.");
+    const connection = currentArrConnection(service);
+    sendJson(response, 200, { service, ...(await readArrIndexers(service)), targetRevision: connection.targetRevision });
+  }
+
+  async function arrIndexerAction(request, response) {
+    if (request.method !== "POST") fail(405, "METHOD_NOT_ALLOWED", "That method is not allowed.");
+    await authenticate(request, true);
+    sendJson(response, 200, await performArrIndexerAction(await readBoundedJson(request)));
+  }
+
+  async function performArrIndexerAction(body) {
+    if (!executeArrIndexerAction) fail(503, "ACTIONS_UNAVAILABLE", "Indexer tests are temporarily unavailable.");
+    const single = body?.operation === "testIndexer";
+    requireExactKeys(body, single ? ["service", "operation", "indexerId", "targetRevision"] : ["service", "operation", "targetRevision"]);
+    const service = Object.hasOwn(ARR_INDEXER_LABELS, body.service) ? body.service : null;
+    if (!service) fail(400, "INVALID_ACTION_TARGET", "Choose Radarr or Sonarr.");
+    const operation = ["testIndexer", "testAllIndexers"].includes(body.operation) ? body.operation : null;
+    if (!operation) fail(400, "INVALID_ACTION_TARGET", "Choose a supported indexer action.");
+    const indexerId = single ? requiredActionInteger(body.indexerId, "indexer") : null;
+    const targetRevision = requiredActionRevision(body.targetRevision);
+    const connection = currentArrConnection(service, targetRevision);
+    const provider = requireCurrentActionEvidence(
+      currentOperationsSnapshot({ liveOnly: true }).services?.find((candidate) => candidate?.id === service),
+      targetRevision,
+      `${ARR_INDEXER_LABELS[service]} status`
+    );
+    if (provider?.connectionState !== "connected") fail(409, "ACTION_TARGET_NOT_CURRENT", `${ARR_INDEXER_LABELS[service]} is not connected right now.`);
+    const targetResolution = await resolveAndAuthorizeTarget(parseServiceUrl(connection.url), stateStore.snapshot().policy, {
+      lookup,
+      approvedHostCidrs: connection.approvedHostCidrs || []
+    });
+    const result = await runSingleFlightAction(`${service}:${operation}:${indexerId ?? "all"}`, async () => {
+      try {
+        return await useServiceCredential(service, connection, (credential) => executeArrIndexerAction({
+          service,
+          operation,
+          ...(single ? { indexerId } : {}),
+          connection,
+          targetResolution,
+          credential
+        }));
+      } finally {
+        monitor?.requestRefresh?.();
+      }
+    });
+    recordEvent({
+      level: result.passed === false || result.results?.some(({ ok }) => !ok) ? "warn" : "info",
+      category: "action",
+      event: "media_control",
+      outcome: "succeeded",
+      service,
+      operation: operation.replace(/[A-Z]/gu, (letter) => `-${letter.toLowerCase()}`),
+      targetType: single ? "indexer" : "indexers",
+      targetId: single ? String(indexerId) : "all"
+    });
+    return result;
+  }
+
   async function prowlarrIndexers(request, response) {
     if (request.method !== "GET") fail(405, "METHOD_NOT_ALLOWED", "That method is not allowed.");
     await authenticate(request, false);
@@ -5212,6 +5361,18 @@ export async function createControlPlane(options) {
         await eventLogs(request, response, url);
         return true;
       }
+      if (url.pathname === "/api/v2/logs/settings") {
+        await loggingSettings(request, response, url);
+        return true;
+      }
+      if (url.pathname === "/api/v2/logs/output") {
+        await serverOutput(request, response, url);
+        return true;
+      }
+      if (url.pathname === "/api/v2/logs/export") {
+        await exportLogs(request, response, url);
+        return true;
+      }
       if (url.pathname === "/api/v2/actions/portainer/container") {
         if (url.search) fail(404, "NOT_FOUND", "Not found.");
         await portainerContainerAction(request, response);
@@ -5225,6 +5386,17 @@ export async function createControlPlane(options) {
       if (url.pathname === "/api/v2/actions/prowlarr") {
         if (url.search) fail(404, "NOT_FOUND", "Not found.");
         await prowlarrAction(request, response);
+        return true;
+      }
+      const arrIndexerMatch = url.pathname.match(/^\/api\/v2\/(radarr|sonarr)\/indexers$/u);
+      if (arrIndexerMatch) {
+        if (url.search) fail(404, "NOT_FOUND", "Not found.");
+        await arrIndexers(request, response, arrIndexerMatch[1]);
+        return true;
+      }
+      if (url.pathname === "/api/v2/actions/arr-indexers") {
+        if (url.search) fail(404, "NOT_FOUND", "Not found.");
+        await arrIndexerAction(request, response);
         return true;
       }
       if (url.pathname === "/api/v2/prowlarr/indexers") {

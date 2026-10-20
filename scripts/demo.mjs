@@ -295,8 +295,10 @@ function seerr(upstreamPath) {
   return { status: 404, json: {} };
 }
 
-function arr(service, upstreamPath) {
+function arr(service, upstreamPath, method = "GET", body = Buffer.alloc(0)) {
   if (faults.has(service)) return { status: 503, json: {} };
+  const indexers = arrIndexers(upstreamPath, method, body);
+  if (indexers) return indexers;
   const movies = service === "radarr";
   const items = ALL.filter((item) => item.kind === (movies ? "movie" : "series"));
   if (upstreamPath === "/api/v3/system/status") {
@@ -440,6 +442,36 @@ function recoverIndexer(name = "Example Public Tracker") {
   if (indexer) failingIndexers.delete(indexer.id);
 }
 
+// Radarr's and Sonarr's indexers, as Prowlarr syncs them: they fail along
+// with the Prowlarr indexer of the same name.
+function arrIndexers(upstreamPath, method, body) {
+  const record = (indexer) => ({ id: indexer.id, name: `${indexer.name} (Prowlarr)`, protocol: indexer.protocol, priority: indexer.priority, enableRss: true, enableAutomaticSearch: true, enableInteractiveSearch: true, implementation: "Torznab", fields: [{ name: "apiKey", value: DEMO_INDEXER_SECRET }] });
+  const failure = [{ propertyName: "BaseUrl", errorMessage: "Unable to connect to indexer, check the log above the ValidationFailure for more details", severity: "error" }];
+  if (upstreamPath === "/api/v3/indexer" && method === "GET") return INDEXERS.map(record);
+  if (upstreamPath === "/api/v3/indexerstatus") {
+    return [...failingIndexers].map((id) => ({ id, indexerId: id, initialFailure: indexerFailures.get(id), mostRecentFailure: new Date().toISOString(), disabledTill: new Date(Date.now() + 15 * 60_000).toISOString() }));
+  }
+  const single = /^\/api\/v3\/indexer\/(\d+)$/u.exec(upstreamPath);
+  if (single && method === "GET") {
+    const indexer = INDEXERS.find(({ id }) => id === Number(single[1]));
+    return indexer ? record(indexer) : { status: 404, json: {} };
+  }
+  if (upstreamPath === "/api/v3/indexer/test" && method === "POST") {
+    let id = null;
+    try {
+      id = JSON.parse(body.toString("utf8")).id;
+    } catch {
+      return { status: 400, json: [] };
+    }
+    return failingIndexers.has(id) ? { status: 400, json: failure } : {};
+  }
+  if (upstreamPath === "/api/v3/indexer/testall" && method === "POST") {
+    const results = INDEXERS.map(({ id }) => ({ id, isValid: !failingIndexers.has(id), validationFailures: failingIndexers.has(id) ? failure : [] }));
+    return results.every(({ isValid }) => isValid) ? results : { status: 400, json: results };
+  }
+  return null;
+}
+
 function bazarr(upstreamPath) {
   if (upstreamPath === "/api/system/status") return { data: { bazarr_version: "1.5.3" } };
   if (upstreamPath === "/api/system/health") return { data: [] };
@@ -489,7 +521,7 @@ function qbittorrent(upstreamPath) {
   return { status: 404, json: {} };
 }
 
-const MEDIA = { jellyfin, seerr, radarr: (p) => arr("radarr", p), sonarr: (p) => arr("sonarr", p), prowlarr, bazarr, qbittorrent };
+const MEDIA = { jellyfin, seerr, radarr: (p, m, b) => arr("radarr", p, m, b), sonarr: (p, m, b) => arr("sonarr", p, m, b), prowlarr, bazarr, qbittorrent };
 
 function upstreamResponse(result) {
   if (result && Buffer.isBuffer(result.image)) {
@@ -1025,6 +1057,8 @@ export async function startDemo(options = {}) {
 
 async function main() {
   const options = parseArguments(process.argv.slice(2));
+  // Like the real server, keep recent output for Logs → Server output.
+  (await import("../server/diagnostics.mjs")).installOutputCapture();
   if (options.help) {
     process.stdout.write([
       "Usage: npm run demo -- [--port 4180] [--data DIR] [--outage]",

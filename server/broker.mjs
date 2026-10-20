@@ -18,6 +18,8 @@ import {
 } from "./routes.mjs";
 import { createControlPlane, ControlPlaneError } from "./control-plane.mjs";
 import { createEventJournal } from "./event-journal.mjs";
+import { createDiagnostics, tracedDispatcher } from "./diagnostics.mjs";
+import { ARR_INDEXER_LIMITS, ARR_INDEXER_OPERATIONS, ARR_INDEXER_SERVICES, arrValidationMessage, authorizeArrIndexerStep, parseArrIndexers, parseArrTestResults } from "./arr-indexers.mjs";
 import { createHealthIncidentEngine } from "./health-engine.mjs";
 import { normalizeLokiQueryResult, authorizeLokiRoute } from "./loki.mjs";
 import { probeLoki } from "./loki-probes.mjs";
@@ -55,7 +57,7 @@ import {
 } from "./network.mjs";
 import { generateSecretToken, hashToken, StateStore, tokenMatches } from "./state.mjs";
 
-const DEFAULT_VERSION = "1.12.2";
+const DEFAULT_VERSION = "1.13.0";
 const requestedVersion = String(process.env.HELMSMAN_VERSION || DEFAULT_VERSION);
 const VERSION = /^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/u.test(requestedVersion)
   ? requestedVersion
@@ -1543,11 +1545,15 @@ export async function createBroker(options = {}) {
   const rootDir = path.resolve(options.rootDir || PROJECT_ROOT);
   const log = typeof options.log === "function" ? options.log : (message) => console.log(message);
   const lookup = options.lookup;
-  const dispatchUpstream = options.dispatchUpstream || performUpstreamRequest;
-  const dispatchMediaAction = options.dispatchMediaAction || performMediaActionUpstreamRequest;
-  const dispatchProxmox = options.dispatchProxmox || performProxmoxUpstreamRequest;
-  const dispatchPortainer = options.dispatchPortainer || performPortainerUpstreamRequest;
-  const dispatchLoki = options.dispatchLoki || performLokiUpstreamRequest;
+  // In-depth logging. Events reach the journal once it exists (below).
+  let recordForDiagnostics = () => null;
+  const diagnostics = createDiagnostics({ record: (event) => recordForDiagnostics(event) });
+  // Every call to a connected service is timed and logged at debug level.
+  const dispatchUpstream = tracedDispatcher("media", options.dispatchUpstream || performUpstreamRequest, diagnostics);
+  const dispatchMediaAction = tracedDispatcher("media-action", options.dispatchMediaAction || performMediaActionUpstreamRequest, diagnostics);
+  const dispatchProxmox = tracedDispatcher("proxmox", options.dispatchProxmox || performProxmoxUpstreamRequest, diagnostics);
+  const dispatchPortainer = tracedDispatcher("portainer", options.dispatchPortainer || performPortainerUpstreamRequest, diagnostics);
+  const dispatchLoki = tracedDispatcher("loki", options.dispatchLoki || performLokiUpstreamRequest, diagnostics);
   const limits = {
     maxApiResponseBytes: options.maxApiResponseBytes || DEFAULT_MAX_API_RESPONSE_BYTES,
     maxImageResponseBytes: options.maxImageResponseBytes || DEFAULT_MAX_IMAGE_RESPONSE_BYTES,
@@ -1616,6 +1622,7 @@ export async function createBroker(options = {}) {
       return null;
     }
   };
+  recordForDiagnostics = recordEvent;
   const setupToken = await store.rotateUnclaimedSetupToken();
   if (setupToken) log(`Helmsman setup token: ${setupToken}`);
   let activeRequests = 0;
@@ -2805,6 +2812,100 @@ export async function createBroker(options = {}) {
    * Reads Prowlarr's indexers live, keeping only safe fields (see
    * prowlarr.mjs). Statistics and applications are optional extras.
    */
+  const ARR_LABELS = Object.freeze({ radarr: "Radarr", sonarr: "Sonarr" });
+
+  function arrIndexerStatusError(service, status, what) {
+    const label = ARR_LABELS[service] || "The service";
+    if ([401, 403].includes(status)) return new BrokerError(502, "ACTION_PERMISSION_DENIED", `${label} rejected the saved API key.`);
+    if (status === 404) return new BrokerError(409, "ACTION_TARGET_CHANGED", `${label} no longer has that ${what}; refresh and try again.`);
+    return new BrokerError(502, "UPSTREAM_ACTION_FAILED", `${label} did not answer the ${what} request.`);
+  }
+
+  /** Radarr's or Sonarr's own indexers, without their keys. */
+  async function readArrIndexers(service, { signal } = {}) {
+    if (!ARR_INDEXER_SERVICES.includes(service)) throw new BrokerError(404, "SERVICE_NOT_SUPPORTED", "That service has no indexers.");
+    const read = (upstreamPath, maxBytes) => monitorRequest(service, upstreamPath, {
+      method: "GET",
+      responseType: "json",
+      maxBytes,
+      timeoutMs: Math.min(15_000, limits.upstreamTimeoutMs),
+      signal
+    });
+    const [list, status] = await Promise.all([
+      read("/api/v3/indexer", ARR_INDEXER_LIMITS.listBytes),
+      read("/api/v3/indexerstatus", ARR_INDEXER_LIMITS.resultBytes)
+    ]);
+    for (const [response, what] of [[list, "indexer list"], [status, "indexer status"]]) {
+      if (response.status < 200 || response.status >= 300) throw arrIndexerStatusError(service, response.status, what);
+    }
+    try {
+      return { checkedAt: new Date().toISOString(), indexers: parseArrIndexers(list.body, status.body) };
+    } catch {
+      throw new BrokerError(502, "UPSTREAM_CONTENT_REJECTED", `${ARR_LABELS[service]} returned an indexer list Helmsman could not read.`);
+    }
+  }
+
+  /**
+   * Tests one of Radarr's or Sonarr's indexers, or all of them. Testing one
+   * reads its full record and posts it straight back to the same app.
+   */
+  async function executeArrIndexerAction(input) {
+    const service = ARR_INDEXER_SERVICES.includes(input?.service) ? input.service : null;
+    const operation = ARR_INDEXER_OPERATIONS.includes(input?.operation) ? input.operation : null;
+    if (!service || !operation) throw new BrokerError(404, "ROUTE_NOT_ALLOWED", "That indexer action is not allowed.");
+    const release = reserveServiceCapacity(service);
+    const headers = monitorCredentialHeaders(service, input.credential, input.connection);
+    const send = async (route, maxBytes) => {
+      if (!route.allowed) throw new BrokerError(route.status || 404, route.code, route.message);
+      const body = Buffer.from(route.body, "utf8");
+      try {
+        return await dispatchUpstream({
+          request: { method: route.method, headers: { ...headers, ...(body.length ? { "content-type": "application/json" } : {}) } },
+          body,
+          targetResolution: input.targetResolution,
+          route,
+          deviceOrigin: "http://127.0.0.1",
+          targetRevision: input.connection.targetRevision,
+          shutdownSignal: shutdownController.signal,
+          limits: { ...limits, maxApiResponseBytes: Math.min(limits.maxApiResponseBytes, maxBytes) }
+        });
+      } finally {
+        body.fill(0);
+      }
+    };
+    try {
+      if (operation === "testIndexer") {
+        const indexerId = input.indexerId;
+        const read = await send(authorizeArrIndexerStep(service, "readIndexer", { indexerId }), ARR_INDEXER_LIMITS.indexerRecordBytes);
+        if (read.status < 200 || read.status >= 300) throw arrIndexerStatusError(service, read.status, "indexer");
+        const record = Buffer.isBuffer(read.body) ? read.body.toString("utf8") : String(read.body ?? "");
+        if (Buffer.isBuffer(read.body)) read.body.fill(0);
+        const testRoute = authorizeArrIndexerStep(service, "testIndexer", { indexerId, record });
+        if (!testRoute.allowed) throw new BrokerError(502, "UPSTREAM_CONTENT_REJECTED", `${ARR_LABELS[service]} returned an indexer record Helmsman could not test.`);
+        const tested = await send(testRoute, ARR_INDEXER_LIMITS.resultBytes);
+        if (tested.status >= 200 && tested.status < 300) return { ok: true, service, operation, indexerId, passed: true, message: "" };
+        if (tested.status === 400) {
+          return { ok: true, service, operation, indexerId, passed: false, message: arrValidationMessage(jsonBody(tested)) || "The test failed." };
+        }
+        throw arrIndexerStatusError(service, tested.status, "indexer test");
+      }
+      const tested = await send(authorizeArrIndexerStep(service, "testAllIndexers"), ARR_INDEXER_LIMITS.resultBytes);
+      // Radarr and Sonarr answer 400 when any indexer failed, with the same list.
+      if (![200, 201, 400].includes(tested.status)) throw arrIndexerStatusError(service, tested.status, "indexer test");
+      let results;
+      try {
+        results = parseArrTestResults(jsonBody(tested));
+      } catch {
+        throw new BrokerError(502, "UPSTREAM_CONTENT_REJECTED", `${ARR_LABELS[service]} returned test results Helmsman could not read.`);
+      }
+      return { ok: true, service, operation, results };
+    } catch (error) {
+      throw actionDispatchError(error, service);
+    } finally {
+      release();
+    }
+  }
+
   async function readProwlarrIndexers({ signal } = {}) {
     const read = (upstreamPath, maxBytes) => monitorRequest("prowlarr", upstreamPath, {
       method: "GET",
@@ -2945,6 +3046,7 @@ export async function createBroker(options = {}) {
 
   controlPlane = await createControlPlane({
     stateStore: store,
+    diagnostics,
     dataDir,
     acknowledgements,
     launchpad,
@@ -2963,6 +3065,8 @@ export async function createBroker(options = {}) {
     executeMediaRecoveryAction,
     executeProwlarrAction,
     readProwlarrIndexers,
+    executeArrIndexerAction,
+    readArrIndexers,
     fetchSeerrSeriesSeasons,
     fetchMediaArtwork: (descriptor, context = {}) => mediaArtwork.get(descriptor, { signal: context.signal }),
     exchangeServiceLogin,
@@ -3326,6 +3430,7 @@ export async function createBroker(options = {}) {
       manual: () => manual?.get?.().markdown || "",
       events: (query) => eventJournal.query(query),
       recordEvent: (event) => { recordEvent(event); },
+      diagnostics,
       ...(typeof options.dispatchAgent === "function" ? { send: options.dispatchAgent } : {}),
       log,
       guard: options.stateGuard,
@@ -3336,7 +3441,15 @@ export async function createBroker(options = {}) {
   } catch {
     log("Helmsman agent storage is unavailable; the agent is disabled for this run.");
   }
-  void monitor.start().catch(() => {
+  monitor.subscribe?.((snapshot) => {
+    try {
+      diagnostics.checks(snapshot);
+    } catch {
+      // Logging never affects monitoring.
+    }
+  });
+  void monitor.start().catch((error) => {
+    diagnostics.error("monitor", error, { event: "monitor.start", category: "application", message: "The monitor could not start." });
     recordEvent({
       level: "error",
       category: "application",
@@ -3561,10 +3674,27 @@ export async function createBroker(options = {}) {
       normalizedHostHeader(request);
       await serveStatic(request, response, rootDir, url.pathname);
     } catch (error) {
+      logRequestError(request, error);
       if (!response.headersSent) sendError(response, error);
       else response.destroy();
     }
   };
+
+  // Unexpected failures are logged with their full message and stack; known
+  // server-side failures (5xx) with their message. Client errors are not.
+  function logRequestError(request, error) {
+    try {
+      const route = String(request.url || "").split("?", 1)[0];
+      const known = error instanceof BrokerError || error instanceof ControlPlaneError || error instanceof NetworkPolicyError;
+      if (!known) {
+        diagnostics.error("broker", error, { event: "request.failed", category: "application", route });
+      } else if ((error.status || 500) >= 500 && error.code !== "BROKER_STOPPING") {
+        diagnostics.error("broker", error, { event: "request.failed", category: "application", route, level: "warn" });
+      }
+    } catch {
+      // Logging never changes the response.
+    }
+  }
 
   const handler = (request, response) => {
     activeHandlers += 1;
@@ -3621,6 +3751,7 @@ export async function createBroker(options = {}) {
     controlPlane,
     eventJournal,
     recordEvent,
+    diagnostics,
     setupToken,
     version: VERSION,
     agent,
