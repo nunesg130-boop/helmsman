@@ -312,6 +312,7 @@ const state = {
   sessionMutation: "",
   infrastructure: emptyInfrastructureState(),
   logging: emptyLoggingState(),
+  agent: emptyAgentState(),
   launchpad: { loaded: false, loading: false, links: [], filter: "", error: "" },
   manual: emptyManualState(),
   search: { query: "", open: false, active: 0, results: [] },
@@ -2247,6 +2248,7 @@ function renderSystemOverview() {
         <ol class="system-pipeline-list">${pipeline.map((stage) => `<li><span class="system-pipeline-marker">${icon(stage.icon)}</span><span><strong>${escapeHtml(stage.label)}</strong><small>${escapeHtml(stage.detail)}</small></span><em>${stage.count.toLocaleString()}</em></li>`).join("")}</ol>
       </section>
     </div>
+    ${renderAgentOverviewCard()}
     ${renderSystemWarningsCard()}
   </div>`;
 }
@@ -4093,6 +4095,673 @@ function renderBrowserSessions() {
   }).join("")}</div>`;
 }
 
+// AI agent -------------------------------------------------------------
+// The agent itself runs in the container (server/agent.mjs). These views
+// read its state, show its reports and approvals on the Overview, offer a
+// chat box, and configure it from Settings. Nothing here assumes a
+// particular model server, model, phone or homelab.
+
+const AGENT_NOTE_LABELS = Object.freeze({
+  incident: "Incident",
+  recovery: "Recovered",
+  digest: "Daily summary",
+  "check-in": "Check-in",
+  "rule-action": "Rule action"
+});
+const AGENT_NOTE_TONES = Object.freeze({ incident: "degraded", recovery: "healthy", digest: "stale", "check-in": "stale", "rule-action": "limited" });
+const AGENT_CHAT_LIMIT = 12;
+const AGENT_QUESTION_LIMIT = 1_000;
+const AGENT_OPERATION_LABELS = Object.freeze({ restart: "Restart", start: "Start", reboot: "Reboot", stop: "Stop", shutdown: "Shut down" });
+
+function emptyAgentState() {
+  return {
+    loaded: false,
+    error: "",
+    data: null,
+    chat: [],
+    draft: "",
+    asking: false,
+    busy: ""
+  };
+}
+
+function agentData() {
+  return state.agent.data;
+}
+
+function agentFingerprint(data) {
+  if (!data) return "";
+  return JSON.stringify([data.config, data.status?.enabled, data.status?.lastModel?.ok, data.notes?.map(({ id }) => id), data.proposals?.map(({ id, status }) => `${id}:${status}`)]);
+}
+
+async function loadAgent({ render = false } = {}) {
+  if (!state.status?.authenticated) return false;
+  const previous = agentFingerprint(state.agent.data);
+  try {
+    state.agent.data = await api("/api/v2/agent");
+    state.agent.error = "";
+  } catch (error) {
+    if (error?.status === 401) return false;
+    state.agent.error = safeSessionText(error?.message, "The agent could not be reached.", 180);
+  }
+  state.agent.loaded = true;
+  if (render && previous !== agentFingerprint(state.agent.data) && ["system", "settings"].includes(currentRoute())) {
+    state.lastMarkup = "";
+    renderPage({ force: true, preserveFocus: true });
+  }
+  return true;
+}
+
+function rerenderAgent() {
+  state.lastMarkup = "";
+  renderPage({ force: true, preserveFocus: true });
+}
+
+function agentStatus(data) {
+  if (!data) return { tone: "stale", label: "Loading" };
+  if (data.status?.configurationProblem) return { tone: "down", label: "Settings problem" };
+  if (!data.config?.ai) return { tone: "disabled", label: "Not set up" };
+  if (!data.status?.enabled) return { tone: "disabled", label: "Off" };
+  if (data.status?.lastModel && data.status.lastModel.ok === false) return { tone: "degraded", label: "Model unreachable" };
+  return { tone: "healthy", label: "Watching" };
+}
+
+function agentNoteTime(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const sameDay = date.toDateString() === new Date().toDateString();
+  return sameDay
+    ? date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+    : date.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
+function renderAgentProposal(proposal) {
+  const busy = state.agent.busy === proposal.id;
+  return `<li class="agent-proposal">
+    <div><strong>${escapeHtml(AGENT_OPERATION_LABELS[proposal.operation] || proposal.operation)} ${escapeHtml(proposal.target)}</strong><p>${escapeHtml(proposal.reason || "Suggested by the agent.")}</p><small>Expires ${escapeHtml(agentNoteTime(proposal.expiresAt))}</small></div>
+    <div class="agent-proposal__actions">
+      <button class="button button--compact" type="button" data-action="agent-proposal" data-decision="decline" data-proposal-id="${escapeHtml(proposal.id)}" ${busy ? "disabled" : ""}>Decline</button>
+      <button class="button button--compact button--primary" type="button" data-action="agent-proposal" data-decision="approve" data-proposal-id="${escapeHtml(proposal.id)}" ${busy ? "disabled aria-busy=\"true\"" : ""}>${busy ? "Working…" : "Approve"}</button>
+    </div>
+  </li>`;
+}
+
+function renderAgentNote(note) {
+  const tone = AGENT_NOTE_TONES[note.kind] || "stale";
+  return `<li class="agent-note">
+    <i class="health-dot is-${tone}" aria-hidden="true"></i>
+    <div>
+      <header><strong>${escapeHtml(note.title || AGENT_NOTE_LABELS[note.kind] || "Note")}</strong><time datetime="${escapeHtml(note.at)}">${escapeHtml(agentNoteTime(note.at))}</time></header>
+      <p>${escapeHtml(note.text || "")}</p>
+      <small>${escapeHtml(AGENT_NOTE_LABELS[note.kind] || "Note")}${note.model ? ` · ${escapeHtml(note.model)}` : " · Helmsman facts"}${note.notified ? " · sent to phone" : ""}</small>
+    </div>
+  </li>`;
+}
+
+function renderAgentChat(data) {
+  const ready = Boolean(data?.config?.ai);
+  const messages = state.agent.chat;
+  return `<section class="agent-chat" aria-labelledby="agent-chat-title">
+    <header><h4 id="agent-chat-title">Ask the agent</h4>${messages.length ? `<button class="agent-text-button" type="button" data-action="agent-chat-clear">Clear</button>` : ""}</header>
+    <ol class="agent-chat__messages" aria-live="polite">
+      ${messages.length ? messages.map((message) => `<li class="agent-chat__message is-${message.role}${message.error ? " is-error" : ""}">
+        <p>${escapeHtml(message.content)}</p>
+        ${message.proposals?.length ? `<small>Suggested an action. Approve or decline it under Reports.</small>` : ""}
+      </li>`).join("") : `<li class="agent-chat__empty">${ready ? "Ask how things look, why something is failing, or what changed today. Answers come from your own model and Helmsman's live data." : "Connect a model server in Settings to ask questions."}</li>`}
+      ${state.agent.asking ? `<li class="agent-chat__message is-assistant is-thinking"><p>Thinking…</p></li>` : ""}
+    </ol>
+    <form class="agent-chat__form" id="agent-ask-form">
+      <label class="sr-only" for="agent-ask-input">Question for the agent</label>
+      <textarea id="agent-ask-input" name="question" rows="2" maxlength="${AGENT_QUESTION_LIMIT}" placeholder="${ready ? "How is everything looking?" : "Set up the agent first"}" ${ready ? "" : "disabled"}>${escapeHtml(state.agent.draft)}</textarea>
+      <button class="button button--primary" type="submit" ${!ready || state.agent.asking ? "disabled" : ""}>${state.agent.asking ? "Asking…" : "Ask"}</button>
+    </form>
+  </section>`;
+}
+
+function renderAgentOverviewCard() {
+  const data = agentData();
+  if (!state.agent.loaded) return "";
+  const status = agentStatus(data);
+  const header = `<header><div><span class="section-kicker">Local AI</span><h3 id="system-agent-title">Agent</h3></div><div class="agent-card__meta"><span class="system-service-state is-${status.tone}"><i class="health-dot is-${status.tone}"></i>${escapeHtml(status.label)}</span><a class="system-overview-link" href="#/settings">Agent settings ${icon("chevron")}</a></div></header>`;
+  if (!data) {
+    return `<section class="system-overview-card system-overview-card--agent" aria-labelledby="system-agent-title">${header}${renderMediaEmpty("Agent unavailable", state.agent.error || "The agent could not be reached.", "shield")}</section>`;
+  }
+  if (!data.config?.ai) {
+    return `<section class="system-overview-card system-overview-card--agent" aria-labelledby="system-agent-title">${header}
+      <div class="agent-intro">
+        <p>Connect a model running on your own hardware and Helmsman will explain problems in plain language, send a daily summary, answer questions, and suggest fixes for you to approve.</p>
+        <a class="button button--primary" href="#/settings">Set up the agent</a>
+      </div>
+    </section>`;
+  }
+  const proposals = data.proposals || [];
+  const notes = (data.notes || []).slice(0, 6);
+  const digestBusy = state.agent.busy === "digest";
+  return `<section class="system-overview-card system-overview-card--agent" aria-labelledby="system-agent-title">${header}
+    <div class="agent-overview">
+      <section class="agent-reports" aria-labelledby="agent-reports-title">
+        <header><h4 id="agent-reports-title">Reports</h4><button class="agent-text-button" type="button" data-action="agent-run" data-job="digest" ${digestBusy ? "disabled aria-busy=\"true\"" : ""}>${digestBusy ? "Writing summary…" : "Summarize now"}</button></header>
+        ${proposals.length ? `<div class="agent-proposals"><span class="section-kicker">Waiting for your approval</span><ul>${proposals.map(renderAgentProposal).join("")}</ul></div>` : ""}
+        ${notes.length
+          ? `<ul class="agent-notes">${notes.map(renderAgentNote).join("")}</ul>`
+          : `<p class="agent-empty">No reports yet. The agent writes one when something breaks or recovers, at the daily summary time, and during periodic check-ins.</p>`}
+      </section>
+      ${renderAgentChat(data)}
+    </div>
+  </section>`;
+}
+
+// Settings -----------------------------------------------------------
+
+function agentRuleServiceOptions() {
+  const snapshot = state.snapshot || {};
+  const options = [];
+  const seen = new Set();
+  const add = (id, label) => {
+    const value = String(id || "");
+    if (!/^[a-z0-9][a-z0-9._:-]{0,95}$/u.test(value) || seen.has(value)) return;
+    seen.add(value);
+    options.push({ value, label: safeSessionText(label, value, 80) });
+  };
+  for (const service of snapshot.services || []) add(service.id, service.label || service.name || service.id);
+  for (const service of snapshot.infrastructure?.portainer || []) add(service.id, `${service.displayName || "Portainer"} (Portainer)`);
+  for (const service of snapshot.infrastructure?.services || []) add(service.id, service.displayName || service.name || service.id);
+  for (const environment of snapshot.infrastructure?.environments || []) add(environment.id, `${environment.displayName || "Proxmox"} (Proxmox)`);
+  return options;
+}
+
+function agentRuleTargetOptions() {
+  const snapshot = state.snapshot || {};
+  const containers = [];
+  for (const service of snapshot.infrastructure?.portainer || []) {
+    for (const container of service.inventory?.containers || []) {
+      const name = String(container.name || "").replace(/^\//u, "");
+      if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/u.test(name)) continue;
+      containers.push({ value: `container|${service.id}|${name}`, label: `${name} · ${service.displayName || "Portainer"}` });
+    }
+  }
+  const guests = [];
+  for (const environment of snapshot.infrastructure?.environments || []) {
+    for (const workload of environment.workloads || []) {
+      if (workload.template || !Number.isSafeInteger(Number(workload.vmid))) continue;
+      guests.push({ value: `guest|${environment.id}|${Number(workload.vmid)}`, label: `${workload.name || "Guest"} (${workload.type === "lxc" ? "LXC" : "VM"} ${Number(workload.vmid)}) · ${environment.displayName || "Proxmox"}` });
+    }
+  }
+  const byLabel = (left, right) => left.label.localeCompare(right.label);
+  return { containers: containers.sort(byLabel), guests: guests.sort(byLabel) };
+}
+
+function agentRuleSentence(rule) {
+  const services = new Map(agentRuleServiceOptions().map(({ value, label }) => [value, label]));
+  const serviceLabel = services.get(rule.when.service) || rule.when.service;
+  let target;
+  if (rule.then.kind === "container") {
+    const portainer = (state.snapshot?.infrastructure?.portainer || []).find(({ id }) => id === rule.then.serviceId);
+    target = `container ${rule.then.containerName}${portainer?.displayName ? ` on ${portainer.displayName}` : ""}`;
+  } else {
+    const environment = (state.snapshot?.infrastructure?.environments || []).find(({ id }) => id === rule.then.environmentId);
+    const workload = environment?.workloads?.find(({ vmid }) => Number(vmid) === rule.then.vmid);
+    target = `${workload?.name ? `${workload.name} ` : ""}(guest ${rule.then.vmid})${environment?.displayName ? ` on ${environment.displayName}` : ""}`;
+  }
+  return {
+    title: `When ${serviceLabel} is down for ${rule.when.minutes} min, ${rule.then.operation} ${target}`,
+    detail: `At most once per incident · ${rule.cooldownMinutes} min cooldown · up to ${rule.maxPerDay} a day`
+  };
+}
+
+function renderAgentSetupSteps(data) {
+  const configured = data?.config || {};
+  const steps = [
+    {
+      done: Boolean(configured.ai),
+      title: "Run a model server on your network",
+      detail: "Any OpenAI-compatible server works: Ollama, LM Studio, llama.cpp's server or vLLM. A 3–4B model on a 4 GB GPU is enough. The server must listen on your network, not only on localhost."
+    },
+    { done: Boolean(configured.ai), title: "Connect it below", detail: "Enter its address, test it, and pick one of the models it lists." },
+    { done: Boolean(configured.ai && configured.settings?.enabled), title: "Turn the agent on", detail: "Choose which events it reports and your time zone for the daily summary." },
+    { done: Boolean(configured.notify), optional: true, title: "Send reports to your phone", detail: "Through a Home Assistant notify action, such as the Companion app's mobile_app action." },
+    { done: Boolean(configured.rules?.length), optional: true, title: "Add rules", detail: "Let Helmsman restart or start something by itself when a service stays down. The model never acts on its own; rules are checked by Helmsman's code." }
+  ];
+  return `<section class="glass-panel settings-card-v5 agent-setup">
+    <header><div><span class="section-kicker">Getting started</span><h3>Set up the agent</h3></div>${icon("book")}</header>
+    <div class="settings-card-v5__body">
+      <ol class="agent-steps">${steps.map((step, index) => `<li class="${step.done ? "is-done" : ""}">
+        <span class="agent-steps__marker" aria-hidden="true">${step.done ? icon("check") : index + 1}</span>
+        <div><strong>${escapeHtml(step.title)}${step.optional ? ` <em>Optional</em>` : ""}</strong><p>${escapeHtml(step.detail)}</p></div>
+        <span class="sr-only">${step.done ? "Done" : "Not done"}</span>
+      </li>`).join("")}</ol>
+      <p class="agent-setup__more">Full guide, including GPU sizing and how to expose Ollama on your network: <a href="https://github.com/nunesg130-boop/helmsman/blob/main/docs/LOCAL-AI.md" target="_blank" rel="noopener noreferrer">docs/LOCAL-AI.md</a>.</p>
+    </div>
+  </section>`;
+}
+
+function renderAgentModelCard(data) {
+  const ai = data?.config?.ai;
+  const limits = data?.limits || {};
+  const context = limits.contextTokens || { min: 2048, max: 131072, default: 4096 };
+  const timeout = limits.timeoutSeconds || { min: 10, max: 300, default: 120 };
+  return `<form class="glass-panel settings-card-v5" id="agent-ai-form">
+    <header><div><span class="section-kicker">Step 2 · Model</span><h3>Model server</h3></div>${icon("server")}</header>
+    <div class="settings-card-v5__body">
+      <div class="form-grid">
+        <label><span>Server address</span><input name="url" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="http://model-server:11434" value="${escapeHtml(ai?.url || "")}" required /><small>Ollama uses port 11434, LM Studio 1234. Leave off /v1.</small></label>
+        <label><span>Model</span><input name="model" type="text" autocomplete="off" spellcheck="false" list="agent-model-options" placeholder="Test the server to list its models" value="${escapeHtml(ai?.model || "")}" required /><datalist id="agent-model-options"></datalist></label>
+        <label><span>API key <em>optional</em></span><input name="apiKey" type="password" autocomplete="new-password" placeholder="${ai?.apiKeyConfigured ? "Saved. Leave empty to keep it" : "Only if your server requires one"}" /></label>
+        ${ai?.apiKeyConfigured ? `<label class="check-row"><input name="clearApiKey" type="checkbox" /><span><strong>Remove the saved API key</strong><small>Use this when the server no longer needs a key.</small></span></label>` : ""}
+      </div>
+      <details class="agent-advanced"><summary>Advanced</summary>
+        <div class="form-grid form-grid--two">
+          <label><span>Context size (tokens)</span><input name="contextTokens" type="number" min="${context.min}" max="${context.max}" step="256" value="${Number(ai?.contextTokens || context.default)}" /><small>Match the context your server loads the model with.</small></label>
+          <label><span>Timeout (seconds)</span><input name="timeoutSeconds" type="number" min="${timeout.min}" max="${timeout.max}" value="${Number(ai?.timeoutSeconds || timeout.default)}" /></label>
+        </div>
+        <label><span>Extra instructions</span><input name="extraInstructions" type="text" maxlength="${Number(limits.extraInstructions || 400)}" placeholder="One line, such as: Keep answers under three sentences." value="${escapeHtml(ai?.extraInstructions || "")}" /></label>
+      </details>
+      <p class="agent-test-result" id="agent-ai-test-result" role="status"></p>
+      <div class="button-row">
+        <button class="button" type="button" data-action="agent-test-ai">Test connection</button>
+        <button class="button button--primary" type="submit">${ai ? "Save model" : "Connect model"}</button>
+        ${ai ? `<button class="button button--danger" type="button" data-action="agent-remove" data-agent-part="ai">Disconnect</button>` : ""}
+      </div>
+    </div>
+  </form>`;
+}
+
+function browserTimeZone() {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  } catch {
+    return "UTC";
+  }
+}
+
+function renderAgentBehaviorCard(data) {
+  const settings = data?.config?.settings || {};
+  const triggers = settings.triggers || {};
+  const checkIn = data?.limits?.checkInHours || { min: 1, max: 24, default: 6 };
+  const localZone = browserTimeZone();
+  const zone = settings.timeZone || localZone;
+  const triggerRow = (name, title, detail) => `<label class="check-row"><input name="${name}" type="checkbox" ${triggers[name] !== false ? "checked" : ""}/><span><strong>${title}</strong><small>${detail}</small></span></label>`;
+  return `<form class="glass-panel settings-card-v5" id="agent-settings-form">
+    <header><div><span class="section-kicker">Step 3 · Behavior</span><h3>What the agent does</h3></div>${icon("bell")}</header>
+    <div class="settings-card-v5__body">
+      <label class="check-row"><input name="enabled" type="checkbox" ${settings.enabled ? "checked" : ""}/><span><strong>Agent on</strong><small>Watch Helmsman's health checks and write reports. Without a model it still reports Helmsman's own facts.</small></span></label>
+      <h4>Report on</h4>
+      ${triggerRow("incidents", "New or worsening problems", "One report and one notification per service outage.")}
+      ${triggerRow("recoveries", "Recoveries", "When a service that was down is healthy again.")}
+      ${triggerRow("digest", "Daily summary", "A short morning-style summary of the last day.")}
+      ${triggerRow("checkIn", "Periodic check-ins", "A quiet look over everything. Notifies only when something needs attention.")}
+      <div class="form-grid form-grid--two">
+        <label><span>Daily summary time</span><input name="digestTime" type="time" value="${escapeHtml(settings.digestTime || "07:30")}" /></label>
+        <label><span>Check-in every (hours)</span><input name="checkInHours" type="number" min="${checkIn.min}" max="${checkIn.max}" value="${Number(settings.checkInHours || checkIn.default)}" /></label>
+      </div>
+      <label><span>Time zone</span><input name="timeZone" type="text" autocomplete="off" spellcheck="false" placeholder="Region/City, such as Europe/Berlin" value="${escapeHtml(zone)}" />${zone !== localZone ? `<small>This browser is in ${escapeHtml(localZone)}. <button class="agent-text-button" type="button" data-action="agent-use-local-zone" data-zone="${escapeHtml(localZone)}">Use it</button></small>` : ""}</label>
+      <h4>Acting on its own</h4>
+      <label class="check-row agent-autonomy"><input name="autonomy" type="checkbox" ${settings.autonomy ? "checked" : ""}/><span><strong>Let rules act</strong><small>Rules below run only while this is on. Everything the model suggests still waits for your approval.</small></span></label>
+      <div class="button-row"><button class="button button--primary" type="submit">Save behavior</button></div>
+    </div>
+  </form>`;
+}
+
+function renderAgentNotifyCard(data) {
+  const notify = data?.config?.notify;
+  return `<form class="glass-panel settings-card-v5" id="agent-notify-form">
+    <header><div><span class="section-kicker">Step 4 · Optional</span><h3>Phone notifications</h3></div>${icon("bell")}</header>
+    <div class="settings-card-v5__body">
+      <p>Reports are sent through a Home Assistant notify action. Notes still appear on the Overview without this.</p>
+      <div class="form-grid">
+        <label><span>Home Assistant address</span><input name="url" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="http://homeassistant.local:8123" value="${escapeHtml(notify?.url || "")}" required /><small>Use a local address. Public addresses are refused unless your outbound policy allows public HTTPS.</small></label>
+        <label><span>Long-lived access token</span><input name="token" type="password" autocomplete="new-password" placeholder="${notify?.tokenConfigured ? "Saved. Leave empty to keep it" : "Profile → Security → Long-lived access tokens"}" ${notify?.tokenConfigured ? "" : "required"} /></label>
+        <label><span>Notify action</span><input name="service" type="text" autocomplete="off" spellcheck="false" placeholder="mobile_app_your_phone" value="${escapeHtml(notify?.service || "")}" required /><small>Find it under Developer tools → Actions by typing notify.mobile_app. Enter the part after notify.</small></label>
+        <label><span>Helmsman address <em>optional</em></span><input name="helmsmanUrl" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="${escapeHtml(location.origin)}" value="${escapeHtml(notify?.helmsmanUrl || "")}" /><small>Tapping a notification opens this page.</small></label>
+      </div>
+      <p class="agent-test-result" id="agent-notify-test-result" role="status"></p>
+      <div class="button-row">
+        ${notify ? `<button class="button" type="button" data-action="agent-test-notify">Send test</button>` : ""}
+        <button class="button button--primary" type="submit">${notify ? "Save notifications" : "Connect Home Assistant"}</button>
+        ${notify ? `<button class="button button--danger" type="button" data-action="agent-remove" data-agent-part="notify">Remove</button>` : ""}
+      </div>
+    </div>
+  </form>`;
+}
+
+function renderAgentRulesCard(data) {
+  const rules = data?.config?.rules || [];
+  const limits = data?.limits || {};
+  const minutes = limits.ruleMinutes || { min: 1, max: 120, default: 5 };
+  const cooldown = limits.cooldownMinutes || { min: 10, max: 1440, default: 60 };
+  const perDay = limits.maxPerDay || { min: 1, max: 10, default: 3 };
+  const services = agentRuleServiceOptions();
+  const { containers, guests } = agentRuleTargetOptions();
+  const autonomy = Boolean(data?.config?.settings?.autonomy);
+  const canAdd = services.length && (containers.length || guests.length) && rules.length < Number(limits.rules || 20);
+  return `<section class="glass-panel settings-card-v5 agent-rules">
+    <header><div><span class="section-kicker">Step 5 · Optional</span><h3>Rules</h3></div>${icon("shield")}</header>
+    <div class="settings-card-v5__body">
+      <p>A rule restarts or starts one container or guest when a service stays down. Helmsman runs it once per incident, within its cooldown and daily limit, and never more than 10 actions a day across all rules.</p>
+      ${autonomy ? "" : `<div class="security-note">${icon("lock")}<div><strong>Rules are paused</strong><span>Turn on “Let rules act” under What the agent does for them to run.</span></div></div>`}
+      ${rules.length ? `<ul class="agent-rule-list">${rules.map((rule) => {
+        const sentence = agentRuleSentence(rule);
+        return `<li class="${rule.enabled ? "" : "is-disabled"}">
+          <div><strong>${escapeHtml(sentence.title)}</strong><small>${escapeHtml(sentence.detail)}</small></div>
+          <div class="agent-rule-list__actions">
+            <button class="button button--compact" type="button" data-action="agent-rule-toggle" data-rule-id="${escapeHtml(rule.id)}">${rule.enabled ? "Pause" : "Enable"}</button>
+            <button class="button button--compact button--danger" type="button" data-action="agent-rule-delete" data-rule-id="${escapeHtml(rule.id)}" aria-label="Delete rule: ${escapeHtml(sentence.title)}">Delete</button>
+          </div>
+        </li>`;
+      }).join("")}</ul>` : ""}
+      ${canAdd ? `<form id="agent-rule-form" class="agent-rule-form">
+        <h4>New rule</h4>
+        <div class="form-grid form-grid--two">
+          <label><span>When this service is down</span><select name="service" required>${services.map(({ value, label }) => `<option value="${escapeHtml(value)}">${escapeHtml(label)}</option>`).join("")}</select></label>
+          <label><span>For at least (minutes)</span><input name="minutes" type="number" min="${minutes.min}" max="${minutes.max}" value="${minutes.default}" required /></label>
+          <label><span>Do this</span><select name="operation" required><option value="restart">Restart (containers)</option><option value="start">Start (containers or guests)</option><option value="reboot">Reboot (guests)</option></select></label>
+          <label><span>To</span><select name="target" required>
+            ${containers.length ? `<optgroup label="Containers">${containers.map(({ value, label }) => `<option value="${escapeHtml(value)}">${escapeHtml(label)}</option>`).join("")}</optgroup>` : ""}
+            ${guests.length ? `<optgroup label="VMs and LXCs">${guests.map(({ value, label }) => `<option value="${escapeHtml(value)}">${escapeHtml(label)}</option>`).join("")}</optgroup>` : ""}
+          </select></label>
+          <label><span>Cooldown (minutes)</span><input name="cooldownMinutes" type="number" min="${cooldown.min}" max="${cooldown.max}" value="${cooldown.default}" required /></label>
+          <label><span>At most per day</span><input name="maxPerDay" type="number" min="${perDay.min}" max="${perDay.max}" value="${perDay.default}" required /></label>
+        </div>
+        <p class="form-error" id="agent-rule-error" role="alert"></p>
+        <div class="button-row"><button class="button button--primary" type="submit">${icon("plus")} Add rule</button></div>
+      </form>` : `<p class="agent-empty">${rules.length >= Number(limits.rules || 20) ? "The rule limit is reached." : "Rules need a monitored service and a Portainer or Proxmox connection to act on."}</p>`}
+    </div>
+  </section>`;
+}
+
+function renderAgentSettings() {
+  if (!state.agent.loaded) {
+    return `<section class="agent-settings"><div class="empty-state"><span>Loading agent settings…</span></div></section>`;
+  }
+  const data = agentData();
+  if (!data) {
+    return `<section class="agent-settings"><div class="empty-state"><strong>Agent unavailable</strong><span>${escapeHtml(state.agent.error || "The agent could not be reached.")}</span></div></section>`;
+  }
+  const status = agentStatus(data);
+  return `<section class="agent-settings" aria-labelledby="agent-settings-title">
+    <header class="detail-hero"><div><span class="section-kicker">Local AI</span><h2 id="agent-settings-title">Agent</h2><p>An assistant that runs on your own hardware. It watches Helmsman's health checks, explains problems, and only changes things through rules you write or actions you approve.</p></div><span class="system-service-state is-${status.tone}"><i class="health-dot is-${status.tone}"></i>${escapeHtml(status.label)}</span></header>
+    ${data.status?.configurationProblem ? `<div class="security-note">${icon("lock")}<div><strong>The saved agent settings could not be read</strong><span>${escapeHtml(String(data.status.configurationProblem))}. Saving any card below replaces them.</span></div></div>` : ""}
+    ${renderAgentSetupSteps(data)}
+    <div class="settings-grid-v5">
+      ${renderAgentModelCard(data)}
+      ${renderAgentBehaviorCard(data)}
+      ${renderAgentNotifyCard(data)}
+      ${renderAgentRulesCard(data)}
+    </div>
+  </section>`;
+}
+
+// Actions ------------------------------------------------------------
+
+function agentFormNumber(form, name) {
+  const raw = String(new FormData(form).get(name) ?? "").trim();
+  return raw === "" ? undefined : Number(raw);
+}
+
+function agentFormText(form, name) {
+  return String(new FormData(form).get(name) ?? "").trim();
+}
+
+function setAgentTestResult(id, tone, message) {
+  const element = document.getElementById(id);
+  if (!element) return;
+  element.className = `agent-test-result is-${tone}`;
+  element.textContent = message;
+}
+
+async function agentMutation(path, method, body, successMessage) {
+  try {
+    state.agent.data = await api(`/api/v2/agent${path}`, { method, body });
+    state.agent.error = "";
+    if (successMessage) showToast(successMessage, "success");
+    rerenderAgent();
+    return true;
+  } catch (error) {
+    if (error?.status === 401) await initialize();
+    else showToast(error?.message || "That change could not be saved.", "danger");
+    return false;
+  }
+}
+
+async function testAgentModel(button) {
+  const form = button.closest("form");
+  if (!form || button.disabled) return;
+  const url = agentFormText(form, "url");
+  if (!url) {
+    setAgentTestResult("agent-ai-test-result", "degraded", "Enter the server address first.");
+    return;
+  }
+  const body = { url };
+  const model = agentFormText(form, "model");
+  const apiKey = String(new FormData(form).get("apiKey") || "");
+  if (model) body.model = model;
+  if (apiKey) {
+    body.apiKey = apiKey;
+    body.authMode = "bearer";
+  }
+  button.disabled = true;
+  button.setAttribute("aria-busy", "true");
+  setAgentTestResult("agent-ai-test-result", "stale", "Testing…");
+  try {
+    const result = await api("/api/v2/agent/ai/test", { method: "POST", body });
+    const models = Array.isArray(result?.models) ? result.models : [];
+    const list = document.getElementById("agent-model-options");
+    if (list) list.replaceChildren(...models.map((name) => Object.assign(document.createElement("option"), { value: name })));
+    if (!models.length) setAgentTestResult("agent-ai-test-result", "limited", "Connected, but the server lists no models. Download one on the server first.");
+    else if (result.model && !result.modelAvailable) setAgentTestResult("agent-ai-test-result", "limited", `Connected. The server does not have “${result.model}”. It has: ${models.slice(0, 8).join(", ")}${models.length > 8 ? "…" : ""}`);
+    else if (result.model) setAgentTestResult("agent-ai-test-result", "healthy", `Connected in ${Number(result.latencyMs) || 0} ms. “${result.model}” is available.`);
+    else {
+      const input = form.querySelector("input[name='model']");
+      if (input && models.length === 1) input.value = models[0];
+      setAgentTestResult("agent-ai-test-result", "healthy", `Connected. Pick a model: ${models.slice(0, 8).join(", ")}${models.length > 8 ? "…" : ""}`);
+    }
+  } catch (error) {
+    if (error?.status === 401) await initialize();
+    else setAgentTestResult("agent-ai-test-result", "degraded", error?.message || "The model server could not be reached.");
+  } finally {
+    button.disabled = false;
+    button.removeAttribute("aria-busy");
+  }
+}
+
+async function submitAgentModel(form) {
+  const body = {
+    url: agentFormText(form, "url"),
+    model: agentFormText(form, "model"),
+    extraInstructions: agentFormText(form, "extraInstructions")
+  };
+  const contextTokens = agentFormNumber(form, "contextTokens");
+  const timeoutSeconds = agentFormNumber(form, "timeoutSeconds");
+  if (contextTokens !== undefined) body.contextTokens = contextTokens;
+  if (timeoutSeconds !== undefined) body.timeoutSeconds = timeoutSeconds;
+  const apiKey = String(new FormData(form).get("apiKey") || "");
+  if (apiKey) {
+    body.apiKey = apiKey;
+    body.authMode = "bearer";
+  } else if (new FormData(form).get("clearApiKey")) {
+    body.clearApiKey = true;
+    body.authMode = "none";
+  }
+  const firstConnection = !agentData()?.config?.ai;
+  const saved = await agentMutation("/ai", "PUT", body, "Model saved.");
+  // A first connection also switches the agent on, which is what setting
+  // it up means; the behavior card can turn it off again.
+  if (saved && firstConnection && !agentData()?.config?.settings?.enabled) {
+    await agentMutation("/settings", "PUT", { enabled: true, timeZone: browserTimeZone() }, "");
+  }
+}
+
+async function submitAgentSettings(form) {
+  const data = new FormData(form);
+  const body = {
+    enabled: data.get("enabled") === "on",
+    autonomy: data.get("autonomy") === "on",
+    triggers: {
+      incidents: data.get("incidents") === "on",
+      recoveries: data.get("recoveries") === "on",
+      digest: data.get("digest") === "on",
+      checkIn: data.get("checkIn") === "on"
+    },
+    digestTime: agentFormText(form, "digestTime") || "07:30",
+    timeZone: agentFormText(form, "timeZone") || browserTimeZone()
+  };
+  const checkInHours = agentFormNumber(form, "checkInHours");
+  if (checkInHours !== undefined) body.checkInHours = checkInHours;
+  await agentMutation("/settings", "PUT", body, "Agent behavior saved.");
+}
+
+async function submitAgentNotify(form) {
+  const body = {
+    url: agentFormText(form, "url"),
+    service: agentFormText(form, "service").replace(/^notify\./u, ""),
+    helmsmanUrl: agentFormText(form, "helmsmanUrl")
+  };
+  const token = String(new FormData(form).get("token") || "").trim();
+  if (token) body.token = token;
+  await agentMutation("/notify", "PUT", body, "Notifications saved. Send a test to check them.");
+}
+
+async function testAgentNotify(button) {
+  if (button.disabled) return;
+  button.disabled = true;
+  button.setAttribute("aria-busy", "true");
+  setAgentTestResult("agent-notify-test-result", "stale", "Sending…");
+  try {
+    await api("/api/v2/agent/notify/test", { method: "POST", body: {} });
+    setAgentTestResult("agent-notify-test-result", "healthy", "Sent. Check your phone.");
+  } catch (error) {
+    if (error?.status === 401) await initialize();
+    else setAgentTestResult("agent-notify-test-result", "degraded", error?.message || "The notification could not be sent.");
+  } finally {
+    button.disabled = false;
+    button.removeAttribute("aria-busy");
+  }
+}
+
+async function removeAgentPart(part) {
+  if (!["ai", "notify"].includes(part)) return;
+  const label = part === "ai" ? "Disconnect the model server? The agent keeps reporting Helmsman's own facts." : "Remove phone notifications? The saved token is deleted.";
+  if (!(await confirmAgentChange(label, { confirmLabel: part === "ai" ? "Disconnect" : "Remove" }))) return;
+  await agentMutation(`/${part}`, "DELETE", undefined, part === "ai" ? "Model disconnected." : "Notifications removed.");
+}
+
+function confirmAgentChange(message, { title = "Confirm change", confirmLabel = "Continue", tone = "danger" } = {}) {
+  return confirmControl({ title, message, confirmLabel, tone });
+}
+
+function agentRuleId(service, target) {
+  const base = `${service}-${target}`.toLowerCase().replace(/[^a-z0-9]+/gu, "-").replace(/^-+|-+$/gu, "").slice(0, 38) || "rule";
+  const existing = new Set((agentData()?.config?.rules || []).map(({ id }) => id));
+  let id = base;
+  for (let index = 2; existing.has(id); index += 1) id = `${base}-${index}`.slice(0, 48);
+  return /^[a-z0-9]/u.test(id) ? id : `r-${id}`.slice(0, 48);
+}
+
+async function submitAgentRule(form) {
+  const error = form.querySelector("#agent-rule-error");
+  const fail = (message) => {
+    if (error) error.textContent = message;
+  };
+  const [kind, connectionId, name] = agentFormText(form, "target").split("|");
+  const operation = agentFormText(form, "operation");
+  const service = agentFormText(form, "service");
+  if (kind === "container" && !["restart", "start"].includes(operation)) return fail("Containers can be restarted or started.");
+  if (kind === "guest" && !["start", "reboot"].includes(operation)) return fail("VMs and LXCs can be started or rebooted.");
+  if (!["container", "guest"].includes(kind) || !connectionId || !name) return fail("Choose what the rule acts on.");
+  const rule = {
+    id: agentRuleId(service, name),
+    enabled: true,
+    when: { service, minutes: agentFormNumber(form, "minutes") },
+    then: kind === "container"
+      ? { kind, serviceId: connectionId, containerName: name, operation }
+      : { kind, environmentId: connectionId, vmid: Number(name), operation },
+    cooldownMinutes: agentFormNumber(form, "cooldownMinutes"),
+    maxPerDay: agentFormNumber(form, "maxPerDay")
+  };
+  const rules = [...(agentData()?.config?.rules || []), rule];
+  await agentMutation("/rules", "PUT", { rules }, agentData()?.config?.settings?.autonomy ? "Rule added." : "Rule added. Turn on “Let rules act” for it to run.");
+}
+
+async function changeAgentRule(ruleId, change) {
+  const rules = agentData()?.config?.rules || [];
+  if (!rules.some(({ id }) => id === ruleId)) return;
+  if (change === "delete" && !(await confirmAgentChange("Helmsman stops using this rule immediately.", { title: "Delete this rule?", confirmLabel: "Delete rule" }))) return;
+  const next = change === "delete"
+    ? rules.filter(({ id }) => id !== ruleId)
+    : rules.map((rule) => (rule.id === ruleId ? { ...rule, enabled: !rule.enabled } : rule));
+  await agentMutation("/rules", "PUT", { rules: next }, change === "delete" ? "Rule deleted." : "Rule updated.");
+}
+
+async function decideAgentProposal(button) {
+  const id = String(button.dataset.proposalId || "");
+  const decision = button.dataset.decision === "approve" ? "approve" : "decline";
+  if (!/^[a-f0-9-]{36}$/u.test(id) || state.agent.busy) return;
+  const proposal = (agentData()?.proposals || []).find((candidate) => candidate.id === id);
+  if (decision === "approve") {
+    const action = `${AGENT_OPERATION_LABELS[proposal?.operation] || "Run"} ${proposal?.target || "this target"}`;
+    const confirmed = await confirmAgentChange(`${proposal?.reason ? `${proposal.reason} ` : ""}Helmsman checks the target again before it runs.`, { title: `${action}?`, confirmLabel: action, tone: "default" });
+    if (!confirmed) return;
+  }
+  state.agent.busy = id;
+  rerenderAgent();
+  try {
+    await api(`/api/v2/agent/proposals/${id}`, { method: "POST", body: { decision } });
+    showToast(decision === "approve" ? "Approved. Helmsman is running the action." : "Declined.", "success");
+  } catch (error) {
+    if (error?.status === 401) await initialize();
+    else showToast(error?.message || "That decision could not be saved.", "danger");
+  } finally {
+    state.agent.busy = "";
+    await loadAgent();
+    rerenderAgent();
+  }
+}
+
+async function runAgentJob(job) {
+  if (!["digest", "checkIn"].includes(job) || state.agent.busy) return;
+  state.agent.busy = job;
+  rerenderAgent();
+  try {
+    await api("/api/v2/agent/run", { method: "POST", body: { job } });
+  } catch (error) {
+    if (error?.status === 401) await initialize();
+    else showToast(error?.message || "The agent could not write a summary.", "danger");
+  } finally {
+    state.agent.busy = "";
+    await loadAgent();
+    rerenderAgent();
+  }
+}
+
+async function askAgent() {
+  const question = state.agent.draft.trim().slice(0, AGENT_QUESTION_LIMIT);
+  if (!question || state.agent.asking) return;
+  const history = state.agent.chat
+    .filter((message) => !message.error)
+    .slice(-AGENT_CHAT_LIMIT)
+    .map(({ role, content }) => ({ role, content: content.slice(0, 1_500) }));
+  state.agent.chat.push({ role: "user", content: question });
+  state.agent.draft = "";
+  state.agent.asking = true;
+  rerenderAgent();
+  try {
+    const result = await api("/api/v2/agent/ask", { method: "POST", body: { question, history } });
+    state.agent.chat.push({ role: "assistant", content: String(result?.answer || "No answer."), proposals: result?.proposals || [] });
+    if (result?.proposals?.length) await loadAgent();
+  } catch (error) {
+    if (error?.status === 401) {
+      await initialize();
+      return;
+    }
+    state.agent.chat.push({ role: "assistant", content: error?.message || "The agent could not answer.", error: true });
+  } finally {
+    state.agent.asking = false;
+    state.agent.chat = state.agent.chat.slice(-AGENT_CHAT_LIMIT * 2);
+    rerenderAgent();
+    document.getElementById("agent-ask-input")?.focus({ preventScroll: true });
+  }
+}
+
 function renderSettingsPage() {
   const policy = state.config?.policy || { allowedCidrs: [], allowPublicHttps: false };
   const networkMode = Array.isArray(policy.allowedCidrs) && policy.allowedCidrs.length ? "manual" : "exact";
@@ -4127,6 +4796,7 @@ function renderSettingsPage() {
         <section class="glass-panel settings-card-v5"><header><div><span class="section-kicker">Deployment edge</span><h3>Authentik and HTTPS</h3></div>${icon("shield")}</header><div class="settings-card-v5__body"><p>Optional for localhost. For LAN or external access, terminate HTTPS at a trusted reverse proxy, put Authentik in front, and firewall the container port so that proxy cannot be bypassed.</p></div></section>
         <section class="glass-panel settings-card-v5"><header><div><span class="section-kicker">About</span><h3>Helmsman release</h3></div>${icon("logs")}</header><div class="settings-card-v5__body app-version-v5"><p>Include this exact version when reporting a problem or checking release notes.</p><dl><div><dt>Version</dt><dd data-app-version>${escapeHtml(appVersion)}</dd></div></dl><nav class="button-row app-version-v5__links" aria-label="Helmsman project resources"><a class="button button--compact" href="https://github.com/nunesg130-boop/helmsman" target="_blank" rel="noopener noreferrer" aria-label="Source code (opens in a new tab)">Source</a><a class="button button--compact" href="https://github.com/nunesg130-boop/helmsman/blob/main/LICENSE" target="_blank" rel="noopener noreferrer" aria-label="AGPL-3.0 license (opens in a new tab)">AGPL-3.0 License</a><a class="button button--compact" href="https://github.com/nunesg130-boop/helmsman/blob/main/assets/services/THIRD_PARTY_NOTICES.md" target="_blank" rel="noopener noreferrer" aria-label="Third-party icon notices (opens in a new tab)">Third-party icon notices</a></nav></div></section>
       </div>
+      ${renderAgentSettings()}
     </section>`;
 }
 
@@ -8918,6 +9588,7 @@ function clearAuthenticatedState() {
   state.refreshing = false;
   state.infrastructure = emptyInfrastructureState();
   state.logging = emptyLoggingState();
+  state.agent = emptyAgentState();
   state.lastMarkup = "";
 }
 
@@ -8947,7 +9618,7 @@ async function revokeBrowserSession(sessionId) {
 }
 
 async function loadAuthenticatedData(options = {}) {
-  const [config] = await Promise.all([api("/api/v2/config"), loadOperations(), loadSessions()]);
+  const [config] = await Promise.all([api("/api/v2/config"), loadOperations(), loadSessions(), loadAgent().catch(() => false)]);
   state.config = config;
   state.infrastructure.targets = normalizedInfrastructureTargets(config?.infrastructureEnvironments || config?.infrastructureTargets || []);
   state.infrastructure.loaded = true;
@@ -8991,6 +9662,7 @@ function schedulePolling() {
     if (document.visibilityState === "visible" && state.status?.authenticated) {
       try {
         await loadOperations();
+        if (currentRoute() === "system") await loadAgent({ render: true });
       } catch {
         // The next interval or a manual check retries without replacing the UI.
       }
@@ -9054,6 +9726,40 @@ document.addEventListener("click", async (event) => {
   }
   if (action === "edit-manual") {
     openManualEditor();
+    return;
+  }
+  if (action === "agent-test-ai") {
+    await testAgentModel(target);
+    return;
+  }
+  if (action === "agent-test-notify") {
+    await testAgentNotify(target);
+    return;
+  }
+  if (action === "agent-remove") {
+    await removeAgentPart(target.dataset.agentPart);
+    return;
+  }
+  if (action === "agent-rule-toggle" || action === "agent-rule-delete") {
+    await changeAgentRule(String(target.dataset.ruleId || ""), action === "agent-rule-delete" ? "delete" : "toggle");
+    return;
+  }
+  if (action === "agent-proposal") {
+    await decideAgentProposal(target);
+    return;
+  }
+  if (action === "agent-run") {
+    await runAgentJob(target.dataset.job);
+    return;
+  }
+  if (action === "agent-chat-clear") {
+    state.agent.chat = [];
+    rerenderAgent();
+    return;
+  }
+  if (action === "agent-use-local-zone") {
+    const input = target.closest("form")?.querySelector("input[name='timeZone']");
+    if (input) input.value = String(target.dataset.zone || "");
     return;
   }
   if (action === "manual-use-template") {
@@ -9256,6 +9962,10 @@ document.addEventListener("change", (event) => {
 
 document.addEventListener("input", (event) => {
   const fieldName = String(event.target?.name || "");
+  if (event.target?.id === "agent-ask-input") {
+    state.agent.draft = String(event.target.value || "").slice(0, AGENT_QUESTION_LIMIT);
+    return;
+  }
   const lokiQueryForm = event.target.closest?.("#loki-query-form");
   if (lokiQueryForm && ["query", "search"].includes(fieldName)) {
     syncLokiQueryControls(lokiQueryForm);
@@ -9364,6 +10074,11 @@ document.addEventListener("submit", (event) => {
   if (event.target.id === "proxmox-endpoint-form") submitInfrastructureEndpoint(event.target);
   if (event.target.id === "network-form") submitNetwork(event.target);
   if (event.target.id === "launch-address-form") submitLaunchAddress(event.target);
+  if (event.target.id === "agent-ai-form") submitAgentModel(event.target);
+  if (event.target.id === "agent-settings-form") submitAgentSettings(event.target);
+  if (event.target.id === "agent-notify-form") submitAgentNotify(event.target);
+  if (event.target.id === "agent-rule-form") submitAgentRule(event.target);
+  if (event.target.id === "agent-ask-form") askAgent();
 });
 
 window.addEventListener("hashchange", async () => {
@@ -9383,9 +10098,17 @@ window.addEventListener("hashchange", async () => {
   }
   if (currentRoute() === "launchpad" && state.status?.authenticated) await loadLaunchpadLinks();
   if (currentRoute() === "manual" && state.status?.authenticated) await loadManual();
+  if (["system", "settings"].includes(currentRoute()) && state.status?.authenticated) void loadAgent({ render: true });
   resetRouteScroll();
   main.focus({ preventScroll: true });
   if (currentRoute() === "manual") revealManualTarget();
+});
+
+document.addEventListener("keydown", (event) => {
+  // Enter sends a question; Shift+Enter starts a new line.
+  if (event.target?.id !== "agent-ask-input" || event.key !== "Enter" || event.shiftKey || event.isComposing) return;
+  event.preventDefault();
+  askAgent();
 });
 
 window.addEventListener("keydown", (event) => {
