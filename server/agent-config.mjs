@@ -44,6 +44,9 @@ export const AGENT_LIMITS = Object.freeze({
   repeatHours: { min: 1, max: 168, default: 24 },
   healthContainers: 64,
   stuckMinutes: { min: 10, max: 1_440, default: 60 },
+  indexerTests: { min: 1, max: 5, default: 2 },
+  indexerSpacingMinutes: { min: 5, max: 120, default: 15 },
+  indexerTestsPerHour: 12,
   approvedHosts: 32
 });
 
@@ -188,6 +191,25 @@ export function canonicalDownloads(value) {
   };
 }
 
+/**
+ * Indexers: whether the agent may test Prowlarr indexers, on its own when
+ * one starts failing and when the owner asks in chat. A failing indexer is
+ * tested up to `tests` times, `spacingMinutes` apart, before the owner is
+ * notified. Testing changes nothing in Prowlarr.
+ */
+export function defaultIndexers() {
+  return { enabled: false, tests: AGENT_LIMITS.indexerTests.default, spacingMinutes: AGENT_LIMITS.indexerSpacingMinutes.default };
+}
+
+export function canonicalIndexers(value) {
+  exactKeys(value, ["enabled", "tests", "spacingMinutes"], [], "Indexers");
+  return {
+    enabled: bool(value.enabled, "Indexer testing enabled"),
+    tests: integer(value.tests, AGENT_LIMITS.indexerTests, "The number of tests"),
+    spacingMinutes: integer(value.spacingMinutes, AGENT_LIMITS.indexerSpacingMinutes, "The time between tests")
+  };
+}
+
 export function emptyAgentConfig() {
   return { ai: null, notify: null, settings: defaultSettings(), rules: [] };
 }
@@ -326,14 +348,15 @@ export function canonicalRules(value) {
 export function canonicalAgentConfig(value) {
   // containerHealth is optional and only saved once the owner changes it,
   // so a configuration that never used it still loads in older versions.
-  exactKeys(value, ["ai", "notify", "settings", "rules"], ["containerHealth", "downloads"], "The agent configuration");
+  exactKeys(value, ["ai", "notify", "settings", "rules"], ["containerHealth", "downloads", "indexers"], "The agent configuration");
   return {
     ai: canonicalAiConfig(value.ai),
     notify: canonicalNotifyConfig(value.notify),
     settings: canonicalSettings(value.settings),
     rules: canonicalRules(value.rules),
     ...(value.containerHealth === undefined ? {} : { containerHealth: canonicalContainerHealth(value.containerHealth) }),
-    ...(value.downloads === undefined ? {} : { downloads: canonicalDownloads(value.downloads) })
+    ...(value.downloads === undefined ? {} : { downloads: canonicalDownloads(value.downloads) }),
+    ...(value.indexers === undefined ? {} : { indexers: canonicalIndexers(value.indexers) })
   };
 }
 

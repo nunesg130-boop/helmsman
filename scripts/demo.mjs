@@ -364,11 +364,80 @@ function arr(service, upstreamPath) {
   return { status: 404, json: {} };
 }
 
-function prowlarr(upstreamPath) {
+// Demo indexers. Their `fields` hold a fake secret so tests can prove
+// Helmsman never passes indexer settings on.
+const DEMO_INDEXER_SECRET = "demo-indexer-secret-0123456789abcdef";
+const INDEXERS = [
+  { id: 1, name: "Example Public Tracker", protocol: "torrent", privacy: "public", priority: 25 },
+  { id: 2, name: "Example Private Tracker", protocol: "torrent", privacy: "private", priority: 10 },
+  { id: 3, name: "Example Usenet", protocol: "usenet", privacy: "private", priority: 20 }
+];
+const failingIndexers = new Set();
+const indexerFailures = new Map();
+
+function indexerRecord(indexer) {
+  return { ...indexer, enable: true, implementation: "Cardigann", fields: [{ name: "apiKey", value: DEMO_INDEXER_SECRET }] };
+}
+
+function prowlarr(upstreamPath, method = "GET", body = Buffer.alloc(0)) {
   if (upstreamPath === "/api/v1/system/status") return { appName: "Prowlarr", version: "2.1.5.5216" };
   if (upstreamPath === "/api/v1/health") return [];
-  if (upstreamPath === "/api/v1/indexerstatus") return [];
+  if (upstreamPath === "/api/v1/indexerstatus") {
+    return [...failingIndexers].map((id) => ({
+      id,
+      indexerId: id,
+      initialFailure: indexerFailures.get(id),
+      mostRecentFailure: new Date().toISOString(),
+      disabledTill: new Date(Date.now() + 30 * 60_000).toISOString()
+    }));
+  }
+  if (upstreamPath === "/api/v1/indexer" && method === "GET") return INDEXERS.map(indexerRecord);
+  const single = /^\/api\/v1\/indexer\/(\d+)$/u.exec(upstreamPath);
+  if (single && method === "GET") {
+    const indexer = INDEXERS.find(({ id }) => id === Number(single[1]));
+    return indexer ? indexerRecord(indexer) : { status: 404, json: {} };
+  }
+  if (upstreamPath === "/api/v1/indexerstats") {
+    return { indexers: INDEXERS.map(({ id, name }) => ({ indexerId: id, indexerName: name, numberOfQueries: 40 * id, numberOfGrabs: 3 * id, numberOfFailedQueries: failingIndexers.has(id) ? 6 : 0, averageResponseTime: 300 + id * 120 })) };
+  }
+  if (upstreamPath === "/api/v1/applications" && method === "GET") {
+    return [
+      { id: 1, name: "Sonarr", implementationName: "Sonarr", syncLevel: "fullSync", fields: [{ name: "apiKey", value: DEMO_INDEXER_SECRET }] },
+      { id: 2, name: "Radarr", implementationName: "Radarr", syncLevel: "fullSync", fields: [{ name: "apiKey", value: DEMO_INDEXER_SECRET }] }
+    ];
+  }
+  const failure = [{ propertyName: "BaseUrl", errorMessage: "Unable to connect to indexer: the site answered with a Cloudflare challenge", severity: "error" }];
+  if (upstreamPath === "/api/v1/indexer/test" && method === "POST") {
+    let id = null;
+    try {
+      id = JSON.parse(body.toString("utf8")).id;
+    } catch {
+      return { status: 400, json: [] };
+    }
+    return failingIndexers.has(id) ? { status: 400, json: failure } : {};
+  }
+  if (upstreamPath === "/api/v1/indexer/testall" && method === "POST") {
+    const results = INDEXERS.map(({ id }) => ({ id, isValid: !failingIndexers.has(id), validationFailures: failingIndexers.has(id) ? failure : [] }));
+    return results.every(({ isValid }) => isValid) ? results : { status: 400, json: results };
+  }
+  if (upstreamPath === "/api/v1/applications/testall" && method === "POST") {
+    return [{ id: 1, isValid: true, validationFailures: [] }, { id: 2, isValid: true, validationFailures: [] }];
+  }
+  if (upstreamPath === "/api/v1/command" && method === "POST") return { status: 201, json: { id: 1, name: "ApplicationIndexerSync" } };
   return { status: 404, json: {} };
+}
+
+// An indexer starts failing in Prowlarr, as when a tracker's site is down.
+function failIndexer(name = "Example Public Tracker") {
+  const indexer = INDEXERS.find((candidate) => candidate.name === name);
+  if (!indexer) throw new Error(`The demo has no indexer called ${name}.`);
+  failingIndexers.add(indexer.id);
+  indexerFailures.set(indexer.id, new Date().toISOString());
+}
+
+function recoverIndexer(name = "Example Public Tracker") {
+  const indexer = INDEXERS.find((candidate) => candidate.name === name);
+  if (indexer) failingIndexers.delete(indexer.id);
 }
 
 function bazarr(upstreamPath) {
@@ -946,6 +1015,9 @@ export async function startDemo(options = {}) {
     breakService,
     makeUnhealthy,
     stallDownload,
+    failIndexer,
+    recoverIndexer,
+    demoIndexerSecret: DEMO_INDEXER_SECRET,
     notifications,
     printNotifications(value = true) { demoPrintNotifications = value; }
   };

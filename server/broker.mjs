@@ -35,6 +35,15 @@ import { probeProxmox, probeProxmoxEndpoint } from "./proxmox-probes.mjs";
 import { probePortainer } from "./portainer-probes.mjs";
 import { probeService } from "./service-probes.mjs";
 import {
+  authorizeProwlarrStep,
+  parseApplications,
+  parseIndexers,
+  parseTestResults,
+  PROWLARR_LIMITS,
+  PROWLARR_OPERATIONS,
+  validationMessage
+} from "./prowlarr.mjs";
+import {
   connectionAuthorizationBoundaryHash,
   isSecureBrowserOrigin,
   NetworkPolicyError,
@@ -45,7 +54,7 @@ import {
 } from "./network.mjs";
 import { generateSecretToken, hashToken, StateStore, tokenMatches } from "./state.mjs";
 
-const DEFAULT_VERSION = "1.11.1";
+const DEFAULT_VERSION = "1.12.0";
 const requestedVersion = String(process.env.HELMSMAN_VERSION || DEFAULT_VERSION);
 const VERSION = /^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/u.test(requestedVersion)
   ? requestedVersion
@@ -2715,6 +2724,123 @@ export async function createBroker(options = {}) {
     }
   }
 
+  // ------------------------------------------------------- Prowlarr --
+
+  function prowlarrStatusError(status, what) {
+    if ([401, 403].includes(status)) return new BrokerError(502, "ACTION_PERMISSION_DENIED", "Prowlarr rejected the saved API key.");
+    if (status === 404) return new BrokerError(409, "ACTION_TARGET_CHANGED", `Prowlarr no longer has that ${what}; refresh and try again.`);
+    return new BrokerError(502, "UPSTREAM_ACTION_FAILED", `Prowlarr did not answer the ${what} request.`);
+  }
+
+  function jsonBody(upstream) {
+    const raw = Buffer.isBuffer(upstream?.body) ? upstream.body.toString("utf8") : String(upstream?.body ?? "");
+    try {
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Reads Prowlarr's indexers live, keeping only safe fields (see
+   * prowlarr.mjs). Statistics and applications are optional extras.
+   */
+  async function readProwlarrIndexers({ signal } = {}) {
+    const read = (upstreamPath, maxBytes) => monitorRequest("prowlarr", upstreamPath, {
+      method: "GET",
+      responseType: "json",
+      maxBytes,
+      timeoutMs: Math.min(15_000, limits.upstreamTimeoutMs),
+      signal
+    });
+    const [list, status] = await Promise.all([
+      read("/api/v1/indexer", PROWLARR_LIMITS.listBytes),
+      read("/api/v1/indexerstatus", PROWLARR_LIMITS.resultBytes)
+    ]);
+    for (const [response, what] of [[list, "indexer list"], [status, "indexer status"]]) {
+      if (response.status < 200 || response.status >= 300) throw prowlarrStatusError(response.status, what);
+    }
+    const [stats, applications] = await Promise.allSettled([
+      read("/api/v1/indexerstats", PROWLARR_LIMITS.listBytes),
+      read("/api/v1/applications", PROWLARR_LIMITS.resultBytes)
+    ]);
+    const ok = (result) => (result.status === "fulfilled" && result.value.status >= 200 && result.value.status < 300 ? result.value.body : null);
+    let indexers;
+    try {
+      indexers = parseIndexers(list.body, status.body, ok(stats));
+    } catch {
+      throw new BrokerError(502, "UPSTREAM_CONTENT_REJECTED", "Prowlarr returned an indexer list Helmsman could not read.");
+    }
+    return { checkedAt: new Date().toISOString(), indexers, applications: parseApplications(ok(applications)) };
+  }
+
+  /**
+   * Runs one allowlisted Prowlarr action. Testing one indexer reads its full
+   * record and posts it straight back to Prowlarr's test endpoint; the
+   * record is never returned or stored.
+   */
+  async function executeProwlarrAction(input) {
+    const operation = PROWLARR_OPERATIONS.includes(input?.operation) ? input.operation : null;
+    if (!operation) throw new BrokerError(404, "ROUTE_NOT_ALLOWED", "That Prowlarr action is not allowed.");
+    const release = reserveServiceCapacity("prowlarr");
+    const headers = monitorCredentialHeaders("prowlarr", input.credential, input.connection);
+    const send = async (route, maxBytes) => {
+      if (!route.allowed) throw new BrokerError(route.status || 404, route.code, route.message);
+      const body = Buffer.from(route.body, "utf8");
+      try {
+        return await dispatchUpstream({
+          request: { method: route.method, headers: { ...headers, ...(body.length ? { "content-type": "application/json" } : {}) } },
+          body,
+          targetResolution: input.targetResolution,
+          route,
+          deviceOrigin: "http://127.0.0.1",
+          targetRevision: input.connection.targetRevision,
+          shutdownSignal: shutdownController.signal,
+          limits: { ...limits, maxApiResponseBytes: Math.min(limits.maxApiResponseBytes, maxBytes) }
+        });
+      } finally {
+        body.fill(0);
+      }
+    };
+    try {
+      if (operation === "testIndexer") {
+        const indexerId = input.indexerId;
+        const read = await send(authorizeProwlarrStep("readIndexer", { indexerId }), PROWLARR_LIMITS.indexerRecordBytes);
+        if (read.status < 200 || read.status >= 300) throw prowlarrStatusError(read.status, "indexer");
+        const record = Buffer.isBuffer(read.body) ? read.body.toString("utf8") : String(read.body ?? "");
+        if (Buffer.isBuffer(read.body)) read.body.fill(0);
+        const testRoute = authorizeProwlarrStep("testIndexer", { indexerId, record });
+        if (!testRoute.allowed) throw new BrokerError(502, "UPSTREAM_CONTENT_REJECTED", "Prowlarr returned an indexer record Helmsman could not test.");
+        const tested = await send(testRoute, PROWLARR_LIMITS.resultBytes);
+        if (tested.status >= 200 && tested.status < 300) return { ok: true, operation, indexerId, passed: true, message: "" };
+        if (tested.status === 400) {
+          return { ok: true, operation, indexerId, passed: false, message: validationMessage(jsonBody(tested)) || "The test failed." };
+        }
+        throw prowlarrStatusError(tested.status, "indexer test");
+      }
+      if (operation === "syncApps") {
+        const synced = await send(authorizeProwlarrStep("syncApps"), 64 * 1024);
+        acceptedActionStatus(synced, "prowlarr");
+        return { ok: true, operation };
+      }
+      const step = operation === "testApps" ? "testApps" : "testAllIndexers";
+      const tested = await send(authorizeProwlarrStep(step), PROWLARR_LIMITS.resultBytes);
+      // Prowlarr answers 400 when any of them failed, with the same list.
+      if (![200, 201, 400].includes(tested.status)) throw prowlarrStatusError(tested.status, operation === "testApps" ? "application test" : "indexer test");
+      let results;
+      try {
+        results = parseTestResults(jsonBody(tested));
+      } catch {
+        throw new BrokerError(502, "UPSTREAM_CONTENT_REJECTED", "Prowlarr returned test results Helmsman could not read.");
+      }
+      return { ok: true, operation, results };
+    } catch (error) {
+      throw actionDispatchError(error, "prowlarr");
+    } finally {
+      release();
+    }
+  }
+
   const seerrRequestMetadata = createSeerrRequestMetadataEnricher({
     fetchDetail: async (candidate, context) => {
       const type = candidate.mediaType === "movie" ? "movie" : "tv";
@@ -2775,6 +2901,8 @@ export async function createBroker(options = {}) {
     executePortainerContainerAction,
     executeProxmoxWorkloadAction,
     executeMediaRecoveryAction,
+    executeProwlarrAction,
+    readProwlarrIndexers,
     fetchSeerrSeriesSeasons,
     fetchMediaArtwork: (descriptor, context = {}) => mediaArtwork.get(descriptor, { signal: context.signal }),
     exchangeServiceLogin,
@@ -3134,6 +3262,7 @@ export async function createBroker(options = {}) {
       snapshot: () => monitor.getSnapshot(),
       subscribe: (callback) => monitor.subscribe(callback),
       performAction: (kind, body) => controlPlane.performAction(kind, body),
+      readIndexers: () => controlPlane.readProwlarrIndexers(),
       manual: () => manual?.get?.().markdown || "",
       events: (query) => eventJournal.query(query),
       recordEvent: (event) => { recordEvent(event); },

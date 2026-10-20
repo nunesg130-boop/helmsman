@@ -137,3 +137,53 @@ test("the demo agent explains an outage, proposes a fix, and notifies once", { t
     await demo.stop();
   }
 });
+
+test("Prowlarr indexers can be listed and tested without exposing their settings", { timeout: 60_000 }, async () => {
+  const demo = await startDemo({ port: 0 });
+  try {
+    const login = await request(demo, "/api/v2/auth/jellyfin/login", "POST", { username: demo.username, password: demo.password, deviceName: "Prowlarr test", origin: demo.origin });
+    const auth = { cookie: String(login.headers["set-cookie"][0]).split(";", 1)[0], csrf: login.json.csrfToken };
+    assert.equal((await request(demo, "/api/v2/prowlarr/indexers")).status, 401);
+
+    let listed = await request(demo, "/api/v2/prowlarr/indexers", "GET", undefined, auth);
+    assert.equal(listed.status, 200, JSON.stringify(listed.json));
+    assert.deepEqual(listed.json.indexers.map(({ name, failing }) => [name, failing]), [
+      ["Example Private Tracker", false],
+      ["Example Public Tracker", false],
+      ["Example Usenet", false]
+    ]);
+    assert.deepEqual(listed.json.applications.map(({ name }) => name), ["Radarr", "Sonarr"]);
+    assert.equal(listed.bytes.toString("utf8").includes(demo.demoIndexerSecret), false, "no indexer or app secret reaches the browser");
+
+    demo.failIndexer("Example Public Tracker");
+    await request(demo, "/api/v2/operations/refresh", "POST", {}, auth);
+    listed = await request(demo, "/api/v2/prowlarr/indexers", "GET", undefined, auth);
+    const failing = listed.json.indexers[0];
+    assert.equal(failing.name, "Example Public Tracker");
+    assert.equal(failing.failing, true);
+    const targetRevision = listed.json.targetRevision;
+
+    const act = (body, session = auth) => request(demo, "/api/v2/actions/prowlarr", "POST", body, session);
+    const failed = await act({ operation: "testIndexer", indexerId: failing.id, targetRevision });
+    assert.equal(failed.status, 200, JSON.stringify(failed.json));
+    assert.deepEqual(failed.json, { ok: true, operation: "testIndexer", indexerId: failing.id, passed: false, message: "Unable to connect to indexer: the site answered with a Cloudflare challenge" });
+    const passed = await act({ operation: "testIndexer", indexerId: listed.json.indexers[1].id, targetRevision });
+    assert.equal(passed.json.passed, true);
+
+    const all = await act({ operation: "testAllIndexers", targetRevision });
+    assert.deepEqual(all.json.results.map(({ ok }) => ok), [false, true, true]);
+    assert.equal((await act({ operation: "syncApps", targetRevision })).json.ok, true);
+    assert.deepEqual((await act({ operation: "testApps", targetRevision })).json.results.map(({ ok }) => ok), [true, true]);
+
+    assert.equal((await act({ operation: "testIndexer", indexerId: failing.id, targetRevision }, { cookie: auth.cookie })).status, 403, "CSRF is required");
+    assert.equal((await act({ operation: "testIndexer", indexerId: failing.id, targetRevision: "00000000-0000-4000-8000-000000000000" })).json.code, "TARGET_CHANGED");
+    assert.equal((await act({ operation: "deleteIndexer", indexerId: failing.id, targetRevision })).status, 400);
+    assert.equal((await act({ operation: "testAllIndexers", indexerId: failing.id, targetRevision })).status, 400);
+    assert.equal((await act({ operation: "testIndexer", indexerId: 999, targetRevision })).json.code, "ACTION_TARGET_CHANGED");
+
+    // The agent's entry point only tests.
+    await assert.rejects(demo.broker.controlPlane.performAction("prowlarr", { operation: "syncApps", targetRevision }), { code: "INVALID_ACTION_TARGET" });
+  } finally {
+    await demo.stop();
+  }
+});

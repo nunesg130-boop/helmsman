@@ -323,7 +323,12 @@ const policies = {
       exact: new Set([
         "/api/v1/system/status",
         "/api/v1/health",
-        "/api/v1/indexerstatus"
+        "/api/v1/indexerstatus",
+        // Internal only (see PROWLARR_CONFIGURATION): these records carry
+        // indexer and application secrets, so only the server reads them.
+        "/api/v1/indexer",
+        "/api/v1/indexerstats",
+        "/api/v1/applications"
       ]),
       patterns: []
     }
@@ -502,6 +507,8 @@ function validateFixedCapabilityQuery(service, upstreamPath, url) {
   return { allowed: true };
 }
 
+const PROWLARR_CONFIGURATION = new Set(["/api/v1/indexer", "/api/v1/indexerstats", "/api/v1/applications"]);
+
 export function authorizeBridgeRoute(serviceValue, methodValue, requestUrl) {
   const service = canonicalServiceId(serviceValue);
   if (!service) return { allowed: false, code: "SERVICE_NOT_SUPPORTED", message: "That service is not supported." };
@@ -575,7 +582,7 @@ export function authorizeBridgeRoute(serviceValue, methodValue, requestUrl) {
     upstreamPathAndQuery: `${upstreamPath}${url.search}`,
     isArtwork,
     isLogin,
-    internalOnly: isLogin || isJellyfinAuthentication
+    internalOnly: isLogin || isJellyfinAuthentication || (service === "prowlarr" && PROWLARR_CONFIGURATION.has(upstreamPath))
   };
 }
 
