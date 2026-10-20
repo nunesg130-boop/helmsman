@@ -39,6 +39,10 @@ export const AGENT_LIMITS = Object.freeze({
   cooldownMinutes: { min: 10, max: 1_440, default: 60 },
   maxPerDay: { min: 1, max: 10, default: 3 },
   extraInstructions: 2_000,
+  healthMinutes: { min: 1, max: 60, default: 3 },
+  repeatCount: { min: 2, max: 10, default: 3 },
+  repeatHours: { min: 1, max: 168, default: 24 },
+  healthContainers: 64,
   approvedHosts: 32
 });
 
@@ -122,6 +126,44 @@ export function defaultSettings() {
     timeZone: "UTC",
     checkInHours: AGENT_LIMITS.checkInHours.default,
     autonomy: false
+  };
+}
+
+/**
+ * Restarting unhealthy containers. Off until the owner turns it on. `scope`
+ * "all" covers every container except `containers`; "only" covers just the
+ * listed ones. After `repeatCount` unhealthy episodes within `repeatHours`
+ * Helmsman stops restarting that container and tells the owner instead.
+ */
+export function defaultContainerHealth() {
+  return {
+    enabled: false,
+    scope: "all",
+    containers: [],
+    minutes: AGENT_LIMITS.healthMinutes.default,
+    repeatCount: AGENT_LIMITS.repeatCount.default,
+    repeatHours: AGENT_LIMITS.repeatHours.default
+  };
+}
+
+export function canonicalContainerHealth(value) {
+  exactKeys(value, ["enabled", "scope", "containers", "minutes", "repeatCount", "repeatHours"], [], "Container health");
+  if (!["all", "only"].includes(value.scope)) invalid("Container health must cover all containers or only listed ones.");
+  if (!Array.isArray(value.containers) || value.containers.length > AGENT_LIMITS.healthContainers) {
+    invalid(`List up to ${AGENT_LIMITS.healthContainers} containers.`);
+  }
+  const containers = [];
+  for (const name of value.containers) {
+    if (typeof name !== "string" || !CONTAINER_NAME.test(name)) invalid("Container names may use letters, digits, dots, dashes and underscores.");
+    if (!containers.includes(name)) containers.push(name);
+  }
+  return {
+    enabled: bool(value.enabled, "Container health enabled"),
+    scope: value.scope,
+    containers: containers.sort((left, right) => left.localeCompare(right)),
+    minutes: integer(value.minutes, AGENT_LIMITS.healthMinutes, "The unhealthy wait"),
+    repeatCount: integer(value.repeatCount, AGENT_LIMITS.repeatCount, "The repeat count"),
+    repeatHours: integer(value.repeatHours, AGENT_LIMITS.repeatHours, "The repeat window")
   };
 }
 
@@ -261,12 +303,15 @@ export function canonicalRules(value) {
 }
 
 export function canonicalAgentConfig(value) {
-  exactKeys(value, ["ai", "notify", "settings", "rules"], [], "The agent configuration");
+  // containerHealth is optional and only saved once the owner changes it,
+  // so a configuration that never used it still loads in older versions.
+  exactKeys(value, ["ai", "notify", "settings", "rules"], ["containerHealth"], "The agent configuration");
   return {
     ai: canonicalAiConfig(value.ai),
     notify: canonicalNotifyConfig(value.notify),
     settings: canonicalSettings(value.settings),
-    rules: canonicalRules(value.rules)
+    rules: canonicalRules(value.rules),
+    ...(value.containerHealth === undefined ? {} : { containerHealth: canonicalContainerHealth(value.containerHealth) })
   };
 }
 

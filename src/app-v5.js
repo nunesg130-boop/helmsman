@@ -4228,7 +4228,7 @@ function renderAgentOverviewCard() {
   const data = agentData();
   if (!state.agent.loaded) return "";
   const status = agentStatus(data);
-  const header = `<header><div><span class="section-kicker">Local AI</span><h3 id="system-agent-title">Agent</h3></div><div class="agent-card__meta"><span class="system-service-state is-${status.tone}"><i class="health-dot is-${status.tone}"></i>${escapeHtml(status.label)}</span><a class="system-overview-link" href="#/settings">Agent settings ${icon("chevron")}</a></div></header>`;
+  const header = `<header><div><span class="section-kicker">Local AI</span><h3 id="system-agent-title">Agent</h3></div><div class="agent-card__meta"><span class="system-service-state is-${status.tone}"><i class="health-dot is-${status.tone}"></i>${escapeHtml(status.label)}</span><a class="system-overview-link" href="#/settings" data-settings-tab="agent">Agent settings ${icon("chevron")}</a></div></header>`;
   if (!data) {
     return `<section class="system-overview-card system-overview-card--agent" aria-labelledby="system-agent-title">${header}${renderMediaEmpty("Agent unavailable", state.agent.error || "The agent could not be reached.", "shield")}</section>`;
   }
@@ -4236,7 +4236,7 @@ function renderAgentOverviewCard() {
     return `<section class="system-overview-card system-overview-card--agent" aria-labelledby="system-agent-title">${header}
       <div class="agent-intro">
         <p>Connect a model running on your own hardware and Helmsman will explain problems in plain language, send a daily summary, answer questions, and suggest fixes for you to approve.</p>
-        <a class="button button--primary" href="#/settings">Set up the agent</a>
+        <a class="button button--primary" href="#/settings" data-settings-tab="agent">Set up the agent</a>
       </div>
     </section>`;
   }
@@ -4325,15 +4325,15 @@ function renderAgentSetupSteps(data) {
     },
     { done: Boolean(configured.ai), title: "Connect it below", detail: "Enter its address, test it, and pick one of the models it lists." },
     { done: Boolean(configured.ai && configured.settings?.enabled), title: "Turn the agent on", detail: "Choose which events it reports and your time zone for the daily summary." },
-    { done: Boolean(configured.notify), optional: true, title: "Send reports to your phone", detail: "Through a Home Assistant notify action, such as the Companion app's mobile_app action." },
-    { done: Boolean(configured.rules?.length), optional: true, title: "Add rules", detail: "Let Helmsman restart or start something by itself when a service stays down. The model never acts on its own; rules are checked by Helmsman's code." }
+    { done: Boolean(configured.notify), optional: true, tab: "notifications", title: "Send reports to your phone", detail: "Through a Home Assistant notify action, such as the Companion app's mobile_app action." },
+    { done: Boolean(configured.rules?.length || configured.containerHealth?.enabled), optional: true, tab: "automation", title: "Let it fix things", detail: "Restart unhealthy containers, or restart or start something when a service stays down. The model never acts on its own; Helmsman's code checks every action." }
   ];
   return `<section class="glass-panel settings-card-v5 agent-setup">
     <header><div><span class="section-kicker">Getting started</span><h3>Set up the agent</h3></div>${icon("book")}</header>
     <div class="settings-card-v5__body">
       <ol class="agent-steps">${steps.map((step, index) => `<li class="${step.done ? "is-done" : ""}">
         <span class="agent-steps__marker" aria-hidden="true">${step.done ? icon("check") : index + 1}</span>
-        <div><strong>${escapeHtml(step.title)}${step.optional ? ` <em>Optional</em>` : ""}</strong><p>${escapeHtml(step.detail)}</p></div>
+        <div><strong>${escapeHtml(step.title)}${step.optional ? ` <em>Optional</em>` : ""}</strong><p>${escapeHtml(step.detail)}</p>${step.tab ? `<button class="agent-text-button" type="button" data-action="settings-tab" data-settings-tab="${step.tab}">Open ${step.tab === "notifications" ? "Notifications" : "Automation"}</button>` : ""}</div>
         <span class="sr-only">${step.done ? "Done" : "Not done"}</span>
       </li>`).join("")}</ol>
       <p class="agent-setup__more">Full guide, including GPU sizing and how to expose Ollama on your network: <a href="https://github.com/nunesg130-boop/helmsman/blob/main/docs/LOCAL-AI.md" target="_blank" rel="noopener noreferrer">docs/LOCAL-AI.md</a>.</p>
@@ -4436,8 +4436,6 @@ function renderAgentBehaviorCard(data) {
         <label><span>Check-in every (hours)</span><input name="checkInHours" type="number" min="${checkIn.min}" max="${checkIn.max}" value="${Number(settings.checkInHours || checkIn.default)}" /></label>
       </div>
       <label><span>Time zone</span><input name="timeZone" type="text" autocomplete="off" spellcheck="false" placeholder="Region/City, such as Europe/Berlin" value="${escapeHtml(zone)}" />${zone !== localZone ? `<small>This browser is in ${escapeHtml(localZone)}. <button class="agent-text-button" type="button" data-action="agent-use-local-zone" data-zone="${escapeHtml(localZone)}">Use it</button></small>` : ""}</label>
-      <h4>Acting on its own</h4>
-      <label class="check-row agent-autonomy"><input name="autonomy" type="checkbox" ${settings.autonomy ? "checked" : ""}/><span><strong>Let rules act</strong><small>Rules below run only while this is on. Everything the model suggests still waits for your approval.</small></span></label>
       <div class="button-row"><button class="button button--primary" type="submit">Save behavior</button></div>
       <h4>In this browser</h4>
       ${renderAgentHelperSetting()}
@@ -4448,7 +4446,7 @@ function renderAgentBehaviorCard(data) {
 function renderAgentNotifyCard(data) {
   const notify = data?.config?.notify;
   return `<form class="glass-panel settings-card-v5" id="agent-notify-form">
-    <header><div><span class="section-kicker">Step 4 · Optional</span><h3>Phone notifications</h3></div>${icon("bell")}</header>
+    <header><div><span class="section-kicker">Home Assistant</span><h3>Phone notifications</h3></div>${icon("bell")}</header>
     <div class="settings-card-v5__body">
       <p>Reports are sent through a Home Assistant notify action. Notes still appear on the Overview without this.</p>
       <div class="form-grid">
@@ -4478,10 +4476,10 @@ function renderAgentRulesCard(data) {
   const autonomy = Boolean(data?.config?.settings?.autonomy);
   const canAdd = services.length && (containers.length || guests.length) && rules.length < Number(limits.rules || 20);
   return `<section class="glass-panel settings-card-v5 agent-rules">
-    <header><div><span class="section-kicker">Step 5 · Optional</span><h3>Rules</h3></div>${icon("shield")}</header>
+    <header><div><span class="section-kicker">When a service stays down</span><h3>Rules</h3></div>${icon("shield")}</header>
     <div class="settings-card-v5__body">
       <p>A rule restarts or starts one container or guest when a service stays down. Helmsman runs it once per incident, within its cooldown and daily limit, and never more than 10 actions a day across all rules.</p>
-      ${autonomy ? "" : `<div class="security-note">${icon("lock")}<div><strong>Rules are paused</strong><span>Turn on “Let rules act” under What the agent does for them to run.</span></div></div>`}
+      ${autonomy ? "" : `<div class="security-note">${icon("lock")}<div><strong>Rules are paused</strong><span>Turn on “Let rules act” above for them to run.</span></div></div>`}
       ${rules.length ? `<ul class="agent-rule-list">${rules.map((rule) => {
         const sentence = agentRuleSentence(rule);
         return `<li class="${rule.enabled ? "" : "is-disabled"}">
@@ -4529,7 +4527,111 @@ function renderAgentSettings() {
       ${renderAgentModelCard(data)}
       ${renderAgentVoiceCard(data)}
       ${renderAgentBehaviorCard(data)}
+    </div>
+  </section>`;
+}
+
+function renderAgentUnavailable(kind) {
+  if (!state.agent.loaded) return `<section class="agent-settings"><div class="empty-state"><span>Loading ${kind}…</span></div></section>`;
+  return `<section class="agent-settings"><div class="empty-state"><strong>Agent unavailable</strong><span>${escapeHtml(state.agent.error || "The agent could not be reached.")}</span></div></section>`;
+}
+
+function renderAgentNotificationsTab() {
+  const data = agentData();
+  if (!data) return renderAgentUnavailable("notification settings");
+  const triggers = data.config?.settings?.triggers || {};
+  const enabled = Boolean(data.config?.settings?.enabled);
+  const sent = [
+    [triggers.incidents !== false, "New or worsening problems", "One notification per service outage."],
+    [triggers.recoveries !== false, "Recoveries", "When a service that was down is healthy again."],
+    [triggers.digest !== false, "Daily summary", `At ${escapeHtml(data.config?.settings?.digestTime || "07:30")} in ${escapeHtml(data.config?.settings?.timeZone || "UTC")}.`],
+    [triggers.checkIn !== false, "Check-ins", "Only when something needs attention."],
+    [true, "Automatic actions", "Repeat container restarts, giving up on a container, and failed actions."]
+  ];
+  return `<section class="agent-settings" aria-labelledby="agent-notifications-title">
+    <header class="detail-hero"><div><span class="section-kicker">Agent</span><h2 id="agent-notifications-title">Notifications</h2><p>Where the agent's reports go besides the Overview.</p></div></header>
+    <div class="settings-grid-v5">
       ${renderAgentNotifyCard(data)}
+      <section class="glass-panel settings-card-v5">
+        <header><div><span class="section-kicker">Sent to your phone</span><h3>What you'll hear about</h3></div>${icon("bell")}</header>
+        <div class="settings-card-v5__body">
+          ${enabled ? "" : `<div class="security-note">${icon("lock")}<div><strong>The agent is off</strong><span>Nothing is sent until it's turned on under Agent.</span></div></div>`}
+          <ul class="agent-sent-list">${sent.map(([on, title, detail]) => `<li class="${on ? "" : "is-off"}"><i class="health-dot is-${on ? "healthy" : "disabled"}" aria-hidden="true"></i><div><strong>${title}</strong><small>${on ? detail : "Off"}</small></div></li>`).join("")}</ul>
+          <div class="button-row"><button class="button button--compact" type="button" data-action="settings-tab" data-settings-tab="agent">Change what's reported</button></div>
+        </div>
+      </section>
+    </div>
+  </section>`;
+}
+
+function renderAgentAutonomyCard(data) {
+  const settings = data.config?.settings || {};
+  const today = Number(data.status?.automaticActionsToday || 0);
+  return `<form class="glass-panel settings-card-v5" id="agent-autonomy-form">
+    <header><div><span class="section-kicker">Master switch</span><h3>Automatic actions</h3></div>${icon("shield")}</header>
+    <div class="settings-card-v5__body">
+      <label class="check-row agent-autonomy"><input name="autonomy" type="checkbox" ${settings.autonomy ? "checked" : ""}/><span><strong>Let rules act</strong><small>Container health restarts and the rules below run only while this is on. Everything the model suggests still waits for your approval.</small></span></label>
+      <dl class="agent-facts"><div><dt>Automatic actions in the last 24 hours</dt><dd>${today} of 10</dd></div></dl>
+      <p class="agent-voice__hint">All automatic actions together stop at 10 a day, whatever each rule allows.</p>
+      <div class="button-row"><button class="button button--primary" type="submit">Save</button></div>
+    </div>
+  </form>`;
+}
+
+const RISKY_CONTAINER = /portainer|helmsman|postgres|mariadb|mysql|mongo|redis|valkey|influx|home-?assistant|hass|traefik|nginx-proxy|caddy|authentik|vaultwarden|unifi/iu;
+
+function renderAgentHealthCard(data) {
+  const policy = data.config?.containerHealth || { enabled: false, scope: "all", containers: [], minutes: 3, repeatCount: 3, repeatHours: 24 };
+  const limits = data.limits || {};
+  const minutes = limits.healthMinutes || { min: 1, max: 60 };
+  const repeat = limits.repeatCount || { min: 2, max: 10 };
+  const hours = limits.repeatHours || { min: 1, max: 168 };
+  const inventory = new Map();
+  for (const server of state.snapshot?.infrastructure?.portainer || []) {
+    for (const container of server.inventory?.containers || []) {
+      if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/u.test(container.name)) continue;
+      const entry = inventory.get(container.name) || { name: container.name, unhealthy: false, image: container.image };
+      entry.unhealthy ||= container.health === "unhealthy";
+      inventory.set(container.name, entry);
+    }
+  }
+  for (const name of policy.containers) if (!inventory.has(name)) inventory.set(name, { name, unhealthy: false, missing: true });
+  const names = [...inventory.values()].sort((left, right) => left.name.localeCompare(right.name));
+  // Before the first save, suggest leaving databases and core services alone.
+  const firstTime = !policy.enabled && !policy.containers.length && policy.scope === "all";
+  const picked = (entry) => (firstTime ? RISKY_CONTAINER.test(`${entry.name} ${entry.image || ""}`) : policy.containers.includes(entry.name));
+  const seen = data.containerHealth || [];
+  return `<form class="glass-panel settings-card-v5 agent-health" id="agent-health-form">
+    <header><div><span class="section-kicker">Docker health checks</span><h3>Unhealthy containers</h3></div>${icon("containers")}</header>
+    <div class="settings-card-v5__body">
+      <p>When a container's health check fails, Helmsman restarts it. If it keeps going unhealthy, Helmsman stops restarting it and tells you instead.</p>
+      <label class="check-row"><input name="enabled" type="checkbox" ${policy.enabled ? "checked" : ""}/><span><strong>Restart unhealthy containers</strong><small>Needs “Let rules act”. With it off, you're told about unhealthy containers but nothing is restarted.</small></span></label>
+      <div class="form-grid form-grid--two">
+        <label><span>Wait before restarting (minutes)</span><input name="minutes" type="number" min="${minutes.min}" max="${minutes.max}" value="${Number(policy.minutes)}" required /><small>Some containers report unhealthy briefly while starting.</small></label>
+        <label><span>Give up after (times)</span><input name="repeatCount" type="number" min="${repeat.min}" max="${repeat.max}" value="${Number(policy.repeatCount)}" required /><small>Unhealthy this many times within the window below.</small></label>
+        <label><span>Within (hours)</span><input name="repeatHours" type="number" min="${hours.min}" max="${hours.max}" value="${Number(policy.repeatHours)}" required /></label>
+      </div>
+      <fieldset class="agent-health__scope">
+        <legend>Which containers</legend>
+        <label class="agent-radio"><input type="radio" name="scope" value="all" ${policy.scope === "all" ? "checked" : ""}/> All except the ones ticked below</label>
+        <label class="agent-radio"><input type="radio" name="scope" value="only" ${policy.scope === "only" ? "checked" : ""}/> Only the ones ticked below</label>
+      </fieldset>
+      ${names.length ? `<div class="agent-health__list" role="group" aria-label="Containers">${names.map((entry) => `<label class="agent-health__item"><input type="checkbox" name="containers" value="${escapeHtml(entry.name)}" ${picked(entry) ? "checked" : ""}/><span>${escapeHtml(entry.name)}</span>${entry.unhealthy ? `<em class="is-bad">unhealthy</em>` : entry.missing ? `<em>not found</em>` : ""}</label>`).join("")}</div>` : `<p class="agent-empty">Connect Portainer to choose containers.</p>`}
+      ${firstTime && names.some(picked) ? `<p class="agent-voice__hint">Databases, Portainer, Helmsman and similar core services are ticked to be left alone. Change it if you like.</p>` : ""}
+      ${seen.length ? `<h4>This week</h4><ul class="agent-health__seen">${seen.map((entry) => `<li><i class="health-dot is-${entry.gaveUp ? "down" : entry.unhealthyNow ? "degraded" : "limited"}" aria-hidden="true"></i><div><strong>${escapeHtml(entry.name)}${entry.server ? ` <small>${escapeHtml(entry.server)}</small>` : ""}</strong><small>Unhealthy ${entry.episodes} time${entry.episodes === 1 ? "" : "s"} · restarted ${entry.restarts}${entry.gaveUp ? " · stopped restarting, needs you" : entry.unhealthyNow ? " · unhealthy now" : ""}</small></div></li>`).join("")}</ul>` : ""}
+      <div class="button-row"><button class="button button--primary" type="submit">Save</button></div>
+    </div>
+  </form>`;
+}
+
+function renderAgentAutomationTab() {
+  const data = agentData();
+  if (!data) return renderAgentUnavailable("automation settings");
+  return `<section class="agent-settings" aria-labelledby="agent-automation-title">
+    <header class="detail-hero"><div><span class="section-kicker">Agent</span><h2 id="agent-automation-title">Automation</h2><p>What Helmsman may fix by itself. The model never acts on its own: these are checked and run by Helmsman's code, within limits you set.</p></div></header>
+    <div class="settings-grid-v5">
+      ${renderAgentAutonomyCard(data)}
+      ${renderAgentHealthCard(data)}
       ${renderAgentRulesCard(data)}
     </div>
   </section>`;
@@ -4638,7 +4740,6 @@ async function submitAgentSettings(form) {
   const data = new FormData(form);
   const body = {
     enabled: data.get("enabled") === "on",
-    autonomy: data.get("autonomy") === "on",
     triggers: {
       incidents: data.get("incidents") === "on",
       recoveries: data.get("recoveries") === "on",
@@ -4651,6 +4752,28 @@ async function submitAgentSettings(form) {
   const checkInHours = agentFormNumber(form, "checkInHours");
   if (checkInHours !== undefined) body.checkInHours = checkInHours;
   await agentMutation("/settings", "PUT", body, "Agent behavior saved.");
+}
+
+async function submitAgentAutonomy(form) {
+  const autonomy = new FormData(form).get("autonomy") === "on";
+  await agentMutation("/settings", "PUT", { autonomy }, autonomy ? "Automatic actions on." : "Automatic actions off. Nothing runs by itself.");
+}
+
+async function submitAgentHealth(form) {
+  const data = new FormData(form);
+  const number = (name) => Number(String(data.get(name) || "").trim());
+  const body = {
+    enabled: data.get("enabled") === "on",
+    scope: data.get("scope") === "only" ? "only" : "all",
+    containers: data.getAll("containers").map(String),
+    minutes: number("minutes"),
+    repeatCount: number("repeatCount"),
+    repeatHours: number("repeatHours")
+  };
+  const autonomy = Boolean(agentData()?.config?.settings?.autonomy);
+  await agentMutation("/container-health", "PUT", body, body.enabled && !autonomy
+    ? "Saved. Turn on “Let rules act” for restarts to happen; until then you're only told."
+    : "Container health saved.");
 }
 
 async function submitAgentNotify(form) {
@@ -5174,7 +5297,7 @@ function syncAgentHelper({ force = false } = {}) {
   const messages = helper.root.querySelector(".agent-helper__messages");
   setMarkup(messages, ready
     ? renderAgentChatMessages(true, "above")
-    : `<li class="agent-chat__empty">Connect a model running on your own hardware to chat here. <button class="agent-text-button" type="button" data-action="switch-workspace" data-workspace="system" data-workspace-route="settings">Set up the agent</button></li>`);
+    : `<li class="agent-chat__empty">Connect a model running on your own hardware to chat here. <button class="agent-text-button" type="button" data-action="switch-workspace" data-workspace="system" data-workspace-route="settings" data-settings-tab="agent">Set up the agent</button></li>`);
   messages.scrollTop = messages.scrollHeight;
   const input = helper.root.querySelector("#agent-helper-input");
   input.disabled = !ready;
@@ -5214,6 +5337,41 @@ document.addEventListener("keydown", (event) => {
   askAgent("helper");
 });
 
+const SETTINGS_TABS = Object.freeze([
+  Object.freeze({ id: "access", label: "Access" }),
+  Object.freeze({ id: "agent", label: "Agent" }),
+  Object.freeze({ id: "notifications", label: "Notifications" }),
+  Object.freeze({ id: "automation", label: "Automation" }),
+  Object.freeze({ id: "about", label: "About" })
+]);
+const SETTINGS_TAB_KEY = "helmsman.settingsTab";
+
+function settingsTab() {
+  let candidate = state.settingsTab;
+  if (!candidate) {
+    try {
+      candidate = globalThis.localStorage?.getItem(SETTINGS_TAB_KEY) || "";
+    } catch {
+      candidate = "";
+    }
+  }
+  return SETTINGS_TABS.some(({ id }) => id === candidate) ? candidate : "access";
+}
+
+function setSettingsTab(id, { focus = false } = {}) {
+  if (!SETTINGS_TABS.some((tab) => tab.id === id)) return;
+  state.settingsTab = id;
+  try {
+    globalThis.localStorage?.setItem(SETTINGS_TAB_KEY, id);
+  } catch {
+    // A private window may block storage; the tab still changes.
+  }
+  if (currentRoute() !== "settings") return;
+  state.lastMarkup = "";
+  renderPage({ force: true });
+  if (focus) document.getElementById(`settings-tab-${id}`)?.focus({ preventScroll: true });
+}
+
 function renderSettingsPage() {
   const policy = state.config?.policy || { allowedCidrs: [], allowPublicHttps: false };
   const networkMode = Array.isArray(policy.allowedCidrs) && policy.allowedCidrs.length ? "manual" : "exact";
@@ -5221,9 +5379,9 @@ function renderSettingsPage() {
   const jellyfinConnected = configuredJellyfinConnection();
   const ownerName = authentication.ownerName ? escapeHtml(authentication.ownerName) : "Jellyfin owner";
   const appVersion = safeSessionText(state.status?.version, "Version unavailable", 48);
-  return `
-    <section class="detail-page settings-page-v5">
-      <header class="detail-hero"><div><span class="section-kicker">Control plane</span><h2>Security and access</h2><p>Local mode stays simple; HTTPS and Authentik remain optional deployment layers for LAN or external access.</p></div></header>
+  const tab = settingsTab();
+  const panels = {
+    access: `<header class="detail-hero"><div><span class="section-kicker">Control plane</span><h2>Security and access</h2><p>Local mode stays simple; HTTPS and Authentik remain optional deployment layers for LAN or external access.</p></div></header>
       <div class="settings-grid-v5">
         <form class="glass-panel settings-card-v5" id="network-form" data-network-mode="${networkMode}"><header><div><span class="section-kicker">Outbound policy</span><h3>Allowed service networks</h3></div>${icon("shield")}</header><div class="settings-card-v5__body">
           ${renderNetworkPolicyFields(policy, "settings")}
@@ -5246,9 +5404,16 @@ function renderSettingsPage() {
         </div></section>
         <section class="glass-panel settings-card-v5"><header><div><span class="section-kicker">At rest</span><h3>Credential encryption</h3></div>${icon("shield")}</header><div class="settings-card-v5__body"><p>Secrets use AES-256-GCM and never return through the API. ${state.status?.storage?.externalKey ? "This deployment uses an external key file." : "This local deployment uses an automatically generated key in its protected data volume."}</p><div class="security-note security-note--good">${icon("check")}<div><strong>No extra unlock step</strong><span>The container keeps monitoring after every browser closes.</span></div></div></div></section>
         <section class="glass-panel settings-card-v5"><header><div><span class="section-kicker">Deployment edge</span><h3>Authentik and HTTPS</h3></div>${icon("shield")}</header><div class="settings-card-v5__body"><p>Optional for localhost. For LAN or external access, terminate HTTPS at a trusted reverse proxy, put Authentik in front, and firewall the container port so that proxy cannot be bypassed.</p></div></section>
-        <section class="glass-panel settings-card-v5"><header><div><span class="section-kicker">About</span><h3>Helmsman release</h3></div>${icon("logs")}</header><div class="settings-card-v5__body app-version-v5"><p>Include this exact version when reporting a problem or checking release notes.</p><dl><div><dt>Version</dt><dd data-app-version>${escapeHtml(appVersion)}</dd></div></dl><nav class="button-row app-version-v5__links" aria-label="Helmsman project resources"><a class="button button--compact" href="https://github.com/nunesg130-boop/helmsman" target="_blank" rel="noopener noreferrer" aria-label="Source code (opens in a new tab)">Source</a><a class="button button--compact" href="https://github.com/nunesg130-boop/helmsman/blob/main/LICENSE" target="_blank" rel="noopener noreferrer" aria-label="AGPL-3.0 license (opens in a new tab)">AGPL-3.0 License</a><a class="button button--compact" href="https://github.com/nunesg130-boop/helmsman/blob/main/assets/services/THIRD_PARTY_NOTICES.md" target="_blank" rel="noopener noreferrer" aria-label="Third-party icon notices (opens in a new tab)">Third-party icon notices</a></nav></div></section>
-      </div>
-      ${renderAgentSettings()}
+      </div>`,
+    agent: renderAgentSettings(),
+    notifications: renderAgentNotificationsTab(),
+    automation: renderAgentAutomationTab(),
+    about: `<div class="settings-grid-v5"><section class="glass-panel settings-card-v5"><header><div><span class="section-kicker">About</span><h3>Helmsman release</h3></div>${icon("logs")}</header><div class="settings-card-v5__body app-version-v5"><p>Include this exact version when reporting a problem or checking release notes.</p><dl><div><dt>Version</dt><dd data-app-version>${escapeHtml(appVersion)}</dd></div></dl><nav class="button-row app-version-v5__links" aria-label="Helmsman project resources"><a class="button button--compact" href="https://github.com/nunesg130-boop/helmsman" target="_blank" rel="noopener noreferrer" aria-label="Source code (opens in a new tab)">Source</a><a class="button button--compact" href="https://github.com/nunesg130-boop/helmsman/blob/main/LICENSE" target="_blank" rel="noopener noreferrer" aria-label="AGPL-3.0 license (opens in a new tab)">AGPL-3.0 License</a><a class="button button--compact" href="https://github.com/nunesg130-boop/helmsman/blob/main/assets/services/THIRD_PARTY_NOTICES.md" target="_blank" rel="noopener noreferrer" aria-label="Third-party icon notices (opens in a new tab)">Third-party icon notices</a></nav></div></section></div>`
+  };
+  return `
+    <section class="detail-page settings-page-v5">
+      <nav class="settings-tabs filter-chips" role="tablist" aria-label="Settings sections">${SETTINGS_TABS.map(({ id, label }) => `<button class="filter-chip ${tab === id ? "is-active" : ""}" type="button" role="tab" id="settings-tab-${id}" aria-selected="${tab === id ? "true" : "false"}" aria-controls="settings-panel" tabindex="${tab === id ? "0" : "-1"}" data-action="settings-tab" data-settings-tab="${id}">${escapeHtml(label)}</button>`).join("")}</nav>
+      <div class="settings-panel" id="settings-panel" role="tabpanel" aria-labelledby="settings-tab-${tab}">${panels[tab]}</div>
     </section>`;
 }
 
@@ -5760,14 +5925,50 @@ function renderPortainerContainer(container) {
   </article>`;
 }
 
-function renderPortainerContainerGroups(containers) {
+function renderPortainerContainerGroups(containers, offset = 0) {
   const groups = groupedPortainerContainers(containers);
   if (!groups.length) return `<div class="empty-state"><strong>No matching containers</strong><span>Adjust the filters or wait for the next Portainer inventory cycle.</span></div>`;
   return `<div class="portainer-container-groups">${groups.map((group, index) => {
-    const titleId = `portainer-container-group-${index}`;
+    const titleId = `portainer-container-group-${offset + index}`;
     return `<section class="portainer-container-group" aria-labelledby="${titleId}"><header class="portainer-container-group__header"><span class="portainer-environment-mark">${icon("server")}</span><div><span>Portainer environment</span><h4 id="${titleId}">${escapeHtml(group.serverName)} · ${escapeHtml(group.environmentName)}</h4></div><span class="count-pill">${group.containers.length} container${group.containers.length === 1 ? "" : "s"}</span></header><div class="portainer-container-list">${group.containers.map(renderPortainerContainer).join("")}</div></section>`;
   }).join("")}</div>`;
 }
+
+const PORTAINER_OPEN_KEY = "helmsman.portainerOpen";
+
+function portainerOpenState() {
+  try {
+    const saved = JSON.parse(globalThis.localStorage?.getItem(PORTAINER_OPEN_KEY) || "null");
+    return saved && typeof saved === "object" && !Array.isArray(saved) ? saved : {};
+  } catch {
+    return {};
+  }
+}
+
+// A single connection starts open; with several, each starts closed until
+// the owner opens it, and the choice is remembered in this browser.
+function portainerInstanceOpen(id, count) {
+  const saved = portainerOpenState()[id];
+  return typeof saved === "boolean" ? saved : count === 1;
+}
+
+function rememberPortainerInstance(id, open) {
+  const saved = portainerOpenState();
+  saved[id] = Boolean(open);
+  try {
+    globalThis.localStorage?.setItem(PORTAINER_OPEN_KEY, JSON.stringify(Object.fromEntries(Object.entries(saved).slice(-32))));
+  } catch {
+    // Storage may be blocked; the section still opens and closes.
+  }
+}
+
+document.addEventListener("toggle", (event) => {
+  const instance = event.target?.closest?.(".portainer-instance");
+  if (!instance || instance !== event.target) return;
+  const filters = state.infrastructure?.portainerFilters;
+  const filtering = filters && (filters.search.trim() !== "" || filters.state !== "all" || filters.environment !== "all");
+  if (!filtering) rememberPortainerInstance(String(instance.dataset.portainerInstance || ""), instance.open);
+}, true);
 
 function renderPortainerPage() {
   const services = portainerServicesForUi();
@@ -5793,13 +5994,7 @@ function renderPortainerPage() {
       <div class="portainer-metric"><dt>Needs attention</dt><dd>${totals.unhealthy}</dd><small>${totals.stacks.length} visible stack${totals.stacks.length === 1 ? "" : "s"}</small></div>
     </dl>
 
-    ${services.length ? `<section class="portainer-panel"><header><div><span class="section-kicker">Secure connections</span><h3>Portainer servers</h3><p>Each server keeps an independently encrypted, destination-bound access token.</p></div><span class="count-pill">${services.length}</span></header><div class="portainer-grid">${services.map(renderPortainerConnection).join("")}</div></section>` : ""}
-
-    <section class="portainer-panel"><header><div><span class="section-kicker">Permitted scope</span><h3>Environments</h3><p>Docker and Podman environments expose container inventory. Kubernetes and Azure environments remain visible without unsupported container calls.</p></div><span class="count-pill">${totals.environments.length}</span></header>
-      ${totals.environments.length ? `<div class="portainer-environment-grid">${totals.environments.map((environment) => `<article class="portainer-environment-card"><header><span class="portainer-environment-mark">${icon("server")}</span><span><small>${escapeHtml(environment.serverName)}</small><strong>${escapeHtml(environment.name)}</strong></span><span class="portainer-status is-${portainerEnvironmentTone(environment.state)}"><i class="health-dot is-${portainerEnvironmentTone(environment.state)}"></i>${escapeHtml(environment.state)}</span></header><dl class="portainer-summary-grid"><div><dt>Platform</dt><dd>${escapeHtml(environment.platform)}</dd></div><div><dt>Containers</dt><dd>${environmentContainerCounts.get(environment.key) || 0}</dd></div><div><dt>Agent</dt><dd>${escapeHtml(environment.agentVersion || "—")}</dd></div><div><dt>Connection</dt><dd>${environment.edge ? "Edge" : "Direct"}</dd></div></dl></article>`).join("")}</div>` : `<div class="empty-state"><strong>No permitted environments yet</strong><span>Connect Portainer or verify that its user can access at least one environment.</span></div>`}
-    </section>
-
-    <section class="portainer-panel"><header><div><span class="section-kicker">Container inventory</span><h3>Containers</h3><p>Stopped and exited containers are informational. Unhealthy, dead, and restarting containers are clearly flagged.</p></div><span class="count-pill">${filtered.containers.length}</span></header>
+    <section class="portainer-panel portainer-find"><header><div><span class="section-kicker">Container inventory</span><h3>Find containers</h3><p>Stopped and exited containers are informational. Unhealthy, dead, and restarting containers are clearly flagged. Filters apply to every connection below.</p></div><span class="count-pill">${filtered.containers.length}</span></header>
       <div class="portainer-notice">${icon("shield")}<span><strong>Guarded container controls</strong><small>Every command opens a Helmsman confirmation. Remove, recreate, force-kill, and stack deployment actions remain unavailable.</small></span></div>
       <div class="portainer-filterbar">
         <label><span>Server</span><select id="portainer-server-filter" data-portainer-filter="server"><option value="all">All Portainer servers</option>${services.map((service) => `<option value="${escapeHtml(service.id)}" ${filters.server === service.id ? "selected" : ""}>${escapeHtml(service.displayName)}</option>`).join("")}</select></label>
@@ -5808,10 +6003,40 @@ function renderPortainerPage() {
         <label class="filter-search"><span>Name, image, stack, or ID</span><input id="portainer-container-search" type="search" data-portainer-filter="search" value="${escapeHtml(filters.search)}" placeholder="Search containers" /></label>
         <span class="filter-result-count">${filtered.containers.length} result${filtered.containers.length === 1 ? "" : "s"}</span>
       </div>
-      ${renderPortainerContainerGroups(filtered.containers)}
     </section>
 
-    <section class="portainer-panel"><header><div><span class="section-kicker">Application groups</span><h3>Stacks</h3><p>Stack records are correlated to their visible Portainer environment.</p></div><span class="count-pill">${filtered.stacks.length}</span></header>${filtered.stacks.length ? `<div class="portainer-stack-grid">${filtered.stacks.map((stack) => `<article class="portainer-stack-card"><header><span class="portainer-environment-mark">${icon("library")}</span><span><small>${escapeHtml(stack.serverName)} · ${escapeHtml(stack.environmentName)}</small><strong>${escapeHtml(stack.name)}</strong></span><span class="portainer-status is-${stack.state === "active" ? "healthy" : "stale"}"><i class="health-dot is-${stack.state === "active" ? "healthy" : "stale"}"></i>${escapeHtml(stack.state)}</span></header><footer><span>Stack ${stack.id}</span><time>${escapeHtml(formatTime(stack.updatedAt || stack.createdAt, "Timestamp unavailable"))}</time></footer></article>`).join("")}</div>` : `<div class="empty-state"><strong>No visible stacks</strong><span>The configured Portainer users have not returned any stack records for this filter.</span></div>`}</section>
+    ${selectedServices.length ? `<div class="portainer-instances">${(() => {
+      let groupOffset = 0;
+      const filtering = filters.search.trim() !== "" || filters.state !== "all" || filters.environment !== "all";
+      return selectedServices.map((service) => {
+        const ownEnvironments = filtered.environments.filter((environment) => String(environment.key || "").startsWith(`${service.id}:`));
+        const ownContainers = filtered.containers.filter((container) => container.serverId === service.id);
+        const ownStacks = filtered.stacks.filter((stack) => stack.serverId === service.id);
+        const allContainers = service.inventory.containers;
+        const unhealthy = allContainers.filter(({ health }) => health === "unhealthy").length;
+        const running = allContainers.filter(({ state: containerState }) => containerState === "running").length;
+        const open = filtering ? ownContainers.length > 0 : portainerInstanceOpen(service.id, selectedServices.length);
+        const groups = renderPortainerContainerGroups(ownContainers, groupOffset);
+        groupOffset += groupedPortainerContainers(ownContainers).length;
+        return `<details class="portainer-instance" data-portainer-instance="${escapeHtml(service.id)}" ${open ? "open" : ""}>
+          <summary class="portainer-instance__summary">
+            <span class="portainer-mark">${serviceIconMarkup("portainer", "P")}</span>
+            <span class="portainer-instance__name"><small>${escapeHtml(service.typeName)}</small><strong>${escapeHtml(service.displayName)}</strong></span>
+            <span class="portainer-instance__facts">${running}/${allContainers.length} running · ${service.metrics.environmentOnline}/${service.metrics.environmentTotal} environments${unhealthy ? ` · <b>${unhealthy} need${unhealthy === 1 ? "s" : ""} attention</b>` : ""}${filtering ? ` · ${ownContainers.length} match${ownContainers.length === 1 ? "" : "es"}` : ""}</span>
+            <span class="portainer-status is-${statusClass(service.state)}"><i class="health-dot is-${statusClass(service.state)}"></i>${escapeHtml(statusLabel(service.state))}</span>
+            <span class="portainer-instance__chevron">${icon("chevron")}</span>
+          </summary>
+          <div class="portainer-instance__body">
+            ${renderPortainerConnection(service)}
+            <section class="portainer-instance__section"><h4>Environments <span class="count-pill">${ownEnvironments.length}</span></h4>
+              ${ownEnvironments.length ? `<div class="portainer-environment-grid">${ownEnvironments.map((environment) => `<article class="portainer-environment-card"><header><span class="portainer-environment-mark">${icon("server")}</span><span><small>${escapeHtml(environment.serverName)}</small><strong>${escapeHtml(environment.name)}</strong></span><span class="portainer-status is-${portainerEnvironmentTone(environment.state)}"><i class="health-dot is-${portainerEnvironmentTone(environment.state)}"></i>${escapeHtml(environment.state)}</span></header><dl class="portainer-summary-grid"><div><dt>Platform</dt><dd>${escapeHtml(environment.platform)}</dd></div><div><dt>Containers</dt><dd>${environmentContainerCounts.get(environment.key) || 0}</dd></div><div><dt>Agent</dt><dd>${escapeHtml(environment.agentVersion || "—")}</dd></div><div><dt>Connection</dt><dd>${environment.edge ? "Edge" : "Direct"}</dd></div></dl></article>`).join("")}</div>` : `<div class="empty-state"><strong>No permitted environments yet</strong><span>Verify that this Portainer user can access at least one environment.</span></div>`}
+            </section>
+            <section class="portainer-instance__section"><h4>Containers <span class="count-pill">${ownContainers.length}</span></h4>${groups}</section>
+            <section class="portainer-instance__section"><h4>Stacks <span class="count-pill">${ownStacks.length}</span></h4>${ownStacks.length ? `<div class="portainer-stack-grid">${ownStacks.map((stack) => `<article class="portainer-stack-card"><header><span class="portainer-environment-mark">${icon("library")}</span><span><small>${escapeHtml(stack.serverName)} · ${escapeHtml(stack.environmentName)}</small><strong>${escapeHtml(stack.name)}</strong></span><span class="portainer-status is-${stack.state === "active" ? "healthy" : "stale"}"><i class="health-dot is-${stack.state === "active" ? "healthy" : "stale"}"></i>${escapeHtml(stack.state)}</span></header><footer><span>Stack ${stack.id}</span><time>${escapeHtml(formatTime(stack.updatedAt || stack.createdAt, "Timestamp unavailable"))}</time></footer></article>`).join("")}</div>` : `<div class="empty-state"><strong>No visible stacks</strong><span>This Portainer user has not returned any stack records for this filter.</span></div>`}</section>
+          </div>
+        </details>`;
+      }).join("");
+    })()}</div>` : ""}
   </section>`;
 }
 
@@ -10211,6 +10436,11 @@ document.addEventListener("click", async (event) => {
     rerenderAgent();
     return;
   }
+  if (action === "settings-tab") {
+    setSettingsTab(String(target.dataset.settingsTab || ""), { focus: Boolean(target.closest?.(".settings-tabs")) });
+    if (currentRoute() !== "settings") location.hash = "#/settings";
+    return;
+  }
   if (action === "agent-voice-preset") {
     const input = document.getElementById("agent-voice-input");
     const preset = AGENT_VOICE_PRESETS[target.dataset.preset];
@@ -10546,6 +10776,8 @@ document.addEventListener("submit", (event) => {
   if (event.target.id === "launch-address-form") submitLaunchAddress(event.target);
   if (event.target.id === "agent-ai-form") submitAgentModel(event.target);
   if (event.target.id === "agent-voice-form") submitAgentVoice(event.target);
+  if (event.target.id === "agent-autonomy-form") submitAgentAutonomy(event.target);
+  if (event.target.id === "agent-health-form") submitAgentHealth(event.target);
   if (event.target.id === "agent-settings-form") submitAgentSettings(event.target);
   if (event.target.id === "agent-notify-form") submitAgentNotify(event.target);
   if (event.target.id === "agent-rule-form") submitAgentRule(event.target);
@@ -10574,6 +10806,32 @@ window.addEventListener("hashchange", async () => {
   main.focus({ preventScroll: true });
   if (currentRoute() === "manual") revealManualTarget();
 });
+
+document.addEventListener("keydown", (event) => {
+  // Arrow keys move between Settings tabs, as in a standard tab list.
+  if (!event.target?.matches?.(".settings-tabs [role='tab']")) return;
+  const ids = SETTINGS_TABS.map(({ id }) => id);
+  const index = ids.indexOf(event.target.dataset.settingsTab);
+  const next = { ArrowRight: index + 1, ArrowLeft: index - 1, Home: 0, End: ids.length - 1 }[event.key];
+  if (next === undefined) return;
+  event.preventDefault();
+  setSettingsTab(ids[(next + ids.length) % ids.length], { focus: true });
+});
+
+// Links elsewhere can open a particular Settings tab.
+document.addEventListener("click", (event) => {
+  const link = event.target.closest?.("[data-settings-tab]:not([data-action='settings-tab'])");
+  if (!link) return;
+  const id = String(link.dataset.settingsTab || "");
+  if (!SETTINGS_TABS.some((tab) => tab.id === id)) return;
+  state.settingsTab = id;
+  try {
+    globalThis.localStorage?.setItem(SETTINGS_TAB_KEY, id);
+  } catch {
+    // Storage may be blocked.
+  }
+  if (currentRoute() === "settings") setSettingsTab(id);
+}, true);
 
 document.addEventListener("keydown", (event) => {
   // Enter sends a question; Shift+Enter starts a new line.
