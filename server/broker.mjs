@@ -2,7 +2,7 @@ import http from "node:http";
 import https from "node:https";
 import tls from "node:tls";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
-import { readFile, realpath, stat } from "node:fs/promises";
+import { open, realpath } from "node:fs/promises";
 import { gzipSync } from "node:zlib";
 import { isIP } from "node:net";
 import path from "node:path";
@@ -1446,23 +1446,43 @@ const staticCache = new Map();
 const MAX_STATIC_CACHE_ENTRIES = 128;
 
 async function staticFile(realCandidate) {
-  const metadata = await stat(realCandidate);
-  if (!metadata.isFile() || metadata.size > MAX_STATIC_BYTES) return null;
-  const version = `${metadata.size}:${metadata.mtimeMs}`;
-  const cached = staticCache.get(realCandidate);
-  if (cached?.version === version) return cached;
-  const bytes = await readFile(realCandidate);
-  if (bytes.length > MAX_STATIC_BYTES) return null;
-  const entry = {
-    version,
-    bytes,
-    etag: `"${createHash("sha256").update(bytes).digest("base64url")}"`,
-    gzip: null
-  };
-  staticCache.delete(realCandidate);
-  staticCache.set(realCandidate, entry);
-  while (staticCache.size > MAX_STATIC_CACHE_ENTRIES) staticCache.delete(staticCache.keys().next().value);
-  return entry;
+  // One open handle for both the size check and the read, so the file
+  // checked is the file served.
+  const handle = await open(realCandidate, "r");
+  try {
+    const metadata = await handle.stat();
+    if (!metadata.isFile() || metadata.size > MAX_STATIC_BYTES) return null;
+    const version = `${metadata.size}:${metadata.mtimeMs}`;
+    const cached = staticCache.get(realCandidate);
+    if (cached?.version === version) return cached;
+    const bytes = await handle.readFile();
+    if (bytes.length > MAX_STATIC_BYTES) return null;
+    const entry = {
+      version,
+      bytes,
+      etag: `"${createHash("sha256").update(bytes).digest("base64url")}"`,
+      gzip: null
+    };
+    staticCache.delete(realCandidate);
+    staticCache.set(realCandidate, entry);
+    while (staticCache.size > MAX_STATIC_CACHE_ENTRIES) staticCache.delete(staticCache.keys().next().value);
+    return entry;
+  } finally {
+    await handle.close();
+  }
+}
+
+// True when Accept-Encoding allows gzip with a non-zero quality.
+function acceptsGzip(header) {
+  for (const part of String(header || "").slice(0, 512).split(",").slice(0, 16)) {
+    const [coding, ...params] = part.split(";").map((value) => value.trim().toLowerCase());
+    if (coding !== "gzip") continue;
+    const quality = params.find((param) => param.startsWith("q="));
+    if (!quality) return true;
+    const value = Number(quality.slice(2));
+    return Number.isFinite(value) && value > 0;
+  }
+  return false;
 }
 
 async function serveStatic(request, response, rootDir, pathname) {
@@ -1498,7 +1518,7 @@ async function serveStatic(request, response, rootDir, pathname) {
     ? "private, max-age=86400"
     : "private, no-cache");
   const gzip = STATIC_COMPRESSIBLE.has(extension) && file.bytes.length > 1_024
-    && /(?:^|,)\s*gzip\s*(?:;\s*q=(?:1(?:\.0+)?|0?\.\d*[1-9]\d*))?\s*(?:,|$)/iu.test(String(request.headers["accept-encoding"] || ""));
+    && acceptsGzip(request.headers["accept-encoding"]);
   const etag = gzip ? `${file.etag.slice(0, -1)}-gz"` : file.etag;
   if (STATIC_COMPRESSIBLE.has(extension)) response.setHeader("Vary", "Accept-Encoding");
   response.setHeader("ETag", etag);
