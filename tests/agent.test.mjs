@@ -405,7 +405,7 @@ test("model proposals wait for approval and are re-resolved against current inve
 test("proposals expire, can be declined, and close when the service recovers", async (t) => {
   let proposeTarget = "container:sonarr";
   const { agent, context, publish } = await harness(t, {
-    modelReplies: (body) => (body.messages.some((message) => message.role === "tool")
+    modelReplies: (body) => (body.messages.some((message) => message.tool_calls?.some((call) => call.function.name === "propose_action"))
       ? { content: "ok" }
       : { tool_calls: [{ id: "c1", type: "function", function: { name: "propose_action", arguments: JSON.stringify({ target: proposeTarget, action: proposeTarget.startsWith("vm:") ? "reboot" : "restart", reason: "x" }) } }] })
   });
@@ -474,6 +474,46 @@ test("the context budget shortens tool output to fit a small model", async (t) =
     const estimate = JSON.stringify(call.messages).length / 3.2 + JSON.stringify(call.tools || []).length / 3.2;
     assert.ok(estimate < 2048, `request fits a 2048-token context (estimated ${Math.round(estimate)})`);
   }
+});
+
+test("questions start with the overview already looked up", async (t) => {
+  const { agent, context, publish } = await harness(t, { modelReplies: () => ({ content: "All good." }) });
+  await configure(agent, { autonomy: false });
+  await publish(snapshotAt(context.now));
+  const asked = await api(agent, "POST", "/api/v2/agent/ask", { question: "How is everything looking?" });
+  assert.equal(asked.payload.answer, "All good.");
+  assert.deepEqual(asked.payload.toolsUsed, ["overview"]);
+  assert.equal(context.modelCalls.length, 1);
+  const [system, user, call, result] = context.modelCalls[0].messages;
+  assert.equal(system.role, "system");
+  assert.equal(user.content, "How is everything looking?");
+  assert.equal(call.tool_calls[0].function.name, "overview");
+  assert.equal(result.role, "tool");
+  assert.equal(result.tool_call_id, call.tool_calls[0].id);
+  assert.match(result.content, /Media: healthy/u);
+  assert.ok(context.modelCalls[0].tools.length > 0, "tools stay available for follow-ups");
+});
+
+test("an empty model reply is retried once without tools", async (t) => {
+  // qwen2.5:3b answers some requests with neither text nor a tool call.
+  const { agent, context, publish } = await harness(t, {
+    modelReplies: (body) => (body.tools?.length ? { content: "" } : { content: "Everything is healthy." })
+  });
+  await configure(agent, { autonomy: false });
+  await publish(snapshotAt(context.now));
+  const asked = await api(agent, "POST", "/api/v2/agent/ask", { question: "How is everything looking?" });
+  assert.equal(asked.payload.answer, "Everything is healthy.");
+  assert.equal(context.modelCalls.length, 2);
+  assert.equal(context.modelCalls[1].tools, undefined);
+  assert.equal(context.modelCalls[1].messages.at(-1).content, "Answer now using what you have found.");
+
+  // A model that stays silent even then is reported, not looped on.
+  const silent = await harness(t, { modelReplies: () => ({ content: "" }) });
+  await configure(silent.agent, { autonomy: false });
+  await silent.publish(snapshotAt(silent.context.now));
+  const nothing = await api(silent.agent, "POST", "/api/v2/agent/ask", { question: "Hello?" });
+  assert.equal(nothing.payload.answer, "The model did not give an answer.");
+  assert.equal(silent.context.modelCalls.length, 2);
 });
 
 test("the digest runs once a day at the owner's local time and the check-in every few hours", async (t) => {

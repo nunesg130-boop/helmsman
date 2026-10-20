@@ -539,7 +539,7 @@ export async function createAgent(options) {
     return total() <= budget;
   }
 
-  async function converse({ prompt, history = [], allowProposals, source, service = null, maxReplyTokens = MAX_REPLY_TOKENS }) {
+  async function converse({ prompt, history = [], allowProposals, source, service = null, maxReplyTokens = MAX_REPLY_TOKENS, seedOverview = false }) {
     const { ai, settings } = config();
     if (!ai) throw new AgentError(409, "AI_NOT_CONFIGURED", "Connect a model server first.");
     const sender = modelSender(ai);
@@ -561,16 +561,36 @@ export async function createAgent(options) {
     const proposalIds = [];
     const startedAt = clock();
     let answer = "";
+    if (seedOverview) {
+      // Small local models often stay silent when offered every tool at
+      // once, so questions start with the overview already looked up, the
+      // same as if the model had called it. The model only needs tools for
+      // follow-ups.
+      const output = await runTool("overview", {}, toolContext);
+      messages.push(
+        { role: "assistant", content: "", tool_calls: [{ id: "seed-overview", type: "function", function: { name: "overview", arguments: "{}" } }] },
+        { role: "tool", tool_call_id: "seed-overview", content: output }
+      );
+      toolsUsed.push("overview");
+    }
+    let nudged = false;
     try {
       for (let round = 0; round <= MAX_TOOL_ROUNDS; round += 1) {
         if (!fitToBudget(messages, budget)) throw new AgentError(409, "CONTEXT_TOO_SMALL", "The model's context size is too small for this request.");
-        const finalRound = round === MAX_TOOL_ROUNDS;
+        const finalRound = round === MAX_TOOL_ROUNDS || nudged;
         const result = await chatCompletion(sender, {
           model: ai.model,
           messages: messages.map(({ historic, ...message }) => message),
           tools: finalRound ? [] : tools,
           maxTokens: maxReplyTokens
         });
+        if (!result.toolCalls.length && !result.content && !finalRound) {
+          // An empty reply with neither text nor a tool call: ask once more
+          // without tools, which small models handle far more reliably.
+          nudged = true;
+          messages.push({ role: "user", content: "Answer now using what you have found." });
+          continue;
+        }
         if (!result.toolCalls.length || finalRound) {
           answer = result.content;
           break;
@@ -1190,7 +1210,7 @@ export async function createAgent(options) {
     const history = historyInput(body.history);
     const job = enqueue({
       key: `ask:${randomUUID()}`,
-      run: () => converse({ prompt: plainText(body.question, MAX_QUESTION_CHARS), history, allowProposals: true, source: "question" })
+      run: () => converse({ prompt: plainText(body.question, MAX_QUESTION_CHARS), history, allowProposals: true, source: "question", seedOverview: true })
     }, { front: true });
     const result = await job;
     return {
