@@ -189,6 +189,13 @@ On the **Overview** (Overview workspace):
 - **Ask the agent** answers questions about your homelab from live data.
   Enter sends; Shift+Enter adds a line. The last few turns are sent along so
   follow-up questions work.
+- **Commands.** A message that is only a request, such as `restart
+  qbittorrent`, `can you reboot the media vm` or `shut down vm 105`, becomes
+  an approval request straight away, without asking the model. Names match
+  regardless of capitals, spaces or hyphens; VMs and LXCs can be named or
+  given by number. "Restart" on a VM means reboot, and "stop" means shut
+  down. Approving always happens with the button: typing "yes" or "approved"
+  never runs anything.
 
 The **floating helper** offers the same chat on every page. Drag it anywhere;
 click it and it moves to the right edge and opens a mini chat. A badge means

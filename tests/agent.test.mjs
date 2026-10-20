@@ -545,6 +545,43 @@ test("questions start with the manual lines that match them", async (t) => {
   assert.equal(context.modelCalls[0].messages.some((message) => message.tool_call_id === "seed-manual"), false);
 });
 
+test("a chat message that is only a command becomes a proposal without the model", async (t) => {
+  const { agent, context, publish } = await harness(t, { modelReplies: () => ({ content: "- **Propose Action**: Restart" }) });
+  await configure(agent, { autonomy: false });
+  await publish(snapshotAt(context.now));
+
+  const restart = await api(agent, "POST", "/api/v2/agent/ask", { question: "Can you restart Sonarr please?" });
+  assert.equal(context.modelCalls.length, 0, "the model is not asked");
+  assert.equal(restart.payload.proposals.length, 1);
+  assert.equal(restart.payload.proposals[0].operation, "restart");
+  assert.equal(restart.payload.proposals[0].target, "container sonarr");
+  assert.match(restart.payload.answer, /Approve it with the button above/u);
+  assert.equal(context.actions.length, 0, "nothing runs until the owner approves");
+
+  // "restart" on a guest means reboot; guests match by name or VMID.
+  const guest = await api(agent, "POST", "/api/v2/agent/ask", { question: "restart the media vm" });
+  assert.equal(guest.payload.proposals[0].operation, "reboot");
+  assert.equal(guest.payload.proposals[0].target, "VM 105 (media)");
+  const byId = await api(agent, "POST", "/api/v2/agent/ask", { question: "shut down vm 105" });
+  assert.equal(byId.payload.proposals[0].operation, "shutdown");
+
+  // A typed approval points at the button and approves nothing.
+  const typed = await api(agent, "POST", "/api/v2/agent/ask", { question: "approved" });
+  assert.match(typed.payload.answer, /Approve button/u);
+  assert.equal(context.actions.length, 0);
+  assert.ok((await api(agent, "GET", "/api/v2/agent")).payload.proposals.every(({ status }) => status === "pending"));
+
+  // Unknown names are answered plainly, listing what exists.
+  const unknown = await api(agent, "POST", "/api/v2/agent/ask", { question: "restart plex" });
+  assert.match(unknown.payload.answer, /couldn't find a container, VM or LXC called "plex"\. I can see: sonarr, radarr, media \(105\)/u);
+  assert.equal(unknown.payload.proposals.length, 0);
+
+  // Questions about actions still go to the model, and bold is stripped.
+  const question = await api(agent, "POST", "/api/v2/agent/ask", { question: "Should I restart sonarr?" });
+  assert.equal(context.modelCalls.length, 1);
+  assert.equal(question.payload.answer, "- Propose Action: Restart");
+});
+
 test("an empty model reply is retried once without tools", async (t) => {
   // qwen2.5:3b answers some requests with neither text nor a tool call.
   const { agent, context, publish } = await harness(t, {
