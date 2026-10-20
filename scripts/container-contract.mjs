@@ -365,7 +365,7 @@ if (existsSync(join(root, "server/media-model.mjs"))
     "v0.9 builds one bounded read-only media model matched by provider identifiers with opaque artwork URLs"
   );
   record(
-    /DEFAULT_POSITIVE_TTL_MS = 24 \* 60 \* 60 \* 1_000/u.test(mediaArtwork)
+    /DEFAULT_POSITIVE_TTL_MS = 7 \* 24 \* 60 \* 60 \* 1_000/u.test(mediaArtwork)
       && /DEFAULT_NEGATIVE_TTL_MS = 15 \* 60 \* 1_000/u.test(mediaArtwork)
       && /DEFAULT_MAX_ENTRIES = 512/u.test(mediaArtwork)
       && /DEFAULT_MAX_BYTES = 64 \* 1024 \* 1024/u.test(mediaArtwork)
@@ -880,8 +880,10 @@ if (existsSync(join(root, "server/broker.mjs"))) {
   const broker = read("server/broker.mjs");
   record(
     /relative\.startsWith\("assets\/services\/"\).*relative\.startsWith\("assets\/workloads\/"\)/su.test(broker)
-      && /Cache-Control", "private, max-age=86400"/u.test(broker)
-      && /response\.setHeader\("ETag", etag\)/u.test(broker),
+      && /"private, max-age=86400"/u.test(broker)
+      && /"private, no-cache"/u.test(broker)
+      && /response\.setHeader\("ETag", etag\)/u.test(broker)
+      && /function acceptsGzip/u.test(broker),
     "local service and workload icons use deterministic private ETags without a runtime CDN"
   );
 }
