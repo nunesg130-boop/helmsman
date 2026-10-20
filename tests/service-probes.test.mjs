@@ -923,9 +923,28 @@ test("derives actionable Arr, indexer, and download counters without media ident
     stalled: 1,
     errored: 1,
     paused: 1,
-    completed: 2
+    completed: 2,
+    seeding: 0
   });
   assert.equal(JSON.stringify(qbit).includes(RAW_SECRET), false);
+
+  // Idle and firewalled: qBittorrent only says "connected" after a peer
+  // connects in, so with nothing active this is not a problem.
+  fixtures.qbittorrent.transfer.connection_status = "firewalled";
+  fixtures.qbittorrent.torrents = [
+    { state: "stalledUP", progress: 1, name: RAW_SECRET },
+    { state: "pausedUP", progress: 1, name: RAW_SECRET }
+  ];
+  const idle = await probeService("qbittorrent", fixtureTransport(fixtures), { checkedAt: CHECKED_AT });
+  assert.equal(idle.checks.find(({ id }) => id === "transfer").state, "healthy");
+  assert.equal(idle.state, "healthy");
+
+  // Firewalled while downloading or seeding is still flagged.
+  for (const state of ["downloading", "uploading", "stalledDL"]) {
+    fixtures.qbittorrent.torrents = [{ state, progress: 0.5, name: RAW_SECRET }];
+    const busy = await probeService("qbittorrent", fixtureTransport(fixtures), { checkedAt: CHECKED_AT });
+    assert.equal(busy.checks.find(({ id }) => id === "transfer").state, "limited", state);
+  }
 });
 
 test("an externally cancelled probe is stale and never calls the transport", async () => {

@@ -185,6 +185,7 @@ const SAFE_METRICS = new Set([
   "nodeOnline",
   "nodeTotal",
   "paused",
+  "seeding",
   "pendingRequests",
   "processingRequests",
   "queued",
