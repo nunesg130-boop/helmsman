@@ -83,7 +83,6 @@ function rule(overrides = {}) {
 
 async function harness(t, { modelReplies = null, lookupAddress = "10.1.0.20" } = {}) {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "helmsman-agent-"));
-  t.after(() => rm(dataDir, { recursive: true, force: true }));
   const credentialStore = new CredentialStore(dataDir, { instanceId: INSTANCE_ID });
   await credentialStore.initialize();
   const context = {
@@ -137,7 +136,11 @@ async function harness(t, { modelReplies = null, lookupAddress = "10.1.0.20" } =
     clock: () => context.now,
     timers: { setInterval: () => null, clearInterval: () => {} }
   });
-  t.after(() => agent.stop());
+  // Stop the agent before removing its data directory.
+  t.after(async () => {
+    await agent.stop();
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 5 });
+  });
   agent.start();
   const publish = async (value) => {
     context.current = value;

@@ -1298,8 +1298,11 @@ export async function createAgent(options) {
       unsubscribe?.();
       if (tickHandle) timers.clearInterval(tickHandle);
       for (const job of queue.splice(0)) job.reject(new AgentError(503, "AGENT_STOPPED", "The agent stopped."));
-      await activityWrite.catch(() => {});
+      // Refuse new saves first, then wait for any save already in progress,
+      // so nothing writes to /data after stop resolves. A model call still
+      // running finishes in memory only, so shutdown is never held up by it.
       stopped = true;
+      await activityWrite.catch(() => {});
     },
     // For tests and the demo.
     tick,
