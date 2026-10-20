@@ -43,6 +43,7 @@ export const AGENT_LIMITS = Object.freeze({
   repeatCount: { min: 2, max: 10, default: 3 },
   repeatHours: { min: 1, max: 168, default: 24 },
   healthContainers: 64,
+  stuckMinutes: { min: 10, max: 1_440, default: 60 },
   approvedHosts: 32
 });
 
@@ -164,6 +165,26 @@ export function canonicalContainerHealth(value) {
     minutes: integer(value.minutes, AGENT_LIMITS.healthMinutes, "The unhealthy wait"),
     repeatCount: integer(value.repeatCount, AGENT_LIMITS.repeatCount, "The repeat count"),
     repeatHours: integer(value.repeatHours, AGENT_LIMITS.repeatHours, "The repeat window")
+  };
+}
+
+/**
+ * Stuck downloads: Radarr or Sonarr queue items that stay failed, stalled or
+ * blocked from importing. Off until the owner turns it on. Helmsman suggests
+ * removing the item, blocklisting the release and searching again; with
+ * `automatic` (and autonomy) it does that by itself for stalled and failed
+ * downloads. Blocked imports always wait for approval.
+ */
+export function defaultDownloads() {
+  return { enabled: false, minutes: AGENT_LIMITS.stuckMinutes.default, automatic: false };
+}
+
+export function canonicalDownloads(value) {
+  exactKeys(value, ["enabled", "minutes", "automatic"], [], "Stuck downloads");
+  return {
+    enabled: bool(value.enabled, "Stuck downloads enabled"),
+    minutes: integer(value.minutes, AGENT_LIMITS.stuckMinutes, "The stuck wait"),
+    automatic: bool(value.automatic, "Automatic clean-up")
   };
 }
 
@@ -305,13 +326,14 @@ export function canonicalRules(value) {
 export function canonicalAgentConfig(value) {
   // containerHealth is optional and only saved once the owner changes it,
   // so a configuration that never used it still loads in older versions.
-  exactKeys(value, ["ai", "notify", "settings", "rules"], ["containerHealth"], "The agent configuration");
+  exactKeys(value, ["ai", "notify", "settings", "rules"], ["containerHealth", "downloads"], "The agent configuration");
   return {
     ai: canonicalAiConfig(value.ai),
     notify: canonicalNotifyConfig(value.notify),
     settings: canonicalSettings(value.settings),
     rules: canonicalRules(value.rules),
-    ...(value.containerHealth === undefined ? {} : { containerHealth: canonicalContainerHealth(value.containerHealth) })
+    ...(value.containerHealth === undefined ? {} : { containerHealth: canonicalContainerHealth(value.containerHealth) }),
+    ...(value.downloads === undefined ? {} : { downloads: canonicalDownloads(value.downloads) })
   };
 }
 

@@ -36,7 +36,7 @@ own facts instead of a written explanation.
 
 ## What it can change, and the guardrails
 
-The agent changes things in exactly three ways.
+The agent changes things in exactly four ways.
 
 **1. Rules you write.** For example: "when Sonarr has an open incident for 5
 minutes, restart the `sonarr` container." Rules are checked by Helmsman's own
@@ -79,7 +79,26 @@ Helmsman can restart it. Settings → Automation → **Unhealthy containers**:
   containers that went unhealthy this week, and the daily summary mentions
   repeat offenders.
 
-**3. Suggestions you approve.** The model can suggest a container start,
+**3. Clearing stuck downloads.** When a Radarr or Sonarr download stays
+stalled, failed or blocked from importing, Helmsman can remove it, blocklist
+that release and ask Radarr or Sonarr to search for another. It's the same
+action, with the same checks, as the **Block release & search again** button.
+Settings → Automation → **Stuck downloads**:
+
+- Off by default. When on, each download stuck past the wait (10 minutes to a
+  day, an hour to start with) gets one notification and an Approve button on
+  the Overview and in the helper. The suggestion waits up to 12 hours, and
+  closes itself if the download recovers.
+- **Clear stalled and failed downloads by myself** lets Helmsman do it without
+  asking, while **Let rules act** is on. It shares the 10-a-day cap with the
+  other automatic actions. Blocked imports always ask first, since the file
+  may be fine and only need a manual import.
+- While it's on, a Radarr or Sonarr incident that is only about the queue
+  stays a quiet note, so one stuck download doesn't send two notifications.
+- Approving checks the queue again first: an item that is no longer stuck is
+  refused.
+
+**4. Suggestions you approve.** The model can suggest a container start,
 restart or stop, or a VM start, reboot or shutdown. A suggestion **never runs
 by itself**. When you approve it, Helmsman looks up the target again in
 current inventory, so a container that was recreated still gets the right one,
@@ -262,6 +281,7 @@ whole list:
 
 ```js
 await agent("/container-health", "PUT", { enabled: true, scope: "all", containers: ["postgres", "portainer"], minutes: 3, repeatCount: 3, repeatHours: 24 });
+await agent("/downloads", "PUT", { enabled: true, minutes: 60, automatic: false });
 await agent("/rules", "PUT", {
   rules: [
     {

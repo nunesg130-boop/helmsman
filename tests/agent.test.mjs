@@ -721,6 +721,143 @@ test("container health settings are validated", async (t) => {
   assert.deepEqual(saved.config.containerHealth.containers, ["helmsman", "portainer"]);
 });
 
+const SONARR_REVISION = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+
+function withStuckDownload(snapshot, { queueId = 42, title = "Example Show S01E02", error = "The download is stalled with no connections", state = "blocked" } = {}) {
+  snapshot.services[0].targetRevision = SONARR_REVISION;
+  snapshot.media.activity = [...(snapshot.media.activity || []), {
+    id: `activity:sonarr:${queueId}`,
+    service: "sonarr",
+    queueId,
+    queueActionTarget: { service: "sonarr", queueId },
+    downloadId: "a".repeat(40),
+    title,
+    state,
+    error
+  }];
+  return snapshot;
+}
+
+async function downloadsHarness(t, { autonomy = true, policy = {} } = {}) {
+  const setup = await harness(t, { modelReplies: () => ({ content: "Model note." }) });
+  await configure(setup.agent, { autonomy, rules: [] });
+  await api(setup.agent, "PUT", "/api/v2/agent/downloads", { enabled: true, minutes: 10, ...policy });
+  await setup.publish(snapshotAt(setup.context.now));
+  return setup;
+}
+
+test("stuck downloads are off until turned on", async (t) => {
+  const { agent, context, publish } = await harness(t);
+  await configure(agent, { autonomy: true, rules: [] });
+  assert.deepEqual((await api(agent, "GET", "/api/v2/agent")).payload.config.downloads, { enabled: false, minutes: 60, automatic: false });
+  await publish(withStuckDownload(snapshotAt(context.now)));
+  context.now += 2 * 3_600_000;
+  await publish(withStuckDownload(snapshotAt(context.now)));
+  assert.equal((await api(agent, "GET", "/api/v2/agent")).payload.proposals.length, 0);
+});
+
+test("a download stuck past its wait becomes a suggestion that runs the dashboard's blocklist action", async (t) => {
+  const { agent, context, publish } = await downloadsHarness(t);
+  await publish(withStuckDownload(snapshotAt(context.now)));
+  context.now += 9 * 60_000;
+  await publish(withStuckDownload(snapshotAt(context.now)));
+  let state = (await api(agent, "GET", "/api/v2/agent")).payload;
+  assert.equal(state.proposals.length, 0, "it waits the configured minutes");
+  assert.deepEqual(state.downloads.map(({ title, kind, waitingMinutes }) => ({ title, kind, waitingMinutes })), [{ title: "Example Show S01E02", kind: "stalled", waitingMinutes: 1 }]);
+
+  context.now += 60_000;
+  await publish(withStuckDownload(snapshotAt(context.now)));
+  state = (await api(agent, "GET", "/api/v2/agent")).payload;
+  assert.equal(state.proposals.length, 1);
+  assert.equal(state.proposals[0].operation, "blocklistAndSearch");
+  assert.equal(state.proposals[0].target, "download Example Show S01E02 (Sonarr)");
+  assert.match(state.proposals[0].reason, /Stalled for over 10 min\. Sonarr says: "The download is stalled with no connections"/u);
+  assert.equal(context.actions.length, 0, "nothing runs without approval");
+  assert.equal(context.pushes.at(-1).title, "Stuck download: Example Show S01E02");
+  assert.equal(state.downloads[0].pendingApproval, true);
+
+  // The same stuck item is not suggested twice.
+  context.now += 30 * 60_000;
+  await publish(withStuckDownload(snapshotAt(context.now)));
+  assert.equal((await api(agent, "GET", "/api/v2/agent")).payload.proposals.length, 1);
+
+  const approved = await api(agent, "POST", `/api/v2/agent/proposals/${state.proposals[0].id}`, { decision: "approve" });
+  assert.equal(approved.payload.proposal.status, "approved");
+  assert.deepEqual(context.actions, [{ kind: "media", body: { serviceId: "sonarr", operation: "blocklistAndSearch", queueId: 42, targetRevision: SONARR_REVISION } }]);
+});
+
+test("a stuck download that clears itself closes its suggestion, and approval rechecks the queue", async (t) => {
+  const { agent, context, publish } = await downloadsHarness(t);
+  await publish(withStuckDownload(snapshotAt(context.now)));
+  context.now += 10 * 60_000;
+  await publish(withStuckDownload(snapshotAt(context.now)));
+  const [proposal] = (await api(agent, "GET", "/api/v2/agent")).payload.proposals;
+  await publish(snapshotAt(context.now));
+  await assert.rejects(api(agent, "POST", `/api/v2/agent/proposals/${proposal.id}`, { decision: "approve" }), { code: "PROPOSAL_NOT_PENDING" });
+  assert.equal(context.actions.length, 0);
+});
+
+test("automatic clean-up handles stalled and failed downloads, never blocked imports", async (t) => {
+  const { agent, context, publish } = await downloadsHarness(t, { policy: { automatic: true } });
+  const both = () => withStuckDownload(withStuckDownload(snapshotAt(context.now)), { queueId: 43, title: "Example Movie", error: "Import blocked: no files found are eligible for import" });
+  await publish(both());
+  context.now += 10 * 60_000;
+  await publish(both());
+  assert.deepEqual(context.actions.map(({ body }) => body.queueId), [42], "only the stalled one is cleared");
+  const state = (await api(agent, "GET", "/api/v2/agent")).payload;
+  assert.equal(state.notes.find((note) => note.kind === "rule-action").title, "Cleared stuck download: Example Show S01E02");
+  assert.equal(state.proposals.length, 1);
+  assert.equal(state.proposals[0].target, "download Example Movie (Sonarr)");
+  assert.match(state.notes.find((note) => note.title === "Stuck download: Example Movie").text, /Blocked imports always ask first/u);
+  assert.equal(state.status.automaticActionsToday, 1, "clean-ups share the daily cap");
+});
+
+test("while watching downloads, a queue-only incident and its recovery stay quiet", async (t) => {
+  const { agent, context, publish } = await downloadsHarness(t);
+  const queueIncident = sonarrIncident(context.now, { id: "sonarr-queue-1", capability: "queue", state: "degraded", code: "QUEUE_DEGRADED" });
+  await publish(snapshotAt(context.now, { incidents: [queueIncident] }));
+  let state = (await api(agent, "GET", "/api/v2/agent")).payload;
+  const note = state.notes.find((entry) => entry.kind === "incident");
+  assert.match(note.text, /watching the queue and will notify you about any download still stuck after 10 min/u);
+  assert.equal(context.pushes.length, 0);
+  context.now += 5 * 60_000;
+  await publish(snapshotAt(context.now, { recent: [{ ...queueIncident, recoveredAt: new Date(context.now).toISOString() }] }));
+  state = (await api(agent, "GET", "/api/v2/agent")).payload;
+  assert.equal(state.notes[0].kind, "recovery");
+  assert.equal(context.pushes.length, 0, "the recovery is quiet too");
+
+  // Any other Sonarr problem still notifies as before.
+  context.now += 60_000;
+  await publish(snapshotAt(context.now, { incidents: [sonarrIncident(context.now, { id: "sonarr-status-2" })] }));
+  assert.equal(context.pushes.length, 1);
+});
+
+test("a stuck-download suggestion survives another Sonarr problem recovering", async (t) => {
+  const { agent, context, publish } = await downloadsHarness(t);
+  const outage = sonarrIncident(context.now);
+  await publish(withStuckDownload(snapshotAt(context.now, { incidents: [outage] })));
+  context.now += 10 * 60_000;
+  await publish(withStuckDownload(snapshotAt(context.now, { incidents: [outage] })));
+  assert.equal((await api(agent, "GET", "/api/v2/agent")).payload.proposals.length, 1);
+  await publish(withStuckDownload(snapshotAt(context.now, { recent: [{ ...outage, recoveredAt: new Date(context.now).toISOString() }] })));
+  const state = (await api(agent, "GET", "/api/v2/agent")).payload;
+  assert.equal(state.notes[0].kind, "recovery");
+  assert.equal(state.proposals.length, 1, "the download is still stuck, so its suggestion stays");
+});
+
+test("automatic clean-up waits for approval while autonomy is off; settings are validated", async (t) => {
+  const { agent, context, publish } = await downloadsHarness(t, { autonomy: false, policy: { automatic: true } });
+  await publish(withStuckDownload(snapshotAt(context.now), { error: "", state: "downloadfailed" }));
+  context.now += 10 * 60_000;
+  await publish(withStuckDownload(snapshotAt(context.now), { error: "", state: "downloadfailed" }));
+  assert.equal(context.actions.length, 0);
+  const state = (await api(agent, "GET", "/api/v2/agent")).payload;
+  assert.equal(state.proposals.length, 1);
+  assert.match(state.notes[0].text, /Sonarr shows it as downloadfailed\..*paused because "Let rules act" is off/u);
+  await assert.rejects(api(agent, "PUT", "/api/v2/agent/downloads", { minutes: 5 }), { code: "INVALID_AGENT_CONFIG" });
+  await assert.rejects(api(agent, "PUT", "/api/v2/agent/downloads", { extra: 1 }), { code: "INVALID_REQUEST" });
+});
+
 test("an empty model reply is retried once without tools", async (t) => {
   // qwen2.5:3b answers some requests with neither text nor a tool call.
   const { agent, context, publish } = await harness(t, {

@@ -4573,7 +4573,11 @@ export async function createControlPlane(options) {
     if (request.method !== "POST") fail(405, "METHOD_NOT_ALLOWED", "That method is not allowed.");
     await authenticate(request, true);
     if (!executeMediaRecoveryAction) fail(503, "ACTIONS_UNAVAILABLE", "Media recovery controls are temporarily unavailable.");
-    const body = await readBoundedJson(request);
+    sendJson(response, 200, await performMediaRecoveryAction(await readBoundedJson(request)));
+  }
+
+  async function performMediaRecoveryAction(body) {
+    if (!executeMediaRecoveryAction) fail(503, "ACTIONS_UNAVAILABLE", "Media recovery controls are temporarily unavailable.");
     const seasonRequest = body.operation === "requestSeasons";
     const queueAction = body.operation === "blocklistAndSearch";
     requireExactKeys(body, seasonRequest
@@ -4724,8 +4728,7 @@ export async function createControlPlane(options) {
         targetType: "series",
         targetId: String(resourceId)
       });
-      sendJson(response, 200, result);
-      return;
+      return result;
     }
 
     const target = parseServiceUrl(connection.url);
@@ -4762,7 +4765,7 @@ export async function createControlPlane(options) {
       targetType: queueAction ? "queue_item" : serviceId === "radarr" ? "movie" : "series",
       targetId: String(queueAction ? queueId : resourceId)
     });
-    sendJson(response, 200, result);
+    return result;
   }
 
   function operationsResponse(snapshot) {
@@ -5304,6 +5307,10 @@ export async function createControlPlane(options) {
     performAction(kind, body) {
       if (kind === "portainer") return performPortainerContainerAction(body);
       if (kind === "proxmox") return performProxmoxWorkloadAction(body);
+      // The agent may only clear stuck downloads: remove a blocked Radarr or
+      // Sonarr queue item, blocklist the release and search again, with the
+      // same current-inventory checks as the dashboard button.
+      if (kind === "media" && body?.operation === "blocklistAndSearch") return performMediaRecoveryAction(body);
       return Promise.reject(new ControlPlaneError(400, "INVALID_ACTION_TARGET", "That action is not supported."));
     },
     currentPolicy: () => structuredClone(stateStore.snapshot().policy),

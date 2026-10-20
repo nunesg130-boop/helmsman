@@ -333,9 +333,9 @@ function arr(service, upstreamPath) {
           episode: { seasonNumber: 1, episodeNumber: 3, title: "Episode three" } }),
       downloadId: torrentHash(item.title).toUpperCase(),
       title: `${item.title.replace(/\s+/gu, ".")}.${item.year}`,
-      status: "downloading",
-      trackedDownloadStatus: "ok",
-      trackedDownloadState: "downloading",
+      ...(stalledQueues.has(service) && index === 0
+        ? { status: "warning", trackedDownloadStatus: "warning", trackedDownloadState: "downloading", errorMessage: "The download is stalled with no connections" }
+        : { status: "downloading", trackedDownloadStatus: "ok", trackedDownloadState: "downloading" }),
       size: 4_000_000_000,
       sizeleft: Math.round(4_000_000_000 * (1 - item.progress)),
       timeleft: "00:24:00",
@@ -446,8 +446,10 @@ async function dispatchUpstream({ route, request, body }) {
   return upstreamResponse(handler(route.upstreamPath, request?.method || route.method, body || Buffer.alloc(0)));
 }
 
-// Media actions (retry, search, blocklist) are accepted and do nothing.
-async function dispatchMediaAction() {
+// Media actions (retry, search, blocklist) are accepted. Blocklisting a
+// stalled download clears it, as the replacement search would.
+async function dispatchMediaAction({ route } = {}) {
+  if (route?.operation === "blocklistAndSearch") stalledQueues.delete(route.service);
   return { status: 201, body: Buffer.from("{}", "utf8"), contentType: "application/json", cookies: [] };
 }
 
@@ -645,6 +647,14 @@ let demoPrintNotifications = false;
 // rule, an approved proposal or the Portainer button) fixes it.
 
 const faults = new Set();
+const stalledQueues = new Set();
+
+// The first download in Radarr's or Sonarr's queue reports "stalled with no
+// connections", as a torrent without seeds does.
+function stallDownload(service = "sonarr") {
+  if (!["sonarr", "radarr"].includes(service)) throw new Error("The demo can stall a sonarr or radarr download.");
+  stalledQueues.add(service);
+}
 
 function breakService(name) {
   if (!["sonarr", "radarr"].includes(name)) throw new Error("The demo can break sonarr or radarr.");
@@ -935,6 +945,7 @@ export async function startDemo(options = {}) {
     stop,
     breakService,
     makeUnhealthy,
+    stallDownload,
     notifications,
     printNotifications(value = true) { demoPrintNotifications = value; }
   };
