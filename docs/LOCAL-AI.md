@@ -249,16 +249,29 @@ On the **Overview** (Overview workspace):
 
 - **Reports** lists the agent's latest notes. **Summarize now** writes a
   summary on demand.
-- **Waiting for your approval** lists actions the model suggested. Approving
-  one asks for confirmation, then runs it through the same checks as the
-  dashboard's own buttons. Suggestions expire after 30 minutes.
+- **Approval requests** appear right where they were made: a request from
+  the chat sits under the answer that made it, and requests from incident
+  reports or stuck downloads appear under **Waiting for your approval**.
+  Approve runs it through the same checks as the dashboard's own buttons;
+  actions that take something offline (stop, shut down, reboot, clearing a
+  download) ask once more. Afterwards the request shows what happened.
+  Requests expire after 30 minutes.
+- **Questions about a period** ("how has it been in the past 24 hours?",
+  "anything wrong today?", "this week") are answered from Helmsman's own
+  records: its code works out each problem's start, duration and whether it
+  is still open, plus actions taken, and the model only puts that into words.
+  The agent also knows exactly what Helmsman monitors, and says so when asked
+  about something it does not watch, such as your internet connection or
+  Wi-Fi.
 - **Ask the agent** answers questions about your homelab from live data.
   Enter sends; Shift+Enter adds a line. The last few turns are sent along so
   follow-up questions work.
 - **Commands.** A message that is only a request, such as `restart
   qbittorrent`, `can you reboot the media vm` or `shut down vm 105`, becomes
   an approval request straight away, without asking the model. Names match
-  regardless of capitals, spaces or hyphens; VMs and LXCs can be named or
+  regardless of capitals, spaces or hyphens, and short names and small typos
+  work too (`qbit`, `sonar`, `pve`, `qbitorrent`); when a name could mean more
+  than one thing, the agent asks which; VMs and LXCs can be named or
   given by number. "Restart" on a VM means reboot, and "stop" means shut
   down. Approving always happens with the button: typing "yes" or "approved"
   never runs anything.
