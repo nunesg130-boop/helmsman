@@ -656,6 +656,15 @@ function breakService(name) {
   }
 }
 
+// Docker health check failing while the container keeps running; a restart
+// clears it, as it would for a real container that recovers.
+function makeUnhealthy(name) {
+  const container = CONTAINERS.find((entry) => entry.Names[0] === `/${name}`);
+  if (!container) throw new Error(`The demo has no container called ${name}.`);
+  container.State = "running";
+  container.Status = "Up 2 hours (unhealthy)";
+}
+
 function repairContainer(container) {
   container.State = "running";
   container.Status = "Up Less than a second";
@@ -925,6 +934,7 @@ export async function startDemo(options = {}) {
     password: DEMO_PASSWORD,
     stop,
     breakService,
+    makeUnhealthy,
     notifications,
     printNotifications(value = true) { demoPrintNotifications = value; }
   };

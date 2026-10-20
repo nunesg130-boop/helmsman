@@ -4728,6 +4728,18 @@ async function authenticatedRuntimeContract() {
   assert.match(environment.main.innerHTML, /Kitchen &lt;img src=x onerror=&quot;session-xss&quot;&gt;/u);
   assert.match(environment.main.innerHTML, /http:\/\/kitchen\.test\/&quot;&gt;&lt;svg\/onload=session-xss&gt;/u);
   assert.doesNotMatch(environment.main.innerHTML, /<svg\/onload=session-xss>/u, "session metadata must not create elements");
+  // Settings sections are tabs; About is its own tab.
+  const openSettingsTab = async (id) => {
+    const tab = new FakeElement({ id: `settings-tab-${id}` });
+    tab.dataset.action = "settings-tab";
+    tab.dataset.settingsTab = id;
+    tab.closest = (selector) => (selector === "[data-action]" ? tab : null);
+    await environment.dispatchDocument("click", { target: tab });
+  };
+  assert.match(environment.main.innerHTML, /role="tablist" aria-label="Settings sections"/u, "Settings must offer its sections as tabs");
+  assert.match(environment.main.innerHTML, /id="settings-tab-access" aria-selected="true"/u, "Access is the default Settings tab");
+  await openSettingsTab("about");
+  assert.match(environment.main.innerHTML, /id="settings-tab-about" aria-selected="true"/u);
   assert.match(environment.main.innerHTML, /<nav class="button-row app-version-v5__links" aria-label="Helmsman project resources">/u, "Settings About must label its project links");
   for (const [label, href, accessibleName] of [
     ["Source", "https://github.com/nunesg130-boop/helmsman", "Source code"],
@@ -4741,6 +4753,9 @@ async function authenticatedRuntimeContract() {
       `${label} must render as the fixed accessible new-tab destination`
     );
   }
+
+  await openSettingsTab("access");
+  assert.match(environment.main.innerHTML, /Authorized browsers/u, "switching back restores the Access tab");
 
   // Restore the incident's current capability after the authentication-state
   // exercise so report content remains part of the structural fingerprint.

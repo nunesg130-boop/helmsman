@@ -582,6 +582,145 @@ test("a chat message that is only a command becomes a proposal without the model
   assert.equal(question.payload.answer, "- Propose Action: Restart");
 });
 
+function withContainerHealth(snapshot, { name = "sonarr", health = "unhealthy", state = "running", status = "Up 1 hour (unhealthy)" } = {}) {
+  const container = snapshot.infrastructure.portainer[0].inventory.containers.find((candidate) => candidate.name === name);
+  Object.assign(container, { health, state, status });
+  return snapshot;
+}
+
+async function containerHealthHarness(t, { autonomy = true, policy = {} } = {}) {
+  const setup = await harness(t, { modelReplies: () => ({ content: "Model note." }) });
+  await configure(setup.agent, { autonomy, rules: [] });
+  await api(setup.agent, "PUT", "/api/v2/agent/container-health", { enabled: true, minutes: 3, repeatCount: 3, repeatHours: 24, ...policy });
+  await setup.publish(snapshotAt(setup.context.now));
+  return setup;
+}
+
+test("container health is off until the owner turns it on", async (t) => {
+  const { agent, context, publish } = await harness(t);
+  await configure(agent, { autonomy: true, rules: [] });
+  const state = (await api(agent, "GET", "/api/v2/agent")).payload;
+  assert.equal(state.config.containerHealth.enabled, false);
+  await publish(withContainerHealth(snapshotAt(context.now)));
+  context.now += 10 * 60_000;
+  await publish(withContainerHealth(snapshotAt(context.now)));
+  assert.equal(context.actions.length, 0);
+});
+
+test("an unhealthy container is restarted after its wait; repeats notify, then Helmsman gives up", async (t) => {
+  const { agent, context, publish } = await containerHealthHarness(t);
+  const unhealthy = () => publish(withContainerHealth(snapshotAt(context.now)));
+  const healthy = () => publish(snapshotAt(context.now));
+
+  await unhealthy();
+  context.now += 2 * 60_000;
+  await unhealthy();
+  assert.equal(context.actions.length, 0, "it waits the configured minutes");
+  context.now += 60_000;
+  await unhealthy();
+  assert.equal(context.actions.length, 1);
+  assert.deepEqual(context.actions[0], { kind: "portainer", body: { serviceId: PORTAINER_ID, environmentId: 1, containerId: SONARR_CONTAINER, operation: "restart", targetRevision: "dddddddd-dddd-4ddd-8ddd-dddddddddddd" } });
+  assert.equal(context.pushes.length, 0, "the first restart is quiet");
+  context.now += 60_000;
+  await unhealthy();
+  assert.equal(context.actions.length, 1, "one restart per episode");
+
+  // Second episode: restarted again, and the owner hears about it.
+  await healthy();
+  context.now += 30 * 60_000;
+  await unhealthy();
+  context.now += 3 * 60_000;
+  await unhealthy();
+  assert.equal(context.actions.length, 2);
+  assert.equal(context.pushes.length, 1);
+  assert.equal(context.pushes[0].title, "Restarted container sonarr");
+  assert.match(context.pushes[0].message, /went unhealthy again: 2 times in the last day\. I restarted it\. If it happens once more, I'll stop/u);
+
+  // Third episode reaches the repeat count: no restart, one clear alert.
+  await healthy();
+  context.now += 30 * 60_000;
+  await unhealthy();
+  context.now += 3 * 60_000;
+  await unhealthy();
+  assert.equal(context.actions.length, 2, "it stops restarting");
+  assert.equal(context.pushes.length, 2);
+  assert.equal(context.pushes[1].title, "sonarr keeps going unhealthy");
+  assert.match(context.pushes[1].message, /3 times in the last day, and I restarted it 2 times\. It keeps coming back, so I've stopped/u);
+
+  // A fourth episode in the same window is not announced again.
+  await healthy();
+  context.now += 30 * 60_000;
+  await unhealthy();
+  context.now += 3 * 60_000;
+  await unhealthy();
+  assert.equal(context.pushes.length, 2);
+
+  const state = (await api(agent, "GET", "/api/v2/agent")).payload;
+  assert.deepEqual(
+    state.containerHealth.map(({ name, episodes, restarts, gaveUp, unhealthyNow }) => ({ name, episodes, restarts, gaveUp, unhealthyNow })),
+    [{ name: "sonarr", episodes: 4, restarts: 2, gaveUp: true, unhealthyNow: true }]
+  );
+});
+
+test("container health respects autonomy, exclusions, restart loops and the daily summary", async (t) => {
+  // Autonomy off: tell the owner, change nothing.
+  {
+    const { context, publish } = await containerHealthHarness(t, { autonomy: false });
+    await publish(withContainerHealth(snapshotAt(context.now)));
+    context.now += 3 * 60_000;
+    await publish(withContainerHealth(snapshotAt(context.now)));
+    assert.equal(context.actions.length, 0);
+    assert.match(context.pushes[0].message, /didn't restart it because "Let rules act" is off/u);
+  }
+  // Excluded, or not on an "only" list: ignored.
+  for (const policy of [{ scope: "all", containers: ["sonarr"] }, { scope: "only", containers: ["radarr"] }]) {
+    const { context, publish } = await containerHealthHarness(t, { policy });
+    await publish(withContainerHealth(snapshotAt(context.now)));
+    context.now += 5 * 60_000;
+    await publish(withContainerHealth(snapshotAt(context.now)));
+    assert.equal(context.actions.length, 0, JSON.stringify(policy));
+    assert.equal(context.pushes.length, 0);
+  }
+  // Docker is already restarting it: don't pile on.
+  {
+    const { context, publish } = await containerHealthHarness(t);
+    const looping = () => publish(withContainerHealth(snapshotAt(context.now), { state: "restarting", status: "Restarting (1) 5 seconds ago" }));
+    await looping();
+    context.now += 3 * 60_000;
+    await looping();
+    assert.equal(context.actions.length, 0);
+    assert.equal(context.pushes[0].title, "sonarr keeps restarting");
+  }
+  // Repeat offenders reach the daily summary.
+  {
+    const { agent, context, publish } = await containerHealthHarness(t);
+    for (let episode = 0; episode < 2; episode += 1) {
+      await publish(withContainerHealth(snapshotAt(context.now)));
+      context.now += 3 * 60_000;
+      await publish(withContainerHealth(snapshotAt(context.now)));
+      await publish(snapshotAt(context.now));
+      context.now += 10 * 60_000;
+    }
+    context.modelCalls.length = 0;
+    await api(agent, "POST", "/api/v2/agent/run", { job: "digest" });
+    const prompt = context.modelCalls[0].messages.at(-1).content;
+    assert.match(prompt, /Containers that went unhealthy more than once in the last 24 hours:\n- sonarr: unhealthy 2 times, restarted 2/u);
+  }
+});
+
+test("container health settings are validated", async (t) => {
+  const { agent, dataDir } = await harness(t);
+  await configure(agent, { autonomy: false, rules: [] });
+  const before = JSON.parse(await readFile(path.join(dataDir, "agent.json"), "utf8"));
+  assert.equal(Object.hasOwn(before.config, "containerHealth"), false, "not written until used, so older versions still load the file");
+  await assert.rejects(api(agent, "PUT", "/api/v2/agent/container-health", { scope: "some" }), { code: "INVALID_AGENT_CONFIG" });
+  await assert.rejects(api(agent, "PUT", "/api/v2/agent/container-health", { repeatCount: 1 }), { code: "INVALID_AGENT_CONFIG" });
+  await assert.rejects(api(agent, "PUT", "/api/v2/agent/container-health", { containers: ["bad name"] }), { code: "INVALID_AGENT_CONFIG" });
+  await assert.rejects(api(agent, "PUT", "/api/v2/agent/container-health", { surprise: true }), { code: "INVALID_REQUEST" });
+  const saved = (await api(agent, "PUT", "/api/v2/agent/container-health", { enabled: true, containers: ["portainer", "helmsman", "portainer"] })).payload;
+  assert.deepEqual(saved.config.containerHealth.containers, ["helmsman", "portainer"]);
+});
+
 test("an empty model reply is retried once without tools", async (t) => {
   // qwen2.5:3b answers some requests with neither text nor a tool call.
   const { agent, context, publish } = await harness(t, {

@@ -36,7 +36,7 @@ own facts instead of a written explanation.
 
 ## What it can change, and the guardrails
 
-The agent changes things in exactly two ways.
+The agent changes things in exactly three ways.
 
 **1. Rules you write.** For example: "when Sonarr has an open incident for 5
 minutes, restart the `sonarr` container." Rules are checked by Helmsman's own
@@ -57,7 +57,29 @@ code, not by the model:
   a single switch.
 - Every rule action is written to the event journal and sent to your phone.
 
-**2. Suggestions you approve.** The model can suggest a container start,
+**2. Restarting unhealthy containers.** When a container's Docker health
+check fails (it reports "unhealthy", is dead, or is stuck restarting),
+Helmsman can restart it. Settings → Automation → **Unhealthy containers**:
+
+- Off by default, and only acts while **Let rules act** is on. With it off,
+  you're told about unhealthy containers but nothing is restarted.
+- Covers every container except the ones you tick, or only the ones you tick.
+  The first time you open it, databases, Portainer, Helmsman, Home Assistant
+  and similar core services are ticked to be left alone.
+- Waits a few minutes (1–60) before restarting, since some containers report
+  unhealthy briefly while starting.
+- The first restart is quiet. If the container goes unhealthy again, you're
+  notified on each restart, with how many times it has happened.
+- After it goes unhealthy a set number of times (2–10) within a window (1–168
+  hours), Helmsman **stops restarting it** and tells you, once, that it keeps
+  coming back and needs you. Restarting forever would only hide the problem.
+- A container Docker is already restarting in a loop isn't restarted again;
+  you're told instead.
+- These restarts share the 10-a-day cap with your rules. The card lists the
+  containers that went unhealthy this week, and the daily summary mentions
+  repeat offenders.
+
+**3. Suggestions you approve.** The model can suggest a container start,
 restart or stop, or a VM start, reboot or shutdown. A suggestion **never runs
 by itself**. When you approve it, Helmsman looks up the target again in
 current inventory, so a container that was recreated still gets the right one,
@@ -129,8 +151,9 @@ gives that VM the card exclusively.
 
 ## 2. Connect it in Helmsman
 
-Open **Settings** and scroll to **Agent**. The numbered steps at the top show
-what's done.
+Open **Settings**. It has five tabs: **Access**, **Agent**,
+**Notifications**, **Automation** and **About**. On the **Agent** tab, the
+numbered steps at the top show what's done.
 
 1. **Model server.** Enter the server's address, such as
    `http://model-server:11434` for Ollama or `http://model-server:1234` for
@@ -153,11 +176,13 @@ what's done.
    so they don't reason at length before every answer.
 3. **What the agent does.** Choose which events it reports, the daily
    summary time, how often it checks in, and your time zone.
-4. **Phone notifications (optional).** See the next section.
-5. **Rules (optional).** Pick a service, how long it must be down, and what
-   to restart or start. The lists come from the services Helmsman monitors
-   and your Portainer and Proxmox connections. Rules only run while **Let
-   rules act** is on.
+4. **Phone notifications (optional),** on the **Notifications** tab. See the
+   next section.
+5. **Automation (optional),** on the **Automation** tab: the **Let rules
+   act** switch, restarting unhealthy containers (above), and rules. For a
+   rule, pick a service, how long it must be down, and what to restart or
+   start. The lists come from the services Helmsman monitors and your
+   Portainer and Proxmox connections.
 
 ## 3. Phone notifications through Home Assistant (optional)
 
@@ -171,7 +196,7 @@ one the Companion app creates for your phone.
    appears as something like `notify.mobile_app_your_phone`. Helmsman needs
    the part after `notify.`. Newer installs also show a `notify.your_phone`
    entity for `notify.send_message`; Helmsman uses the `mobile_app_…` action.
-3. In Helmsman, under **Phone notifications**, enter Home Assistant's local
+3. In Helmsman, on the **Notifications** tab, enter Home Assistant's local
    address (such as `http://homeassistant.local:8123`), the token and the
    action, save, and select **Send test**.
 
@@ -202,7 +227,8 @@ click it and it moves to the right edge and opens a mini chat. A badge means
 something is waiting for approval or there's a new report. Hide it with the
 eye button in its chat, or under **Settings → Agent → In this browser**.
 
-To stop all rules at once, turn off **Let rules act**. To stop the agent,
+To stop all automatic actions at once, turn off **Let rules act** on the
+**Automation** tab. To stop the agent,
 turn off **Agent on**.
 
 ## Using the API
@@ -235,6 +261,7 @@ the saved one. A rule looks like this, and saving the rule list replaces the
 whole list:
 
 ```js
+await agent("/container-health", "PUT", { enabled: true, scope: "all", containers: ["postgres", "portainer"], minutes: 3, repeatCount: 3, repeatHours: 24 });
 await agent("/rules", "PUT", {
   rules: [
     {

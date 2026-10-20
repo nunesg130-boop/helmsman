@@ -6,9 +6,11 @@ import path from "node:path";
 import {
   AGENT_LIMITS,
   AgentConfigError,
+  canonicalContainerHealth,
   canonicalRules,
   canonicalSettings,
   createAgentConfigStore,
+  defaultContainerHealth,
   validTimeZone
 } from "./agent-config.mjs";
 import {
@@ -188,6 +190,28 @@ async function writeJsonFile(dataDir, filePath, value, maxBytes) {
   }
 }
 
+const HEALTH_RECORD_KEY = /^[a-f0-9-]{36}:\d{1,9}:[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/u;
+const HEALTH_MEMORY_MS = 7 * 86_400_000;
+
+// Per container: when it was found unhealthy, when Helmsman restarted it,
+// and when it last told the owner it had given up. Kept for a week.
+function healthRecordsInput(value) {
+  const records = {};
+  if (!isPlainObject(value)) return records;
+  const times = (list) => (Array.isArray(list) ? list.filter((time) => Number.isSafeInteger(time) && time > 0).slice(-50) : []);
+  for (const [key, record] of Object.entries(value).slice(0, 500)) {
+    if (!HEALTH_RECORD_KEY.test(key) || !isPlainObject(record)) continue;
+    records[key] = {
+      name: typeof record.name === "string" ? record.name.slice(0, 128) : key.split(":").at(-1),
+      server: typeof record.server === "string" ? record.server.slice(0, 96) : "",
+      episodes: times(record.episodes),
+      restarts: times(record.restarts),
+      escalatedAt: Number.isSafeInteger(record.escalatedAt) ? record.escalatedAt : null
+    };
+  }
+  return records;
+}
+
 function validNote(note) {
   return isPlainObject(note) && UUID.test(note.id) && typeof note.text === "string" && typeof note.at === "string";
 }
@@ -238,7 +262,8 @@ export async function createAgent(options) {
     notes: Array.isArray(loaded?.notes) ? loaded.notes.filter(validNote).slice(-MAX_NOTES) : [],
     history: Array.isArray(loaded?.history) ? loaded.history.filter(isPlainObject).slice(-MAX_HISTORY) : [],
     lastDigestDate: typeof loaded?.lastDigestDate === "string" ? loaded.lastDigestDate : null,
-    lastCheckInAt: Number.isSafeInteger(loaded?.lastCheckInAt) ? loaded.lastCheckInAt : null
+    lastCheckInAt: Number.isSafeInteger(loaded?.lastCheckInAt) ? loaded.lastCheckInAt : null,
+    containerHealth: healthRecordsInput(loaded?.containerHealth)
   };
   let activityWrite = Promise.resolve();
   let stopped = false;
@@ -270,6 +295,8 @@ export async function createAgent(options) {
   // Rule evaluations run one at a time, in snapshot order.
   let ruleChain = Promise.resolve();
   const ruleIncidentDone = new Map();
+  // Containers unhealthy right now: key -> { since, handled }.
+  const unhealthyNow = new Map();
   const backgroundRate = new RateWindow(BACKGROUND_JOBS_PER_HOUR, 3_600_000);
   const questionRate = new RateWindow(QUESTIONS_PER_HOUR, 3_600_000);
   const notifyRate = new RateWindow(NOTIFICATIONS_PER_HOUR, 3_600_000);
@@ -827,13 +854,14 @@ export async function createAgent(options) {
         const recent = activity.notes.filter((note) => Date.parse(note.at) >= since && ["incident", "recovery", "rule-action"].includes(note.kind))
           .slice(-8).map((note) => `- ${formatTime(note.at, settings.timeZone)} ${note.title}`);
         const overviewText = await runTool("overview", {}, { snapshot, events, manual, timeZone: settings.timeZone });
-        const prompt = `Write the owner's daily summary in at most 120 words: overall health, what broke or recovered in the last 24 hours, anything that needs attention, and what is coming up today.\n\nCurrent overview:\n${overviewText}\n\nAgent notes from the last 24 hours:\n${recent.join("\n") || "- none"}`;
+        const offenders = repeatOffenders(since);
+        const prompt = `Write the owner's daily summary in at most 120 words: overall health, what broke or recovered in the last 24 hours, anything that needs attention, and what is coming up today.${offenders.length ? " Mention containers that went unhealthy more than once." : ""}\n\nCurrent overview:\n${overviewText}\n\nAgent notes from the last 24 hours:\n${recent.join("\n") || "- none"}${offenders.length ? `\n\nContainers that went unhealthy more than once in the last 24 hours:\n${offenders.join("\n")}` : ""}`;
         const note = await investigate({
           kind: "digest",
           title: "Daily homelab summary",
           prompt,
           allowProposals: false,
-          fallback: overviewText
+          fallback: offenders.length ? `${overviewText}\nContainers that went unhealthy more than once:\n${offenders.join("\n")}` : overviewText
         });
         if (!manualRun) {
           activity.lastDigestDate = localParts(clock(), settings.timeZone).date;
@@ -884,8 +912,7 @@ export async function createAgent(options) {
     if (!settings.enabled || !settings.autonomy || !rules.length) return;
     const now = clock();
     const open = current?.incidents?.open || [];
-    const totalToday = activity.history.filter((entry) => entry.actor === "rule" && entry.outcome !== "skipped"
-      && Date.parse(entry.at) >= now - 86_400_000).length;
+    const totalToday = automaticActionsToday(now);
     let budget = RULE_ACTIONS_PER_DAY - totalToday;
     for (const rule of rules) {
       if (!rule.enabled || budget <= 0) continue;
@@ -903,6 +930,159 @@ export async function createAgent(options) {
       budget -= 1;
       await runRule(current, rule, incident);
     }
+  }
+
+  // Rules and container-health restarts share one daily cap.
+  function automaticActionsToday(now) {
+    return activity.history.filter((entry) => ["rule", "container-health"].includes(entry.actor) && entry.outcome !== "skipped"
+      && Date.parse(entry.at) >= now - 86_400_000).length;
+  }
+
+  function containerHealthPolicy() {
+    return config().containerHealth || defaultContainerHealth();
+  }
+
+  function healthCovers(policy, name) {
+    return policy.scope === "only" ? policy.containers.includes(name) : !policy.containers.includes(name);
+  }
+
+  function hoursText(hours) {
+    if (hours % 24 === 0) return hours === 24 ? "day" : `${hours / 24} days`;
+    return hours === 1 ? "hour" : `${hours} hours`;
+  }
+
+  async function evaluateContainerHealth(current) {
+    const { settings } = config();
+    const policy = containerHealthPolicy();
+    if (!settings.enabled || !policy.enabled) {
+      unhealthyNow.clear();
+      return;
+    }
+    const now = clock();
+    const seen = new Set();
+    const servers = current?.infrastructure?.portainer || [];
+    for (const server of servers) {
+      for (const container of server.inventory?.containers || []) {
+        if (container.health !== "unhealthy" || !healthCovers(policy, container.name)) continue;
+        const key = `${server.id}:${container.environmentId}:${container.name}`;
+        if (!HEALTH_RECORD_KEY.test(key)) continue;
+        seen.add(key);
+        let episode = unhealthyNow.get(key);
+        if (!episode) {
+          episode = { since: now, handled: false };
+          unhealthyNow.set(key, episode);
+        }
+        if (episode.handled || now - episode.since < policy.minutes * 60_000) continue;
+        episode.handled = true;
+        await handleUnhealthyContainer(current, server, container, key, policy, servers.length > 1);
+      }
+    }
+    for (const key of [...unhealthyNow.keys()]) if (!seen.has(key)) unhealthyNow.delete(key);
+  }
+
+  async function handleUnhealthyContainer(current, server, container, key, policy, manyServers) {
+    const { settings } = config();
+    const now = clock();
+    const keepSince = now - HEALTH_MEMORY_MS;
+    const record = activity.containerHealth[key] || { name: container.name, server: "", episodes: [], restarts: [], escalatedAt: null };
+    record.name = container.name;
+    record.server = untrusted(server.displayName, 96);
+    record.episodes = [...record.episodes.filter((time) => time >= keepSince), now];
+    record.restarts = record.restarts.filter((time) => time >= keepSince);
+    activity.containerHealth[key] = record;
+    for (const [otherKey, other] of Object.entries(activity.containerHealth)) {
+      if (Math.max(0, ...other.episodes, ...other.restarts) < keepSince) delete activity.containerHealth[otherKey];
+    }
+    void persistActivity();
+
+    const name = untrusted(container.name, 60);
+    const label = `container ${container.name}${manyServers ? ` on ${record.server}` : ""}`;
+    const windowStart = now - policy.repeatHours * 3_600_000;
+    const recentEpisodes = record.episodes.filter((time) => time >= windowStart).length;
+    const recentRestarts = record.restarts.filter((time) => time >= windowStart).length;
+    const window = hoursText(policy.repeatHours);
+    const status = untrusted(container.status, 80);
+    const report = async (kind, title, text) => notifyNote(addNote({ kind, title, text, service: "portainer" }));
+
+    // It keeps coming back: stop restarting and tell the owner, once per window.
+    if (recentEpisodes >= policy.repeatCount) {
+      if (record.escalatedAt && record.escalatedAt >= windowStart) {
+        addHistory({ actor: "container-health", target: label, outcome: "skipped", code: "CONTAINER_KEEPS_FAILING" });
+        return;
+      }
+      record.escalatedAt = now;
+      void persistActivity();
+      addHistory({ actor: "container-health", target: label, outcome: "skipped", code: "CONTAINER_KEEPS_FAILING" });
+      await report("incident", `${name} keeps going unhealthy`,
+        `${name} has gone unhealthy ${recentEpisodes} times in the last ${window}${recentRestarts ? `, and I restarted it ${recentRestarts === 1 ? "once" : `${recentRestarts} times`}` : ""}. It keeps coming back, so I've stopped restarting it and left it for you. Docker reports: ${status}. Its logs are the next place to look.`);
+      return;
+    }
+    if (!settings.autonomy) {
+      await report("incident", `${name} is unhealthy`, `${name} has been unhealthy for ${policy.minutes} min (${status}). I didn't restart it because "Let rules act" is off.`);
+      return;
+    }
+    if (container.state === "restarting") {
+      await report("incident", `${name} keeps restarting`, `Docker is already restarting ${name} over and over (${status}), so restarting it again won't help. Its logs are the next place to look.`);
+      return;
+    }
+    if (automaticActionsToday(now) >= RULE_ACTIONS_PER_DAY) {
+      addHistory({ actor: "container-health", target: label, outcome: "skipped", code: "RULE_DAILY_LIMIT" });
+      await report("incident", `${name} is unhealthy`, `${name} is unhealthy (${status}), but automatic actions have reached their limit of ${RULE_ACTIONS_PER_DAY} for the day, so I left it.`);
+      return;
+    }
+    let outcome = "succeeded";
+    let code = null;
+    let message = "";
+    let target = null;
+    try {
+      target = resolveTarget(current, { kind: "container", name: container.name, serviceId: server.id, scope: String(container.environmentName || "").toLowerCase() || null });
+      const request = actionRequestFor(target, "restart");
+      await performAction(request.kind, request.body);
+    } catch (error) {
+      outcome = "failed";
+      code = error?.code || (error instanceof AgentTargetError ? "CONTAINER_NOT_FOUND" : "ACTION_FAILED");
+      message = untrusted(error?.message, 200);
+    }
+    addHistory({ actor: "container-health", operation: "restart", target: label, outcome, code });
+    recordEvent({
+      level: outcome === "succeeded" ? "info" : "warn",
+      category: "action",
+      event: "agent_container_health_action",
+      outcome,
+      service: "portainer",
+      operation: "restart",
+      targetType: "container",
+      targetId: target?.containerId || container.id,
+      ...(code && /^[A-Z][A-Z0-9_.:-]{0,63}$/u.test(code) ? { code } : {})
+    });
+    if (outcome === "failed") {
+      await report("rule-action", `Failed: restart ${label}`, `${name} was unhealthy (${status}). I tried to restart it, but it failed: ${message || code}.`);
+      return;
+    }
+    record.restarts.push(now);
+    supersedeProposals((proposal) => proposal.label === target.label);
+    void persistActivity();
+    const left = policy.repeatCount - recentEpisodes;
+    const note = addNote({
+      kind: "rule-action",
+      title: `Restarted ${label}`,
+      text: recentEpisodes === 1
+        ? `${name} was unhealthy for ${policy.minutes} min (${status}), so I restarted it.`
+        : `${name} went unhealthy again: ${recentEpisodes} times in the last ${window}. I restarted it. If it happens ${left === 1 ? "once more" : `${left} more times`}, I'll stop restarting it and leave it to you.`,
+      service: "portainer"
+    });
+    // The first restart is quiet; a repeat is worth a notification.
+    if (recentEpisodes > 1) await notifyNote(note);
+  }
+
+  /** Lines for the daily summary: containers that went unhealthy more than once. */
+  function repeatOffenders(sinceMs) {
+    return Object.values(activity.containerHealth)
+      .map((record) => ({ record, episodes: record.episodes.filter((time) => time >= sinceMs).length, restarts: record.restarts.filter((time) => time >= sinceMs).length }))
+      .filter(({ episodes }) => episodes >= 2)
+      .sort((left, right) => right.episodes - left.episodes)
+      .slice(0, 5)
+      .map(({ record, episodes, restarts }) => `- ${untrusted(record.name, 60)}: unhealthy ${episodes} times, restarted ${restarts}`);
   }
 
   async function runRule(current, rule, incident) {
@@ -994,7 +1174,9 @@ export async function createAgent(options) {
     }
     ruleChain = ruleChain
       .then(() => evaluateRules(current))
-      .catch(() => log("Agent rules could not be evaluated."));
+      .catch(() => log("Agent rules could not be evaluated."))
+      .then(() => evaluateContainerHealth(current))
+      .catch(() => log("Agent container health could not be evaluated."));
   }
 
   function tick() {
@@ -1052,8 +1234,29 @@ export async function createAgent(options) {
           }
         : null,
       settings,
-      rules
+      rules,
+      containerHealth: containerHealthPolicy()
     };
+  }
+
+  // What the container-health watcher has seen this week, for Settings.
+  function publicContainerHealth() {
+    const policy = containerHealthPolicy();
+    const now = clock();
+    const windowStart = now - policy.repeatHours * 3_600_000;
+    return Object.entries(activity.containerHealth)
+      .map(([key, record]) => ({
+        name: record.name,
+        server: record.server,
+        unhealthyNow: unhealthyNow.has(key),
+        episodes: record.episodes.filter((time) => time >= windowStart).length,
+        restarts: record.restarts.filter((time) => time >= windowStart).length,
+        lastSeenAt: new Date(Math.max(0, ...record.episodes)).toISOString(),
+        gaveUp: Boolean(record.escalatedAt && record.escalatedAt >= windowStart)
+      }))
+      .filter((entry) => entry.episodes > 0 || entry.unhealthyNow)
+      .sort((left, right) => right.episodes - left.episodes || left.name.localeCompare(right.name))
+      .slice(0, 20);
   }
 
   function publicState() {
@@ -1067,11 +1270,13 @@ export async function createAgent(options) {
         lastModel: status.lastModel,
         lastNotify: status.lastNotify,
         lastJobAt: status.lastJobAt,
+        automaticActionsToday: automaticActionsToday(clock()),
         configurationProblem: configStore.loadProblem
       },
       notes: activity.notes.slice(-30).reverse(),
       proposals: [...proposals.values()].filter((proposal) => proposal.status === "pending").map(publicProposal),
       history: activity.history.slice(-20).reverse(),
+      containerHealth: publicContainerHealth(),
       limits: AGENT_LIMITS
     };
   }
@@ -1332,6 +1537,14 @@ export async function createAgent(options) {
       }
       if (route === "/settings" && method === "PUT") {
         await saveSettings(await readJson(request));
+        return sendJson(response, 200, publicState());
+      }
+      if (route === "/container-health" && method === "PUT") {
+        const body = await readJson(request);
+        requireKeys(body, ["enabled", "scope", "containers", "minutes", "repeatCount", "repeatHours"]);
+        const next = canonicalContainerHealth({ ...containerHealthPolicy(), ...body });
+        await configStore.update((draft) => { draft.containerHealth = next; });
+        if (!next.enabled) unhealthyNow.clear();
         return sendJson(response, 200, publicState());
       }
       if (route === "/rules" && method === "PUT") {

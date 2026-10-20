@@ -6056,3 +6056,347 @@ body.has-overlay .agent-helper > * {
   font-size: 10px;
   line-height: 1.5;
 }
+
+/* Settings tabs ---------------------------------------------------------- */
+
+.settings-tabs.filter-chips {
+  display: inline-flex;
+  max-width: 100%;
+  margin-bottom: 18px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.settings-tabs .filter-chip {
+  flex: none;
+  min-height: 34px;
+  padding-inline: 16px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.settings-tabs .filter-chip.is-active {
+  color: #f1f1f3;
+}
+
+.settings-tabs .filter-chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.settings-panel > .agent-settings {
+  margin-top: 0;
+}
+
+.agent-sent-list,
+.agent-health__seen {
+  display: grid;
+  gap: 2px;
+  margin: 0 0 14px;
+  padding: 0;
+  list-style: none;
+}
+
+.agent-sent-list li,
+.agent-health__seen li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.agent-sent-list li:last-child,
+.agent-health__seen li:last-child {
+  border-bottom: 0;
+}
+
+.agent-sent-list .health-dot,
+.agent-health__seen .health-dot {
+  margin-top: 4px;
+}
+
+.agent-sent-list strong,
+.agent-health__seen strong {
+  color: #ededf0;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.agent-health__seen strong small {
+  margin-left: 6px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 500;
+}
+
+.agent-sent-list small,
+.agent-health__seen > li small {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.agent-sent-list li.is-off strong {
+  color: var(--muted);
+}
+
+.agent-facts {
+  display: grid;
+  margin: 14px 0 0;
+}
+
+.agent-facts div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.agent-facts dt {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.agent-facts dd {
+  margin: 0;
+  color: #ededf0;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.agent-health__scope {
+  display: grid;
+  gap: 6px;
+  margin: 14px 0 10px;
+  padding: 0;
+  border: 0;
+}
+
+.agent-health__scope legend {
+  margin-bottom: 6px;
+  color: #d6d6da;
+  font-size: 11px;
+  font-weight: 620;
+}
+
+.agent-radio {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-soft);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.agent-health__list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 4px;
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.agent-health__item {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 6px;
+  border-radius: 6px;
+  color: #d9d9de;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.agent-health__item:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.agent-health__item span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-health__item em {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 9px;
+  font-style: normal;
+}
+
+.agent-health__item em.is-bad {
+  color: #f2c46d;
+}
+
+.agent-steps .agent-text-button {
+  margin-top: 6px;
+}
+
+/* Portainer connections, one collapsible section each --------------------- */
+
+.portainer-instances {
+  display: grid;
+  gap: 12px;
+}
+
+.portainer-instance {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.022), transparent 42%),
+    rgba(16, 16, 19, 0.84);
+}
+
+.portainer-instance__summary {
+  display: grid;
+  grid-template-columns: auto minmax(0, auto) minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.portainer-instance__summary::-webkit-details-marker {
+  display: none;
+}
+
+.portainer-instance__summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.portainer-instance__summary:hover {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.portainer-instance__name {
+  display: grid;
+  min-width: 0;
+}
+
+.portainer-instance__name small {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.portainer-instance__name strong {
+  overflow: hidden;
+  color: #f1f1f3;
+  font-size: 14px;
+  font-weight: 620;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.portainer-instance__facts {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.portainer-instance__facts b {
+  color: #f2c46d;
+  font-weight: 600;
+}
+
+.portainer-instance__chevron {
+  display: grid;
+  color: var(--muted);
+  transition: transform 200ms ease;
+}
+
+.portainer-instance__chevron svg {
+  width: 14px;
+  height: 14px;
+  transform: rotate(90deg);
+}
+
+.portainer-instance[open] .portainer-instance__chevron {
+  transform: rotate(180deg);
+}
+
+.portainer-instance__body {
+  display: grid;
+  gap: 18px;
+  padding: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.portainer-instance__section h4 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 10px;
+  color: #d6d6da;
+  font-size: 12px;
+  font-weight: 620;
+}
+
+.portainer-instance__section h4 .count-pill {
+  min-width: 22px;
+  height: 22px;
+  font-size: 10px;
+}
+
+@media (max-width: 680px) {
+  .portainer-instance__summary {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .portainer-instance__facts {
+    grid-column: 2 / -1;
+    grid-row: 2;
+    white-space: normal;
+  }
+
+  .portainer-instance__summary .portainer-status {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .portainer-instance__chevron {
+    transition: none;
+  }
+}
+
+/* Small native radios and checkboxes inside settings cards, which otherwise
+   pick up the full-width text-field styling. */
+.agent-radio input,
+.agent-health__item input {
+  flex: none;
+  width: 15px !important;
+  height: 15px;
+  min-height: 15px !important;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  accent-color: var(--accent-strong, var(--accent));
+}
+
+.agent-radio,
+.agent-health__item {
+  display: flex !important;
+  flex-direction: row;
+  align-items: center;
+  font-weight: 500;
+}
