@@ -313,6 +313,7 @@ const state = {
   infrastructure: emptyInfrastructureState(),
   logging: emptyLoggingState(),
   agent: emptyAgentState(),
+  prowlarr: emptyProwlarrState(),
   launchpad: { loaded: false, loading: false, links: [], filter: "", error: "" },
   manual: emptyManualState(),
   search: { query: "", open: false, active: 0, results: [] },
@@ -2432,7 +2433,9 @@ function mediaOnlyOperationsSnapshot() {
 }
 
 function renderMediaHealthPage() {
-  return renderOperationsOverview(mediaOnlyOperationsSnapshot(), []);
+  const panel = renderProwlarrPanel();
+  const overview = renderOperationsOverview(mediaOnlyOperationsSnapshot(), []);
+  return panel ? `<div class="media-health-stack">${overview}${panel}</div>` : overview;
 }
 
 function mediaRecordById(id) {
@@ -4110,9 +4113,10 @@ const AGENT_NOTE_LABELS = Object.freeze({
   recovery: "Recovered",
   digest: "Daily summary",
   "check-in": "Check-in",
-  "rule-action": "Rule action"
+  "rule-action": "Rule action",
+  "agent-action": "Agent action"
 });
-const AGENT_NOTE_TONES = Object.freeze({ incident: "degraded", recovery: "healthy", digest: "stale", "check-in": "stale", "rule-action": "limited" });
+const AGENT_NOTE_TONES = Object.freeze({ incident: "degraded", recovery: "healthy", digest: "stale", "check-in": "stale", "rule-action": "limited", "agent-action": "limited" });
 const AGENT_CHAT_LIMIT = 12;
 const AGENT_QUESTION_LIMIT = 1_000;
 const AGENT_OPERATION_LABELS = Object.freeze({ restart: "Restart", start: "Start", reboot: "Reboot", stop: "Stop", shutdown: "Shut down", blocklistAndSearch: "Clear stuck" });
@@ -4551,6 +4555,7 @@ function renderAgentNotificationsTab() {
     [triggers.digest !== false, "Daily summary", `At ${escapeHtml(data.config?.settings?.digestTime || "07:30")} in ${escapeHtml(data.config?.settings?.timeZone || "UTC")}.`],
     [triggers.checkIn !== false, "Check-ins", "Only when something needs attention."],
     [Boolean(data.config?.downloads?.enabled), "Stuck downloads", "Each one, with an Approve button, or what was cleared automatically."],
+    [Boolean(data.config?.indexers?.enabled), "Failing indexers", "Only after the agent's retests also fail."],
     [true, "Automatic actions", "Repeat container restarts, giving up on a container, and failed actions."]
   ];
   return `<section class="agent-settings" aria-labelledby="agent-notifications-title">
@@ -4672,6 +4677,7 @@ function renderAgentAutomationTab() {
       ${renderAgentAutonomyCard(data)}
       ${renderAgentHealthCard(data)}
       ${renderAgentDownloadsCard(data)}
+      ${renderAgentIndexersCard(data)}
       ${renderAgentRulesCard(data)}
     </div>
   </section>`;
@@ -5376,6 +5382,199 @@ document.addEventListener("keydown", (event) => {
   event.preventDefault();
   askAgent("helper");
 });
+
+// Prowlarr indexers ----------------------------------------------------
+// Read live from the server (which strips every indexer secret) when the
+// Media Health page opens. Tests change nothing in Prowlarr; syncing pushes
+// indexers to the connected apps, so it asks first.
+
+function emptyProwlarrState() {
+  return { loaded: false, loading: false, error: "", data: null, results: new Map(), appResults: new Map(), busy: "" };
+}
+
+function prowlarrConfigured() {
+  return Boolean(state.config?.services?.some((service) => service.id === "prowlarr"
+    && service.configured !== false && service.enabled !== false && service.monitoringEnabled !== false));
+}
+
+function rerenderProwlarr() {
+  if (currentRoute() !== "health" || state.workspace !== "media") return;
+  state.lastMarkup = "";
+  renderPage({ force: true, preserveFocus: true });
+}
+
+async function loadProwlarr({ render = true } = {}) {
+  if (!state.status?.authenticated || !prowlarrConfigured() || state.prowlarr.loading) return;
+  state.prowlarr.loading = true;
+  if (render) rerenderProwlarr();
+  try {
+    state.prowlarr.data = await api("/api/v2/prowlarr/indexers");
+    state.prowlarr.error = "";
+  } catch (error) {
+    if (error?.status === 401) {
+      await initialize();
+      return;
+    }
+    state.prowlarr.error = safeSessionText(error?.message, "Prowlarr's indexers could not be read.", 180);
+  } finally {
+    state.prowlarr.loading = false;
+    state.prowlarr.loaded = true;
+  }
+  if (render) rerenderProwlarr();
+}
+
+function prowlarrTime(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "" : agentNoteTime(value);
+}
+
+function renderProwlarrIndexer(indexer) {
+  const result = state.prowlarr.results.get(indexer.id);
+  const busy = state.prowlarr.busy === `test:${indexer.id}`;
+  const tone = !indexer.enabled ? "disabled" : indexer.failing ? "degraded" : "healthy";
+  const status = !indexer.enabled ? "Disabled in Prowlarr"
+    : indexer.failing ? `Failing${indexer.failingSince ? ` since ${prowlarrTime(indexer.failingSince)}` : ""}` : "Working";
+  const numbers = indexer.queries === null ? "" : [
+    `${Number(indexer.queries).toLocaleString()} queries`,
+    `${Number(indexer.grabs || 0).toLocaleString()} grabs`,
+    indexer.failedQueries ? `${Number(indexer.failedQueries).toLocaleString()} failed` : "",
+    indexer.averageResponseMs ? `${Number(indexer.averageResponseMs).toLocaleString()} ms` : ""
+  ].filter(Boolean).join(" · ");
+  const protocol = { torrent: "Torrent", usenet: "Usenet" }[indexer.protocol] || "";
+  const privacy = { public: "Public", private: "Private", semiPrivate: "Semi-private" }[indexer.privacy] || "";
+  return `<li class="prowlarr-indexer${indexer.failing ? " is-failing" : ""}">
+    <i class="health-dot is-${tone}" aria-hidden="true"></i>
+    <div class="prowlarr-indexer__main">
+      <strong>${escapeHtml(indexer.name)}</strong>
+      <small>${escapeHtml([protocol, privacy].filter(Boolean).join(" · "))}${numbers ? ` · ${escapeHtml(numbers)}` : ""}</small>
+      ${result ? `<small class="prowlarr-indexer__result is-${result.ok ? "ok" : "bad"}">${result.ok ? "Passed its test" : `Failed its test: ${escapeHtml(result.message)}`} · ${escapeHtml(prowlarrTime(result.at))}</small>` : ""}
+    </div>
+    <span class="system-service-state is-${tone}"><i class="health-dot is-${tone}"></i>${escapeHtml(status)}${indexer.failing && indexer.disabledUntil ? `<em>Paused until ${escapeHtml(prowlarrTime(indexer.disabledUntil))}</em>` : ""}</span>
+    <button class="button button--compact" type="button" data-action="prowlarr-test" data-indexer-id="${indexer.id}" ${state.prowlarr.busy ? "disabled" : ""}${busy ? ' aria-busy="true"' : ""}>${busy ? "Testing…" : "Test"}</button>
+  </li>`;
+}
+
+function renderProwlarrPanel() {
+  if (!prowlarrConfigured()) return "";
+  const prowlarr = state.prowlarr;
+  const data = prowlarr.data;
+  const busy = prowlarr.busy;
+  const indexers = data?.indexers || [];
+  const failing = indexers.filter((indexer) => indexer.failing && indexer.enabled).length;
+  const button = (action, label, busyLabel) => `<button class="button button--compact" type="button" data-action="${action}" ${busy || !data ? "disabled" : ""}${busy === action ? ' aria-busy="true"' : ""}>${busy === action ? busyLabel : label}</button>`;
+  const body = !prowlarr.loaded || (prowlarr.loading && !data)
+    ? `<p class="agent-empty">Reading indexers from Prowlarr…</p>`
+    : prowlarr.error && !data
+      ? `<div class="empty-state"><strong>Indexers unavailable</strong><span>${escapeHtml(prowlarr.error)}</span></div>`
+      : !indexers.length
+        ? `<p class="agent-empty">Prowlarr has no indexers yet.</p>`
+        : `<ul class="prowlarr-indexers">${indexers.map(renderProwlarrIndexer).join("")}</ul>`;
+  const apps = data?.applications || [];
+  return `<section class="system-overview-card prowlarr-panel" aria-labelledby="prowlarr-indexers-title">
+    <header>
+      <div><span class="section-kicker">Prowlarr</span><h3 id="prowlarr-indexers-title">Indexers</h3></div>
+      <div class="prowlarr-panel__actions">
+        ${data ? `<span class="prowlarr-panel__summary">${failing ? `<b>${failing} failing</b> · ` : ""}${indexers.length} indexer${indexers.length === 1 ? "" : "s"}</span>` : ""}
+        ${button("prowlarr-test-all", "Test all", "Testing…")}
+        <button class="button button--compact" type="button" data-action="prowlarr-refresh" ${prowlarr.loading ? 'disabled aria-busy="true"' : ""}>${icon("refresh")}<span class="sr-only">Refresh indexers</span></button>
+      </div>
+    </header>
+    ${body}
+    ${apps.length ? `<footer class="prowlarr-apps">
+      <span class="prowlarr-apps__label">Apps</span>
+      <span class="prowlarr-apps__list">${apps.map((app) => {
+        const result = prowlarr.appResults.get(app.id);
+        return `<span class="prowlarr-app${result ? ` is-${result.ok ? "ok" : "bad"}` : ""}" title="${escapeHtml(result && !result.ok ? result.message : app.kind)}">${result ? icon(result.ok ? "check" : "x") : ""}${escapeHtml(app.name)}</span>`;
+      }).join("")}</span>
+      <span class="prowlarr-apps__actions">${button("prowlarr-test-apps", "Test connections", "Testing…")}${button("prowlarr-sync", "Sync indexers to apps", "Syncing…")}</span>
+    </footer>` : ""}
+  </section>`;
+}
+
+async function runProwlarrAction(action, indexerId = null) {
+  const data = state.prowlarr.data;
+  if (!data?.targetRevision || state.prowlarr.busy) return;
+  const operation = { "prowlarr-test": "testIndexer", "prowlarr-test-all": "testAllIndexers", "prowlarr-sync": "syncApps", "prowlarr-test-apps": "testApps" }[action];
+  if (!operation) return;
+  if (operation === "syncApps") {
+    const confirmed = await confirmControl({
+      title: "Sync indexers to apps?",
+      message: "Prowlarr sends its indexers to Sonarr, Radarr and its other connected apps, following each app's sync setting.",
+      confirmLabel: "Sync indexers"
+    });
+    if (!confirmed) return;
+  }
+  state.prowlarr.busy = operation === "testIndexer" ? `test:${indexerId}` : action;
+  rerenderProwlarr();
+  try {
+    const result = await api("/api/v2/actions/prowlarr", {
+      method: "POST",
+      body: { operation, ...(operation === "testIndexer" ? { indexerId } : {}), targetRevision: data.targetRevision }
+    });
+    const at = new Date().toISOString();
+    if (operation === "testIndexer") {
+      state.prowlarr.results.set(indexerId, { ok: result.passed === true, message: result.message || "", at });
+      const name = data.indexers.find((indexer) => indexer.id === indexerId)?.name || "The indexer";
+      showToast(result.passed ? `${name} passed its test.` : `${name} failed its test.`, result.passed ? "success" : "danger");
+    } else if (operation === "testAllIndexers") {
+      for (const entry of result.results || []) state.prowlarr.results.set(entry.id, { ok: entry.ok, message: entry.message || "", at });
+      const failed = (result.results || []).filter(({ ok }) => !ok).length;
+      showToast(failed ? `${failed} indexer${failed === 1 ? "" : "s"} failed the test.` : "Every indexer passed.", failed ? "danger" : "success");
+    } else if (operation === "testApps") {
+      for (const entry of result.results || []) state.prowlarr.appResults.set(entry.id, { ok: entry.ok, message: entry.message || "" });
+      const failed = (result.results || []).filter(({ ok }) => !ok).length;
+      showToast(failed ? `${failed} app connection${failed === 1 ? "" : "s"} failed.` : "Prowlarr can reach every app.", failed ? "danger" : "success");
+    } else {
+      showToast("Prowlarr is syncing its indexers to the apps.", "success");
+    }
+  } catch (error) {
+    if (error?.status === 401) {
+      await initialize();
+      return;
+    }
+    showToast(error?.message || "Prowlarr didn't accept that.", "danger");
+  } finally {
+    state.prowlarr.busy = "";
+  }
+  await loadProwlarr();
+}
+
+// Automation tab ---------------------------------------------------------
+
+function renderAgentIndexersCard(data) {
+  const policy = data.config?.indexers || { enabled: false, tests: 2, spacingMinutes: 15 };
+  const tests = data.limits?.indexerTests || { min: 1, max: 5 };
+  const spacing = data.limits?.indexerSpacingMinutes || { min: 5, max: 120 };
+  const watching = data.indexers || [];
+  const stateText = (entry) => entry.state === "gaveUp"
+    ? `Failed ${entry.tests} test${entry.tests === 1 ? "" : "s"}; you were notified`
+    : entry.state === "passed" ? "Passed a retest"
+      : entry.tests ? `Failed test ${entry.tests} of ${entry.maxTests}; next test in ${entry.nextTestMinutes} min` : "Testing now";
+  return `<form class="glass-panel settings-card-v5 agent-indexers" id="agent-indexers-form">
+    <header><div><span class="section-kicker">Prowlarr</span><h3>Indexers</h3></div>${icon("search")}</header>
+    <div class="settings-card-v5__body">
+      <p>When an indexer starts failing in Prowlarr, the agent tests it, retests it after a while, and notifies you only if it keeps failing. Testing changes nothing in Prowlarr.</p>
+      ${prowlarrConfigured() ? "" : `<div class="security-note">${icon("link")}<div><strong>Prowlarr isn't connected</strong><span>Connect it under Media → Connections for this to have anything to test.</span></div></div>`}
+      <label class="check-row"><input name="enabled" type="checkbox" ${policy.enabled ? "checked" : ""}/><span><strong>Let the agent test indexers</strong><small>On its own when one fails, and when you ask in chat (“test indexers”, “test 1337x”). When off, you're notified about failing indexers as usual and nothing is tested.</small></span></label>
+      <div class="form-grid form-grid--two">
+        <label><span>Tests before notifying</span><input name="tests" type="number" min="${tests.min}" max="${tests.max}" value="${Number(policy.tests)}" required /></label>
+        <label><span>Minutes between tests</span><input name="spacingMinutes" type="number" min="${spacing.min}" max="${spacing.max}" value="${Number(policy.spacingMinutes)}" required /></label>
+      </div>
+      <p class="agent-voice__hint">Each test queries the indexer's site, so the agent tests only the failing indexer, and at most 12 tests an hour.</p>
+      ${policy.enabled && watching.length ? `<h4>Right now</h4><ul class="agent-health__seen">${watching.map((entry) => `<li><i class="health-dot is-${entry.state === "gaveUp" ? "down" : entry.state === "passed" ? "healthy" : "degraded"}" aria-hidden="true"></i><div><strong>${escapeHtml(entry.name)}</strong><small>${escapeHtml(stateText(entry))}</small>${entry.lastMessage ? `<small>${escapeHtml(entry.lastMessage)}</small>` : ""}</div></li>`).join("")}</ul>` : ""}
+      <div class="button-row"><button class="button button--primary" type="submit">Save</button></div>
+    </div>
+  </form>`;
+}
+
+async function submitAgentIndexers(form) {
+  const data = new FormData(form);
+  await agentMutation("/indexers", "PUT", {
+    enabled: data.get("enabled") === "on",
+    tests: Number(String(data.get("tests") || "").trim()),
+    spacingMinutes: Number(String(data.get("spacingMinutes") || "").trim())
+  }, "Indexer testing saved.");
+}
 
 const SETTINGS_TABS = Object.freeze([
   Object.freeze({ id: "access", label: "Access" }),
@@ -10307,6 +10506,7 @@ function clearAuthenticatedState() {
   state.infrastructure = emptyInfrastructureState();
   state.logging = emptyLoggingState();
   state.agent = emptyAgentState();
+  state.prowlarr = emptyProwlarrState();
   state.lastMarkup = "";
 }
 
@@ -10341,6 +10541,7 @@ async function loadAuthenticatedData(options = {}) {
   state.infrastructure.targets = normalizedInfrastructureTargets(config?.infrastructureEnvironments || config?.infrastructureTargets || []);
   state.infrastructure.loaded = true;
   state.infrastructure.error = "";
+  if (state.workspace === "media" && currentRoute() === "health") void loadProwlarr();
   if (options.refresh) await refreshOperations();
 }
 
@@ -10479,6 +10680,14 @@ document.addEventListener("click", async (event) => {
   if (action === "settings-tab") {
     setSettingsTab(String(target.dataset.settingsTab || ""), { focus: Boolean(target.closest?.(".settings-tabs")) });
     if (currentRoute() !== "settings") location.hash = "#/settings";
+    return;
+  }
+  if (["prowlarr-test", "prowlarr-test-all", "prowlarr-sync", "prowlarr-test-apps"].includes(action)) {
+    await runProwlarrAction(action, action === "prowlarr-test" ? Number(target.dataset.indexerId) : null);
+    return;
+  }
+  if (action === "prowlarr-refresh") {
+    await loadProwlarr();
     return;
   }
   if (action === "agent-voice-preset") {
@@ -10819,6 +11028,7 @@ document.addEventListener("submit", (event) => {
   if (event.target.id === "agent-autonomy-form") submitAgentAutonomy(event.target);
   if (event.target.id === "agent-health-form") submitAgentHealth(event.target);
   if (event.target.id === "agent-downloads-form") submitAgentDownloads(event.target);
+  if (event.target.id === "agent-indexers-form") submitAgentIndexers(event.target);
   if (event.target.id === "agent-settings-form") submitAgentSettings(event.target);
   if (event.target.id === "agent-notify-form") submitAgentNotify(event.target);
   if (event.target.id === "agent-rule-form") submitAgentRule(event.target);
@@ -10843,6 +11053,7 @@ window.addEventListener("hashchange", async () => {
   if (currentRoute() === "launchpad" && state.status?.authenticated) await loadLaunchpadLinks();
   if (currentRoute() === "manual" && state.status?.authenticated) await loadManual();
   if (state.status?.authenticated) void loadAgent({ render: ["system", "settings"].includes(currentRoute()) });
+  if (state.status?.authenticated && state.workspace === "media" && currentRoute() === "health") void loadProwlarr();
   resetRouteScroll();
   main.focus({ preventScroll: true });
   if (currentRoute() === "manual") revealManualTarget();

@@ -471,6 +471,26 @@ const DEFINITIONS = [
     run: (snapshot, context, args) => searchManual(snapshot, context, args)
   },
   {
+    name: "indexer_status",
+    description: "Prowlarr indexers: which are failing, since when, Prowlarr's last error and recent query numbers.",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+    indexers: true,
+    run: (_snapshot, context) => context.indexers.status()
+  },
+  {
+    name: "test_indexer",
+    description: "Test one Prowlarr indexer by name and get pass or fail with Prowlarr's error. Testing changes nothing.",
+    parameters: {
+      type: "object",
+      properties: { name: { type: "string", description: "Indexer name as Prowlarr shows it." } },
+      required: ["name"],
+      additionalProperties: false
+    },
+    indexers: true,
+    tests: true,
+    run: (_snapshot, context, args) => context.indexers.test(String(args.name || ""))
+  },
+  {
     name: "propose_action",
     description: "Suggest one control action for the owner to approve. Containers: start, restart, stop. VMs and LXCs: start, reboot, shutdown. Nothing runs until the owner approves.",
     parameters: {
@@ -489,15 +509,18 @@ const DEFINITIONS = [
 ];
 
 /** OpenAI-format tool definitions. Without `propose`, propose_action is left out. */
-export function toolDefinitions({ allowProposals }) {
+export function toolDefinitions({ allowProposals, indexers = false, indexerTests = false }) {
   return DEFINITIONS
     .filter((definition) => allowProposals || !definition.proposes)
+    .filter((definition) => !definition.indexers || indexers)
+    .filter((definition) => !definition.tests || indexerTests)
     .map(({ name, description, parameters }) => ({ type: "function", function: { name, description, parameters } }));
 }
 
 export async function runTool(name, args, context) {
   const definition = DEFINITIONS.find((candidate) => candidate.name === name);
-  if (!definition || (definition.proposes && !context.propose)) return `There is no tool called ${untrusted(name, 40)}.`;
+  if (!definition || (definition.proposes && !context.propose) || (definition.indexers && !context.indexers)
+    || (definition.tests && !context.indexers?.test)) return `There is no tool called ${untrusted(name, 40)}.`;
   const snapshot = context.snapshot();
   if (!snapshot) return "Helmsman has not finished its first health check yet.";
   try {

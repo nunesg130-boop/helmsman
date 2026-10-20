@@ -8,11 +8,13 @@ import {
   AgentConfigError,
   canonicalContainerHealth,
   canonicalDownloads,
+  canonicalIndexers,
   canonicalRules,
   canonicalSettings,
   createAgentConfigStore,
   defaultContainerHealth,
   defaultDownloads,
+  defaultIndexers,
   validTimeZone
 } from "./agent-config.mjs";
 import {
@@ -238,6 +240,7 @@ export async function createAgent(options) {
     snapshot,
     subscribe,
     performAction,
+    readIndexers = null,
     manual = () => "",
     events = null,
     recordEvent = () => {},
@@ -305,6 +308,11 @@ export async function createAgent(options) {
   const stuckNow = new Map();
   // Services whose incident was reported quietly; their recovery is quiet too.
   const quietServices = new Set();
+  // Failing indexers the agent is testing: id -> { name, since, tests, nextAt, done, doneAt }.
+  const indexerWatch = new Map();
+  const indexerTestTimes = [];
+  let indexerReadAt = 0;
+  let indexerReading = null;
   const backgroundRate = new RateWindow(BACKGROUND_JOBS_PER_HOUR, 3_600_000);
   const questionRate = new RateWindow(QUESTIONS_PER_HOUR, 3_600_000);
   const notifyRate = new RateWindow(NOTIFICATIONS_PER_HOUR, 3_600_000);
@@ -563,7 +571,7 @@ export async function createAgent(options) {
   // The prompt has three parts: what the agent is and can do, the owner's
   // own response instructions, and fixed rules that come last so the owner's
   // text (or anything else) cannot switch them off.
-  function systemPrompt(ai, settings, { allowProposals, source = "note" }) {
+  function systemPrompt(ai, settings, { allowProposals, source = "note", indexerTests = false }) {
     const activeRules = config().rules.filter((rule) => rule.enabled).length;
     const ruleLine = activeRules === 0
       ? "The owner has no automatic rules set up."
@@ -580,6 +588,7 @@ export async function createAgent(options) {
         ? "What you cannot do: change anything yourself. You can suggest one action with propose_action (start, restart or stop a container; start, reboot or shut down a VM or LXC), and it runs only if the owner approves it."
         : "What you cannot do: change anything, or suggest actions here.",
       ruleLine,
+      indexerTests ? "You may test a Prowlarr indexer yourself with test_indexer; testing changes nothing in Prowlarr." : "",
       style,
       `The owner's time zone is ${settings.timeZone}.`,
       ai.extraInstructions ? `The owner's instructions for how you respond:\n${ai.extraInstructions}` : "",
@@ -612,11 +621,14 @@ export async function createAgent(options) {
       events,
       manual,
       timeZone: settings.timeZone,
-      propose: allowProposals ? createProposal(source, service) : null
+      propose: allowProposals ? createProposal(source, service) : null,
+      indexers: typeof readIndexers === "function" && prowlarrService()
+        ? { status: indexerStatusText, ...(indexersPolicy().enabled ? { test: testIndexerByName } : {}) }
+        : null
     };
-    const tools = toolDefinitions({ allowProposals });
+    const tools = toolDefinitions({ allowProposals, indexers: Boolean(toolContext.indexers), indexerTests: Boolean(toolContext.indexers?.test) });
     const messages = [
-      { role: "system", content: systemPrompt(ai, settings, { allowProposals, source }) },
+      { role: "system", content: systemPrompt(ai, settings, { allowProposals, source, indexerTests: Boolean(toolContext.indexers?.test) }) },
       ...history.map((turn) => ({ ...turn, historic: true })),
       { role: "user", content: prompt }
     ];
@@ -835,6 +847,13 @@ export async function createAgent(options) {
       quietServices.add(service);
       return note;
     }
+    // Likewise for failing indexers while the agent is testing them.
+    const indexerPolicy = indexersPolicy();
+    if (indexerPolicy.enabled && service === "prowlarr" && items.every((item) => item.incident.capability === "indexers")) {
+      note.text = `${note.text}\n\nI'm testing the failing indexer and will notify you if it still fails after ${indexerPolicy.tests} test${indexerPolicy.tests === 1 ? "" : "s"}.`;
+      quietServices.add(service);
+      return note;
+    }
     await notifyNote(note);
     return note;
   }
@@ -881,17 +900,18 @@ export async function createAgent(options) {
       run: async () => {
         const { settings } = config();
         const since = clock() - 86_400_000;
-        const recent = activity.notes.filter((note) => Date.parse(note.at) >= since && ["incident", "recovery", "rule-action"].includes(note.kind))
+        const recent = activity.notes.filter((note) => Date.parse(note.at) >= since && ["incident", "recovery", "rule-action", "agent-action"].includes(note.kind))
           .slice(-8).map((note) => `- ${formatTime(note.at, settings.timeZone)} ${note.title}`);
         const overviewText = await runTool("overview", {}, { snapshot, events, manual, timeZone: settings.timeZone });
         const offenders = repeatOffenders(since);
-        const prompt = `Write the owner's daily summary in at most 120 words: overall health, what broke or recovered in the last 24 hours, anything that needs attention, and what is coming up today.${offenders.length ? " Mention containers that went unhealthy more than once." : ""}\n\nCurrent overview:\n${overviewText}\n\nAgent notes from the last 24 hours:\n${recent.join("\n") || "- none"}${offenders.length ? `\n\nContainers that went unhealthy more than once in the last 24 hours:\n${offenders.join("\n")}` : ""}`;
+        const brokenIndexers = failingIndexerLines();
+        const prompt = `Write the owner's daily summary in at most 120 words: overall health, what broke or recovered in the last 24 hours, anything that needs attention, and what is coming up today.${offenders.length ? " Mention containers that went unhealthy more than once." : ""}${brokenIndexers.length ? " Mention indexers that keep failing." : ""}\n\nCurrent overview:\n${overviewText}\n\nAgent notes from the last 24 hours:\n${recent.join("\n") || "- none"}${offenders.length ? `\n\nContainers that went unhealthy more than once in the last 24 hours:\n${offenders.join("\n")}` : ""}${brokenIndexers.length ? `\n\nProwlarr indexers that keep failing:\n${brokenIndexers.join("\n")}` : ""}`;
         const note = await investigate({
           kind: "digest",
           title: "Daily homelab summary",
           prompt,
           allowProposals: false,
-          fallback: offenders.length ? `${overviewText}\nContainers that went unhealthy more than once:\n${offenders.join("\n")}` : overviewText
+          fallback: `${overviewText}${offenders.length ? `\nContainers that went unhealthy more than once:\n${offenders.join("\n")}` : ""}${brokenIndexers.length ? `\nIndexers that keep failing:\n${brokenIndexers.join("\n")}` : ""}`
         });
         if (!manualRun) {
           activity.lastDigestDate = localParts(clock(), settings.timeZone).date;
@@ -1249,6 +1269,214 @@ export async function createAgent(options) {
       .slice(0, 20);
   }
 
+  // ------------------------------------------------------------ indexers --
+
+  function indexersPolicy() {
+    return config().indexers || defaultIndexers();
+  }
+
+  function prowlarrService(current = snapshot()) {
+    return (current?.services || []).find((service) => service?.id === "prowlarr" && service.connectionState === "connected") || null;
+  }
+
+  function looseName(value) {
+    return String(value || "").toLowerCase().replace(/[^a-z0-9]/gu, "");
+  }
+
+  async function currentIndexers() {
+    if (typeof readIndexers !== "function") throw new AgentError(409, "PROWLARR_NOT_CONFIGURED", "Prowlarr isn't connected.");
+    if (!indexerReading) {
+      indexerReading = Promise.resolve().then(() => readIndexers()).finally(() => { indexerReading = null; });
+    }
+    const result = await indexerReading;
+    indexerReadAt = clock();
+    return result.indexers || [];
+  }
+
+  function indexerTestBudget(now) {
+    while (indexerTestTimes.length && indexerTestTimes[0] < now - 3_600_000) indexerTestTimes.shift();
+    return AGENT_LIMITS.indexerTestsPerHour - indexerTestTimes.length;
+  }
+
+  /** Tests one indexer through the control plane. Never throws. */
+  async function testIndexer(indexer) {
+    const now = clock();
+    if (indexerTestBudget(now) <= 0) return { passed: null, message: `The hourly limit of ${AGENT_LIMITS.indexerTestsPerHour} indexer tests is reached.` };
+    const service = prowlarrService();
+    if (!service?.targetRevision) return { passed: null, message: "Prowlarr isn't connected right now." };
+    indexerTestTimes.push(now);
+    try {
+      const result = await performAction("prowlarr", { operation: "testIndexer", indexerId: indexer.id, targetRevision: service.targetRevision });
+      addHistory({ actor: "agent", operation: "testIndexer", target: `indexer ${indexer.name}`, outcome: result.passed ? "passed" : "failed" });
+      return { passed: result.passed === true, message: result.passed ? "" : untrusted(result.message || "The test failed.", 200) };
+    } catch (error) {
+      return { passed: null, message: untrusted(error?.message || "The test could not run.", 200) };
+    }
+  }
+
+  // Reads indexers when Prowlarr reports a blocked one, or while the agent
+  // is following one, at most once a minute.
+  async function evaluateIndexers(current) {
+    const { settings } = config();
+    const policy = indexersPolicy();
+    if (!settings.enabled || !policy.enabled || typeof readIndexers !== "function") {
+      indexerWatch.clear();
+      return;
+    }
+    const service = prowlarrService(current);
+    const blocked = Number(service?.metrics?.indexersBlocked || 0);
+    const following = [...indexerWatch.values()].some((entry) => !entry.done || entry.done === "gaveUp");
+    const now = clock();
+    if (!service || (!blocked && !following) || now - indexerReadAt < 60_000) return;
+    let indexers;
+    try {
+      indexers = await currentIndexers();
+    } catch {
+      return;
+    }
+    const failing = new Map(indexers.filter((indexer) => indexer.failing && indexer.enabled).map((indexer) => [indexer.id, indexer]));
+    for (const indexer of failing.values()) {
+      let entry = indexerWatch.get(indexer.id);
+      // A new failure after a passing test starts over.
+      if (entry?.done === "passed" && Date.parse(indexer.lastFailureAt || "") > entry.doneAt) entry = null;
+      if (!entry) {
+        entry = { name: indexer.name, since: now, tests: [], nextAt: now, done: null, doneAt: null };
+        indexerWatch.set(indexer.id, entry);
+      }
+      entry.name = indexer.name;
+      if (entry.done || now < entry.nextAt) continue;
+      await runIndexerTest(indexer, entry, policy);
+    }
+    for (const [id, entry] of [...indexerWatch.entries()]) {
+      if (failing.has(id)) continue;
+      indexerWatch.delete(id);
+      if (entry.done === "gaveUp") {
+        addNote({ kind: "recovery", title: `Indexer ${untrusted(entry.name, 60)} is working again`, text: `Prowlarr no longer reports ${untrusted(entry.name, 60)} as failing.`, service: "prowlarr" });
+      }
+    }
+  }
+
+  async function runIndexerTest(indexer, entry, policy) {
+    const now = clock();
+    const name = untrusted(indexer.name, 60);
+    const result = await testIndexer(indexer);
+    if (result.passed === null) {
+      // The test itself couldn't run; try again at the next spacing.
+      entry.nextAt = now + policy.spacingMinutes * 60_000;
+      return;
+    }
+    entry.tests.push({ at: now, passed: result.passed, message: result.message });
+    const count = entry.tests.length;
+    if (result.passed) {
+      entry.done = "passed";
+      entry.doneAt = now;
+      addNote({
+        kind: "agent-action",
+        title: `Indexer ${name} passed a retest`,
+        text: `${name} started failing in Prowlarr. I tested it and it passed${count > 1 ? ` on test ${count}` : ""}, so I'm leaving it.`,
+        service: "prowlarr"
+      });
+      return;
+    }
+    if (count < policy.tests) {
+      entry.nextAt = now + policy.spacingMinutes * 60_000;
+      addNote({
+        kind: "agent-action",
+        title: `Tested indexer ${name}: failed`,
+        text: `${name} is failing in Prowlarr. I tested it and it failed: "${result.message}". I'll test it again in ${policy.spacingMinutes} min.`,
+        service: "prowlarr"
+      });
+      return;
+    }
+    entry.done = "gaveUp";
+    entry.doneAt = now;
+    const tz = config().settings.timeZone;
+    const lines = entry.tests.map((test, index) => `- Test ${index + 1} at ${formatTime(new Date(test.at).toISOString(), tz)}: ${test.passed ? "passed" : `failed, "${test.message}"`}`);
+    const fallback = `${name} failed ${count === 1 ? "its test" : `all ${count} tests, ${policy.spacingMinutes} min apart`}. Prowlarr says: "${result.message}". It stays failing until the site or its settings are fixed; check it in Prowlarr.`;
+    const note = await investigate({
+      kind: "incident",
+      title: `Indexer ${name} keeps failing`,
+      prompt: [
+        `The Prowlarr indexer ${name} is failing. Helmsman tested it ${count} time${count === 1 ? "" : "s"}:`,
+        ...lines,
+        "",
+        "In at most 60 words, say what is wrong, the likely cause (for example the site being down, a Cloudflare challenge, an expired cookie or API key, or a rate limit) and one next step in Prowlarr."
+      ].join("\n"),
+      service: "prowlarr",
+      allowProposals: false,
+      fallback
+    });
+    await notifyNote(note);
+  }
+
+  /** Text for the model's indexer_status tool. */
+  async function indexerStatusText() {
+    const indexers = await currentIndexers();
+    if (!indexers.length) return "Prowlarr has no indexers.";
+    const tz = config().settings.timeZone;
+    return indexers.slice(0, 30).map((indexer) => {
+      const name = untrusted(indexer.name, 60);
+      const state = !indexer.enabled ? "disabled by the owner"
+        : indexer.failing ? `failing since ${formatTime(indexer.failingSince || indexer.lastFailureAt, tz)}${indexer.disabledUntil ? `, paused by Prowlarr until ${formatTime(indexer.disabledUntil, tz)}` : ""}`
+          : "working";
+      const numbers = indexer.queries === null ? "" : `, ${indexer.queries} queries, ${indexer.grabs ?? 0} grabs, ${indexer.failedQueries ?? 0} failed`;
+      return `- ${name} (${indexer.protocol}): ${state}${numbers}`;
+    }).join("\n");
+  }
+
+  /** Text for the model's test_indexer tool and the chat command. */
+  async function testIndexerByName(name) {
+    const indexers = await currentIndexers();
+    const wanted = looseName(name);
+    const matches = indexers.filter((indexer) => looseName(indexer.name) === wanted);
+    const found = matches.length === 1 ? matches[0] : indexers.filter((indexer) => wanted && looseName(indexer.name).includes(wanted)).length === 1
+      ? indexers.find((indexer) => looseName(indexer.name).includes(wanted)) : null;
+    if (!found) return `There is no single indexer called "${untrusted(name, 60)}". Indexers: ${indexers.slice(0, 20).map((indexer) => untrusted(indexer.name, 40)).join(", ") || "none"}.`;
+    const result = await testIndexer(found);
+    if (result.passed === null) return `I couldn't test ${untrusted(found.name, 60)}: ${result.message}`;
+    return result.passed ? `${untrusted(found.name, 60)} passed its test.` : `${untrusted(found.name, 60)} failed its test: "${result.message}"`;
+  }
+
+  async function testAllIndexersText() {
+    const service = prowlarrService();
+    if (!service?.targetRevision) return "Prowlarr isn't connected right now.";
+    const now = clock();
+    if (indexerTestBudget(now) <= 0) return `The hourly limit of ${AGENT_LIMITS.indexerTestsPerHour} indexer tests is reached.`;
+    indexerTestTimes.push(now);
+    const [indexers, result] = await Promise.all([
+      currentIndexers().catch(() => []),
+      performAction("prowlarr", { operation: "testAllIndexers", targetRevision: service.targetRevision })
+    ]);
+    addHistory({ actor: "agent", operation: "testAllIndexers", target: "all indexers", outcome: result.results.every(({ ok }) => ok) ? "passed" : "failed" });
+    const names = new Map(indexers.map((indexer) => [indexer.id, untrusted(indexer.name, 40)]));
+    const failed = result.results.filter(({ ok }) => !ok);
+    if (!result.results.length) return "Prowlarr has no indexers to test.";
+    if (!failed.length) return `All ${result.results.length} indexers passed.`;
+    return `${result.results.length - failed.length} of ${result.results.length} indexers passed. Failed: ${failed.map(({ id, message }) => `${names.get(id) || `indexer ${id}`} ("${untrusted(message, 120)}")`).join("; ")}.`;
+  }
+
+  function publicIndexers() {
+    const policy = indexersPolicy();
+    const now = clock();
+    return [...indexerWatch.values()]
+      .map((entry) => ({
+        name: untrusted(entry.name, 80),
+        since: new Date(entry.since).toISOString(),
+        tests: entry.tests.length,
+        lastMessage: entry.tests.at(-1)?.message || "",
+        state: entry.done || "testing",
+        nextTestMinutes: entry.done ? null : Math.max(0, Math.ceil((entry.nextAt - now) / 60_000)),
+        maxTests: policy.tests
+      }))
+      .slice(0, 20);
+  }
+
+  /** Lines for the daily summary: indexers the agent gave up on. */
+  function failingIndexerLines() {
+    return [...indexerWatch.values()].filter((entry) => entry.done === "gaveUp")
+      .slice(0, 5).map((entry) => `- ${untrusted(entry.name, 60)}: failed ${entry.tests.length} test${entry.tests.length === 1 ? "" : "s"}, last: "${untrusted(entry.tests.at(-1)?.message || "", 100)}"`);
+  }
+
   /** Lines for the daily summary: containers that went unhealthy more than once. */
   function repeatOffenders(sinceMs) {
     return Object.values(activity.containerHealth)
@@ -1352,7 +1580,9 @@ export async function createAgent(options) {
       .then(() => evaluateContainerHealth(current))
       .catch(() => log("Agent container health could not be evaluated."))
       .then(() => evaluateDownloads(current))
-      .catch(() => log("Agent stuck downloads could not be evaluated."));
+      .catch(() => log("Agent stuck downloads could not be evaluated."))
+      .then(() => evaluateIndexers(current))
+      .catch(() => log("Agent indexer checks could not be evaluated."));
   }
 
   function tick() {
@@ -1412,7 +1642,8 @@ export async function createAgent(options) {
       settings,
       rules,
       containerHealth: containerHealthPolicy(),
-      downloads: downloadsPolicy()
+      downloads: downloadsPolicy(),
+      indexers: indexersPolicy()
     };
   }
 
@@ -1455,6 +1686,7 @@ export async function createAgent(options) {
       history: activity.history.slice(-20).reverse(),
       containerHealth: publicContainerHealth(),
       downloads: publicDownloads(),
+      indexers: publicIndexers(),
       limits: AGENT_LIMITS
     };
   }
@@ -1644,6 +1876,8 @@ export async function createAgent(options) {
         proposals: []
       };
     }
+    const indexerAnswer = await indexerCommand(question);
+    if (indexerAnswer) return indexerAnswer;
     const current = snapshot();
     const command = current ? parseActionCommand(question, current) : null;
     if (command?.error) return { answer: command.error, toolsUsed: [], proposals: [] };
@@ -1666,6 +1900,35 @@ export async function createAgent(options) {
       toolsUsed: result.toolsUsed,
       proposals: result.proposals.map((id) => proposals.get(id)).filter(Boolean).map(publicProposal)
     };
+  }
+
+  // "test indexers", "test all indexers", "retest 1337x": answered by testing,
+  // without the model. Anything else is left for the model.
+  async function indexerCommand(question) {
+    const lead = "^(?:(?:please|pls|can you|could you|would you|go ahead and)\\s+)*(?:re-?)?test\\s+";
+    const tail = "(?:\\s+(?:please|now|again|for me))*\\s*[.!?]*$";
+    const all = new RegExp(`${lead}(?:all\\s+)?(?:(?:the|my)\\s+)?(?:prowlarr\\s+)?indexers${tail}`, "iu").test(question);
+    const one = all ? null : new RegExp(`${lead}(?:(?:the|my)\\s+)?(?:indexer\\s+)?(.{2,60}?)(?:\\s+indexer)?${tail}`, "iu").exec(question);
+    if (!all && !one) return null;
+    if (typeof readIndexers !== "function" || !prowlarrService()) return null;
+    if (one) {
+      let indexers;
+      try {
+        indexers = await currentIndexers();
+      } catch {
+        return null;
+      }
+      const wanted = looseName(one[1]);
+      if (!wanted || !indexers.some((indexer) => looseName(indexer.name).includes(wanted))) return null;
+    }
+    const off = "Indexer testing is turned off. An admin can turn it on under Settings → Automation → Indexers.";
+    if (!indexersPolicy().enabled) return { answer: off, toolsUsed: [], proposals: [] };
+    try {
+      const answer = all ? await testAllIndexersText() : await testIndexerByName(one[1]);
+      return { answer, toolsUsed: ["test_indexer"], proposals: [] };
+    } catch (error) {
+      return { answer: `I couldn't test indexers: ${untrusted(error?.message || "Prowlarr didn't answer.", 160)}`, toolsUsed: [], proposals: [] };
+    }
   }
 
   function translateError(error) {
@@ -1723,6 +1986,14 @@ export async function createAgent(options) {
         const next = canonicalContainerHealth({ ...containerHealthPolicy(), ...body });
         await configStore.update((draft) => { draft.containerHealth = next; });
         if (!next.enabled) unhealthyNow.clear();
+        return sendJson(response, 200, publicState());
+      }
+      if (route === "/indexers" && method === "PUT") {
+        const body = await readJson(request);
+        requireKeys(body, ["enabled", "tests", "spacingMinutes"]);
+        const next = canonicalIndexers({ ...indexersPolicy(), ...body });
+        await configStore.update((draft) => { draft.indexers = next; });
+        if (!next.enabled) indexerWatch.clear();
         return sendJson(response, 200, publicState());
       }
       if (route === "/downloads" && method === "PUT") {

@@ -1140,6 +1140,12 @@ export async function createControlPlane(options) {
   const fetchSeerrSeriesSeasons = typeof options.fetchSeerrSeriesSeasons === "function"
     ? options.fetchSeerrSeriesSeasons
     : null;
+  const executeProwlarrAction = typeof options.executeProwlarrAction === "function"
+    ? options.executeProwlarrAction
+    : null;
+  const readProwlarrIndexers = typeof options.readProwlarrIndexers === "function"
+    ? options.readProwlarrIndexers
+    : null;
   const acknowledgementStore = options.acknowledgements
     && typeof options.acknowledgements.list === "function"
     && typeof options.acknowledgements.add === "function"
@@ -4768,6 +4774,80 @@ export async function createControlPlane(options) {
     return result;
   }
 
+  // ------------------------------------------------------- Prowlarr --
+
+  function currentProwlarrConnection(targetRevision = undefined) {
+    const connection = stateStore.snapshot().connections.prowlarr;
+    if (!connection || connection.monitoringEnabled === false) {
+      fail(409, "PROWLARR_NOT_CONFIGURED", "Connect Prowlarr under Media → Connections first.");
+    }
+    if (targetRevision !== undefined && connection.targetRevision !== targetRevision) {
+      fail(409, "TARGET_CHANGED", "The Prowlarr connection changed; refresh it before trying again.");
+    }
+    return connection;
+  }
+
+  async function prowlarrIndexers(request, response) {
+    if (request.method !== "GET") fail(405, "METHOD_NOT_ALLOWED", "That method is not allowed.");
+    await authenticate(request, false);
+    if (!readProwlarrIndexers) fail(503, "PROWLARR_UNAVAILABLE", "Prowlarr indexers are temporarily unavailable.");
+    const connection = currentProwlarrConnection();
+    sendJson(response, 200, { ...(await readProwlarrIndexers()), targetRevision: connection.targetRevision });
+  }
+
+  async function prowlarrAction(request, response) {
+    if (request.method !== "POST") fail(405, "METHOD_NOT_ALLOWED", "That method is not allowed.");
+    await authenticate(request, true);
+    sendJson(response, 200, await performProwlarrAction(await readBoundedJson(request)));
+  }
+
+  // Test one indexer or all, test Prowlarr's app connections, or sync
+  // indexers to apps. Shared by the browser route and by the agent.
+  async function performProwlarrAction(body) {
+    if (!executeProwlarrAction) fail(503, "ACTIONS_UNAVAILABLE", "Prowlarr controls are temporarily unavailable.");
+    const single = body?.operation === "testIndexer";
+    requireExactKeys(body, single ? ["operation", "indexerId", "targetRevision"] : ["operation", "targetRevision"]);
+    const operation = ["testIndexer", "testAllIndexers", "syncApps", "testApps"].includes(body.operation) ? body.operation : null;
+    if (!operation) fail(400, "INVALID_ACTION_TARGET", "Choose a supported Prowlarr action.");
+    const indexerId = single ? requiredActionInteger(body.indexerId, "indexer") : null;
+    const targetRevision = requiredActionRevision(body.targetRevision);
+    const connection = currentProwlarrConnection(targetRevision);
+    const provider = requireCurrentActionEvidence(
+      currentOperationsSnapshot({ liveOnly: true }).services?.find((candidate) => candidate?.id === "prowlarr"),
+      targetRevision,
+      "Prowlarr status"
+    );
+    if (provider?.connectionState !== "connected") fail(409, "ACTION_TARGET_NOT_CURRENT", "Prowlarr is not connected right now.");
+    const targetResolution = await resolveAndAuthorizeTarget(parseServiceUrl(connection.url), stateStore.snapshot().policy, {
+      lookup,
+      approvedHostCidrs: connection.approvedHostCidrs || []
+    });
+    const result = await runSingleFlightAction(`prowlarr:${operation}:${indexerId ?? "all"}`, async () => {
+      try {
+        return await useServiceCredential("prowlarr", connection, (credential) => executeProwlarrAction({
+          operation,
+          ...(single ? { indexerId } : {}),
+          connection,
+          targetResolution,
+          credential
+        }));
+      } finally {
+        monitor?.requestRefresh?.();
+      }
+    });
+    recordEvent({
+      level: result.passed === false || result.results?.some(({ ok }) => !ok) ? "warn" : "info",
+      category: "action",
+      event: "media_control",
+      outcome: "succeeded",
+      service: "prowlarr",
+      operation: operation.replace(/[A-Z]/gu, (letter) => `-${letter.toLowerCase()}`),
+      targetType: single ? "indexer" : operation === "syncApps" || operation === "testApps" ? "applications" : "indexers",
+      targetId: single ? String(indexerId) : "all"
+    });
+    return result;
+  }
+
   function operationsResponse(snapshot) {
     return {
       ...publicOperationsSnapshot(snapshot),
@@ -5142,6 +5222,16 @@ export async function createControlPlane(options) {
         await proxmoxWorkloadAction(request, response);
         return true;
       }
+      if (url.pathname === "/api/v2/actions/prowlarr") {
+        if (url.search) fail(404, "NOT_FOUND", "Not found.");
+        await prowlarrAction(request, response);
+        return true;
+      }
+      if (url.pathname === "/api/v2/prowlarr/indexers") {
+        if (url.search) fail(404, "NOT_FOUND", "Not found.");
+        await prowlarrIndexers(request, response);
+        return true;
+      }
       if (url.pathname === "/api/v2/actions/media") {
         if (url.search) fail(404, "NOT_FOUND", "Not found.");
         await mediaRecoveryAction(request, response);
@@ -5311,9 +5401,18 @@ export async function createControlPlane(options) {
       // Sonarr queue item, blocklist the release and search again, with the
       // same current-inventory checks as the dashboard button.
       if (kind === "media" && body?.operation === "blocklistAndSearch") return performMediaRecoveryAction(body);
+      // Testing indexers changes nothing in Prowlarr; the agent may test one
+      // at a time (or all when the owner asks in chat).
+      if (kind === "prowlarr" && ["testIndexer", "testAllIndexers"].includes(body?.operation)) return performProwlarrAction(body);
       return Promise.reject(new ControlPlaneError(400, "INVALID_ACTION_TARGET", "That action is not supported."));
     },
     currentPolicy: () => structuredClone(stateStore.snapshot().policy),
+    // Live, secret-free indexer list for the agent.
+    readProwlarrIndexers: () => {
+      currentProwlarrConnection();
+      if (!readProwlarrIndexers) fail(503, "PROWLARR_UNAVAILABLE", "Prowlarr indexers are temporarily unavailable.");
+      return readProwlarrIndexers();
+    },
     close: async () => {
       await closeBrowserRevocations();
       await credentialStore.close();

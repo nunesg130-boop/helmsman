@@ -1,6 +1,6 @@
 # Support
 
-Helmsman v1.11.1 is volunteer-maintained software. Breaking changes remain
+Helmsman v1.12.0 is volunteer-maintained software. Breaking changes remain
 possible, community help is best effort, and only the newest published release
 is supported. Back up `/data` before an update.
 

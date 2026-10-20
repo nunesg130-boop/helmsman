@@ -93,7 +93,13 @@ async function harness(t, { modelReplies = null, lookupAddress = "10.1.0.20" } =
     pushes: [],
     modelCalls: [],
     events: [],
-    subscribers: new Set()
+    subscribers: new Set(),
+    indexerList: [],
+    indexerReads: 0,
+    failingIndexerIds: new Set(),
+    prowlarr: (body) => (body.operation === "testAllIndexers"
+      ? { ok: true, operation: body.operation, results: context.indexerList.map(({ id }) => ({ id, ok: !context.failingIndexerIds.has(id), message: context.failingIndexerIds.has(id) ? "Cloudflare challenge" : "" })) }
+      : { ok: true, operation: body.operation, indexerId: body.indexerId, passed: !context.failingIndexerIds.has(body.indexerId), message: context.failingIndexerIds.has(body.indexerId) ? "Unable to connect to indexer: Cloudflare challenge" : "" })
   };
   const send = async ({ targetResolution, method, path: requestPath, body, bearerToken }) => {
     const host = targetResolution.target.hostname;
@@ -127,7 +133,12 @@ async function harness(t, { modelReplies = null, lookupAddress = "10.1.0.20" } =
     performAction: async (kind, body) => {
       if (context.actionError) throw context.actionError;
       context.actions.push({ kind, body });
+      if (kind === "prowlarr") return context.prowlarr(body);
       return { ok: true };
+    },
+    readIndexers: async () => {
+      context.indexerReads += 1;
+      return { indexers: context.indexerList };
     },
     manual: () => "# Lab\n## Hosts\n| media | 10.1.0.5 |\n## Runbooks\nRestart sonarr with docker restart sonarr.",
     events: async () => ({ entries: [] }),
@@ -856,6 +867,136 @@ test("automatic clean-up waits for approval while autonomy is off; settings are 
   assert.match(state.notes[0].text, /Sonarr shows it as downloadfailed\..*paused because "Let rules act" is off/u);
   await assert.rejects(api(agent, "PUT", "/api/v2/agent/downloads", { minutes: 5 }), { code: "INVALID_AGENT_CONFIG" });
   await assert.rejects(api(agent, "PUT", "/api/v2/agent/downloads", { extra: 1 }), { code: "INVALID_REQUEST" });
+});
+
+const PROWLARR_REVISION = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+
+function withProwlarr(snapshot, context) {
+  const blocked = context.indexerList.filter(({ failing }) => failing).length;
+  snapshot.services.push({ id: "prowlarr", label: "Prowlarr", state: blocked ? "limited" : "healthy", connectionState: "connected", targetRevision: PROWLARR_REVISION, metrics: { indexersBlocked: blocked }, checks: [] });
+  return snapshot;
+}
+
+function indexer(id, name, failing = false) {
+  return { id, name, enabled: true, protocol: "torrent", privacy: "public", priority: 25, failing, disabledUntil: null, failingSince: failing ? "2026-10-20T14:00:00.000Z" : null, lastFailureAt: failing ? "2026-10-20T14:00:00.000Z" : null, queries: 10, grabs: 1, failedQueries: 0, averageResponseMs: 400 };
+}
+
+async function indexerHarness(t, { policy = {} } = {}) {
+  const setup = await harness(t, { modelReplies: () => ({ content: "Model note." }) });
+  setup.context.indexerList = [indexer(1, "Example Tracker"), indexer(2, "Other Tracker")];
+  await configure(setup.agent, { autonomy: false, rules: [] });
+  await api(setup.agent, "PUT", "/api/v2/agent/indexers", { enabled: true, tests: 2, spacingMinutes: 15, ...policy });
+  await setup.publish(withProwlarr(snapshotAt(setup.context.now), setup.context));
+  return setup;
+}
+
+test("indexer testing is off until turned on, and nothing is read while all indexers work", async (t) => {
+  const { agent, context, publish } = await harness(t);
+  await configure(agent, { autonomy: true, rules: [] });
+  assert.deepEqual((await api(agent, "GET", "/api/v2/agent")).payload.config.indexers, { enabled: false, tests: 2, spacingMinutes: 15 });
+  context.indexerList = [indexer(1, "Example Tracker", true)];
+  context.failingIndexerIds.add(1);
+  await publish(withProwlarr(snapshotAt(context.now), context));
+  assert.equal(context.actions.length, 0);
+  assert.equal(context.indexerReads, 0);
+
+  const enabled = await indexerHarness(t);
+  enabled.context.now += 5 * 60_000;
+  await enabled.publish(withProwlarr(snapshotAt(enabled.context.now), enabled.context));
+  assert.equal(enabled.context.indexerReads, 0, "no blocked indexers, nothing to read");
+});
+
+test("a failing indexer is tested, retested after the spacing, then the owner is notified once", async (t) => {
+  const { agent, context, publish } = await indexerHarness(t);
+  context.indexerList[0] = indexer(1, "Example Tracker", true);
+  context.failingIndexerIds.add(1);
+  await publish(withProwlarr(snapshotAt(context.now), context));
+  assert.deepEqual(context.actions, [{ kind: "prowlarr", body: { operation: "testIndexer", indexerId: 1, targetRevision: PROWLARR_REVISION } }]);
+  let state = (await api(agent, "GET", "/api/v2/agent")).payload;
+  assert.equal(state.notes[0].title, "Tested indexer Example Tracker: failed");
+  assert.match(state.notes[0].text, /I'll test it again in 15 min/u);
+  assert.equal(context.pushes.length, 0, "the first failed test is quiet");
+  assert.deepEqual(state.indexers.map(({ name, tests, state: watchState, nextTestMinutes }) => ({ name, tests, watchState, nextTestMinutes })), [{ name: "Example Tracker", tests: 1, watchState: "testing", nextTestMinutes: 15 }]);
+
+  context.now += 10 * 60_000;
+  await publish(withProwlarr(snapshotAt(context.now), context));
+  assert.equal(context.actions.length, 1, "it waits the spacing");
+
+  context.now += 5 * 60_000;
+  await publish(withProwlarr(snapshotAt(context.now), context));
+  assert.equal(context.actions.length, 2);
+  assert.equal(context.pushes.length, 1);
+  assert.equal(context.pushes[0].title, "Indexer Example Tracker keeps failing");
+  state = (await api(agent, "GET", "/api/v2/agent")).payload;
+  assert.equal(state.indexers[0].state, "gaveUp");
+
+  // No more tests or notifications until it recovers.
+  context.now += 60 * 60_000;
+  await publish(withProwlarr(snapshotAt(context.now), context));
+  assert.equal(context.actions.length, 2);
+  assert.equal(context.pushes.length, 1);
+
+  context.indexerList[0] = indexer(1, "Example Tracker");
+  context.failingIndexerIds.clear();
+  context.now += 60_000;
+  await publish(withProwlarr(snapshotAt(context.now), context));
+  context.now += 60_000;
+  await publish(withProwlarr(snapshotAt(context.now), context));
+  state = (await api(agent, "GET", "/api/v2/agent")).payload;
+  assert.equal(state.notes[0].title, "Indexer Example Tracker is working again");
+  assert.equal(state.indexers.length, 0);
+});
+
+test("an indexer that passes its test is left alone, quietly", async (t) => {
+  const { agent, context, publish } = await indexerHarness(t);
+  context.indexerList[0] = indexer(1, "Example Tracker", true);
+  await publish(withProwlarr(snapshotAt(context.now), context));
+  const state = (await api(agent, "GET", "/api/v2/agent")).payload;
+  assert.equal(state.notes[0].title, "Indexer Example Tracker passed a retest");
+  assert.equal(context.pushes.length, 0);
+  context.now += 30 * 60_000;
+  await publish(withProwlarr(snapshotAt(context.now), context));
+  assert.equal(context.actions.length, 1, "not tested again for the same failure");
+});
+
+test("while the agent tests indexers, Prowlarr's indexer incident stays quiet", async (t) => {
+  const { agent, context, publish } = await indexerHarness(t);
+  const incident = { id: "prowlarr-indexers-1", service: "prowlarr", capability: "indexers", state: "limited", code: "INDEXERS_BLOCKED", status: null, firstSeen: new Date(context.now).toISOString(), lastSeen: new Date(context.now).toISOString(), occurrenceCount: 2 };
+  await publish(withProwlarr(snapshotAt(context.now, { incidents: [incident] }), context));
+  const note = (await api(agent, "GET", "/api/v2/agent")).payload.notes.find((entry) => entry.kind === "incident");
+  assert.match(note.text, /I'm testing the failing indexer and will notify you if it still fails after 2 tests/u);
+  assert.equal(context.pushes.length, 0);
+});
+
+test("indexer chat commands test without the model and respect the switch", async (t) => {
+  const { agent, context, publish } = await indexerHarness(t);
+  context.failingIndexerIds.add(2);
+  const all = await api(agent, "POST", "/api/v2/agent/ask", { question: "Can you test all indexers?" });
+  assert.equal(all.payload.answer, `1 of 2 indexers passed. Failed: Other Tracker ("Cloudflare challenge").`);
+  const one = await api(agent, "POST", "/api/v2/agent/ask", { question: "retest other tracker" });
+  assert.equal(one.payload.answer, `Other Tracker failed its test: "Unable to connect to indexer: Cloudflare challenge"`);
+  assert.equal(context.modelCalls.length, 0);
+
+  // Not an indexer name: the model answers.
+  await api(agent, "POST", "/api/v2/agent/ask", { question: "test my patience" });
+  assert.equal(context.modelCalls.length, 1);
+
+  await api(agent, "PUT", "/api/v2/agent/indexers", { enabled: false });
+  const off = await api(agent, "POST", "/api/v2/agent/ask", { question: "test indexers" });
+  assert.match(off.payload.answer, /Indexer testing is turned off/u);
+  assert.equal(context.actions.length, 2);
+
+  // The model only gets test_indexer while testing is allowed.
+  context.modelCalls.length = 0;
+  await api(agent, "POST", "/api/v2/agent/ask", { question: "How are the indexers?" });
+  const toolNames = context.modelCalls[0].tools.map(({ function: { name } }) => name);
+  assert.equal(toolNames.includes("indexer_status"), true);
+  assert.equal(toolNames.includes("test_indexer"), false);
+  await api(agent, "PUT", "/api/v2/agent/indexers", { enabled: true });
+  context.modelCalls.length = 0;
+  await api(agent, "POST", "/api/v2/agent/ask", { question: "How are the indexers?" });
+  assert.equal(context.modelCalls[0].tools.some(({ function: { name } }) => name === "test_indexer"), true);
+  await assert.rejects(api(agent, "PUT", "/api/v2/agent/indexers", { tests: 9 }), { code: "INVALID_AGENT_CONFIG" });
 });
 
 test("an empty model reply is retried once without tools", async (t) => {

@@ -36,7 +36,8 @@ own facts instead of a written explanation.
 
 ## What it can change, and the guardrails
 
-The agent changes things in exactly four ways.
+The agent changes things in exactly four ways, and can test Prowlarr
+indexers, which changes nothing.
 
 **1. Rules you write.** For example: "when Sonarr has an open incident for 5
 minutes, restart the `sonarr` container." Rules are checked by Helmsman's own
@@ -97,6 +98,27 @@ Settings → Automation → **Stuck downloads**:
   stays a quiet note, so one stuck download doesn't send two notifications.
 - Approving checks the queue again first: an item that is no longer stuck is
   refused.
+
+**Testing Prowlarr indexers.** Settings → Automation → **Indexers**:
+
+- Off by default. When on, an indexer Prowlarr reports as failing is tested
+  by the agent straight away, retested after a while (2 tests, 15 minutes
+  apart, to start with), and you're notified only if every test fails, with
+  Prowlarr's error and a likely cause. A passing test is a quiet note. After
+  notifying, it stops testing that indexer until it recovers.
+- You can also ask in chat: "test indexers" tests them all, "test 1337x"
+  tests one. When the switch is off, nothing is tested, and failing indexers
+  are reported as usual.
+- Only the failing indexer is tested (each test queries its site), at most
+  12 tests an hour. The agent can't enable, disable or change indexers.
+- While it's on, Prowlarr's own "indexers blocked" incident stays a quiet
+  note, so you aren't notified twice.
+
+The **Indexers** panel on Media → Health lists every indexer with its status,
+Prowlarr's last error and recent numbers, with buttons to test one or all,
+test Prowlarr's connections to its apps, and sync indexers to the apps.
+Indexer settings carry API keys and passwords; Helmsman keeps only names,
+status and numbers, so those never reach the browser, the logs or the model.
 
 **4. Suggestions you approve.** The model can suggest a container start,
 restart or stop, or a VM start, reboot or shutdown. A suggestion **never runs
@@ -282,6 +304,7 @@ whole list:
 ```js
 await agent("/container-health", "PUT", { enabled: true, scope: "all", containers: ["postgres", "portainer"], minutes: 3, repeatCount: 3, repeatHours: 24 });
 await agent("/downloads", "PUT", { enabled: true, minutes: 60, automatic: false });
+await agent("/indexers", "PUT", { enabled: true, tests: 2, spacingMinutes: 15 });
 await agent("/rules", "PUT", {
   rules: [
     {
