@@ -4111,7 +4111,7 @@ const AGENT_NOTE_LABELS = Object.freeze({
 const AGENT_NOTE_TONES = Object.freeze({ incident: "degraded", recovery: "healthy", digest: "stale", "check-in": "stale", "rule-action": "limited" });
 const AGENT_CHAT_LIMIT = 12;
 const AGENT_QUESTION_LIMIT = 1_000;
-const AGENT_OPERATION_LABELS = Object.freeze({ restart: "Restart", start: "Start", reboot: "Reboot", stop: "Stop", shutdown: "Shut down" });
+const AGENT_OPERATION_LABELS = Object.freeze({ restart: "Restart", start: "Start", reboot: "Reboot", stop: "Stop", shutdown: "Shut down", blocklistAndSearch: "Clear stuck" });
 
 function emptyAgentState() {
   return {
@@ -4546,6 +4546,7 @@ function renderAgentNotificationsTab() {
     [triggers.recoveries !== false, "Recoveries", "When a service that was down is healthy again."],
     [triggers.digest !== false, "Daily summary", `At ${escapeHtml(data.config?.settings?.digestTime || "07:30")} in ${escapeHtml(data.config?.settings?.timeZone || "UTC")}.`],
     [triggers.checkIn !== false, "Check-ins", "Only when something needs attention."],
+    [Boolean(data.config?.downloads?.enabled), "Stuck downloads", "Each one, with an Approve button, or what was cleared automatically."],
     [true, "Automatic actions", "Repeat container restarts, giving up on a container, and failed actions."]
   ];
   return `<section class="agent-settings" aria-labelledby="agent-notifications-title">
@@ -4624,6 +4625,40 @@ function renderAgentHealthCard(data) {
   </form>`;
 }
 
+const STUCK_KIND_LABELS = Object.freeze({ stalled: "Stalled", failed: "Failed", import: "Import blocked" });
+
+function renderAgentDownloadsCard(data) {
+  const policy = data.config?.downloads || { enabled: false, minutes: 60, automatic: false };
+  const limits = data.limits?.stuckMinutes || { min: 10, max: 1440 };
+  const stuck = data.downloads || [];
+  const connected = (state.snapshot?.services || []).some((service) => ["radarr", "sonarr"].includes(service.id) && service.connectionState === "connected");
+  return `<form class="glass-panel settings-card-v5 agent-downloads" id="agent-downloads-form">
+    <header><div><span class="section-kicker">Radarr and Sonarr queues</span><h3>Stuck downloads</h3></div>${icon("download")}</header>
+    <div class="settings-card-v5__body">
+      <p>When a download stays stalled, failed or blocked from importing, Helmsman offers to remove it, blocklist that release and search for another, the same as the "Block release &amp; search again" button.</p>
+      ${connected ? "" : `<div class="security-note">${icon("link")}<div><strong>Radarr or Sonarr isn't connected</strong><span>Connect one under Media → Connections for this to have anything to watch.</span></div></div>`}
+      <label class="check-row"><input name="enabled" type="checkbox" ${policy.enabled ? "checked" : ""}/><span><strong>Watch for stuck downloads</strong><small>You get a notification and an Approve button for each one.</small></span></label>
+      <label><span>Stuck for at least (minutes)</span><input name="minutes" type="number" min="${limits.min}" max="${limits.max}" value="${Number(policy.minutes)}" required /><small>Stalled torrents sometimes recover on their own, so give them a while.</small></label>
+      <label class="check-row"><input name="automatic" type="checkbox" ${policy.automatic ? "checked" : ""}/><span><strong>Clear stalled and failed downloads by myself</strong><small>Needs “Let rules act”. Blocked imports always ask first, since the file may be fine and only need a manual import.</small></span></label>
+      ${policy.enabled ? `<h4>Right now</h4>${stuck.length ? `<ul class="agent-health__seen">${stuck.map((item) => `<li><i class="health-dot is-${item.kind === "import" ? "limited" : "degraded"}" aria-hidden="true"></i><div><strong>${escapeHtml(item.title)} <small>${escapeHtml(item.service === "radarr" ? "Radarr" : "Sonarr")} · ${escapeHtml(STUCK_KIND_LABELS[item.kind] || "Stuck")}</small></strong><small>${escapeHtml(item.message || "")}</small><small>${item.pendingApproval ? "Waiting for your approval on the Overview" : item.waitingMinutes > 0 ? `Stuck ${item.stuckMinutes} min · Helmsman acts after ${item.waitingMinutes} more` : `Stuck ${item.stuckMinutes} min`}</small></div></li>`).join("")}</ul>` : `<p class="agent-empty">Nothing is stuck.</p>`}` : ""}
+      <div class="button-row"><button class="button button--primary" type="submit">Save</button></div>
+    </div>
+  </form>`;
+}
+
+async function submitAgentDownloads(form) {
+  const data = new FormData(form);
+  const body = {
+    enabled: data.get("enabled") === "on",
+    minutes: Number(String(data.get("minutes") || "").trim()),
+    automatic: data.get("automatic") === "on"
+  };
+  const autonomy = Boolean(agentData()?.config?.settings?.autonomy);
+  await agentMutation("/downloads", "PUT", body, body.automatic && !autonomy
+    ? "Saved. Turn on “Let rules act” for automatic clean-up; until then each one asks first."
+    : "Stuck downloads saved.");
+}
+
 function renderAgentAutomationTab() {
   const data = agentData();
   if (!data) return renderAgentUnavailable("automation settings");
@@ -4632,6 +4667,7 @@ function renderAgentAutomationTab() {
     <div class="settings-grid-v5">
       ${renderAgentAutonomyCard(data)}
       ${renderAgentHealthCard(data)}
+      ${renderAgentDownloadsCard(data)}
       ${renderAgentRulesCard(data)}
     </div>
   </section>`;
@@ -10778,6 +10814,7 @@ document.addEventListener("submit", (event) => {
   if (event.target.id === "agent-voice-form") submitAgentVoice(event.target);
   if (event.target.id === "agent-autonomy-form") submitAgentAutonomy(event.target);
   if (event.target.id === "agent-health-form") submitAgentHealth(event.target);
+  if (event.target.id === "agent-downloads-form") submitAgentDownloads(event.target);
   if (event.target.id === "agent-settings-form") submitAgentSettings(event.target);
   if (event.target.id === "agent-notify-form") submitAgentNotify(event.target);
   if (event.target.id === "agent-rule-form") submitAgentRule(event.target);

@@ -7,10 +7,12 @@ import {
   AGENT_LIMITS,
   AgentConfigError,
   canonicalContainerHealth,
+  canonicalDownloads,
   canonicalRules,
   canonicalSettings,
   createAgentConfigStore,
   defaultContainerHealth,
+  defaultDownloads,
   validTimeZone
 } from "./agent-config.mjs";
 import {
@@ -51,6 +53,8 @@ const MAX_NOTES = 200;
 const MAX_HISTORY = 200;
 const MAX_PROPOSALS = 20;
 const PROPOSAL_TTL_MS = 30 * 60_000;
+// A stuck download isn't urgent, so its suggestion waits longer for the owner.
+const DOWNLOAD_PROPOSAL_TTL_MS = 12 * 3_600_000;
 const MAX_QUEUE = 25;
 const MAX_TOOL_ROUNDS = 4;
 const MAX_REPLY_TOKENS = 450;
@@ -297,6 +301,10 @@ export async function createAgent(options) {
   const ruleIncidentDone = new Map();
   // Containers unhealthy right now: key -> { since, handled }.
   const unhealthyNow = new Map();
+  // Downloads stuck right now: key -> { since, handled, item }.
+  const stuckNow = new Map();
+  // Services whose incident was reported quietly; their recovery is quiet too.
+  const quietServices = new Set();
   const backgroundRate = new RateWindow(BACKGROUND_JOBS_PER_HOUR, 3_600_000);
   const questionRate = new RateWindow(QUESTIONS_PER_HOUR, 3_600_000);
   const notifyRate = new RateWindow(NOTIFICATIONS_PER_HOUR, 3_600_000);
@@ -473,7 +481,7 @@ export async function createAgent(options) {
     }
   }
 
-  function createProposal(source, service = null) {
+  function createProposal(source, service = null, { ttlMs = PROPOSAL_TTL_MS } = {}) {
     return async ({ target, operation, reason }) => {
       pruneProposals();
       const pending = [...proposals.values()].filter((proposal) => proposal.status === "pending");
@@ -487,16 +495,18 @@ export async function createAgent(options) {
       const proposal = {
         id: randomUUID(),
         createdAt: now,
-        expiresAt: now + PROPOSAL_TTL_MS,
+        expiresAt: now + ttlMs,
         status: "pending",
         source,
         service,
         operation,
         reason,
         label: target.label,
-        identity: target.kind === "container"
-          ? { kind: "container", serviceId: target.serviceId, name: target.containerName }
-          : { kind: "guest", environmentId: target.environmentId, name: String(target.vmid) }
+        identity: target.kind === "media"
+          ? { kind: "media", service: target.service, queueId: target.queueId, downloadId: target.downloadId }
+          : target.kind === "container"
+            ? { kind: "container", serviceId: target.serviceId, name: target.containerName }
+            : { kind: "guest", environmentId: target.environmentId, name: String(target.vmid) }
       };
       proposals.set(proposal.id, proposal);
       return proposal;
@@ -516,8 +526,17 @@ export async function createAgent(options) {
     const current = snapshot();
     let request;
     try {
-      const target = resolveTarget(current, proposal.identity);
-      request = actionRequestFor(target, proposal.operation);
+      if (proposal.identity.kind === "media") {
+        // Clear a stuck download: it must still be the same stuck queue item.
+        const item = stuckDownloads(current).find((candidate) => candidate.service === proposal.identity.service
+          && candidate.queueId === proposal.identity.queueId
+          && (candidate.downloadId || null) === (proposal.identity.downloadId || null));
+        if (!item) throw new AgentTargetError("That download is no longer stuck in the queue.");
+        request = mediaRequestFor(current, item);
+      } else {
+        const target = resolveTarget(current, proposal.identity);
+        request = actionRequestFor(target, proposal.operation);
+      }
     } catch (error) {
       proposal.status = "failed";
       proposal.outcome = error instanceof AgentTargetError ? error.message : "The target is no longer available.";
@@ -807,6 +826,15 @@ export async function createAgent(options) {
       incidentId: worst.incident.id,
       fallback: lines.join("\n")
     });
+    // A Radarr or Sonarr queue problem is usually a stuck download. While the
+    // stuck-download watcher is on, it notifies about that itself, so this
+    // note stays quiet instead of sending a second notification.
+    const policy = downloadsPolicy();
+    if (policy.enabled && ["radarr", "sonarr"].includes(service) && items.every((item) => item.incident.capability === "queue")) {
+      note.text = `${note.text}\n\nHelmsman is watching the queue and will notify you about any download still stuck after ${policy.minutes} min.`;
+      quietServices.add(service);
+      return note;
+    }
     await notifyNote(note);
     return note;
   }
@@ -828,7 +856,9 @@ export async function createAgent(options) {
     if (!items.length || (current?.incidents?.open || []).some((incident) => incident.service === service)) return null;
     const wasReported = reported.has(service);
     reported.delete(service);
-    supersedeProposals((proposal) => proposal.service === service);
+    // Stuck-download suggestions close themselves when the download clears.
+    supersedeProposals((proposal) => proposal.service === service && proposal.identity?.kind !== "media");
+    const quiet = quietServices.delete(service);
     if (!wasReported) return null;
     const tz = config().settings.timeZone;
     const name = incidentLine(current, { ...items[0], state: "healthy", code: null, status: null, occurrenceCount: null }, tz).split(" / ")[0];
@@ -841,7 +871,7 @@ export async function createAgent(options) {
       text: `${name} is healthy again at ${formatTime(new Date(recoveredAt).toISOString(), tz)}${minutes ? `, after about ${minutes} minute${minutes === 1 ? "" : "s"}` : ""}.`,
       service
     });
-    await notifyNote(note);
+    if (!quiet) await notifyNote(note);
     return note;
   }
 
@@ -934,7 +964,7 @@ export async function createAgent(options) {
 
   // Rules and container-health restarts share one daily cap.
   function automaticActionsToday(now) {
-    return activity.history.filter((entry) => ["rule", "container-health"].includes(entry.actor) && entry.outcome !== "skipped"
+    return activity.history.filter((entry) => ["rule", "container-health", "downloads"].includes(entry.actor) && entry.outcome !== "skipped"
       && Date.parse(entry.at) >= now - 86_400_000).length;
   }
 
@@ -1075,6 +1105,150 @@ export async function createAgent(options) {
     if (recentEpisodes > 1) await notifyNote(note);
   }
 
+  // ----------------------------------------------------- stuck downloads --
+
+  function downloadsPolicy() {
+    return config().downloads || defaultDownloads();
+  }
+
+  const SERVICE_NAMES = { radarr: "Radarr", sonarr: "Sonarr" };
+
+  /**
+   * Radarr and Sonarr queue items that the dashboard's "block release &
+   * search again" action accepts: an error or warning message, or a blocked,
+   * failed or error state.
+   */
+  function stuckDownloads(current) {
+    return (current?.media?.activity || []).filter((item) => ["radarr", "sonarr"].includes(item?.service)
+      && item.queueActionTarget?.service === item.service
+      && Number.isSafeInteger(item.queueId) && item.queueActionTarget.queueId === item.queueId
+      && ((typeof item.error === "string" && item.error.length > 0) || /(?:blocked|failed|error)/u.test(String(item.state || "").toLowerCase())));
+  }
+
+  /** stalled, failed or import: what kind of stuck, from the service's own words. */
+  function stuckKind(item) {
+    const words = `${item.state || ""} ${item.error || ""}`.toLowerCase();
+    if (/stall|no connections|no seeds|metadata/u.test(words)) return "stalled";
+    if (/import|manual|sample|not a valid|no files|unpack|match/u.test(words)) return "import";
+    if (/fail|error/u.test(words)) return "failed";
+    return "import";
+  }
+
+  function stuckKey(item) {
+    return `${item.service}:${item.queueId}:${item.downloadId || ""}`;
+  }
+
+  function mediaRequestFor(current, item) {
+    const service = (current?.services || []).find((candidate) => candidate?.id === item.service);
+    if (!service?.targetRevision) throw new AgentTargetError(`${SERVICE_NAMES[item.service]} is not connected.`);
+    return {
+      kind: "media",
+      body: { serviceId: item.service, operation: "blocklistAndSearch", queueId: item.queueId, targetRevision: service.targetRevision }
+    };
+  }
+
+  function downloadLabel(item) {
+    return `download ${untrusted(item.title || "Unknown download", 80)} (${SERVICE_NAMES[item.service]})`;
+  }
+
+  async function evaluateDownloads(current) {
+    const { settings } = config();
+    const policy = downloadsPolicy();
+    if (!settings.enabled || !policy.enabled || !current?.media) {
+      stuckNow.clear();
+      return;
+    }
+    const now = clock();
+    const seen = new Set();
+    for (const item of stuckDownloads(current)) {
+      const key = stuckKey(item);
+      seen.add(key);
+      let entry = stuckNow.get(key);
+      if (!entry) {
+        entry = { since: now, handled: false, item };
+        stuckNow.set(key, entry);
+      }
+      entry.item = item;
+      if (entry.handled || now - entry.since < policy.minutes * 60_000) continue;
+      entry.handled = true;
+      await handleStuckDownload(current, item, policy);
+    }
+    for (const key of [...stuckNow.keys()]) if (!seen.has(key)) stuckNow.delete(key);
+    // A suggestion for a download that is no longer stuck closes itself.
+    supersedeProposals((proposal) => proposal.identity?.kind === "media"
+      && !seen.has(`${proposal.identity.service}:${proposal.identity.queueId}:${proposal.identity.downloadId || ""}`));
+  }
+
+  async function handleStuckDownload(current, item, policy) {
+    const { settings } = config();
+    const now = clock();
+    const kind = stuckKind(item);
+    const label = downloadLabel(item);
+    const title = untrusted(item.title || "Unknown download", 80);
+    const service = SERVICE_NAMES[item.service];
+    const said = item.error ? `${service} says: "${untrusted(item.error, 200)}"` : `${service} shows it as ${untrusted(item.state, 40)}`;
+    const kindText = { stalled: "stalled", failed: "failed", import: "blocked from importing" }[kind];
+    const automatic = policy.automatic && settings.autonomy && kind !== "import";
+    if (automatic && automaticActionsToday(now) < RULE_ACTIONS_PER_DAY) {
+      let outcome = "succeeded";
+      let code = null;
+      let message = "";
+      try {
+        const request = mediaRequestFor(current, item);
+        await performAction(request.kind, request.body);
+      } catch (error) {
+        outcome = "failed";
+        code = error?.code || "ACTION_FAILED";
+        message = untrusted(error?.message, 200);
+      }
+      addHistory({ actor: "downloads", operation: "blocklistAndSearch", target: label, outcome, code });
+      const note = addNote({
+        kind: "rule-action",
+        title: outcome === "succeeded" ? `Cleared stuck download: ${title}` : `Failed to clear: ${title}`,
+        text: outcome === "succeeded"
+          ? `${title} was ${kindText} for over ${policy.minutes} min. ${said}. I removed it, blocklisted that release and asked ${service} to search again.`
+          : `${title} was ${kindText}. ${said}. I tried to remove it and search again, but it failed: ${message || code}.`,
+        service: item.service
+      });
+      await notifyNote(note);
+      return;
+    }
+    const proposal = await createProposal("downloads", item.service, { ttlMs: DOWNLOAD_PROPOSAL_TTL_MS })({
+      target: { kind: "media", service: item.service, queueId: item.queueId, downloadId: item.downloadId || null, label },
+      operation: "blocklistAndSearch",
+      reason: `${kindText[0].toUpperCase()}${kindText.slice(1)} for over ${policy.minutes} min. ${said}.`
+    });
+    const why = kind === "import"
+      ? " Blocked imports always ask first, since the file may be fine and only need a manual import."
+      : policy.automatic && !settings.autonomy ? " Automatic clean-up is paused because \"Let rules act\" is off." : "";
+    const note = addNote({
+      kind: "incident",
+      title: `Stuck download: ${title}`,
+      text: `${title} has been ${kindText} for over ${policy.minutes} min. ${said}. Approve to remove it, blocklist that release and search again.${why}`,
+      service: item.service,
+      proposals: [proposal.id]
+    });
+    await notifyNote(note);
+  }
+
+  function publicDownloads() {
+    const policy = downloadsPolicy();
+    const now = clock();
+    return [...stuckNow.values()]
+      .map(({ since, item }) => ({
+        service: item.service,
+        title: untrusted(item.title || "Unknown download", 80),
+        kind: stuckKind(item),
+        message: item.error ? untrusted(item.error, 200) : untrusted(item.state, 40),
+        stuckMinutes: Math.floor((now - since) / 60_000),
+        waitingMinutes: Math.max(0, policy.minutes - Math.floor((now - since) / 60_000)),
+        pendingApproval: [...proposals.values()].some((proposal) => proposal.status === "pending" && proposal.identity?.kind === "media"
+          && `${proposal.identity.service}:${proposal.identity.queueId}:${proposal.identity.downloadId || ""}` === stuckKey(item))
+      }))
+      .sort((left, right) => right.stuckMinutes - left.stuckMinutes)
+      .slice(0, 20);
+  }
+
   /** Lines for the daily summary: containers that went unhealthy more than once. */
   function repeatOffenders(sinceMs) {
     return Object.values(activity.containerHealth)
@@ -1176,7 +1350,9 @@ export async function createAgent(options) {
       .then(() => evaluateRules(current))
       .catch(() => log("Agent rules could not be evaluated."))
       .then(() => evaluateContainerHealth(current))
-      .catch(() => log("Agent container health could not be evaluated."));
+      .catch(() => log("Agent container health could not be evaluated."))
+      .then(() => evaluateDownloads(current))
+      .catch(() => log("Agent stuck downloads could not be evaluated."));
   }
 
   function tick() {
@@ -1235,7 +1411,8 @@ export async function createAgent(options) {
         : null,
       settings,
       rules,
-      containerHealth: containerHealthPolicy()
+      containerHealth: containerHealthPolicy(),
+      downloads: downloadsPolicy()
     };
   }
 
@@ -1277,6 +1454,7 @@ export async function createAgent(options) {
       proposals: [...proposals.values()].filter((proposal) => proposal.status === "pending").map(publicProposal),
       history: activity.history.slice(-20).reverse(),
       containerHealth: publicContainerHealth(),
+      downloads: publicDownloads(),
       limits: AGENT_LIMITS
     };
   }
@@ -1545,6 +1723,14 @@ export async function createAgent(options) {
         const next = canonicalContainerHealth({ ...containerHealthPolicy(), ...body });
         await configStore.update((draft) => { draft.containerHealth = next; });
         if (!next.enabled) unhealthyNow.clear();
+        return sendJson(response, 200, publicState());
+      }
+      if (route === "/downloads" && method === "PUT") {
+        const body = await readJson(request);
+        requireKeys(body, ["enabled", "minutes", "automatic"]);
+        const next = canonicalDownloads({ ...downloadsPolicy(), ...body });
+        await configStore.update((draft) => { draft.downloads = next; });
+        if (!next.enabled) stuckNow.clear();
         return sendJson(response, 200, publicState());
       }
       if (route === "/rules" && method === "PUT") {

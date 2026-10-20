@@ -458,6 +458,19 @@ test("minor controls require CSRF, current inventory, exact revisions, and saved
     assert.equal(context.calls.length, 7);
     assert.equal(context.refreshCount() - refreshBaseline, 7);
 
+    // The agent may clear stuck downloads through the same checks, and do
+    // nothing else on media services.
+    await assert.rejects(
+      context.controlPlane.performAction("media", { serviceId: "radarr", operation: "searchMovie", resourceId: 22, targetRevision: media.radarr.targetRevision }),
+      { code: "INVALID_ACTION_TARGET" }
+    );
+    await assert.rejects(
+      context.controlPlane.performAction("media", { serviceId: "radarr", operation: "blocklistAndSearch", queueId: 502, targetRevision: media.radarr.targetRevision }),
+      { code: "ACTION_NOT_AVAILABLE" },
+      "a healthy queue item is refused for the agent too"
+    );
+    assert.equal(context.calls.length, 7);
+
     const healthyQueueItem = await request(context.port, "/api/v2/actions/media", {
       method: "POST",
       ...authentication,
