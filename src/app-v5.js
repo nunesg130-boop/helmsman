@@ -33,6 +33,7 @@ const pageEyebrow = document.querySelector("#page-eyebrow");
 const modeBadge = document.querySelector("#mode-badge");
 const incidentCount = document.querySelector("#incident-count");
 const monitorSummary = document.querySelector("#monitor-summary");
+const globalRefreshButton = document.querySelector("#global-refresh");
 const sessionButton = document.querySelector("#session-button");
 const privacyButton = document.querySelector("#privacy-button");
 const skipLink = document.querySelector("#skip-link");
@@ -303,6 +304,7 @@ const state = {
   csrfToken: "",
   starting: true,
   refreshing: false,
+  globalRefreshing: false,
   operationsRequestGeneration: 0,
   operationsRefreshPromise: null,
   actionMutation: "",
@@ -7675,6 +7677,15 @@ function updateChrome() {
       : "Health alerts are available after sign in");
     privacyButton.setAttribute("title", authenticated ? `Open ${alertDestination}` : "Sign in to review health alerts");
   }
+  if (globalRefreshButton) {
+    const busy = Boolean(state.globalRefreshing || state.refreshing);
+    globalRefreshButton.hidden = !authenticated;
+    globalRefreshButton.disabled = busy;
+    globalRefreshButton.classList.toggle("is-busy", busy);
+    globalRefreshButton.setAttribute("aria-busy", busy ? "true" : "false");
+    globalRefreshButton.setAttribute("aria-label", busy ? "Refreshing everything" : "Refresh everything now");
+    globalRefreshButton.setAttribute("title", busy ? "Refreshing…" : "Refresh everything now");
+  }
   applySidebarState();
 }
 
@@ -10473,6 +10484,58 @@ async function refreshOperations({ announce = false, afterCurrent = false } = {}
   }
 }
 
+// One refresh for the whole app: runs a full health check (media and
+// infrastructure) and reloads whatever the current page shows.
+async function refreshEverything({ announce = true } = {}) {
+  if (!state.status?.authenticated || state.globalRefreshing) return false;
+  state.globalRefreshing = true;
+  updateChrome();
+  const route = currentRoute();
+  try {
+    const tasks = [
+      refreshOperations({ afterCurrent: true }),
+      loadInfrastructureTargets({ render: false }),
+      loadAgent({ render: false })
+    ];
+    if (route === "health") tasks.push(loadProwlarr({ render: false }));
+    if (route === "logs") tasks.push(loadJournalLogs({ render: false }));
+    if (route === "launchpad") tasks.push(loadLaunchpadLinks({ render: false }));
+    if (route === "settings") tasks.push(loadSessions({ render: false }));
+    const [operations] = await Promise.allSettled(tasks);
+    const ok = operations.status === "fulfilled" && operations.value === true;
+    if (!state.status?.authenticated) return false;
+    state.lastMarkup = "";
+    renderPage({ force: true, preserveFocus: true });
+    if (announce) showToast(ok ? "Everything is up to date." : "Some checks could not finish. Try again in a moment.", ok ? "success" : "danger");
+    return ok;
+  } finally {
+    state.globalRefreshing = false;
+    updateChrome();
+  }
+}
+
+// Coming back to the tab or window shows the latest results at once instead
+// of waiting for the next 30-second poll. The server keeps checking while
+// the tab is hidden, so this only fetches what it already has.
+let lastReturnRefreshAt = 0;
+async function refreshOnReturn() {
+  if (document.visibilityState !== "visible" || !state.status?.authenticated || state.starting) return;
+  const now = Date.now();
+  if (now - lastReturnRefreshAt < 5_000) return;
+  lastReturnRefreshAt = now;
+  schedulePolling();
+  try {
+    await loadOperations();
+    await loadAgent({ render: currentRoute() === "system" });
+    if (["system", "infrastructure"].includes(state.workspace)) await loadInfrastructureTargets({ render: false });
+  } catch {
+    // The regular poll retries.
+  }
+}
+
+document.addEventListener("visibilitychange", () => { refreshOnReturn(); });
+globalThis.addEventListener?.("focus", () => { refreshOnReturn(); });
+
 async function loadOperations() {
   if (state.operationsRefreshPromise) return state.operationsRefreshPromise;
   const requestGeneration = ++state.operationsRequestGeneration;
@@ -10886,7 +10949,7 @@ document.addEventListener("click", async (event) => {
   }
   if (action === "close-modal") closeModal();
   if (action === "retry-startup") initialize();
-  if (action === "refresh-live") refreshOperations({ announce: true });
+  if (action === "refresh-live" || action === "global-refresh") await refreshEverything();
   if (action === "refresh-journal") await loadJournalLogs();
   if (action === "load-more-journal") await loadJournalLogs({ append: true });
   if (action === "test-service") testService(target.closest("#service-form"), target);

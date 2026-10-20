@@ -6770,3 +6770,28 @@ body.has-agent-helper .main-content > :is(.page, .detail-page, .media-health-sta
   .workload-row:not(.workload-row--header) > span:nth-child(4) { grid-column: 2; grid-row: 2; align-self: center; }
   .workload-row:not(.workload-row--header) > span:nth-child(6) { grid-column: 3; grid-row: 2; justify-self: end; }
 }
+
+/* Global refresh in the top bar: spins while a refresh runs. */
+.topbar-refresh[hidden] {
+  display: none !important;
+}
+
+.topbar-refresh.is-busy svg {
+  animation: topbar-refresh-spin 0.9s linear infinite;
+}
+
+.topbar-refresh:disabled {
+  cursor: progress;
+  opacity: 1;
+}
+
+@keyframes topbar-refresh-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .topbar-refresh.is-busy svg {
+    animation: none;
+    opacity: 0.55;
+  }
+}
