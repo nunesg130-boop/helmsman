@@ -6016,3 +6016,43 @@ body.has-overlay .agent-helper > * {
     display: none;
   }
 }
+
+.agent-voice__presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 12px 0 10px;
+}
+
+#agent-voice-input {
+  width: 100%;
+  min-height: 120px;
+  resize: vertical;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.25);
+  color: #f1f1f3;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+#agent-voice-input:focus-visible {
+  border-color: rgba(92, 227, 149, 0.45);
+  outline: none;
+}
+
+.agent-voice__count {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.agent-voice__hint {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+}

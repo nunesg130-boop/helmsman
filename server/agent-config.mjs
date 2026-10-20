@@ -26,6 +26,8 @@ const CONTAINER_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/u;
 const RULE_ID = /^[a-z0-9][a-z0-9-]{0,47}$/u;
 const TIME_OF_DAY = /^(?:[01]\d|2[0-3]):[0-5]\d$/u;
 const SINGLE_LINE = /^[^\u0000-\u001f\u007f-\u009f\u2028\u2029]*$/u;
+// Response instructions may span lines, but carry no other control characters.
+const INSTRUCTION_TEXT = /^[^\u0000-\u0009\u000b-\u001f\u007f-\u009f\u2028\u2029]*$/u;
 const URL_TEXT = /^[^\u0000- \u007f-\u009f\\]{1,2048}$/u;
 
 export const AGENT_LIMITS = Object.freeze({
@@ -36,7 +38,7 @@ export const AGENT_LIMITS = Object.freeze({
   ruleMinutes: { min: 1, max: 120, default: 5 },
   cooldownMinutes: { min: 10, max: 1_440, default: 60 },
   maxPerDay: { min: 1, max: 10, default: 3 },
-  extraInstructions: 400,
+  extraInstructions: 2_000,
   approvedHosts: 32
 });
 
@@ -139,8 +141,8 @@ export function canonicalAiConfig(value) {
   if (!["none", "bearer"].includes(value.authMode)) invalid("The AI connection authentication must be none or bearer.");
   if (typeof value.extraInstructions !== "string"
     || [...value.extraInstructions].length > AGENT_LIMITS.extraInstructions
-    || !SINGLE_LINE.test(value.extraInstructions)) {
-    invalid(`Extra instructions must be one line of ${AGENT_LIMITS.extraInstructions} characters or fewer.`);
+    || !INSTRUCTION_TEXT.test(value.extraInstructions)) {
+    invalid(`Response instructions must be ${AGENT_LIMITS.extraInstructions} characters or fewer.`);
   }
   return {
     url: value.url,

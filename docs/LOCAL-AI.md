@@ -87,7 +87,7 @@ itself can run somewhere small.
 
 | Model | Approx. size at 4-bit | Notes |
 |---|---|---|
-| `qwen3:4b` | ~2.5 GB | Good tool use. Add `/no_think` to the extra instructions (below) so it doesn't reason at length before every answer. |
+| `qwen3:4b` | ~2.5 GB | Good tool use. Add `/no_think` to the response instructions (below) so it doesn't reason at length before every answer. |
 | `qwen2.5:3b` | ~1.9 GB | Lighter, leaves room if the GPU is shared. |
 | `llama3.2:3b` | ~2.0 GB | Another option with tool support. |
 
@@ -141,14 +141,20 @@ what's done.
    - Add an API key only if your server needs one. It's stored encrypted,
      never in `agent.json`.
    - Under **Advanced**, set the context size to what your server loads the
-     model with (4096 suits a 4 GB card), and optionally add one line of
-     extra instructions, such as `/no_think` for Qwen3 models.
+     model with (4096 suits a 4 GB card).
    - The address must fit your Helmsman network policy like any other
      connection. Private addresses are allowed by default.
-2. **What the agent does.** Choose which events it reports, the daily
+2. **How the agent responds (optional).** Tell it how to talk: length,
+   tone, what to include. Start from the Brief, Detailed or Friendly preset
+   and edit it. Your text is added to the built-in instructions; the safety
+   rules always come after it, so they can't be switched off. Keep it short:
+   small models follow short, specific instructions best, and the counter
+   shows how much of the context it uses. For Qwen3 models, add `/no_think`
+   so they don't reason at length before every answer.
+3. **What the agent does.** Choose which events it reports, the daily
    summary time, how often it checks in, and your time zone.
-3. **Phone notifications (optional).** See the next section.
-4. **Rules (optional).** Pick a service, how long it must be down, and what
+4. **Phone notifications (optional).** See the next section.
+5. **Rules (optional).** Pick a service, how long it must be down, and what
    to restart or start. The lists come from the services Helmsman monitors
    and your Portainer and Proxmox connections. Rules only run while **Let
    rules act** is on.
