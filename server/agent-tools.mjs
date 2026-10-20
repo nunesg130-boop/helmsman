@@ -510,3 +510,94 @@ export async function runTool(name, args, context) {
 export function validServiceName(value) {
   return typeof value === "string" && SERVICE_NAME.test(value);
 }
+
+// Plain chat commands ----------------------------------------------------
+// "restart qbittorrent", "can you reboot vm 105", "please start the media
+// vm". Small models often write a pretend proposal instead of calling
+// propose_action, so Helmsman recognises a message that is only a command
+// and builds the proposal itself. The owner still approves it with a
+// button; nothing here runs anything.
+
+const COMMAND = /^(?:(?:hey|ok|okay)[, ]+)?(?:(?:please|pls|can you|could you|would you|will you|go ahead and|i want you to|i need you to)\s+)*(restart|start|stop|reboot|shut\s*down|power\s+on|power\s+off|boot)\s+(?:up\s+)?(?:the\s+)?(?:(container|vm|lxc|guest)\s+)?(.{1,80}?)(?:\s+(?:container|vm|lxc|guest))?(?:\s+(?:please|pls|for me|now|again))*\s*[.!?]*$/iu;
+const APPROVAL = /^(?:approve[ds]?|yes|yes please|yep|yeah|do it|go ahead|go for it|confirm(?:ed)?|ok(?:ay)?,? do it|sure)[.! ]*$/iu;
+
+const GENERAL_TARGETS = new Set(["services", "service", "things", "stuff", "everything", "anything", "something", "it", "them", "that", "this", "all", "containers", "vms", "guests", "apps", "the server", "server", "servers"]);
+
+const VERB_OPERATIONS = Object.freeze({
+  restart: { container: "restart", guest: "reboot" },
+  reboot: { container: "restart", guest: "reboot" },
+  start: { container: "start", guest: "start" },
+  boot: { container: "start", guest: "start" },
+  "power on": { container: "start", guest: "start" },
+  stop: { container: "stop", guest: "shutdown" },
+  shutdown: { container: "stop", guest: "shutdown" },
+  "power off": { container: "stop", guest: "shutdown" }
+});
+
+/** True when a chat message only says yes or approve. */
+export function isApprovalMessage(text) {
+  return APPROVAL.test(String(text || "").trim());
+}
+
+function looseName(value) {
+  return String(value || "").toLowerCase().replace(/[^a-z0-9]/gu, "");
+}
+
+/**
+ * Reads a chat message that is only an action command. Returns null when the
+ * message is anything else, { target, operation } when it names exactly one
+ * container or guest, or { error } when it is a command Helmsman can't match.
+ */
+export function parseActionCommand(text, snapshot) {
+  const match = COMMAND.exec(String(text || "").trim());
+  if (!match) return null;
+  const verb = match[1].toLowerCase().replace(/\s+/gu, " ").replace("shut down", "shutdown");
+  const typeWord = match[2]?.toLowerCase() || "";
+  const rawName = match[3].trim().replace(/^["'`]|["'`]$/gu, "");
+  const wanted = looseName(rawName);
+  if (!wanted) return null;
+  const operations = VERB_OPERATIONS[verb];
+
+  const containers = [];
+  if (typeWord === "" || typeWord === "container") {
+    for (const server of snapshot?.infrastructure?.portainer || []) {
+      for (const container of server.inventory?.containers || []) {
+        if (looseName(container.name) === wanted) containers.push({ server, container });
+      }
+    }
+  }
+  const guests = [];
+  if (typeWord !== "container") {
+    const vmid = /^\d+$/u.test(rawName) ? Number(rawName) : null;
+    for (const environment of snapshot?.infrastructure?.environments || []) {
+      for (const workload of environment.workloads || []) {
+        if (workload.template) continue;
+        if ((vmid !== null && workload.vmid === vmid) || looseName(workload.name) === wanted) guests.push({ environment, workload });
+      }
+    }
+  }
+  const found = containers.length + guests.length;
+  // "Can you restart services?" asks what the agent can do; leave a
+  // question, or a general word, for the model unless it names something.
+  if (found === 0 && (/\?\s*$/u.test(text) || GENERAL_TARGETS.has(rawName.toLowerCase()))) return null;
+  if (found === 0) {
+    const names = [
+      ...(snapshot?.infrastructure?.portainer || []).flatMap((server) => (server.inventory?.containers || []).map((container) => container.name)),
+      ...(snapshot?.infrastructure?.environments || []).flatMap((environment) => (environment.workloads || []).filter((workload) => !workload.template).map((workload) => `${workload.name} (${workload.vmid})`))
+    ];
+    return { error: `I couldn't find a container, VM or LXC called "${untrusted(rawName, 60)}".${names.length ? ` I can see: ${[...new Set(names)].slice(0, 20).join(", ")}.` : " No Portainer or Proxmox connection is set up."}` };
+  }
+  if (found > 1) {
+    return { error: `More than one container, VM or LXC matches "${untrusted(rawName, 60)}". Say which one, such as "${verb} container ${untrusted((containers[0]?.container.name) || rawName, 40)}" or "${verb} vm ${guests[0]?.workload.vmid ?? 100}".` };
+  }
+  try {
+    const target = containers.length
+      ? resolveTarget(snapshot, { kind: "container", name: containers[0].container.name, serviceId: containers[0].server.id })
+      : resolveTarget(snapshot, { kind: "guest", name: String(guests[0].workload.vmid), environmentId: guests[0].environment.id });
+    const operation = operations[target.kind];
+    actionRequestFor(target, operation);
+    return { target, operation };
+  } catch (error) {
+    return { error: error instanceof AgentTargetError ? error.message : "That target could not be resolved." };
+  }
+}

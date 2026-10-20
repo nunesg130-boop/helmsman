@@ -21,7 +21,9 @@ import {
   toolDefinitions,
   untrusted,
   manualKeywords,
-  manualMatches
+  manualMatches,
+  isApprovalMessage,
+  parseActionCommand
 } from "./agent-tools.mjs";
 import { chatCompletion, estimateTokens, listModels, LlmError, validModelId } from "./llm-client.mjs";
 import { parseServiceUrl, resolveAndAuthorizeExplicitTarget, resolveAndAuthorizeTarget } from "./network.mjs";
@@ -652,7 +654,8 @@ export async function createAgent(options) {
       throw error;
     }
     return {
-      text: plainText(answer, MAX_NOTE_CHARS) || "The model did not give an answer.",
+      // Small models add markdown bold despite being asked for plain text.
+      text: plainText(String(answer || "").replace(/\*\*(.+?)\*\*/gu, "$1").replace(/__(.+?)__/gu, "$1"), MAX_NOTE_CHARS) || "The model did not give an answer.",
       toolsUsed: [...new Set(toolsUsed)],
       proposals: proposalIds
     };
@@ -1246,9 +1249,33 @@ export async function createAgent(options) {
     if (!config().ai) fail(409, "AI_NOT_CONFIGURED", "Connect a model server first.");
     if (!questionRate.take(clock())) fail(429, "AGENT_BUSY", "Too many questions in the last hour. Try again later.");
     const history = historyInput(body.history);
+    const question = plainText(body.question, MAX_QUESTION_CHARS);
+    pruneProposals();
+    const pending = [...proposals.values()].filter((proposal) => proposal.status === "pending");
+    // Approval only ever happens through the button, so a typed "yes" can
+    // never run something by accident.
+    if (pending.length && isApprovalMessage(question)) {
+      return {
+        answer: `Use the Approve button on the request above. Actions only run from that button, so a chat message can never start one by accident.`,
+        toolsUsed: [],
+        proposals: []
+      };
+    }
+    const current = snapshot();
+    const command = current ? parseActionCommand(question, current) : null;
+    if (command?.error) return { answer: command.error, toolsUsed: [], proposals: [] };
+    if (command) {
+      const proposal = await createProposal("question")({ target: command.target, operation: command.operation, reason: "Requested in chat." });
+      const verb = { restart: "Restart", start: "Start", stop: "Stop", reboot: "Reboot", shutdown: "Shut down" }[command.operation] || command.operation;
+      return {
+        answer: `I can't run that myself, so it's ready for you: ${verb} ${command.target.label}. Approve it with the button above and Helmsman will run it.`,
+        toolsUsed: ["propose_action"],
+        proposals: [publicProposal(proposal)]
+      };
+    }
     const job = enqueue({
       key: `ask:${randomUUID()}`,
-      run: () => converse({ prompt: plainText(body.question, MAX_QUESTION_CHARS), history, allowProposals: true, source: "question", seedOverview: true })
+      run: () => converse({ prompt: question, history, allowProposals: true, source: "question", seedOverview: true })
     }, { front: true });
     const result = await job;
     return {
