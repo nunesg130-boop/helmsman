@@ -245,23 +245,52 @@ async function recentEvents(_snapshot, context, args) {
   ].filter(Boolean).join(" ")).join("\n");
 }
 
+// Common words that say nothing about what to look for in the manual.
+const MANUAL_STOP_WORDS = new Set(("a an and any are as at be can could did do does for from get go has have how i i'm in is it it's its "
+  + "me my of on or our please show tell than that the their them then there this to up use using was we what what's when where which "
+  + "who why will with would you your yes no ok okay thanks look find search manual tool search_manual about know need want").split(" "));
+
+/** Words worth searching for in a question or query, most specific first. */
+export function manualKeywords(text, limit = 8) {
+  const words = [];
+  for (const word of String(text || "").toLowerCase().split(/[^a-z0-9._-]+/u)) {
+    const trimmed = word.replace(/^[._-]+|[._-]+$/gu, "");
+    if (trimmed.length < 2 || MANUAL_STOP_WORDS.has(trimmed) || words.includes(trimmed)) continue;
+    words.push(trimmed);
+  }
+  return words.slice(0, limit);
+}
+
+/**
+ * Lines of the manual that mention the words, best first. A word matches a
+ * whole word in the line, or the start of one for words of four letters or
+ * more, so "ip" does not match "pipeline" but "proxmo" matches "proxmox".
+ */
+export function manualMatches(markdown, words, limit = 6) {
+  if (!words.length) return [];
+  let heading = "";
+  const hits = [];
+  for (const raw of String(markdown || "").split("\n")) {
+    const line = raw.trim();
+    if (/^#{1,4}\s/u.test(line)) heading = line.replace(/^#+\s*/u, "");
+    if (!line || /^\|?\s*:?-{3,}/u.test(line)) continue;
+    const tokens = line.toLowerCase().split(/[^a-z0-9._-]+/u).filter(Boolean);
+    const headingTokens = heading.toLowerCase().split(/[^a-z0-9._-]+/u).filter(Boolean);
+    const matches = (pool, word) => pool.some((token) => token === word || (word.length >= 4 && token.startsWith(word)));
+    const score = words.reduce((sum, word) => sum + (matches(tokens, word) ? 2 : matches(headingTokens, word) ? 1 : 0), 0);
+    if (score) hits.push({ score, text: `${heading ? `[${untrusted(heading, 40)}] ` : ""}${untrusted(line, 200)}` });
+  }
+  return hits.sort((left, right) => right.score - left.score).slice(0, limit).map(({ text }) => text);
+}
+
 function searchManual(_snapshot, context, args) {
   const markdown = context.manual?.() || "";
   if (!markdown.trim()) return "The owner has not written a manual yet.";
-  const words = String(args.query || "").toLowerCase().split(/[^a-z0-9.-]+/u).filter((word) => word.length > 1).slice(0, 6);
+  const words = manualKeywords(args.query, 6);
   if (!words.length) return "Give one or more words to search for.";
-  let heading = "";
-  const hits = [];
-  for (const raw of markdown.split("\n")) {
-    const line = raw.trim();
-    if (/^#{1,4}\s/u.test(line)) heading = line.replace(/^#+\s*/u, "");
-    if (!line) continue;
-    const lower = line.toLowerCase();
-    const score = words.filter((word) => lower.includes(word)).length;
-    if (score) hits.push({ score, text: `${heading ? `[${untrusted(heading, 40)}] ` : ""}${untrusted(line, 200)}` });
-  }
+  const hits = manualMatches(markdown, words);
   if (!hits.length) return `The manual has nothing about ${words.join(" ")}.`;
-  return hits.sort((left, right) => right.score - left.score).slice(0, 6).map(({ text }) => `- ${text}`).join("\n");
+  return hits.map((text) => `- ${text}`).join("\n");
 }
 
 function parseTarget(value) {

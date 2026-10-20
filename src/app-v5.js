@@ -4360,7 +4360,6 @@ function renderAgentModelCard(data) {
           <label><span>Context size (tokens)</span><input name="contextTokens" type="number" min="${context.min}" max="${context.max}" step="256" value="${Number(ai?.contextTokens || context.default)}" /><small>Match the context your server loads the model with.</small></label>
           <label><span>Timeout (seconds)</span><input name="timeoutSeconds" type="number" min="${timeout.min}" max="${timeout.max}" value="${Number(ai?.timeoutSeconds || timeout.default)}" /></label>
         </div>
-        <label><span>Extra instructions</span><input name="extraInstructions" type="text" maxlength="${Number(limits.extraInstructions || 400)}" placeholder="One line, such as: Keep answers under three sentences." value="${escapeHtml(ai?.extraInstructions || "")}" /></label>
       </details>
       <p class="agent-test-result" id="agent-ai-test-result" role="status"></p>
       <div class="button-row">
@@ -4370,6 +4369,42 @@ function renderAgentModelCard(data) {
       </div>
     </div>
   </form>`;
+}
+
+const AGENT_VOICE_PRESETS = Object.freeze({
+  brief: "Answer in one or two short sentences. Skip greetings, and don't recap service health unless I ask about it.",
+  detailed: "Explain in a short paragraph. Name the service, host or container involved, say how you know, and suggest one next step.",
+  friendly: "Be warm and casual, like a friend who helps run the homelab. Keep answers short and skip the jargon."
+});
+
+function agentVoiceCountText(text, data) {
+  const tokens = Math.ceil(String(text || "").length / 3.2);
+  const context = Number(data?.config?.ai?.contextTokens || 4096);
+  return `${String(text || "").length.toLocaleString()} characters · about ${tokens.toLocaleString()} tokens of your ${context.toLocaleString()}-token context`;
+}
+
+function renderAgentVoiceCard(data) {
+  const ai = data?.config?.ai;
+  const limit = Number(data?.limits?.extraInstructions || 2000);
+  const text = ai?.extraInstructions || "";
+  return `<form class="glass-panel settings-card-v5" id="agent-voice-form">
+    <header><div><span class="section-kicker">Optional · Personality</span><h3>How the agent responds</h3></div>${icon("edit")}</header>
+    <div class="settings-card-v5__body">
+      <p>Tell the agent how to talk: length, tone, what to include. Your text is added to its built-in instructions. The safety rules always come last, so they can't be turned off here.</p>
+      <div class="agent-voice__presets" role="group" aria-label="Start from a preset">
+        ${Object.keys(AGENT_VOICE_PRESETS).map((name) => `<button class="button button--compact" type="button" data-action="agent-voice-preset" data-preset="${name}" ${ai ? "" : "disabled"}>${name[0].toUpperCase()}${name.slice(1)}</button>`).join("")}
+      </div>
+      <label><span class="sr-only">Response instructions</span><textarea id="agent-voice-input" name="extraInstructions" rows="6" maxlength="${limit}" placeholder="${ai ? "Such as: Keep answers under three sentences and always name the host involved." : "Connect a model server first."}" ${ai ? "" : "disabled"}>${escapeHtml(text)}</textarea></label>
+      <small class="agent-voice__count" id="agent-voice-count" aria-live="polite">${escapeHtml(agentVoiceCountText(text, data))}</small>
+      <p class="agent-voice__hint">Small models follow short, specific instructions best, and every token here leaves less room for live data.</p>
+      <div class="button-row"><button class="button button--primary" type="submit" ${ai ? "" : "disabled"}>Save instructions</button></div>
+    </div>
+  </form>`;
+}
+
+async function submitAgentVoice(form) {
+  const text = String(new FormData(form).get("extraInstructions") || "");
+  await agentMutation("/ai", "PUT", { extraInstructions: text }, text.trim() ? "Response instructions saved." : "Response instructions cleared.");
 }
 
 function browserTimeZone() {
@@ -4492,6 +4527,7 @@ function renderAgentSettings() {
     ${renderAgentSetupSteps(data)}
     <div class="settings-grid-v5">
       ${renderAgentModelCard(data)}
+      ${renderAgentVoiceCard(data)}
       ${renderAgentBehaviorCard(data)}
       ${renderAgentNotifyCard(data)}
       ${renderAgentRulesCard(data)}
@@ -4575,8 +4611,7 @@ async function testAgentModel(button) {
 async function submitAgentModel(form) {
   const body = {
     url: agentFormText(form, "url"),
-    model: agentFormText(form, "model"),
-    extraInstructions: agentFormText(form, "extraInstructions")
+    model: agentFormText(form, "model")
   };
   const contextTokens = agentFormNumber(form, "contextTokens");
   const timeoutSeconds = agentFormNumber(form, "timeoutSeconds");
@@ -10176,6 +10211,17 @@ document.addEventListener("click", async (event) => {
     rerenderAgent();
     return;
   }
+  if (action === "agent-voice-preset") {
+    const input = document.getElementById("agent-voice-input");
+    const preset = AGENT_VOICE_PRESETS[target.dataset.preset];
+    if (input && preset) {
+      input.value = preset;
+      const count = document.getElementById("agent-voice-count");
+      if (count) count.textContent = agentVoiceCountText(preset, agentData());
+      input.focus({ preventScroll: true });
+    }
+    return;
+  }
   if (action === "agent-use-local-zone") {
     const input = target.closest("form")?.querySelector("input[name='timeZone']");
     if (input) input.value = String(target.dataset.zone || "");
@@ -10381,6 +10427,11 @@ document.addEventListener("change", (event) => {
 
 document.addEventListener("input", (event) => {
   const fieldName = String(event.target?.name || "");
+  if (event.target?.id === "agent-voice-input") {
+    const count = document.getElementById("agent-voice-count");
+    if (count) count.textContent = agentVoiceCountText(event.target.value, agentData());
+    return;
+  }
   if (event.target?.id === "agent-ask-input") {
     state.agent.draft = String(event.target.value || "").slice(0, AGENT_QUESTION_LIMIT);
     return;
@@ -10494,6 +10545,7 @@ document.addEventListener("submit", (event) => {
   if (event.target.id === "network-form") submitNetwork(event.target);
   if (event.target.id === "launch-address-form") submitLaunchAddress(event.target);
   if (event.target.id === "agent-ai-form") submitAgentModel(event.target);
+  if (event.target.id === "agent-voice-form") submitAgentVoice(event.target);
   if (event.target.id === "agent-settings-form") submitAgentSettings(event.target);
   if (event.target.id === "agent-notify-form") submitAgentNotify(event.target);
   if (event.target.id === "agent-rule-form") submitAgentRule(event.target);
