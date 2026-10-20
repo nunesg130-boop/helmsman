@@ -23,6 +23,16 @@ named [Helmsman](https://github.com/mkubaczyk/helmsman).
 
 **Solid dialog bars.** The header and footer of connection and detail dialogs no longer show the content scrolling behind them.
 
+**Fixes and polish.**
+- Activity shows each download's percent above its progress bar instead of on an unreadable green block.
+- Finished and seeding torrents no longer show "ETA 100d" (qBittorrent's "no ETA" value).
+- The helper starts in the bottom-right corner and drifts less, and pages leave room at the end so it never hides the last row.
+- Logs, Connections, Connectors, Proxmox, Workloads, Portainer, Incidents and Settings line up with every other page.
+- Today's "Last assessment" times show just the time, so they fit their tiles.
+- Helmsman's small background worker is no longer blocked by its own script-safety policy.
+- On phones, Workloads rows fit the screen, the Calendar is a day-by-day list, and the log counts wrap to two rows.
+- A single Proxmox environment fills the row.
+
 ## v1.12.0
 
 **Prowlarr indexers.** Media → Health has an Indexers panel listing every indexer with its status, Prowlarr's last error and recent query numbers, with buttons to test one indexer or all of them, test Prowlarr's connections to its apps, and sync indexers to the apps. Indexer and app settings carry API keys and passwords; Helmsman keeps only names, status and numbers, so those never reach the browser, the logs or the agent's model.

@@ -340,13 +340,17 @@ function timestampMarkup(value, fallback = "Not checked yet") {
   const timestamp = normalizeTimestamp(value);
   if (!timestamp) return escapeOperationsHtml(fallback);
   const date = new Date(timestamp);
-  const label = date.toLocaleString([], {
+  const full = date.toLocaleString([], {
     month: "short",
     day: "numeric",
     hour: "numeric",
     minute: "2-digit"
   });
-  return `<time datetime="${timestamp}">${escapeOperationsHtml(label)}</time>`;
+  // Today's times drop the date so they fit small fact tiles.
+  const label = date.toDateString() === new Date().toDateString()
+    ? date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+    : full;
+  return `<time datetime="${timestamp}" title="${escapeOperationsHtml(full)}">${escapeOperationsHtml(label)}</time>`;
 }
 
 function durationLabel(firstSeen, finishedAt) {

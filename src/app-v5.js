@@ -99,8 +99,15 @@ function emptyLoggingState() {
   };
 }
 
+const SERVICE_WORKER_URL = "./sw.js";
+
 const renderPolicy = globalThis.trustedTypes?.createPolicy("helmsman-render", {
-  createHTML: (markup) => markup
+  createHTML: (markup) => markup,
+  // The only script URL Helmsman ever loads at run time is its own worker.
+  createScriptURL: (url) => {
+    if (url !== SERVICE_WORKER_URL) throw new TypeError("That script URL is not allowed.");
+    return url;
+  }
 }) ?? null;
 
 function setMarkup(element, markup) {
@@ -5061,10 +5068,10 @@ function clampHelper(x, y) {
   };
 }
 
+// Out of the way by default: tucked into the bottom-right corner. Pages leave
+// room at their end (body.has-agent-helper) so the last row can scroll clear.
 function helperDefaultHome() {
-  const { width, height } = helperSize();
-  const viewport = helperViewport();
-  return { x: viewport.width - width - 28, y: viewport.height - height - 110 };
+  return helperDockPosition();
 }
 
 // The home position is saved as fractions of the window, so it stays in a
@@ -5112,9 +5119,10 @@ function scheduleHelperWander() {
   if (!helper.root || helperReducedMotion()) return;
   helper.wanderTimer = setTimeout(() => {
     if (helper.root && !helper.open && !helper.drag && document.visibilityState === "visible" && helper.home) {
-      // Drift a little around home, never far from where the owner put it.
-      const dx = (Math.random() - 0.5) * 160;
-      const dy = (Math.random() - 0.5) * 100;
+      // Drift a little around home, never far from where the owner put it,
+      // so it does not wander over the page's buttons.
+      const dx = (Math.random() - 0.5) * 72;
+      const dy = (Math.random() - 0.5) * 28;
       placeHelper(helper.home.x + dx, helper.home.y + dy, { glide: true });
       helper.root.classList.toggle("is-facing-left", dx < 0);
     }
@@ -5150,6 +5158,7 @@ function createAgentHelper() {
       </form>
     </section>`);
   document.body.append(root);
+  document.body.classList.add("has-agent-helper");
   helper.root = root;
   helper.buddy = root.querySelector(".agent-helper__buddy");
   helper.panel = root.querySelector(".agent-helper__panel");
@@ -5196,6 +5205,7 @@ function removeAgentHelper() {
   clearTimeout(helper.wanderTimer);
   clearTimeout(helper.bubbleTimer);
   helper.root?.remove();
+  document.body.classList.remove("has-agent-helper");
   Object.assign(helper, { root: null, buddy: null, panel: null, bubble: null, open: false, drag: null, renderedKey: "" });
 }
 
@@ -7671,7 +7681,10 @@ function updateChrome() {
 function formatAssessmentTime(value, fallback = "Waiting for data") {
   const date = new Date(value);
   if (!value || !Number.isFinite(date.getTime())) return fallback;
-  return date.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  // Today's times drop the date so they fit the small fact tiles.
+  return date.toDateString() === new Date().toDateString()
+    ? date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+    : date.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 }
 
 function updateTimeElement(element, value, fallback, formatter = formatTime) {
@@ -11341,5 +11354,5 @@ if (!location.hash || !ROUTES.has(rawRoute())) location.replace(`#/${workspaceLa
 initialize();
 
 if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("./sw.js").catch(() => {});
+  navigator.serviceWorker.register(renderPolicy?.createScriptURL ? renderPolicy.createScriptURL(SERVICE_WORKER_URL) : SERVICE_WORKER_URL).catch(() => {});
 }

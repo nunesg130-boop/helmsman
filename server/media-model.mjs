@@ -740,10 +740,20 @@ function qbitTorrents(body) {
       progress: Math.round(boundedNumber(own(item, "progress"), 0, 1, 0) * 1_000) / 10,
       downloadSpeedBps: Math.round(boundedNumber(own(item, "dlspeed") ?? own(item, "downloadSpeed"), 0, Number.MAX_SAFE_INTEGER, 0)),
       uploadSpeedBps: Math.round(boundedNumber(own(item, "upspeed") ?? own(item, "uploadSpeed"), 0, Number.MAX_SAFE_INTEGER, 0)),
-      etaSeconds: Math.round(boundedNumber(own(item, "eta"), 0, 31_536_000, 0)),
+      etaSeconds: qbittorrentEta(own(item, "eta"), own(item, "progress")),
       sizeBytes: Math.round(boundedNumber(own(item, "size") ?? own(item, "total_size"), 0, Number.MAX_SAFE_INTEGER, 0))
     }];
   });
+}
+
+// qBittorrent reports 8640000 seconds (100 days) when there is no ETA, such
+// as a finished or seeding torrent; that, and any finished torrent, has none.
+const QBITTORRENT_NO_ETA = 8_640_000;
+
+function qbittorrentEta(value, progress) {
+  const eta = boundedNumber(value, 0, Number.MAX_SAFE_INTEGER, null);
+  if (eta === null || eta >= QBITTORRENT_NO_ETA || boundedNumber(progress, 0, 1, 0) >= 1) return null;
+  return Math.round(Math.min(eta, 31_536_000));
 }
 
 function bazarrWanted(body, fallbackType) {
