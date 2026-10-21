@@ -141,7 +141,7 @@ async function harness(t, { modelReplies = null, lookupAddress = "10.1.0.20" } =
       context.indexerReads += 1;
       return { indexers: context.indexerList };
     },
-    manual: () => "# Lab\n## Hosts\n| media | 10.1.0.5 |\n## Runbooks\nRestart sonarr with docker restart sonarr.",
+    manual: () => context.manualText ?? "# Lab\n## Hosts\n| media | 10.1.0.5 |\n## Runbooks\nRestart sonarr with docker restart sonarr.",
     events: async (query = {}) => ({ entries: context.journal.filter((entry) => !query.category || entry.category === query.category), nextCursor: null }),
     recordEvent: (event) => context.events.push(event),
     send,
@@ -555,6 +555,29 @@ test("questions start with the manual lines that match them", async (t) => {
   context.modelCalls.length = 0;
   await api(agent, "POST", "/api/v2/agent/ask", { question: "How is everything looking?" });
   assert.equal(context.modelCalls[0].messages.some((message) => message.tool_call_id === "seed-manual"), false);
+});
+
+test("questions about a period are answered from history, not from manual notes", async (t) => {
+  const { agent, context, publish } = await harness(t, { modelReplies: () => ({ content: "Nothing happened overnight." }) });
+  await configure(agent, { autonomy: false });
+  await publish(snapshotAt(context.now));
+  context.manualText = "# Lab\n## Known issues\n| Switch failure | norco's link dropped 25 times overnight |\n## Roadmap\n| memtest86+ overnight on the new RAM |";
+  const asked = await api(agent, "POST", "/api/v2/agent/ask", { question: "Anything happen overnight?" });
+  assert.ok(asked.payload.toolsUsed.includes("history"));
+  assert.equal(asked.payload.toolsUsed.includes("search_manual"), false);
+  assert.equal(context.modelCalls[0].messages.some((message) => message.tool_call_id === "seed-manual"), false, "old notes must not be offered as overnight events");
+
+  // Time words alone never select manual lines.
+  const { manualKeywords } = await import("../server/agent-tools.mjs");
+  assert.deepEqual(manualKeywords("Anything happen overnight?"), []);
+  assert.deepEqual(manualKeywords("What happened to the switch last night?"), ["switch"]);
+
+  // An ordinary question still gets its matching manual lines, labelled as notes.
+  context.modelCalls.length = 0;
+  await api(agent, "POST", "/api/v2/agent/ask", { question: "What do my notes say about the switch?" });
+  const seeded = context.modelCalls[0].messages.find((message) => message.tool_call_id === "seed-manual");
+  assert.match(seeded.content, /not events and not current status/u);
+  assert.match(seeded.content, /Switch failure/u);
 });
 
 test("a chat message that is only a command becomes a proposal without the model", async (t) => {
