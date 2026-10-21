@@ -93,6 +93,7 @@ async function harness(t, { modelReplies = null, lookupAddress = "10.1.0.20" } =
     pushes: [],
     modelCalls: [],
     events: [],
+    journal: [],
     subscribers: new Set(),
     indexerList: [],
     indexerReads: 0,
@@ -141,7 +142,7 @@ async function harness(t, { modelReplies = null, lookupAddress = "10.1.0.20" } =
       return { indexers: context.indexerList };
     },
     manual: () => "# Lab\n## Hosts\n| media | 10.1.0.5 |\n## Runbooks\nRestart sonarr with docker restart sonarr.",
-    events: async () => ({ entries: [] }),
+    events: async (query = {}) => ({ entries: context.journal.filter((entry) => !query.category || entry.category === query.category), nextCursor: null }),
     recordEvent: (event) => context.events.push(event),
     send,
     clock: () => context.now,
@@ -566,7 +567,7 @@ test("a chat message that is only a command becomes a proposal without the model
   assert.equal(restart.payload.proposals.length, 1);
   assert.equal(restart.payload.proposals[0].operation, "restart");
   assert.equal(restart.payload.proposals[0].target, "container sonarr");
-  assert.match(restart.payload.answer, /Approve it with the button above/u);
+  assert.match(restart.payload.answer, /Approve or decline it right here/u);
   assert.equal(context.actions.length, 0, "nothing runs until the owner approves");
 
   // "restart" on a guest means reboot; guests match by name or VMID.
@@ -1109,4 +1110,36 @@ test("integrity tags are separate per domain and per instance", async (t) => {
   assert.notEqual(store.sessionStateIntegrityTag(payload), tag);
   assert.throws(() => store.integrityTag("Bad Domain", payload), { code: "INVALID_INTEGRITY_DOMAIN" });
   assert.throws(() => store.integrityTag("agent-config", "text"), { code: "INVALID_INTEGRITY_PAYLOAD" });
+});
+
+test("nicknames and close spellings in chat commands find the container", async (t) => {
+  const { agent, context, publish } = await harness(t, { modelReplies: () => ({ content: "unused" }) });
+  await configure(agent, { autonomy: false });
+  await publish(snapshotAt(context.now));
+  for (const [question, target] of [["restart sonar", "container sonarr"], ["can you restart radar", "container radarr"], ["restart sonnarr please", "container sonarr"]]) {
+    const asked = await api(agent, "POST", "/api/v2/agent/ask", { question });
+    assert.equal(asked.payload.proposals[0]?.target, target, question);
+  }
+  assert.equal(context.modelCalls.length, 0);
+});
+
+test("questions about a period get Helmsman's own history, and gaps are named", async (t) => {
+  const { agent, context, publish } = await harness(t, { modelReplies: () => ({ content: "Sonarr was down once." }) });
+  await configure(agent, { autonomy: false });
+  await publish(snapshotAt(context.now));
+  context.journal.push(
+    { at: new Date(context.now - 3_600_000).toISOString(), level: "error", category: "health", event: "health_incident", outcome: "changed", service: "sonarr", capability: "api", targetId: "i1" },
+    { at: new Date(context.now - 3_000_000).toISOString(), level: "info", category: "health", event: "health_incident", outcome: "recovered", service: "sonarr", capability: "api", targetId: "i1" }
+  );
+  const asked = await api(agent, "POST", "/api/v2/agent/ask", { question: "How's the health been in the past 24 hours?" });
+  assert.deepEqual(asked.payload.toolsUsed.includes("history"), true);
+  const [system, ...rest] = context.modelCalls[0].messages;
+  assert.match(system.content, /Helmsman monitors only: /u);
+  assert.match(system.content, /does not monitor the internet connection/u);
+  const history = rest.find((message) => message.tool_call_id === "seed-history");
+  assert.match(history.content, /History for the past 24 hours/u);
+  assert.match(history.content, /Sonarr: 1 problem, 10 min in total/u);
+  // A question that is not about a period gets no history.
+  await api(agent, "POST", "/api/v2/agent/ask", { question: "Is Sonarr up?" });
+  assert.equal(context.modelCalls[1].messages.some((message) => message.tool_call_id === "seed-history"), false);
 });

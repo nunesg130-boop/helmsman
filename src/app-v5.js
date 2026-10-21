@@ -4301,6 +4301,7 @@ function emptyAgentState() {
     error: "",
     data: null,
     chat: [],
+    decisions: new Map(),
     draft: "",
     helperDraft: "",
     asking: false,
@@ -4363,7 +4364,7 @@ function agentNoteTime(value) {
 function renderAgentProposal(proposal) {
   const busy = state.agent.busy === proposal.id;
   return `<li class="agent-proposal">
-    <div><strong>${escapeHtml(AGENT_OPERATION_LABELS[proposal.operation] || proposal.operation)} ${escapeHtml(proposal.target)}</strong><p>${escapeHtml(proposal.reason || "Suggested by the agent.")}</p><small>Expires ${escapeHtml(agentNoteTime(proposal.expiresAt))}</small></div>
+    <div><strong>${escapeHtml(AGENT_OPERATION_LABELS[proposal.operation] || proposal.operation)} ${escapeHtml(proposal.target)}</strong><p>${escapeHtml(proposal.reason || "Suggested by the agent.")} <small>Expires ${escapeHtml(agentNoteTime(proposal.expiresAt))}.</small></p></div>
     <div class="agent-proposal__actions">
       <button class="button button--compact" type="button" data-action="agent-proposal" data-decision="decline" data-proposal-id="${escapeHtml(proposal.id)}" ${busy ? "disabled" : ""}>Decline</button>
       <button class="button button--compact button--primary" type="button" data-action="agent-proposal" data-decision="approve" data-proposal-id="${escapeHtml(proposal.id)}" ${busy ? "disabled aria-busy=\"true\"" : ""}>${busy ? "Working…" : "Approve"}</button>
@@ -4383,11 +4384,32 @@ function renderAgentNote(note) {
   </li>`;
 }
 
-function renderAgentChatMessages(ready, proposalPlace) {
+// An approval request shown right where it was made: under the chat answer
+// that created it, with its buttons, and afterwards with what happened.
+function renderInlineProposal(id) {
+  const pending = (agentData()?.proposals || []).find((proposal) => proposal.id === id);
+  if (pending) return `<ul class="agent-inline-proposals">${renderAgentProposal(pending)}</ul>`;
+  const decided = state.agent.decisions.get(id);
+  if (!decided) return `<p class="agent-proposal-outcome is-stale">${icon("more")}<span>No longer waiting: it expired or was decided elsewhere.</span></p>`;
+  const tone = decided.status === "approved" ? "ok" : decided.status === "declined" ? "stale" : "bad";
+  const text = decided.status === "approved"
+    ? `Approved: ${decided.label}. ${decided.outcome || "Done."}`
+    : decided.status === "declined" ? `Declined: ${decided.label}.` : `${decided.label} did not run: ${decided.outcome || "the action failed."}`;
+  return `<p class="agent-proposal-outcome is-${tone}">${icon(tone === "ok" ? "check" : tone === "bad" ? "x" : "more")}<span>${escapeHtml(text)}</span></p>`;
+}
+
+// Requests that did not come from this chat (incident reports, stuck
+// downloads), shown in the strip above the conversation.
+function backgroundProposals(proposals) {
+  const inChat = new Set(state.agent.chat.flatMap((message) => message.proposals || []));
+  return proposals.filter((proposal) => !inChat.has(proposal.id));
+}
+
+function renderAgentChatMessages(ready) {
   const messages = state.agent.chat;
   return `${messages.length ? messages.map((message) => `<li class="agent-chat__message is-${message.role}${message.error ? " is-error" : ""}">
         <p>${escapeHtml(message.content)}</p>
-        ${message.proposals?.length ? `<small>Suggested an action. Approve or decline it ${escapeHtml(proposalPlace)}.</small>` : ""}
+        ${(message.proposals || []).map(renderInlineProposal).join("")}
       </li>`).join("") : `<li class="agent-chat__empty">${ready ? "Ask how things look, why something is failing, or what changed today. Answers come from your own model and Helmsman's live data." : "Connect a model server in Settings to ask questions."}</li>`}
       ${state.agent.asking ? `<li class="agent-chat__message is-assistant is-thinking"><p>Thinking…</p></li>` : ""}`;
 }
@@ -4397,7 +4419,7 @@ function renderAgentChat(data) {
   const messages = state.agent.chat;
   return `<section class="agent-chat" aria-labelledby="agent-chat-title">
     <header><h4 id="agent-chat-title">Ask the agent</h4>${messages.length ? `<button class="agent-text-button" type="button" data-action="agent-chat-clear">Clear</button>` : ""}</header>
-    <ol class="agent-chat__messages" aria-live="polite">${renderAgentChatMessages(ready, "under Reports")}</ol>
+    <ol class="agent-chat__messages" aria-live="polite">${renderAgentChatMessages(ready)}</ol>
     <form class="agent-chat__form" id="agent-ask-form">
       <label class="sr-only" for="agent-ask-input">Question for the agent</label>
       <textarea id="agent-ask-input" name="question" rows="2" maxlength="${AGENT_QUESTION_LIMIT}" placeholder="${ready ? "How is everything looking?" : "Set up the agent first"}" ${ready ? "" : "disabled"}>${escapeHtml(state.agent.draft)}</textarea>
@@ -4429,7 +4451,7 @@ function renderAgentOverviewCard() {
     <div class="agent-overview">
       <section class="agent-reports" aria-labelledby="agent-reports-title">
         <header><h4 id="agent-reports-title">Reports</h4><button class="agent-text-button" type="button" data-action="agent-run" data-job="digest" ${digestBusy ? "disabled aria-busy=\"true\"" : ""}>${digestBusy ? "Writing summary…" : "Summarize now"}</button></header>
-        ${proposals.length ? `<div class="agent-proposals"><span class="section-kicker">Waiting for your approval</span><ul>${proposals.map(renderAgentProposal).join("")}</ul></div>` : ""}
+        ${backgroundProposals(proposals).length ? `<div class="agent-proposals"><span class="section-kicker">Waiting for your approval</span><ul>${backgroundProposals(proposals).map(renderAgentProposal).join("")}</ul></div>` : ""}
         ${notes.length
           ? `<ul class="agent-notes">${notes.map(renderAgentNote).join("")}</ul>`
           : `<p class="agent-empty">No reports yet. The agent writes one when something breaks or recovers, at the daily summary time, and during periodic check-ins.</p>`}
@@ -5083,19 +5105,25 @@ async function decideAgentProposal(button) {
   const decision = button.dataset.decision === "approve" ? "approve" : "decline";
   if (!/^[a-f0-9-]{36}$/u.test(id) || state.agent.busy) return;
   const proposal = (agentData()?.proposals || []).find((candidate) => candidate.id === id);
-  if (decision === "approve") {
-    const action = `${AGENT_OPERATION_LABELS[proposal?.operation] || "Run"} ${proposal?.target || "this target"}`;
-    const confirmed = await confirmAgentChange(`${proposal?.reason ? `${proposal.reason} ` : ""}Helmsman checks the target again before it runs.`, { title: `${action}?`, confirmLabel: action, tone: "default" });
+  const label = `${AGENT_OPERATION_LABELS[proposal?.operation] || "Run"} ${proposal?.target || "this target"}`.toLowerCase().replace(/^./u, (letter) => letter.toUpperCase());
+  // Approve is the confirmation for starting and restarting. Actions that
+  // take something offline get a second, explicit check.
+  if (decision === "approve" && ["stop", "shutdown", "reboot", "blocklistAndSearch"].includes(proposal?.operation)) {
+    const confirmed = await confirmAgentChange(`${proposal?.reason ? `${proposal.reason} ` : ""}Helmsman checks the target again before it runs.`, { title: `${label}?`, confirmLabel: label, tone: "danger" });
     if (!confirmed) return;
   }
   state.agent.busy = id;
   rerenderAgent();
   try {
-    await api(`/api/v2/agent/proposals/${id}`, { method: "POST", body: { decision } });
-    showToast(decision === "approve" ? "Approved. Helmsman is running the action." : "Declined.", "success");
+    const result = await api(`/api/v2/agent/proposals/${id}`, { method: "POST", body: { decision } });
+    state.agent.decisions.set(id, { status: result?.status || (decision === "approve" ? "approved" : "declined"), outcome: safeSessionText(result?.outcome, "", 200), label });
+    showToast(decision === "approve" ? `${label}: done.` : "Declined.", "success");
   } catch (error) {
     if (error?.status === 401) await initialize();
-    else showToast(error?.message || "That decision could not be saved.", "danger");
+    else {
+      state.agent.decisions.set(id, { status: "failed", outcome: safeSessionText(error?.message, "the action failed.", 200), label });
+      showToast(error?.message || "That decision could not be saved.", "danger");
+    }
   } finally {
     state.agent.busy = "";
     await loadAgent();
@@ -5138,7 +5166,11 @@ async function askAgent(source = "page") {
   rerenderAgent();
   try {
     const result = await api("/api/v2/agent/ask", { method: "POST", body: { question, history } });
-    state.agent.chat.push({ role: "assistant", content: String(result?.answer || "No answer."), proposals: result?.proposals || [] });
+    // Keep the ids of any requests this answer made, so they show under it.
+    const proposalIds = (Array.isArray(result?.proposals) ? result.proposals : [])
+      .map((proposal) => (typeof proposal === "string" ? proposal : proposal?.id))
+      .filter((id) => typeof id === "string" && /^[a-f0-9-]{36}$/u.test(id));
+    state.agent.chat.push({ role: "assistant", content: String(result?.answer || "No answer."), proposals: proposalIds });
     if (result?.proposals?.length) await loadAgent();
   } catch (error) {
     if (error?.status === 401) {
@@ -5507,19 +5539,20 @@ function syncAgentHelper({ force = false } = {}) {
   if (seen === null && newest) writeHelperStorage(AGENT_HELPER_SEEN_KEY, newest.id);
   if (helper.open) markHelperNotesSeen();
 
-  const key = JSON.stringify([ready, agentStatus(data).label, proposals.map(({ id }) => id), state.agent.busy, state.agent.asking, state.agent.chat.length, state.agent.chat.at(-1)?.content]);
+  const key = JSON.stringify([ready, agentStatus(data).label, proposals.map(({ id }) => id), state.agent.busy, state.agent.asking, state.agent.chat.length, state.agent.chat.at(-1)?.content, [...state.agent.decisions.keys()]]);
   if (!force && key === helper.renderedKey) return;
   helper.renderedKey = key;
   const status = agentStatus(data);
   const statusElement = helper.root.querySelector(".agent-helper__status");
   statusElement.className = `agent-helper__status system-service-state is-${status.tone}`;
   setMarkup(statusElement, `<i class="health-dot is-${status.tone}"></i>${escapeHtml(status.label)}`);
-  setMarkup(helper.root.querySelector(".agent-helper__proposals"), proposals.length
-    ? `<span class="section-kicker">Waiting for your approval</span><ul>${proposals.map(renderAgentProposal).join("")}</ul>`
+  const background = backgroundProposals(proposals);
+  setMarkup(helper.root.querySelector(".agent-helper__proposals"), background.length
+    ? `<span class="section-kicker">Waiting for your approval</span><ul>${background.map(renderAgentProposal).join("")}</ul>`
     : "");
   const messages = helper.root.querySelector(".agent-helper__messages");
   setMarkup(messages, ready
-    ? renderAgentChatMessages(true, "above")
+    ? renderAgentChatMessages(true)
     : `<li class="agent-chat__empty">Connect a model running on your own hardware to chat here. <button class="agent-text-button" type="button" data-action="switch-workspace" data-workspace="system" data-workspace-route="settings" data-settings-tab="agent">Set up the agent</button></li>`);
   messages.scrollTop = messages.scrollHeight;
   const input = helper.root.querySelector("#agent-helper-input");

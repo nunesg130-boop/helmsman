@@ -7003,3 +7003,89 @@ body.has-agent-helper .main-content > :is(.page, .detail-page, .media-health-sta
 .connection-capability__copy .operations-report small {
   margin-top: 2px;
 }
+
+/* Approval requests -------------------------------------------------------- */
+/* In the chat, under the answer that made the request. */
+.agent-inline-proposals {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.agent-inline-proposals .agent-proposal,
+.agent-helper__proposals .agent-proposal,
+.agent-proposals .agent-proposal {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 196, 92, 0.32);
+  border-radius: 12px;
+  background: rgba(255, 196, 92, 0.06);
+}
+
+.agent-inline-proposals .agent-proposal strong,
+.agent-helper__proposals .agent-proposal strong {
+  display: block;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.agent-inline-proposals .agent-proposal p,
+.agent-helper__proposals .agent-proposal p {
+  margin: 2px 0 0;
+  color: var(--refresh-ink-quiet);
+  font-size: 11.5px;
+}
+
+.agent-proposal__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.agent-proposal-outcome {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font-size: 12px;
+}
+
+.agent-proposal-outcome svg {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin-top: 1px;
+}
+
+.agent-proposal-outcome.is-ok {
+  border-color: rgba(92, 227, 149, 0.3);
+  color: var(--refresh-ink-ok);
+}
+
+.agent-proposal-outcome.is-bad {
+  border-color: rgba(255, 111, 125, 0.3);
+  color: var(--refresh-ink-bad);
+}
+
+.agent-proposal-outcome.is-stale {
+  color: var(--refresh-ink-quiet);
+}
+
+/* The strip above the conversation never shrinks below its requests. */
+.agent-helper__proposals {
+  flex: none;
+  max-height: min(45vh, 320px);
+  padding: 10px 12px;
+}
+
+.agent-helper__proposals ul {
+  display: grid;
+  gap: 8px;
+}

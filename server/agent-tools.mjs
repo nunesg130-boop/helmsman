@@ -6,6 +6,8 @@
 // lead to a change is propose_action, and it only records a proposal; the
 // owner approves it, and the control plane re-checks everything when it runs.
 
+import { buildHistory, readWindow } from "./agent-history.mjs";
+
 const MAX_TOOL_OUTPUT_CHARS = 1_400;
 const MAX_LINES = 30;
 const SERVICE_NAME = /^[A-Za-z0-9][A-Za-z0-9 ._:@-]{0,95}$/u;
@@ -120,6 +122,13 @@ function overview(snapshot, context) {
 function findService(snapshot, name) {
   const needle = String(name || "").trim().toLowerCase();
   if (!needle) return null;
+  const media = matchByName(snapshot.services || [], needle, (service) => service.id);
+  const mediaByLabel = media.length ? media : matchByName(snapshot.services || [], needle, (service) => service.label);
+  if (mediaByLabel.length === 1) return { kind: "media", item: mediaByLabel[0] };
+  return findServiceExact(snapshot, needle);
+}
+
+function findServiceExact(snapshot, needle) {
   const media = (snapshot.services || []).find((service) => service.id === needle || String(service.label || "").toLowerCase() === needle);
   if (media) return { kind: "media", item: media };
   const infra = [
@@ -221,17 +230,70 @@ function mediaQueue(snapshot, context) {
   return lines.join("\n");
 }
 
+// Display names for services and infrastructure, as the journal names them.
+function serviceNamer(snapshot) {
+  const names = new Map();
+  for (const service of snapshot.services || []) names.set(service.id, service.label || service.id);
+  for (const item of [...(snapshot.infrastructure?.environments || []), ...(snapshot.infrastructure?.services || [])]) {
+    const name = untrusted(item.displayName, 60) || item.id;
+    names.set(item.id, name);
+    names.set(`proxmox-${item.id}`, name);
+    names.set(`portainer-${item.id}`, name);
+  }
+  return (id) => names.get(id) || (id ? String(id) : "Helmsman");
+}
+
+const HISTORY_HOUR = 60 * 60 * 1_000;
+
+async function historyTool(snapshot, context, args) {
+  if (!context.events) return "The event journal is not available, so there is no history to report.";
+  const now = typeof context.now === "function" ? context.now() : Date.now();
+  let window;
+  if (Number.isFinite(args.from) && Number.isFinite(args.to) && args.to > args.from && args.to - args.from <= 14 * 24 * HISTORY_HOUR) {
+    window = { from: args.from, to: Math.min(args.to, now), label: typeof args.label === "string" ? args.label.slice(0, 40) : "that period" };
+  } else {
+    const hours = Number.isSafeInteger(args.hours) ? Math.min(336, Math.max(1, args.hours)) : 24;
+    window = { from: now - hours * HISTORY_HOUR, to: now, label: `the past ${hours} hour${hours === 1 ? "" : "s"}` };
+  }
+  let healthEvents;
+  let actionEvents;
+  let appEvents;
+  try {
+    [healthEvents, actionEvents, appEvents] = await Promise.all([
+      readWindow(context.events, { ...window, category: "health", maxPages: 10 }),
+      readWindow(context.events, { ...window, category: "action", maxPages: 3 }),
+      readWindow(context.events, { ...window, category: "application", maxPages: 3 })
+    ]);
+  } catch {
+    return "The event journal could not be read, so there is no history to report.";
+  }
+  return buildHistory({
+    ...window,
+    healthEvents,
+    actionEvents,
+    appEvents,
+    openIncidents: allIncidents(snapshot),
+    monitored: [
+      ...(snapshot.services || []).map((service) => service.id),
+      ...(snapshot.infrastructure?.environments || []).map((item) => item.id)
+    ],
+    nameOf: serviceNamer(snapshot),
+    format: (iso) => formatTime(iso, context.timeZone)
+  });
+}
+
 async function recentEvents(_snapshot, context, args) {
   if (!context.events) return "The event journal is not available.";
   const limit = Number.isSafeInteger(args.limit) ? Math.min(20, Math.max(1, args.limit)) : 12;
   const service = typeof args.service === "string" && /^[a-z0-9][a-z0-9._:-]{0,95}$/u.test(args.service) ? args.service : undefined;
   let result;
   try {
-    result = await context.events({ limit, ...(service ? { service } : {}) });
+    result = await context.events({ limit: 200, ...(service ? { service } : {}) });
   } catch {
     return "The event journal could not be read.";
   }
-  const entries = Array.isArray(result?.entries) ? result.entries : [];
+  // Debug entries (every check and request) would crowd out what matters.
+  const entries = (Array.isArray(result?.entries) ? result.entries : []).filter((entry) => entry?.level !== "debug").slice(0, limit);
   if (!entries.length) return service ? `No recent events for ${service}.` : "No recent events.";
   return entries.map((entry) => [
     formatTime(entry.at, context.timeZone),
@@ -308,16 +370,19 @@ function parseTarget(value) {
  */
 export function resolveTarget(snapshot, { kind, name, scope = null, serviceId = null, environmentId = null }) {
   if (kind === "container") {
-    const matches = [];
+    const candidates = [];
     for (const server of snapshot.infrastructure?.portainer || []) {
       if (serviceId && server.id !== serviceId) continue;
       for (const container of server.inventory?.containers || []) {
-        if (container.name !== name) continue;
         const scopeText = `${String(server.displayName || "").toLowerCase()} ${String(container.environmentName || "").toLowerCase()}`;
         if (scope && !scopeText.includes(scope)) continue;
-        matches.push({ server, container });
+        candidates.push({ server, container });
       }
     }
+    // The exact name first; otherwise a nickname or close spelling, which
+    // the approval card then shows by its real name.
+    const exact = candidates.filter(({ container }) => container.name === name);
+    const matches = exact.length ? exact : matchByName(candidates, name, ({ container }) => container.name);
     if (!matches.length) {
       const names = [...new Set((snapshot.infrastructure?.portainer || [])
         .flatMap((server) => (server.inventory?.containers || []).map((container) => container.name)))].slice(0, 25);
@@ -339,8 +404,19 @@ export function resolveTarget(snapshot, { kind, name, scope = null, serviceId = 
       label: `container ${container.name}`
     };
   }
-  const vmid = Number(name);
-  if (!Number.isSafeInteger(vmid) || vmid < 1) throw new AgentTargetError(`"${untrusted(name, 30)}" is not a VMID. Use the number, such as vm:105.`);
+  let vmid = Number(name);
+  if (!Number.isSafeInteger(vmid) || vmid < 1) {
+    // A guest named instead of numbered: find it by name, then use its VMID.
+    const named = matchByName(
+      (snapshot.infrastructure?.environments || [])
+        .filter((environment) => (!environmentId || environment.id === environmentId) && (!scope || String(environment.displayName || "").toLowerCase().includes(scope)))
+        .flatMap((environment) => (environment.workloads || []).filter((workload) => !workload.template)),
+      name,
+      (workload) => workload.name
+    );
+    if (named.length !== 1) throw new AgentTargetError(named.length ? `"${untrusted(name, 30)}" matches more than one VM or LXC. Use its VMID, such as vm:${named[0].vmid}.` : `"${untrusted(name, 30)}" is not a VMID or a VM or LXC name. Use the number, such as vm:105.`);
+    vmid = named[0].vmid;
+  }
   const matches = [];
   for (const environment of snapshot.infrastructure?.environments || []) {
     if (environmentId && environment.id !== environmentId) continue;
@@ -441,6 +517,8 @@ const DEFINITIONS = [
     run: (snapshot, context, args) => listWorkloads(snapshot, context, args)
   },
   {
+    // Replaced by history for the model; still runnable for older callers.
+    hidden: true,
     name: "recent_events",
     description: "Helmsman's own recent event log: failed checks, recoveries, actions and configuration changes. Optional service id to narrow it.",
     parameters: {
@@ -452,6 +530,18 @@ const DEFINITIONS = [
       additionalProperties: false
     },
     run: (snapshot, context, args) => recentEvents(snapshot, context, args)
+  },
+  {
+    name: "history",
+    description: "What happened over the past hours: each problem per service with start, duration and whether it is still open, plus actions taken.",
+    parameters: {
+      type: "object",
+      properties: {
+        hours: { type: "integer", description: "Hours back, 1 to 336." }
+      },
+      additionalProperties: false
+    },
+    run: (snapshot, context, args) => historyTool(snapshot, context, args)
   },
   {
     name: "media_queue",
@@ -511,6 +601,7 @@ const DEFINITIONS = [
 /** OpenAI-format tool definitions. Without `propose`, propose_action is left out. */
 export function toolDefinitions({ allowProposals, indexers = false, indexerTests = false }) {
   return DEFINITIONS
+    .filter((definition) => !definition.hidden)
     .filter((definition) => allowProposals || !definition.proposes)
     .filter((definition) => !definition.indexers || indexers)
     .filter((definition) => !definition.tests || indexerTests)
@@ -566,6 +657,62 @@ function looseName(value) {
   return String(value || "").toLowerCase().replace(/[^a-z0-9]/gu, "");
 }
 
+// Short names people use for common homelab apps, mapped to the name the
+// app usually has. Matching still has to find a real service or container.
+export const NAME_ALIASES = Object.freeze({
+  qbit: "qbittorrent", qb: "qbittorrent", qbt: "qbittorrent", qbitorrent: "qbittorrent", qbittorent: "qbittorrent", torrent: "qbittorrent", torrents: "qbittorrent",
+  sonar: "sonarr", radar: "radarr", prowler: "prowlarr", prowl: "prowlarr", bazar: "bazarr", lidar: "lidarr", readar: "readarr",
+  jelly: "jellyfin", jf: "jellyfin", jellyfish: "jellyfin",
+  overseerr: "seerr", jellyseerr: "seerr", overseer: "seerr", jellyseer: "seerr", seer: "seerr", requests: "seerr",
+  pve: "proxmox", prox: "proxmox", portainer: "portainer", ha: "homeassistant", hass: "homeassistant", "home assistant": "homeassistant",
+  plex: "plex", sab: "sabnzbd", nzbget: "nzbget", gluetun: "gluetun", vpn: "gluetun", flare: "flaresolverr"
+});
+
+function editDistance(left, right, limit) {
+  if (Math.abs(left.length - right.length) > limit) return limit + 1;
+  let previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  for (let row = 1; row <= left.length; row += 1) {
+    const current = [row];
+    let best = row;
+    for (let column = 1; column <= right.length; column += 1) {
+      const cost = left[row - 1] === right[column - 1] ? 0 : 1;
+      current[column] = Math.min(previous[column] + 1, current[column - 1] + 1, previous[column - 1] + cost);
+      best = Math.min(best, current[column]);
+    }
+    if (best > limit) return limit + 1;
+    previous = current;
+  }
+  return previous[right.length];
+}
+
+/**
+ * Finds the items a typed name means, most certain first: the exact name,
+ * a known nickname ("qbit"), a unique name that starts with what was typed
+ * ("sonar"), or a near-miss spelling ("qbitorent"). Returns every item at
+ * the first level that matched anything, so the caller can ask when there
+ * is more than one.
+ */
+export function matchByName(items, typed, nameOf) {
+  const wanted = looseName(typed);
+  if (!wanted) return [];
+  const named = items.map((item) => ({ item, name: looseName(nameOf(item)) })).filter(({ name }) => name);
+  const alias = NAME_ALIASES[wanted] !== undefined ? looseName(NAME_ALIASES[wanted]) : "";
+  const levels = [
+    ({ name }) => name === wanted,
+    ({ name }) => Boolean(alias) && name === alias,
+    ({ name }) => Boolean(alias) && name.startsWith(alias),
+    ({ name }) => alias.length >= 4 && name.includes(alias),
+    ({ name }) => wanted.length >= 3 && name.startsWith(wanted),
+    ({ name }) => wanted.length >= 4 && name.includes(wanted),
+    ({ name }) => wanted.length >= 5 && editDistance(wanted, name, wanted.length >= 8 ? 2 : 1) <= (wanted.length >= 8 ? 2 : 1)
+  ];
+  for (const level of levels) {
+    const found = named.filter(level).map(({ item }) => item);
+    if (found.length) return found;
+  }
+  return [];
+}
+
 /**
  * Reads a chat message that is only an action command. Returns null when the
  * message is anything else, { target, operation } when it names exactly one
@@ -581,24 +728,20 @@ export function parseActionCommand(text, snapshot) {
   if (!wanted) return null;
   const operations = VERB_OPERATIONS[verb];
 
-  const containers = [];
-  if (typeWord === "" || typeWord === "container") {
-    for (const server of snapshot?.infrastructure?.portainer || []) {
-      for (const container of server.inventory?.containers || []) {
-        if (looseName(container.name) === wanted) containers.push({ server, container });
-      }
-    }
-  }
-  const guests = [];
-  if (typeWord !== "container") {
-    const vmid = /^\d+$/u.test(rawName) ? Number(rawName) : null;
-    for (const environment of snapshot?.infrastructure?.environments || []) {
-      for (const workload of environment.workloads || []) {
-        if (workload.template) continue;
-        if ((vmid !== null && workload.vmid === vmid) || looseName(workload.name) === wanted) guests.push({ environment, workload });
-      }
-    }
-  }
+  const allContainers = typeWord === "" || typeWord === "container"
+    ? (snapshot?.infrastructure?.portainer || []).flatMap((server) => (server.inventory?.containers || []).map((container) => ({ server, container, name: container.name })))
+    : [];
+  const allGuests = typeWord !== "container"
+    ? (snapshot?.infrastructure?.environments || []).flatMap((environment) => (environment.workloads || []).filter((workload) => !workload.template).map((workload) => ({ environment, workload, name: workload.name })))
+    : [];
+  const vmid = /^\d+$/u.test(rawName) ? Number(rawName) : null;
+  // Containers and guests are matched together so the most certain match
+  // wins: "qbit" finds the qbittorrent container through its nickname.
+  const matches = vmid !== null
+    ? allGuests.filter(({ workload }) => workload.vmid === vmid)
+    : matchByName([...allContainers, ...allGuests], rawName, (entry) => entry.name);
+  const containers = matches.filter((entry) => entry.container);
+  const guests = matches.filter((entry) => entry.workload);
   const found = containers.length + guests.length;
   // "Can you restart services?" asks what the agent can do; leave a
   // question, or a general word, for the model unless it names something.
@@ -611,7 +754,11 @@ export function parseActionCommand(text, snapshot) {
     return { error: `I couldn't find a container, VM or LXC called "${untrusted(rawName, 60)}".${names.length ? ` I can see: ${[...new Set(names)].slice(0, 20).join(", ")}.` : " No Portainer or Proxmox connection is set up."}` };
   }
   if (found > 1) {
-    return { error: `More than one container, VM or LXC matches "${untrusted(rawName, 60)}". Say which one, such as "${verb} container ${untrusted((containers[0]?.container.name) || rawName, 40)}" or "${verb} vm ${guests[0]?.workload.vmid ?? 100}".` };
+    const options = [
+      ...containers.map(({ container }) => `container ${untrusted(container.name, 40)}`),
+      ...guests.map(({ workload }) => `${workload.type === "lxc" ? "lxc" : "vm"} ${untrusted(workload.name, 40)} (${workload.vmid})`)
+    ];
+    return { error: `"${untrusted(rawName, 60)}" could mean more than one thing: ${[...new Set(options)].slice(0, 8).join(", ")}. Say which one, such as "${verb} ${options[0]}".` };
   }
   try {
     const target = containers.length
