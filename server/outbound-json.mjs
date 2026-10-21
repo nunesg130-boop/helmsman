@@ -1,6 +1,7 @@
 import http from "node:http";
 import https from "node:https";
 import { isIP } from "node:net";
+import { anySignal } from "./abort-signals.mjs";
 
 // One JSON request to a destination that has already been resolved and
 // authorized by network.mjs. Used by the agent for the local AI model server
@@ -106,7 +107,7 @@ export async function performOutboundJsonRequest({
   const limitBytes = Math.min(HARD_MAX_RESPONSE_BYTES, Math.max(1_024, Number(maxResponseBytes) || DEFAULT_MAX_RESPONSE_BYTES));
   const limitMs = Math.min(HARD_MAX_TIMEOUT_MS, Math.max(250, Number(timeoutMs) || DEFAULT_TIMEOUT_MS));
   const signal = shutdownSignal
-    ? AbortSignal.any([AbortSignal.timeout(limitMs), shutdownSignal])
+    ? anySignal([AbortSignal.timeout(limitMs), shutdownSignal])
     : AbortSignal.timeout(limitMs);
 
   const headers = {

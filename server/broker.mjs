@@ -56,6 +56,7 @@ import {
   resolveAndAuthorizeTarget
 } from "./network.mjs";
 import { generateSecretToken, hashToken, StateStore, tokenMatches } from "./state.mjs";
+import { anySignal } from "./abort-signals.mjs";
 
 const DEFAULT_VERSION = "1.14.0";
 const requestedVersion = String(process.env.HELMSMAN_VERSION || DEFAULT_VERSION);
@@ -740,7 +741,7 @@ export async function performUpstreamRequest({
     family: pinned.family,
     agent: false,
     signal: shutdownSignal
-      ? AbortSignal.any([AbortSignal.timeout(limits.upstreamTimeoutMs), shutdownSignal])
+      ? anySignal([AbortSignal.timeout(limits.upstreamTimeoutMs), shutdownSignal])
       : AbortSignal.timeout(limits.upstreamTimeoutMs)
   };
   if (target.protocol === "https:") {
@@ -1090,7 +1091,7 @@ export async function performProxmoxUpstreamRequest({
     ? Math.min(DEFAULT_UPSTREAM_TIMEOUT_MS, limits.upstreamTimeoutMs)
     : DEFAULT_UPSTREAM_TIMEOUT_MS;
   const signal = shutdownSignal
-    ? AbortSignal.any([AbortSignal.timeout(timeoutMs), shutdownSignal])
+    ? anySignal([AbortSignal.timeout(timeoutMs), shutdownSignal])
     : AbortSignal.timeout(timeoutMs);
   let verifiedSocket = null;
   if (tlsMode === "pinned") {
@@ -1328,7 +1329,7 @@ export async function performPortainerUpstreamRequest({
     ? Math.min(DEFAULT_UPSTREAM_TIMEOUT_MS, limits.upstreamTimeoutMs)
     : DEFAULT_UPSTREAM_TIMEOUT_MS;
   const signal = shutdownSignal
-    ? AbortSignal.any([AbortSignal.timeout(requestTimeoutMs), shutdownSignal])
+    ? anySignal([AbortSignal.timeout(requestTimeoutMs), shutdownSignal])
     : AbortSignal.timeout(requestTimeoutMs);
   let verifiedSocket = null;
   if (tlsMode === "pinned") {
@@ -1703,7 +1704,7 @@ export async function createBroker(options = {}) {
       });
       const send = async (headers = {}) => {
         const signal = requestOptions.signal
-          ? AbortSignal.any([shutdownController.signal, requestOptions.signal])
+          ? anySignal([shutdownController.signal, requestOptions.signal])
           : shutdownController.signal;
         const maximum = Number.isSafeInteger(requestOptions.maxBytes) && requestOptions.maxBytes > 0
           ? Math.min(limits.maxImageResponseBytes, limits.maxApiResponseBytes, requestOptions.maxBytes)
@@ -2300,7 +2301,7 @@ export async function createBroker(options = {}) {
         const publicProbe = isPublicProbe(service, route.upstreamPath);
         const headers = publicProbe ? {} : monitorCredentialHeaders(service, effectiveCredential, testConnection);
         const signal = requestOptions.signal
-          ? AbortSignal.any([shutdownController.signal, requestOptions.signal])
+          ? anySignal([shutdownController.signal, requestOptions.signal])
           : shutdownController.signal;
         const maximum = Number.isSafeInteger(requestOptions.maxBytes) && requestOptions.maxBytes > 0
           ? Math.min(limits.maxApiResponseBytes, requestOptions.maxBytes)
@@ -2370,7 +2371,7 @@ export async function createBroker(options = {}) {
       const release = reserveServiceCapacity(capacityKey);
       try {
         const combinedSignal = requestOptions.signal
-          ? AbortSignal.any([shutdownController.signal, requestOptions.signal])
+          ? anySignal([shutdownController.signal, requestOptions.signal])
           : shutdownController.signal;
         const maximum = Number.isSafeInteger(requestOptions.maxBytes) && requestOptions.maxBytes > 0
           ? Math.min(limits.maxApiResponseBytes, requestOptions.maxBytes)
@@ -2446,7 +2447,7 @@ export async function createBroker(options = {}) {
       const release = reserveServiceCapacity(capacityKey);
       try {
         const combinedSignal = requestOptions.signal
-          ? AbortSignal.any([shutdownController.signal, requestOptions.signal])
+          ? anySignal([shutdownController.signal, requestOptions.signal])
           : shutdownController.signal;
         const maximum = Number.isSafeInteger(requestOptions.maxBytes) && requestOptions.maxBytes > 0
           ? Math.min(limits.maxApiResponseBytes, requestOptions.maxBytes)
@@ -2521,7 +2522,7 @@ export async function createBroker(options = {}) {
     const release = reserveServiceCapacity(`loki:${String(targetRevision || "draft").slice(0, 80)}`);
     try {
       const combinedSignal = signal
-        ? AbortSignal.any([shutdownController.signal, signal])
+        ? anySignal([shutdownController.signal, signal])
         : shutdownController.signal;
       return await dispatchLoki({
         targetResolution: resolution,
