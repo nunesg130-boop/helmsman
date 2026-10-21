@@ -19,7 +19,7 @@ import {
 import { createControlPlane, ControlPlaneError } from "./control-plane.mjs";
 import { createEventJournal } from "./event-journal.mjs";
 import { createDiagnostics, tracedDispatcher } from "./diagnostics.mjs";
-import { ARR_INDEXER_LIMITS, ARR_INDEXER_OPERATIONS, ARR_INDEXER_SERVICES, arrValidationMessage, authorizeArrIndexerStep, parseArrIndexers, parseArrTestResults } from "./arr-indexers.mjs";
+import { ARR_INDEXER_LIMITS, ARR_INDEXER_OPERATIONS, ARR_INDEXER_SERVICES, arrValidationMessage, authorizeArrIndexerStep, parseArrIndexers, parseArrTestResults, optionalIndexerStatus } from "./arr-indexers.mjs";
 import { createHealthIncidentEngine } from "./health-engine.mjs";
 import { normalizeLokiQueryResult, authorizeLokiRoute } from "./loki.mjs";
 import { probeLoki } from "./loki-probes.mjs";
@@ -56,6 +56,7 @@ import {
   resolveAndAuthorizeTarget
 } from "./network.mjs";
 import { generateSecretToken, hashToken, StateStore, tokenMatches } from "./state.mjs";
+import { anySignal } from "./abort-signals.mjs";
 
 const DEFAULT_VERSION = "1.14.0";
 const requestedVersion = String(process.env.HELMSMAN_VERSION || DEFAULT_VERSION);
@@ -740,7 +741,7 @@ export async function performUpstreamRequest({
     family: pinned.family,
     agent: false,
     signal: shutdownSignal
-      ? AbortSignal.any([AbortSignal.timeout(limits.upstreamTimeoutMs), shutdownSignal])
+      ? anySignal([AbortSignal.timeout(limits.upstreamTimeoutMs), shutdownSignal])
       : AbortSignal.timeout(limits.upstreamTimeoutMs)
   };
   if (target.protocol === "https:") {
@@ -1090,7 +1091,7 @@ export async function performProxmoxUpstreamRequest({
     ? Math.min(DEFAULT_UPSTREAM_TIMEOUT_MS, limits.upstreamTimeoutMs)
     : DEFAULT_UPSTREAM_TIMEOUT_MS;
   const signal = shutdownSignal
-    ? AbortSignal.any([AbortSignal.timeout(timeoutMs), shutdownSignal])
+    ? anySignal([AbortSignal.timeout(timeoutMs), shutdownSignal])
     : AbortSignal.timeout(timeoutMs);
   let verifiedSocket = null;
   if (tlsMode === "pinned") {
@@ -1328,7 +1329,7 @@ export async function performPortainerUpstreamRequest({
     ? Math.min(DEFAULT_UPSTREAM_TIMEOUT_MS, limits.upstreamTimeoutMs)
     : DEFAULT_UPSTREAM_TIMEOUT_MS;
   const signal = shutdownSignal
-    ? AbortSignal.any([AbortSignal.timeout(requestTimeoutMs), shutdownSignal])
+    ? anySignal([AbortSignal.timeout(requestTimeoutMs), shutdownSignal])
     : AbortSignal.timeout(requestTimeoutMs);
   let verifiedSocket = null;
   if (tlsMode === "pinned") {
@@ -1703,7 +1704,7 @@ export async function createBroker(options = {}) {
       });
       const send = async (headers = {}) => {
         const signal = requestOptions.signal
-          ? AbortSignal.any([shutdownController.signal, requestOptions.signal])
+          ? anySignal([shutdownController.signal, requestOptions.signal])
           : shutdownController.signal;
         const maximum = Number.isSafeInteger(requestOptions.maxBytes) && requestOptions.maxBytes > 0
           ? Math.min(limits.maxImageResponseBytes, limits.maxApiResponseBytes, requestOptions.maxBytes)
@@ -2300,7 +2301,7 @@ export async function createBroker(options = {}) {
         const publicProbe = isPublicProbe(service, route.upstreamPath);
         const headers = publicProbe ? {} : monitorCredentialHeaders(service, effectiveCredential, testConnection);
         const signal = requestOptions.signal
-          ? AbortSignal.any([shutdownController.signal, requestOptions.signal])
+          ? anySignal([shutdownController.signal, requestOptions.signal])
           : shutdownController.signal;
         const maximum = Number.isSafeInteger(requestOptions.maxBytes) && requestOptions.maxBytes > 0
           ? Math.min(limits.maxApiResponseBytes, requestOptions.maxBytes)
@@ -2370,7 +2371,7 @@ export async function createBroker(options = {}) {
       const release = reserveServiceCapacity(capacityKey);
       try {
         const combinedSignal = requestOptions.signal
-          ? AbortSignal.any([shutdownController.signal, requestOptions.signal])
+          ? anySignal([shutdownController.signal, requestOptions.signal])
           : shutdownController.signal;
         const maximum = Number.isSafeInteger(requestOptions.maxBytes) && requestOptions.maxBytes > 0
           ? Math.min(limits.maxApiResponseBytes, requestOptions.maxBytes)
@@ -2446,7 +2447,7 @@ export async function createBroker(options = {}) {
       const release = reserveServiceCapacity(capacityKey);
       try {
         const combinedSignal = requestOptions.signal
-          ? AbortSignal.any([shutdownController.signal, requestOptions.signal])
+          ? anySignal([shutdownController.signal, requestOptions.signal])
           : shutdownController.signal;
         const maximum = Number.isSafeInteger(requestOptions.maxBytes) && requestOptions.maxBytes > 0
           ? Math.min(limits.maxApiResponseBytes, requestOptions.maxBytes)
@@ -2521,7 +2522,7 @@ export async function createBroker(options = {}) {
     const release = reserveServiceCapacity(`loki:${String(targetRevision || "draft").slice(0, 80)}`);
     try {
       const combinedSignal = signal
-        ? AbortSignal.any([shutdownController.signal, signal])
+        ? anySignal([shutdownController.signal, signal])
         : shutdownController.signal;
       return await dispatchLoki({
         targetResolution: resolution,
@@ -2835,11 +2836,11 @@ export async function createBroker(options = {}) {
       read("/api/v3/indexer", ARR_INDEXER_LIMITS.listBytes),
       read("/api/v3/indexerstatus", ARR_INDEXER_LIMITS.resultBytes)
     ]);
-    for (const [response, what] of [[list, "indexer list"], [status, "indexer status"]]) {
-      if (response.status < 200 || response.status >= 300) throw arrIndexerStatusError(service, response.status, what);
-    }
+    if (list.status < 200 || list.status >= 300) throw arrIndexerStatusError(service, list.status, "indexer list");
+    const failures = optionalIndexerStatus(status);
+    if (!failures) throw arrIndexerStatusError(service, status.status, "indexer status");
     try {
-      return { checkedAt: new Date().toISOString(), indexers: parseArrIndexers(list.body, status.body) };
+      return { checkedAt: new Date().toISOString(), statusAvailable: failures.available, indexers: parseArrIndexers(list.body, failures.body) };
     } catch {
       throw new BrokerError(502, "UPSTREAM_CONTENT_REJECTED", `${ARR_LABELS[service]} returned an indexer list Helmsman could not read.`);
     }

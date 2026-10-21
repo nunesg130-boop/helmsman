@@ -5,6 +5,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { isIP } from "node:net";
 
 import { authorizeLokiRoute } from "./loki.mjs";
+import { anySignal } from "./abort-signals.mjs";
 
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_TIMEOUT_MS = 15_000;
@@ -353,7 +354,7 @@ export async function performLokiUpstreamRequest({
     ? Math.min(MAX_TIMEOUT_MS, limits.upstreamTimeoutMs)
     : MAX_TIMEOUT_MS;
   const signal = shutdownSignal
-    ? AbortSignal.any([AbortSignal.timeout(timeoutMs), shutdownSignal])
+    ? anySignal([AbortSignal.timeout(timeoutMs), shutdownSignal])
     : AbortSignal.timeout(timeoutMs);
 
   let verifiedSocket = null;

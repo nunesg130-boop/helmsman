@@ -1,3 +1,5 @@
+import { anySignal } from "./abort-signals.mjs";
+
 const DEFAULT_CACHE_ENTRIES = 512;
 const DEFAULT_LOOKUPS_PER_CYCLE = 24;
 const DEFAULT_CONCURRENCY = 3;
@@ -245,7 +247,7 @@ export function createSeerrRequestMetadataEnricher(options = {}) {
     const signals = [closeController.signal];
     if (fetchSignal) signals.push(fetchSignal);
     if (timeoutSignal) signals.push(timeoutSignal);
-    return signals.length === 1 ? signals[0] : AbortSignal.any(signals);
+    return signals.length === 1 ? signals[0] : anySignal(signals);
   }
 
   function pump() {

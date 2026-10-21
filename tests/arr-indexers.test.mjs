@@ -50,3 +50,15 @@ test("indexer records are readable by the server only", () => {
     assert.equal(authorizeBridgeRoute(service, "POST", `/bridge/${service}/api/v3/indexer/test`).allowed, false);
   }
 });
+
+test("a missing indexerstatus endpoint means no failure details, not no indexers", async () => {
+  const { optionalIndexerStatus } = await import("../server/arr-indexers.mjs");
+  assert.deepEqual(optionalIndexerStatus({ status: 200, body: [{ indexerId: 2 }] }), { body: [{ indexerId: 2 }], available: true });
+  assert.deepEqual(optionalIndexerStatus({ status: 404, body: "Not Found" }), { body: [], available: false });
+  assert.deepEqual(optionalIndexerStatus({ status: 405, body: null }), { body: [], available: false });
+  assert.equal(optionalIndexerStatus({ status: 401, body: null }), null);
+  assert.equal(optionalIndexerStatus({ status: 500, body: null }), null);
+  const parsed = parseArrIndexers([{ id: 1, name: "Tracker", enableRss: true, protocol: "torrent" }], optionalIndexerStatus({ status: 404 }).body);
+  assert.equal(parsed.length, 1);
+  assert.equal(parsed[0].failing, false);
+});

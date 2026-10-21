@@ -6,6 +6,7 @@ import path from "node:path";
 const LOCK_NAME = ".broker.lock";
 const HEARTBEAT_MS = 2_000;
 const STALE_AFTER_MS = 15_000;
+export const DATA_DIR_LOCK_STALE_AFTER_MS = STALE_AFTER_MS;
 const MAX_LOCK_BYTES = 512;
 
 async function inspectLock(lockPath) {
@@ -48,7 +49,30 @@ async function quarantineStaleLock(dataDir, lockPath, observed) {
   return true;
 }
 
-export async function acquireDataDirLock(dataDir) {
+/**
+ * Takes the exclusive /data lease. With `waitForStaleMs`, a fresh lock left
+ * behind by a process that was killed (for example by the kernel OOM killer)
+ * is waited out until it goes stale instead of failing at once, so a restart
+ * after a crash comes up on the first try. A live broker keeps refreshing its
+ * lease every two seconds, so it is never mistaken for stale and the call
+ * still fails once the wait is used up.
+ */
+export async function acquireDataDirLock(dataDir, { waitForStaleMs = 0 } = {}) {
+  const waitBudget = Number.isSafeInteger(waitForStaleMs) && waitForStaleMs > 0 ? Math.min(waitForStaleMs, 60_000) : 0;
+  const deadline = Date.now() + waitBudget;
+  for (;;) {
+    try {
+      return await acquireDataDirLockOnce(dataDir);
+    } catch (error) {
+      if (!(error instanceof DataDirLockBusyError) || Date.now() >= deadline) throw error;
+      await new Promise((resolve) => setTimeout(resolve, Math.min(1_000, Math.max(50, deadline - Date.now()))));
+    }
+  }
+}
+
+class DataDirLockBusyError extends Error {}
+
+async function acquireDataDirLockOnce(dataDir) {
   await mkdir(dataDir, { recursive: true, mode: 0o700 });
   await chmod(dataDir, 0o700).catch(() => {});
   const lockPath = path.join(dataDir, LOCK_NAME);
@@ -126,7 +150,7 @@ export async function acquireDataDirLock(dataDir) {
       const observed = await inspectLock(lockPath);
       if (!observed) continue;
       if (Date.now() - observed.mtimeMs <= STALE_AFTER_MS) {
-        throw new Error("The broker data directory is already in use. Stop the running broker first.");
+        throw new DataDirLockBusyError("The broker data directory is already in use. Stop the running broker first.");
       }
       if (!await quarantineStaleLock(dataDir, lockPath, observed)) continue;
     }

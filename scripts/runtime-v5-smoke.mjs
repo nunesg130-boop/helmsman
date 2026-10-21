@@ -1081,9 +1081,12 @@ async function emptyStateLayoutContract() {
     readFile(new URL("../src/app-v5.js", import.meta.url), "utf8"),
     readFile(new URL("../src/ui/operations.css", import.meta.url), "utf8")
   ]);
-  const textSpanOverride = styles.match(
-    /\.detail-page \.empty-state > span,\s*\.settings-page-v5 \.empty-state > span\s*\{([^}]*)\}/u
-  )?.[1] || "";
+  const textSpanRule = styles.match(
+    /(\.detail-page \.empty-state > span,\s*\.settings-page-v5 \.empty-state > span(?:,\s*[^{]+)?)\{([^}]*)\}/u
+  );
+  const textSpanOverride = textSpanRule?.[2] || "";
+  assert.match(textSpanRule?.[1] || "", /\.arr-indexers \.empty-state > span/u, "Radarr and Sonarr indexer errors must not collapse into the legacy icon tile");
+  assert.match(textSpanRule?.[1] || "", /\.prowlarr-panel \.empty-state > span/u, "Prowlarr indexer errors must not collapse into the legacy icon tile");
   assert.match(textSpanOverride, /width:\s*min\(100%,\s*520px\)/u, "empty-state copy must not inherit the legacy 48px icon width");
   assert.match(textSpanOverride, /height:\s*auto/u, "empty-state copy must grow to its text height");
   assert.match(textSpanOverride, /background:\s*transparent/u, "empty-state copy must not look like an icon tile");

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { anySignal } from "./abort-signals.mjs";
 
 // Artwork addresses include the source image's own version, so a cached
 // image only goes stale if the source changes it without a new version.
@@ -6,7 +7,10 @@ const DEFAULT_POSITIVE_TTL_MS = 7 * 24 * 60 * 60 * 1_000;
 const DEFAULT_NEGATIVE_TTL_MS = 15 * 60 * 1_000;
 const DEFAULT_ARR_NEGATIVE_TTL_MS = 30 * 1_000;
 const DEFAULT_MAX_ENTRIES = 512;
-const DEFAULT_MAX_BYTES = 64 * 1024 * 1024;
+// 32 MiB keeps the in-memory tier inside the container budget: a 160 MB V8
+// heap cap plus Node's own native memory plus this cache must stay under the
+// 256 MiB limit in compose.yaml. The persistent tier still holds 512 MiB.
+const DEFAULT_MAX_BYTES = 32 * 1024 * 1024;
 const DEFAULT_MAX_CONCURRENT_FETCHES = 3;
 const DEFAULT_MAX_PENDING_FETCHES = 64;
 const ARTWORK_DESCRIPTOR_VERSION = 4;
@@ -401,7 +405,7 @@ export function createMediaArtworkCache(options = {}) {
         const fetchGeneration = generation;
         const controller = new AbortController();
         const sourceSignal = fetchSignal
-          ? AbortSignal.any([fetchSignal, controller.signal])
+          ? anySignal([fetchSignal, controller.signal])
           : controller.signal;
         flight = { controller, promise: null, settled: false, waiters: 0 };
         const currentFlight = flight;

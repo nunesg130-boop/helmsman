@@ -7,7 +7,7 @@ import path from "node:path";
 import { createBroker, createHttpServer } from "./broker.mjs";
 import { installOutputCapture } from "./diagnostics.mjs";
 import { resolveLimits } from "./limits.mjs";
-import { acquireDataDirLock } from "./lock.mjs";
+import { acquireDataDirLock, DATA_DIR_LOCK_STALE_AFTER_MS } from "./lock.mjs";
 import { CredentialStore } from "./secrets.mjs";
 import { SessionAuthStore } from "./session-auth.mjs";
 import { StateStore } from "./state.mjs";
@@ -39,7 +39,9 @@ async function serve() {
   // limits together exceed the encrypted store's budget.
   resolveLimits();
   const dataDir = process.env.HELMSMAN_DATA_DIR || process.env.JELLOFIN_COMMAND_DATA_DIR || "/data";
-  const lock = await acquireDataDirLock(dataDir);
+  // After a crash the old lease stays fresh for up to the stale window; wait it
+  // out once rather than failing and relying on the container restart loop.
+  const lock = await acquireDataDirLock(dataDir, { waitForStaleMs: DATA_DIR_LOCK_STALE_AFTER_MS + 5_000 });
   let broker;
   try {
     broker = await createBroker({
