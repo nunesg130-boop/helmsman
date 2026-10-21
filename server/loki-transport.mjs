@@ -392,7 +392,12 @@ export async function performLokiUpstreamRequest({
     signal
   };
   if (verifiedSocket) {
-    requestOptions.createConnection = () => verifiedSocket;
+    // Node ignores createConnection when an agent is set, and agent: false
+      // makes a fresh agent, which would open a second, unpinned connection
+      // and leave this verified one open forever. Without an agent the
+      // request is sent over exactly this socket.
+      delete requestOptions.agent;
+      requestOptions.createConnection = () => verifiedSocket;
     requestOptions.rejectUnauthorized = false;
   } else {
     requestOptions.lookup = pinnedLookup(pinned.address, pinned.family);
@@ -474,6 +479,17 @@ export async function performLokiUpstreamRequest({
       });
     });
     upstream.on("error", finishReject);
+    if (verifiedSocket) {
+      // Fail closed if the request is ever sent over any other connection,
+      // and close the pinned connection once the exchange is over.
+      upstream.once("socket", (socket) => {
+        if (socket === verifiedSocket) return;
+        socket.destroy();
+        upstream.destroy();
+        finishReject(new LokiTransportError(502, "TLS_PIN_NOT_APPLIED", "The request did not use the pinned connection."));
+      });
+      upstream.once("close", () => verifiedSocket.destroy());
+    }
     upstream.end();
   });
 }

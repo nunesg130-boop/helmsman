@@ -17,6 +17,8 @@ named [Helmsman](https://github.com/mkubaczyk/helmsman).
 
 ## v1.14.3
 
+**The real memory leak is fixed.** With a pinned certificate, every Portainer, Proxmox and Loki request left one encrypted connection open for good. Node ignores a supplied connection when an HTTP agent is also set, so the request went out over a second connection while the checked one stayed open. One Portainer server leaked about 14 connections a minute (1,176 after 80 minutes), and their buffers, not JavaScript objects, filled the 256 MiB container until it was killed. Pinned requests now use exactly the connection whose certificate was checked, close it when they finish, and refuse to send anything if another connection is ever used. The same mistake meant the certificate pin was only checked on the unused connection; the request itself went over one that skipped certificate checks, so pinned mode now really enforces the pin.
+
 **Fixes from a full review.**
 
 - An automatic rule that was skipped because of its cooldown now runs once the cooldown ends, if the problem is still there. Before, a second outage that started inside the cooldown was never handled by the rule, however long it lasted.
@@ -44,7 +46,7 @@ named [Helmsman](https://github.com/mkubaczyk/helmsman).
 
 ## v1.14.1
 
-**No more out-of-memory restarts.** Helmsman's memory grew slowly for as long as it ran, and with the default 256 MiB container limit it was killed and restarted every few hours. The cause was how each request to your services was given its timeout: Node kept a small record of every one of them for the life of the process. That record is no longer kept, and the in-memory artwork cache is now 32 MiB instead of 64 MiB so Helmsman stays well inside the container limit. The on-disk artwork cache is unchanged.
+**Fewer out-of-memory restarts** (the main cause was found in v1.14.3). Helmsman's memory grew slowly for as long as it ran, and with the default 256 MiB container limit it was killed and restarted every few hours. The cause was how each request to your services was given its timeout: Node kept a small record of every one of them for the life of the process. That record is no longer kept, and the in-memory artwork cache is now 32 MiB instead of 64 MiB so Helmsman stays well inside the container limit. The on-disk artwork cache is unchanged.
 
 **Faster recovery after a crash.** If Helmsman is stopped abruptly, it now waits for its old lock to expire and starts on the first try, instead of failing with "The broker data directory is already in use" until Docker's restart loop gets through.
 
