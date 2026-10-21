@@ -1,8 +1,10 @@
 # Helmy, the helper character
 
 `helmy.glb` is Helmsman's floating helper. The 3D model was generated with
-[Meshy](https://www.meshy.ai) for this project and reduced for the web
-(about 30,000 triangles, 768 px colour texture) from the original export.
+[Meshy](https://www.meshy.ai) for this project. The web copy keeps every
+triangle of the original export (about 99,000) with 12-bit normals, and
+re-encodes its textures as JPEG at 1024 px (colour and normal) and 512 px
+(metal and roughness).
 
 Models made on Meshy's free plan are licensed under
 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/), which allows use,

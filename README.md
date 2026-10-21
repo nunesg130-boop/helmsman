@@ -21,6 +21,8 @@ named [Helmsman](https://github.com/mkubaczyk/helmsman).
 
 If you pinned your Portainer certificate, consider making a new Portainer access token after updating.
 
+**Smoother Helmy.** The 3D helper now uses the model's full detail (every triangle, precise lighting normals and sharper textures) and draws at a higher resolution, so his horns and armour look as smooth as the original model instead of faceted. His fingers move too: they rest loosely curled, drum while he thinks, flutter when he waves, clench into fists when something breaks, spread wide when he celebrates or stretches, and grab at the air while you carry him.
+
 ## v1.14.3
 
 **Fixes from a full review.**

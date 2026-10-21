@@ -8,6 +8,6 @@
 //     --outfile=src/vendor/three-helmy.js
 export {
   WebGLRenderer, Scene, PerspectiveCamera, HemisphereLight, DirectionalLight,
-  Group, Box3, Vector3, Matrix4, SRGBColorSpace, ACESFilmicToneMapping, TextureLoader
+  Group, Box3, Vector3, Vector4, Matrix4, SRGBColorSpace, ACESFilmicToneMapping, TextureLoader
 } from "three";
 export { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
