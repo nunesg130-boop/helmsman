@@ -1,4 +1,4 @@
-# Helmsman v1.14.2
+# Helmsman v1.14.3
 
 Helmsman is a self-hosted operations center for a homelab's media services and infrastructure. It runs as one portable Linux container on Docker Desktop, Linux, macOS, compatible NAS platforms, AMD64, and ARM64.
 
@@ -14,6 +14,29 @@ Helmsman is a self-hosted operations center for a homelab's media services and i
 This Helmsman is the media and infrastructure dashboard in this repository. It
 is not affiliated with or derived from the existing Kubernetes project also
 named [Helmsman](https://github.com/mkubaczyk/helmsman).
+
+## v1.14.3
+
+**Fixes from a full review.**
+
+- An automatic rule that was skipped because of its cooldown now runs once the cooldown ends, if the problem is still there. Before, a second outage that started inside the cooldown was never handled by the rule, however long it lasted.
+- "Summarize now" can no longer wait forever when a chat question arrives while the agent's queue is full; the pushed-out job now reports that the agent is busy.
+- A recovery note can no longer be lost when a service doesn't report when it recovered.
+- qBittorrent's version no longer shows as "vv5.1.2".
+- Media → Health: the Prowlarr Indexers panel now lines up with the cards above it instead of running past them.
+- Keyboard focus stays on "Summarize now" while the summary is written.
+
+**Network map.**
+
+- Each row in the Network page's list is now a dropdown: open it to see the item's state, live facts and connections, and to center it in the model. Clicking a block in the model opens its row.
+- Cables end at the edges of their blocks instead of running under them, and item names and zone titles sit on solid tags, so lines no longer cut through text. Zone titles moved inside their zones, clear of the cable runs.
+- On a phone, one finger now pans the model (before, it could only rotate), two fingers pinch and pan, the toolbar is one scrollable row, and long names wrap onto a second line instead of being cut off.
+
+**No more cut-off text.** Proxmox and Portainer tiles reflow before their values get cut off, the Portainer endpoint gets its own row, card descriptions wrap, request times in Requests & warnings are shorter, poster, calendar and request titles get two or three lines, and the header shows the workspace name ("Infrastructure") instead of a truncated "Infrastructure operations".
+
+**Helmy comes alive.** The floating helper is now drawn live in 3D. He floats and breathes, glances around and stretches now and then, follows your mouse with his head, waves when you hover over him, folds his arms and thinks while the agent writes an answer, flinches when something breaks, celebrates (with a spin) when it recovers or when you approve an action, nods at answers, leans into it when you drag him, and turns toward the chat when it opens. He holds still when your system asks for reduced motion, draws nothing while the tab is hidden, runs at 30 frames a second at most, and falls back to the old picture if 3D can't start. The model's credits are in [assets/helmy/NOTICE.md](assets/helmy/NOTICE.md); three.js (MIT) draws him.
+
+**Visual layout tests in CI.** The two browser layout contracts (`npm run check:visual`) were updated to the current design and now run in CI.
 
 ## v1.14.2
 
@@ -301,10 +324,10 @@ Helmsman's project-owned logging mark. Original generic VM/container workload
 drawings are also bundled. See
 [the asset notices](assets/services/THIRD_PARTY_NOTICES.md).
 
-Helmsman v1.14.2 combines built-in logging, optional Loki search, Portainer monitoring, a private persistent state/artwork cache, and a small, fixed set of confirmed recovery actions under Infrastructure with targeted media recovery actions and Helmsman's cluster-aware Proxmox model:
+Helmsman v1.14.3 combines built-in logging, optional Loki search, Portainer monitoring, a private persistent state/artwork cache, and a small, fixed set of confirmed recovery actions under Infrastructure with targeted media recovery actions and Helmsman's cluster-aware Proxmox model:
 
 - Media and Infrastructure are separate workspaces inside the same authenticated application, and only the selected workspace's navigation is shown;
-- the desktop sidebar collapses to an icon rail, remembers that preference, keeps its navigation scrollable at high browser zoom, and places its 44 px collapse control on the content-side edge below the shared header rule;
+- the desktop sidebar collapses to an icon rail, remembers that preference, keeps its navigation scrollable at high browser zoom, and keeps its collapse control in the sidebar's brand row (under the brand mark when collapsed);
 - Infrastructure **Overview** contains only already-configured Proxmox and Portainer connections plus their current read-only signals, while the always-available categorized **Connectors** view owns supported-provider discovery, setup, and editing;
 - the Media workspace has dedicated **Overview**, **Discover**, **Library**, **Requests**, **Activity**, **Calendar**, **Health**, and **Connections** views; the legacy `#/home` URL redirects to canonical `#/overview`;
 - Media **Connections** groups every supported integration by purpose: media server, requests, media management, indexers, download clients, and subtitles;
@@ -347,7 +370,7 @@ Helmsman v1.14.2 combines built-in logging, optional Loki search, Portainer moni
 
 ## Deploy the published container
 
-Helmsman is distributed as the public Linux AMD64/ARM64 image `ghcr.io/nunesg130-boop/helmsman`. The `v1.14.2` Git tag runs the contracts and architecture smoke tests, publishes the version, `latest`, and full-commit image tags, and creates a GitHub Release containing ready-to-use `compose.yaml`, `container.env.example`, and `SHA256SUMS` assets. The release deployment files pin `ghcr.io/nunesg130-boop/helmsman` to the exact multi-architecture manifest digest (`@sha256:...`).
+Helmsman is distributed as the public Linux AMD64/ARM64 image `ghcr.io/nunesg130-boop/helmsman`. The `v1.14.3` Git tag runs the contracts and architecture smoke tests, publishes the version, `latest`, and full-commit image tags, and creates a GitHub Release containing ready-to-use `compose.yaml`, `container.env.example`, and `SHA256SUMS` assets. The release deployment files pin `ghcr.io/nunesg130-boop/helmsman` to the exact multi-architecture manifest digest (`@sha256:...`).
 
 Download those three files from the matching [GitHub Release](https://github.com/nunesg130-boop/helmsman/releases) into one directory, verify the two deployment files against `SHA256SUMS`, open a terminal there, and make sure Docker Desktop or Docker Engine is running. No source checkout, Dockerfile, Node.js installation, or server-side image build is required.
 

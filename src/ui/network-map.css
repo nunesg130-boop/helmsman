@@ -203,11 +203,21 @@
   flex-direction: column;
   align-items: center;
   gap: 3px;
+  padding: 4px 7px;
+  /* A solid tag over its block, so cables and the floor grid never show
+     through the letters. */
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  background: rgba(22, 22, 27, 0.94);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
   transform: translate(-50%, -50%);
   white-space: nowrap;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.95), 0 0 10px rgba(0, 0, 0, 0.85);
   transition: opacity 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
+
+.network-label.tone-down { border-color: rgba(255, 111, 125, 0.45); }
+.network-label:is(.tone-degraded, .tone-limited) { border-color: rgba(242, 207, 97, 0.4); }
+.network-label.is-selected { border-color: var(--accent-border); }
 
 .network-label__name {
   display: flex;
@@ -238,7 +248,7 @@
 
 .network-label__name > span,
 .network-label__address {
-  max-width: var(--network-cell, 180px);
+  max-width: calc(var(--network-cell, 180px) - 16px);
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -256,8 +266,22 @@
 .network-overlay[data-lod="compact"] .network-label.is-small .network-label__address { font-size: 9.5px; }
 .network-overlay:is([data-lod="names"], [data-lod="minimal"]) .network-label.is-small:not(.is-forced) .network-label__address { display: none; }
 .network-overlay:is([data-lod="names"], [data-lod="minimal"]) .network-label.is-small .network-label__name { font-size: 10.5px; }
-.network-overlay[data-lod="minimal"] .network-label:not(.is-small):not(.is-forced) .network-label__address { display: none; }
-.network-overlay[data-lod="minimal"] .network-label.is-small:not(.is-forced) { opacity: 0; }
+.network-overlay:is([data-lod="names"], [data-lod="minimal"]) .network-label:not(.is-forced) .network-label__address { display: none; }
+.network-overlay:is([data-lod="names"], [data-lod="minimal"]) .network-label { padding: 3px 6px; }
+.network-overlay[data-lod="minimal"] .network-label .network-label__name { font-size: 10px; gap: 4px; }
+/* When cells are small, a long name wraps onto a second line instead of
+   being cut off ("Core switch", not "Core sw…"). */
+.network-overlay:is([data-lod="names"], [data-lod="minimal"]) .network-label:not(.is-forced) .network-label__name > span {
+  display: -webkit-box;
+  white-space: normal;
+  text-align: center;
+  line-height: 1.15;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+.network-overlay[data-lod="minimal"] .network-label .network-label__name i { width: 6px; height: 6px; }
 .network-label.is-forced { z-index: 10000 !important; }
 .network-label.is-forced .network-label__name > span,
 .network-label.is-forced .network-label__address { max-width: none; }
@@ -272,9 +296,10 @@
   position: absolute;
   transform: translateY(-50%);
   margin: 0;
-  padding: 0;
+  padding: 4px 7px;
   border: 0;
-  background: none;
+  border-radius: 5px;
+  background: rgba(14, 14, 17, 0.9);
   color: #8a8b93;
   font: inherit;
   font-size: 10px;
@@ -430,6 +455,7 @@
 .network-empty__card p { margin: 0; color: var(--text-soft); font-size: 12.5px; line-height: 1.55; }
 
 .network-panel {
+  position: relative;
   display: grid;
   align-content: start;
   gap: 0;
@@ -582,6 +608,45 @@
 .network-list__item.is-selected { background: var(--surface-strong); color: var(--text); box-shadow: inset 2px 0 0 var(--accent); }
 .network-list__item:focus-visible { outline: 2px solid rgba(92, 227, 149, 0.78); outline-offset: 2px; }
 
+/* Each row in the list is a dropdown with the item's details under it. */
+.network-entry {
+  display: grid;
+  border-radius: 8px;
+}
+
+.network-entry.is-open {
+  background: rgba(255, 255, 255, 0.025);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.network-entry__toggle > span:first-of-type { flex: 1 1 auto; }
+.network-entry__toggle > small { margin-left: 0; }
+
+.network-entry__chevron {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  color: var(--muted);
+  transition: transform 160ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.network-entry__chevron svg { width: 14px; height: 14px; transform: rotate(90deg); }
+.network-entry.is-open .network-entry__chevron { transform: rotate(180deg); color: var(--text); }
+
+.network-entry__detail {
+  display: grid;
+  gap: 10px;
+  padding: 4px 12px 14px 26px;
+}
+
+.network-entry__detail p { margin: 0; color: var(--text-soft); font-size: 12px; line-height: 1.5; }
+.network-entry__detail .network-facts > div { grid-template-columns: 84px minmax(0, 1fr); }
+.network-entry__detail .button-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.network-entry__kind { color: var(--muted); font-size: 11px; }
+.network-entry__link { padding-left: 8px; }
+
 .network-field {
   display: grid;
   gap: 6px;
@@ -688,5 +753,17 @@
   .network-legend { gap: 6px 12px; font-size: 10.5px; }
   .network-field-row { grid-template-columns: minmax(0, 1fr); }
   .network-tool { min-width: 40px; height: 40px; padding: 0 9px; }
-  .network-toolbar { gap: 6px; left: 8px; right: 8px; top: 8px; }
+  /* One scrollable row of tools on a phone, so the model keeps the space. */
+  .network-toolbar {
+    flex-wrap: nowrap;
+    gap: 6px;
+    left: 8px;
+    right: 8px;
+    top: 8px;
+    overflow-x: auto;
+    scrollbar-width: none;
+    pointer-events: auto;
+  }
+  .network-toolbar::-webkit-scrollbar { display: none; }
+  .network-toolgroup { flex: none; }
 }

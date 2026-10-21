@@ -350,6 +350,35 @@ test("a rule acts only on its own incident, after its wait, within cooldown and 
   assert.equal(history[0].code, "RULE_DAILY_LIMIT");
 });
 
+test("an incident skipped for a rule's cooldown gets its turn once the cooldown ends", async (t) => {
+  const { agent, context, publish } = await harness(t);
+  await configure(agent, { rules: [rule()] });
+  await publish(snapshotAt(context.now));
+
+  const first = sonarrIncident(context.now - 6 * 60_000);
+  context.now += 1_000;
+  await publish(snapshotAt(context.now, { incidents: [first] }));
+  assert.equal(context.actions.length, 1);
+
+  // A second outage inside the 60-minute cooldown waits...
+  context.now += 10 * 60_000;
+  const second = sonarrIncident(context.now - 6 * 60_000, { id: "sonarr-status-2" });
+  for (let minute = 0; minute < 3; minute += 1) {
+    context.now += 60_000;
+    await publish(snapshotAt(context.now, { incidents: [second] }));
+  }
+  assert.equal(context.actions.length, 1);
+  let history = (await api(agent, "GET", "/api/v2/agent")).payload.history;
+  assert.equal(history.filter((entry) => entry.code === "RULE_COOLDOWN").length, 1, "a waiting rule logs its skip once");
+
+  // ...and runs when the cooldown is over and the outage is still open.
+  context.now += 50 * 60_000;
+  await publish(snapshotAt(context.now, { incidents: [second] }));
+  assert.equal(context.actions.length, 2);
+  history = (await api(agent, "GET", "/api/v2/agent")).payload.history;
+  assert.equal(history[0].outcome, "succeeded");
+});
+
 test("rules never run while autonomy is off or the agent is disabled", async (t) => {
   const { agent, context, publish } = await harness(t);
   await configure(agent, { autonomy: false });

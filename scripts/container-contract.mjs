@@ -141,6 +141,9 @@ const requiredFiles = [
   "src/ui/network-map.css",
   "src/ui/obsidian-glass.css",
   "src/ui/retro.css",
+  "src/ui/agent-helper-3d.js",
+  "src/vendor/three-helmy.js",
+  "src/vendor/three-LICENSE.txt",
   "assets/helmsman-logo.png",
   "assets/icon-192.png",
   "assets/icon-512.png",
@@ -162,6 +165,8 @@ const requiredFiles = [
   "assets/services/licenses/Zlib-Portainer.txt",
   "assets/workloads/vm.svg",
   "assets/workloads/container.svg",
+  "assets/helmy/helmy.glb",
+  "assets/helmy/NOTICE.md",
   ".github/dependabot.yml",
   ".github/workflows/container.yml",
   "deploy/DOCKER.md",
@@ -175,7 +180,7 @@ const requiredFiles = [
 const missing = requiredFiles.filter((path) => !existsSync(join(root, path)));
 record(
   missing.length === 0,
-  "Helmsman v1.14.2 includes its unified media model, bounded fixed actions, Proxmox and Portainer infrastructure monitors, encrypted store, persistent cache, Obsidian Glass operations UI, logging, and deployment contracts",
+  "Helmsman v1.14.3 includes its unified media model, bounded fixed actions, Proxmox and Portainer infrastructure monitors, encrypted store, persistent cache, Obsidian Glass operations UI, logging, and deployment contracts",
   missing.join(", ")
 );
 
@@ -196,12 +201,12 @@ if (existsSync(join(root, "Dockerfile"))) {
   );
 
   record(
-    /^ARG HELMSMAN_VERSION=1\.14\.2$/mu.test(dockerfile)
+    /^ARG HELMSMAN_VERSION=1\.14\.3$/mu.test(dockerfile)
       && /^ARG HELMSMAN_REVISION=unknown$/mu.test(dockerfile)
       && /org\.opencontainers\.image\.title="Helmsman"/u.test(dockerfile)
       && /org\.opencontainers\.image\.licenses="AGPL-3\.0-only"/u.test(dockerfile)
       && !/org\.opencontainers\.image\.title="Jellofin Command"/u.test(dockerfile),
-    "image metadata carries the Helmsman v1.14.2 identity and license"
+    "image metadata carries the Helmsman v1.14.3 identity and license"
   );
 
   record(
@@ -222,8 +227,10 @@ if (existsSync(join(root, "Dockerfile"))) {
     "COPY --chown=0:0 assets/services/THIRD_PARTY_NOTICES.md assets/services/bazarr.png assets/services/jellyfin.svg assets/services/portainer.svg assets/services/prowlarr.png assets/services/proxmox.png assets/services/qbittorrent.svg assets/services/radarr.svg assets/services/seerr.svg assets/services/sonarr.svg ./assets/services/",
     "COPY --chown=0:0 assets/services/licenses/ ./assets/services/licenses/",
     "COPY --chown=0:0 assets/workloads/vm.svg assets/workloads/container.svg ./assets/workloads/",
+    "COPY --chown=0:0 assets/helmy/helmy.glb assets/helmy/NOTICE.md ./assets/helmy/",
     "COPY --chown=0:0 src/app-v5.js ./src/app-v5.js",
-    "COPY --chown=0:0 src/ui/operations-views.js src/ui/manual-markdown.js src/ui/network-map.js src/ui/operations.css src/ui/control.css src/ui/logging.css src/ui/retro.css src/ui/obsidian-glass.css src/ui/network-map.css ./src/ui/",
+    "COPY --chown=0:0 src/ui/operations-views.js src/ui/manual-markdown.js src/ui/network-map.js src/ui/operations.css src/ui/control.css src/ui/logging.css src/ui/retro.css src/ui/obsidian-glass.css src/ui/network-map.css src/ui/agent-helper-3d.js ./src/ui/",
+    "COPY --chown=0:0 src/vendor/three-helmy.js src/vendor/three-LICENSE.txt ./src/vendor/",
     "COPY --chown=0:0 server ./server",
     "COPY --chown=0:0 package.json ./package.json",
     "COPY --chown=0:0 LICENSE ./LICENSE"
@@ -262,10 +269,10 @@ if (existsSync(join(root, "Dockerfile"))) {
 if (existsSync(join(root, "server/broker.mjs"))) {
   const broker = read("server/broker.mjs");
   record(
-    /const DEFAULT_VERSION = "1\.14\.2"/u.test(broker)
+    /const DEFAULT_VERSION = "1\.14\.3"/u.test(broker)
       && /process\.env\.HELMSMAN_VERSION/u.test(broker)
       && /\^\[0-9A-Za-z\]\[0-9A-Za-z\.\+-\]\{0,63\}\$/u.test(broker),
-    "runtime version follows the validated immutable v1.14.2 image metadata"
+    "runtime version follows the validated immutable v1.14.3 image metadata"
   );
 }
 
@@ -336,7 +343,7 @@ if (existsSync(join(root, "server/index.mjs"))
       && !/url[.]pathname === "\/api\/v2\/access\/rotate"/u.test(controlPlane)
       && !/command === "rotate-access-key"/u.test(index)
       && !/rotate-access-key --confirm/u.test(index),
-    "the beta.2 access-key route is migration-only and v1.14.2 exposes no access-key rotation route or CLI"
+    "the beta.2 access-key route is migration-only and v1.14.3 exposes no access-key rotation route or CLI"
   );
   record(
     /command === "reset-access"/u.test(index)
@@ -390,7 +397,7 @@ if (existsSync(join(root, "compose.yaml"))) {
   record(
     /^name:\s*helmsman\s*$/mu.test(compose)
       && /^services:\s*\n\s{2}helmsman:\s*$/mu.test(compose)
-      && compose.includes('${HELMSMAN_IMAGE:-ghcr.io/OWNER/REPOSITORY:1.14.2}')
+      && compose.includes('${HELMSMAN_IMAGE:-ghcr.io/OWNER/REPOSITORY:1.14.3}')
       && !/^\s{4}build:/mu.test(compose),
     "production Compose has a stable project name and pulls the versioned GHCR image without a local build"
   );
@@ -449,9 +456,9 @@ if (existsSync(join(root, "compose.dev.yaml"))) {
       && /^\s{4}build:\s*$/mu.test(developmentCompose)
       && /^\s{6}context:\s*[.]\s*$/mu.test(developmentCompose)
       && /^\s{6}dockerfile:\s*Dockerfile\s*$/mu.test(developmentCompose)
-      && /HELMSMAN_VERSION:\s*["']1\.14\.2["']/u.test(developmentCompose)
+      && /HELMSMAN_VERSION:\s*["']1\.14\.3["']/u.test(developmentCompose)
       && /HELMSMAN_REVISION:\s*["']local["']/u.test(developmentCompose)
-      && /image:\s*["']helmsman:1\.14\.2["']/u.test(developmentCompose),
+      && /image:\s*["']helmsman:1\.14\.3["']/u.test(developmentCompose),
     "developer Compose override keeps source builds separate from the production pull contract"
   );
 }
@@ -666,7 +673,7 @@ if (existsSync(join(root, "container.env.example"))) {
   const allowed = new Set(["HELMSMAN_IMAGE", "HELMSMAN_BIND_IP", "HELMSMAN_PORT"]);
   const unexpected = keys.filter((key) => !allowed.has(key));
   record(
-    assignments.includes("HELMSMAN_IMAGE=ghcr.io/OWNER/REPOSITORY:1.14.2")
+    assignments.includes("HELMSMAN_IMAGE=ghcr.io/OWNER/REPOSITORY:1.14.3")
       && assignments.includes("HELMSMAN_BIND_IP=127.0.0.1")
       && assignments.includes("HELMSMAN_PORT=4180")
       && !assignments.some((line) => line.startsWith("HELMSMAN_DATA_VOLUME="))
@@ -726,6 +733,9 @@ if (existsSync(join(root, ".dockerignore"))) {
     "!assets/services/licenses/GPL-3.0.txt",
     "!assets/services/licenses/MIT-Seerr.txt",
     "!assets/services/licenses/Zlib-Portainer.txt",
+    "!assets/helmy",
+    "!assets/helmy/helmy.glb",
+    "!assets/helmy/NOTICE.md",
     "!assets/workloads",
     "!assets/workloads/vm.svg",
     "!assets/workloads/container.svg",
@@ -788,10 +798,10 @@ if (existsSync(join(root, "manifest.webmanifest"))) {
         && manifest.icons.some(({ src, sizes }) => src === "./assets/icon-192.png" && sizes === "192x192")
         && manifest.icons.some(({ src, sizes, purpose }) => src === "./assets/icon-512.png" && sizes === "512x512" && purpose === "any")
         && manifest.icons.some(({ src, sizes, purpose }) => src === "./assets/icon-maskable-512.png" && sizes === "512x512" && purpose === "maskable"),
-      "the v1.14.2 installed-app manifest opens canonical Media Overview and retains dedicated local application icons"
+      "the v1.14.3 installed-app manifest opens canonical Media Overview and retains dedicated local application icons"
     );
   } catch (error) {
-    record(false, "the v1.14.2 installed-app manifest opens canonical Media Overview and retains dedicated local application icons", error.message);
+    record(false, "the v1.14.3 installed-app manifest opens canonical Media Overview and retains dedicated local application icons", error.message);
   }
 }
 
@@ -1013,7 +1023,7 @@ if (existsSync(join(root, "package.json"))) {
     const packageJson = JSON.parse(read("package.json"));
     record(
       packageJson.name === "helmsman"
-        && packageJson.version === "1.14.2"
+        && packageJson.version === "1.14.3"
         && packageJson.scripts?.serve === "node server/index.mjs serve"
         && packageJson.scripts?.["check:broker"] === "node --test tests/control-plane.test.mjs"
         && /tests\/secrets[.]test[.]mjs/u.test(packageJson.scripts?.["check:security"] || "")
@@ -1163,7 +1173,7 @@ if (existsSync(join(root, ".github/workflows/container.yml"))) {
   const existingReleaseJob = yamlJobBlock(workflow, "verify-existing-release");
   const usesLines = workflow.match(/^\s*uses:\s+[^\s#]+(?:\s+#.*)?$/gmu) || [];
   record(
-    usesLines.length === 14
+    usesLines.length === 16
       && usesLines.every((line) => /@[0-9a-f]{40}\s+#\s+v\d+\.\d+\.\d+\s*$/u.test(line)),
     "container workflow pins every external action to a full commit with a release comment",
     usesLines.join("; ")
@@ -1204,6 +1214,16 @@ if (existsSync(join(root, ".github/workflows/container.yml"))) {
       && /^\s{6}- publisher-syntax\s*$/mu.test(imageJob)
       && /^\s{6}- publisher-syntax\s*$/mu.test(existingReleaseJob),
     "Windows PowerShell 5.1 parses both publishers and exercises the offline bootstrap before either tagged release path can pass"
+  );
+  const visualJob = yamlJobBlock(workflow, "visual");
+  record(
+    /name: Visual layout contracts/u.test(visualJob)
+      && /playwright@\d+\.\d+\.\d+/u.test(visualJob)
+      && /playwright install --with-deps chromium/u.test(visualJob)
+      && /run: npm run check:visual/u.test(visualJob)
+      && /^\s{6}- visual\s*$/mu.test(imageJob)
+      && /^\s{6}- visual\s*$/mu.test(existingReleaseJob),
+    "the visual layout contracts run in CI with a pinned Playwright Chromium before either tagged release path can pass"
   );
   record(
     /release_exists:\s*\$\{\{ steps[.]release_state[.]outputs[.]exists \}\}/u.test(testJob)

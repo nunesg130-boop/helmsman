@@ -255,6 +255,9 @@ async function assertNoPageErrors(page, errors, viewport, label) {
         return {
           bento: {
             ...rectFor(bento),
+            // The bento is also the page, so its cards sit inside its padding.
+            contentLeft: bento.getBoundingClientRect().left + parseFloat(getComputedStyle(bento).paddingLeft),
+            contentRight: bento.getBoundingClientRect().right - parseFloat(getComputedStyle(bento).paddingRight),
             clientWidth: bento.clientWidth,
             scrollWidth: bento.scrollWidth,
             gridColumns: getComputedStyle(bento).gridTemplateColumns.trim().split(/\s+/u).filter(Boolean).length
@@ -298,10 +301,10 @@ async function assertNoPageErrors(page, errors, viewport, label) {
         });
       } else {
         assert.equal(geometry.bento.gridColumns, 2, `${viewport.width}px Infrastructure bento must use two desktop columns`);
-        near(assessment.left, geometry.bento.left, `${viewport.width}px Infrastructure assessment left edge`);
-        near(assessment.right, geometry.bento.right, `${viewport.width}px Infrastructure assessment right edge`);
-        near(signals.left, geometry.bento.left, `${viewport.width}px Infrastructure signals left edge`);
-        near(signals.right, geometry.bento.right, `${viewport.width}px Infrastructure signals right edge`);
+        near(assessment.left, geometry.bento.contentLeft, `${viewport.width}px Infrastructure assessment left edge`);
+        near(assessment.right, geometry.bento.contentRight, `${viewport.width}px Infrastructure assessment right edge`);
+        near(signals.left, geometry.bento.contentLeft, `${viewport.width}px Infrastructure signals left edge`);
+        near(signals.right, geometry.bento.contentRight, `${viewport.width}px Infrastructure signals right edge`);
         near(proxmox.top, portainer.top, `${viewport.width}px provider cards must align on one desktop row`);
         near(proxmox.width, portainer.width, `${viewport.width}px provider cards must use equal desktop tracks`);
         near(workloads.top, incidents.top, `${viewport.width}px workload and incident cards must align on one desktop row`);
@@ -322,7 +325,11 @@ async function assertNoPageErrors(page, errors, viewport, label) {
       assert.match(focus.tagName, /^(?:A|BUTTON)$/u, `${viewport.width}px Infrastructure heading action must use native semantics`);
       assert.notEqual(focus.outlineStyle, "none", `${viewport.width}px Infrastructure heading action must retain a visible focus outline`);
       assert.ok(focus.outlineWidth >= 2, `${viewport.width}px Infrastructure heading action must retain at least a 2px focus outline`);
-      assert.ok(focus.width >= 44 && focus.height >= 44, `${viewport.width}px Infrastructure heading action must retain a 44px target`);
+      // Touch targets are 44px on phones and touch screens; with a mouse the
+      // compact 32px buttons are the design (see "Touch devices and phones"
+      // in obsidian-glass.css).
+      const minimumTarget = viewport.width <= 760 ? 44 : 32;
+      assert.ok(focus.width >= minimumTarget && focus.height >= minimumTarget, `${viewport.width}px Infrastructure heading action must retain a ${minimumTarget}px target`);
 
       const target = page.locator(".infrastructure-target").first();
       const beforeHover = await target.evaluate((element) => ({ background: getComputedStyle(element).backgroundColor, border: getComputedStyle(element).borderColor }));

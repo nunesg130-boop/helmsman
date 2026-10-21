@@ -291,11 +291,13 @@ async function readHomeGeometry(page) {
         assert.ok(geometry.rail.posterWidths.every((width) => width <= 132.5), `${viewport.width}px ${variant.label} poster cards must not grow into oversized fluid columns`);
 
         assert.ok(geometry.activityLink.left >= geometry.activityHeader.left - 1 && geometry.activityLink.right <= geometry.activityHeader.right + 1, `${viewport.width}px ${variant.label} activity action must stay inside its card heading`);
-        near(geometry.activityLink.width, 36, `${viewport.width}px ${variant.label} activity action width`);
-        near(geometry.activityLink.height, 36, `${viewport.width}px ${variant.label} activity action height`);
+        // The card's arrow button is a 44px square at every width.
+        near(geometry.activityLink.width, 44, `${viewport.width}px ${variant.label} activity action width`);
+        near(geometry.activityLink.height, 44, `${viewport.width}px ${variant.label} activity action height`);
         assert.equal(geometry.activityLink.alignItems, "center", `${viewport.width}px ${variant.label} activity icon must be vertically centered`);
         assert.equal(geometry.activityLink.justifyItems, "center", `${viewport.width}px ${variant.label} activity icon must be horizontally centered`);
-        assert.ok(parseFloat(geometry.activityLink.borderRadius) >= 17.5, `${viewport.width}px ${variant.label} activity action must retain its circular treatment`);
+        // Rounded square, matching the header's icon buttons.
+        assert.ok(parseFloat(geometry.activityLink.borderRadius) >= 8, `${viewport.width}px ${variant.label} activity action must keep its rounded corners`);
 
         await page.locator('.media-home-bento :is(a, button)').first().focus();
         const focusedControl = await page.evaluate(() => {
@@ -318,24 +320,30 @@ async function readHomeGeometry(page) {
           assert.ok(geometry.topbar.left >= geometry.main.left, `${viewport.width}px ${variant.label} topbar must stay inside the main grid column`);
           assert.ok(geometry.topbar.right <= geometry.viewport + 1, `${viewport.width}px ${variant.label} topbar must stay inside the viewport`);
           assert.ok(geometry.brand.left >= geometry.sidebar.left && geometry.brand.right <= geometry.sidebar.right, `${viewport.width}px ${variant.label} brand must stay inside the sidebar`);
-          near(geometry.toggle.left, geometry.sidebar.right, `${viewport.width}px ${variant.label} sidebar toggle edge placement`, 3);
-          near(geometry.toggle.top, geometry.topbar.bottom + 16, `${viewport.width}px ${variant.label} sidebar toggle vertical placement`, 2);
-          near(geometry.toggle.width, 44, `${viewport.width}px ${variant.label} sidebar toggle width`);
+          // The collapse control sits at the end of the sidebar's brand row.
+          assert.ok(geometry.toggle.left >= geometry.sidebar.left && geometry.toggle.right <= geometry.sidebar.right + 1, `${viewport.width}px ${variant.label} sidebar toggle must sit inside the sidebar`);
+          assert.ok(geometry.toggle.top >= geometry.brand.top - 1 && geometry.toggle.bottom <= geometry.brand.bottom + 1, `${viewport.width}px ${variant.label} sidebar toggle must sit in the brand row`);
+          assert.ok(geometry.toggle.width >= 28, `${viewport.width}px ${variant.label} sidebar toggle width`);
           near(geometry.toggle.height, 44, `${viewport.width}px ${variant.label} sidebar toggle height`);
           assert.equal(geometry.toggle.hit, true, `${viewport.width}px ${variant.label} sidebar toggle must remain clickable outside the sidebar`);
           assert.ok(geometry.toggle.right <= geometry.topLevelBlocks[0].left || geometry.toggle.bottom <= geometry.topLevelBlocks[0].top || geometry.toggle.top >= geometry.topLevelBlocks[0].bottom, `${viewport.width}px ${variant.label} sidebar toggle must not overlap the first content panel`);
 
           await page.evaluate(() => document.querySelector("#app").classList.add("is-sidebar-collapsed"));
-          await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+          // The sidebar animates its width; measure once the main column stops moving.
+          await page.waitForFunction(() => new Promise((resolve) => {
+            const left = document.querySelector(".main-content").getBoundingClientRect().left;
+            setTimeout(() => resolve(document.querySelector(".main-content").getBoundingClientRect().left === left), 120);
+          }), null, { timeout: 5_000 });
           const collapsed = await readHomeGeometry(page);
           assert.ok(collapsed.documentWidth <= collapsed.viewport + 1, `${viewport.width}px ${variant.label} collapsed shell must not overflow horizontally`);
-          near(collapsed.main.left, 102, `${viewport.width}px ${variant.label} collapsed main-column offset`);
-          near(collapsed.sidebar.width, 102, `${viewport.width}px ${variant.label} collapsed sidebar width`);
+          near(collapsed.main.left, 68, `${viewport.width}px ${variant.label} collapsed main-column offset`);
+          near(collapsed.sidebar.width, 68, `${viewport.width}px ${variant.label} collapsed sidebar width`);
           near(collapsed.sidebar.right + collapsed.sidebar.left, collapsed.main.left, `${viewport.width}px ${variant.label} collapsed sidebar/main gutter`);
           assert.ok(collapsed.topbar.left >= collapsed.main.left, `${viewport.width}px ${variant.label} collapsed topbar must stay inside the main grid column`);
           assert.ok(collapsed.brand.width <= collapsed.sidebar.width, `${viewport.width}px ${variant.label} collapsed brand must stay inside the sidebar`);
-          near(collapsed.toggle.left, collapsed.sidebar.right, `${viewport.width}px ${variant.label} collapsed sidebar toggle edge placement`, 3);
-          near(collapsed.toggle.top, collapsed.topbar.bottom + 16, `${viewport.width}px ${variant.label} collapsed sidebar toggle vertical placement`, 2);
+          // Collapsed, the control moves under the brand mark, still inside the rail.
+          assert.ok(collapsed.toggle.left >= collapsed.sidebar.left && collapsed.toggle.right <= collapsed.sidebar.right + 1, `${viewport.width}px ${variant.label} collapsed sidebar toggle must sit inside the rail`);
+          assert.ok(collapsed.toggle.top >= collapsed.brand.bottom - 1, `${viewport.width}px ${variant.label} collapsed sidebar toggle must sit under the brand mark`);
           assert.equal(collapsed.toggle.hit, true, `${viewport.width}px ${variant.label} collapsed sidebar toggle must remain clickable`);
           assert.ok(collapsed.toggle.right <= collapsed.topLevelBlocks[0].left || collapsed.toggle.bottom <= collapsed.topLevelBlocks[0].top || collapsed.toggle.top >= collapsed.topLevelBlocks[0].bottom, `${viewport.width}px ${variant.label} collapsed toggle must not overlap the first content panel`);
           const collapsedLabels = await page.evaluate(() => ({
@@ -457,7 +465,7 @@ async function readHomeGeometry(page) {
         const state = collapsed ? "collapsed" : "expanded";
 
         assert.ok(geometry.documentWidth <= geometry.viewport + 1, `${viewport.width}px ${state} compact request shell must not overflow horizontally`);
-        near(geometry.toggle.left, geometry.sidebar.right, `${viewport.width}px ${state} compact sidebar toggle edge`, 3);
+        assert.ok(geometry.toggle.left >= geometry.sidebar.left && geometry.toggle.right <= geometry.sidebar.right + 1, `${viewport.width}px ${state} compact sidebar toggle must sit inside the sidebar`);
         assert.equal(geometry.toggle.hit, true, `${viewport.width}px ${state} compact sidebar toggle must be clickable`);
         assert.ok(
           geometry.toggle.right <= geometry.list.left
@@ -495,7 +503,9 @@ async function readHomeGeometry(page) {
         const sidebar = document.querySelector(".sidebar");
         const scrollRegion = document.querySelector(".sidebar-scroll-region");
         const footer = document.querySelector(".sidebar-footer");
-        const privacyCard = document.querySelector(".privacy-card");
+        // The last visible entry in the scrolling part of the sidebar.
+        const lastEntry = [...scrollRegion.querySelectorAll(".nav-item, .privacy-card")]
+          .filter((element) => element.getBoundingClientRect().height > 0).at(-1);
         const sidebarToggle = document.querySelector(".sidebar-toggle");
 
         scrollRegion.scrollTop = scrollRegion.scrollHeight;
@@ -503,7 +513,7 @@ async function readHomeGeometry(page) {
         const sidebarRect = sidebar.getBoundingClientRect();
         const scrollRect = scrollRegion.getBoundingClientRect();
         const footerRect = footer.getBoundingClientRect();
-        const privacyRect = privacyCard.getBoundingClientRect();
+        const lastRect = lastEntry.getBoundingClientRect();
         const toggleRect = sidebarToggle.getBoundingClientRect();
         return {
           viewport: document.documentElement.clientWidth,
@@ -518,7 +528,7 @@ async function readHomeGeometry(page) {
             overflowY: getComputedStyle(scrollRegion).overflowY
           },
           footer: { top: footerRect.top, bottom: footerRect.bottom, height: footerRect.height },
-          privacyCard: { top: privacyRect.top, bottom: privacyRect.bottom },
+          lastEntry: { top: lastRect.top, bottom: lastRect.bottom },
           toggle: { top: toggleRect.top, right: toggleRect.right, bottom: toggleRect.bottom, left: toggleRect.left }
         };
       });
@@ -538,9 +548,9 @@ async function readHomeGeometry(page) {
         1.5
       );
       assert.ok(
-        sidebarOverflow.privacyCard.top >= sidebarOverflow.scrollRegion.top - 1
-          && sidebarOverflow.privacyCard.bottom <= sidebarOverflow.scrollRegion.bottom + 1,
-        `${viewport.width}x${viewport.height} final scrollable sidebar card must be reachable`
+        sidebarOverflow.lastEntry.top >= sidebarOverflow.scrollRegion.top - 1
+          && sidebarOverflow.lastEntry.bottom <= sidebarOverflow.scrollRegion.bottom + 1,
+        `${viewport.width}x${viewport.height} final scrollable sidebar entry must be reachable`
       );
       assert.ok(sidebarOverflow.footer.height > 0, `${viewport.width}x${viewport.height} fixed sidebar footer must remain rendered`);
       assert.ok(
@@ -553,7 +563,7 @@ async function readHomeGeometry(page) {
           && sidebarOverflow.toggle.bottom <= sidebarOverflow.sidebar.bottom,
         `${viewport.width}x${viewport.height} sidebar toggle must remain reachable`
       );
-      near(sidebarOverflow.toggle.left, sidebarOverflow.sidebar.right, `${viewport.width}x${viewport.height} sidebar toggle edge placement`, 3);
+      assert.ok(sidebarOverflow.toggle.right <= sidebarOverflow.sidebar.right + 1, `${viewport.width}x${viewport.height} sidebar toggle must sit inside the sidebar`);
       await page.close();
     }
     console.log("Shell geometry contract passed for both Media Overview bento states, the 21-column reference layout, responsive containment, compact requests and downloads, collapsed navigation, and short-height sidebar scrolling.");

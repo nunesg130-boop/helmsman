@@ -304,6 +304,9 @@ export async function createAgent(options) {
   // Rule evaluations run one at a time, in snapshot order.
   let ruleChain = Promise.resolve();
   const ruleIncidentDone = new Map();
+  // The incident a rule last logged a skip for, so a skip is recorded once
+  // while the rule waits for its cooldown or daily limit to clear.
+  const ruleSkipLogged = new Map();
   // Containers unhealthy right now: key -> { since, handled }.
   const unhealthyNow = new Map();
   // Downloads stuck right now: key -> { since, handled, item }.
@@ -787,7 +790,9 @@ export async function createAgent(options) {
     if (queue.some((queued) => queued.key === job.key)) return null;
     if (queue.length >= MAX_QUEUE) {
       if (!front) return null;
-      queue.pop();
+      // A question jumps a full queue; the job it pushes out must still
+      // settle, or whoever waits on it (such as "Summarize now") hangs.
+      queue.pop().reject(new AgentError(503, "AGENT_BUSY", "The agent is busy. Try again in a moment."));
     }
     const promise = new Promise((resolve, reject) => {
       const entry = { ...job, resolve, reject };
@@ -956,7 +961,8 @@ export async function createAgent(options) {
     const tz = config().settings.timeZone;
     const name = incidentLine(current, { ...items[0], state: "healthy", code: null, status: null, occurrenceCount: null }, tz).split(" / ")[0];
     const firstSeen = Math.min(...items.map((item) => Date.parse(item.firstSeen)).filter(Number.isFinite));
-    const recoveredAt = Math.max(...items.map((item) => Date.parse(item.recoveredAt)).filter(Number.isFinite));
+    const latest = Math.max(...items.map((item) => Date.parse(item.recoveredAt)).filter(Number.isFinite));
+    const recoveredAt = Number.isFinite(latest) ? latest : clock();
     const minutes = Number.isFinite(firstSeen) && Number.isFinite(recoveredAt) ? Math.max(1, Math.round((recoveredAt - firstSeen) / 60_000)) : null;
     const note = addNote({
       kind: "recovery",
@@ -1044,13 +1050,18 @@ export async function createAgent(options) {
         && Date.parse(candidate.firstSeen) <= now - rule.when.minutes * 60_000);
       if (!incident) continue;
       if (ruleIncidentDone.get(rule.id) === incident.id) continue;
-      ruleIncidentDone.set(rule.id, incident.id);
       const cooldown = ruleAttempts(rule.id, now - rule.cooldownMinutes * 60_000);
       const today = ruleAttempts(rule.id, now - 86_400_000);
       if (cooldown.length || today.length >= rule.maxPerDay) {
-        addHistory({ actor: "rule", ruleId: rule.id, outcome: "skipped", code: cooldown.length ? "RULE_COOLDOWN" : "RULE_DAILY_LIMIT", incidentId: incident.id });
+        // Still open when the cooldown ends? Then the rule gets its turn: a
+        // skip only waits, it does not use up the incident.
+        if (ruleSkipLogged.get(rule.id) !== incident.id) {
+          ruleSkipLogged.set(rule.id, incident.id);
+          addHistory({ actor: "rule", ruleId: rule.id, outcome: "skipped", code: cooldown.length ? "RULE_COOLDOWN" : "RULE_DAILY_LIMIT", incidentId: incident.id });
+        }
         continue;
       }
+      ruleIncidentDone.set(rule.id, incident.id);
       budget -= 1;
       await runRule(current, rule, incident);
     }
@@ -1915,7 +1926,9 @@ export async function createAgent(options) {
     requireKeys(body, ["rules"]);
     const rules = canonicalRules(body.rules);
     await configStore.update((next) => { next.rules = rules; });
-    for (const id of [...ruleIncidentDone.keys()]) if (!rules.some((rule) => rule.id === id)) ruleIncidentDone.delete(id);
+    for (const map of [ruleIncidentDone, ruleSkipLogged]) {
+      for (const id of [...map.keys()]) if (!rules.some((rule) => rule.id === id)) map.delete(id);
+    }
   }
 
   function historyInput(value) {

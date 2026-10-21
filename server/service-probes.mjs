@@ -245,7 +245,9 @@ function safeVersion(value) {
   if (text.length < 1
     || text.length > 64
     || !/^[vV]?\d+(?:\.\d+){1,4}(?:[-+][0-9A-Za-z.-]+)?$/u.test(text)) return null;
-  return text.slice(0, 64);
+  // qBittorrent reports "v5.1.2"; every other service reports "5.1.2". The UI
+  // adds its own "v", so drop the service's to avoid showing "vv5.1.2".
+  return text.replace(/^[vV]/u, "");
 }
 
 function lowercaseToken(value) {

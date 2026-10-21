@@ -176,6 +176,33 @@ jobs:
             exit $LASTEXITCODE
           }
 
+  visual:
+    name: Visual layout contracts
+    # Pinned: Playwright's browser dependency install supports this release,
+    # and the layout measurements should not shift with a runner image change.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Use Node 24.19.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.19.0
+          package-manager-cache: false
+
+      - name: Install the pinned Playwright Chromium
+        run: |
+          set -euo pipefail
+          npm install --no-save --ignore-scripts --no-audit --no-fund playwright@1.56.0
+          ./node_modules/.bin/playwright install --with-deps chromium
+
+      - name: Run visual layout contracts
+        run: npm run check:visual
+
   smoke:
     name: Linux ${{ matrix.arch }} runtime smoke
     needs: test
@@ -254,6 +281,7 @@ jobs:
       - test
       - smoke
       - publisher-syntax
+      - visual
     runs-on: ubuntu-latest
     timeout-minutes: 45
     outputs:
@@ -517,6 +545,7 @@ jobs:
     needs:
       - test
       - publisher-syntax
+      - visual
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:

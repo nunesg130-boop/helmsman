@@ -808,6 +808,16 @@ function formatTime(value, fallback = "Not yet") {
   return date.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit" });
 }
 
+// A compact time for narrow lists: no seconds, and no date when it is today.
+function formatShortTime(value, fallback = "Not yet") {
+  const date = new Date(value);
+  if (!value || !Number.isFinite(date.getTime())) return fallback;
+  const sameDay = date.toDateString() === new Date().toDateString();
+  return sameDay
+    ? date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+    : date.toLocaleDateString([], { month: "short", day: "numeric" });
+}
+
 function safeCapabilityId(value) {
   const candidate = String(value || "").trim().toLowerCase();
   return /^[a-z0-9][a-z0-9._-]{0,63}$/u.test(candidate) ? candidate : "";
@@ -2036,7 +2046,7 @@ function mediaOverviewAttention(media, operations) {
 
 function renderMediaOverviewEvent(entry) {
   const timestamp = entry.stamp > 0 ? new Date(entry.stamp).toISOString() : "";
-  const content = `<span class="media-overview-event__mark is-${escapeHtml(entry.tone)}">${icon(entry.iconName)}</span><span class="media-overview-event__copy"><strong>${escapeHtml(entry.kind)}</strong><small>${escapeHtml(entry.detail)}</small></span><time${timestamp ? ` datetime="${timestamp}"` : ""} data-overview-event-time>${escapeHtml(formatTime(entry.at, "Current"))}</time>`;
+  const content = `<span class="media-overview-event__mark is-${escapeHtml(entry.tone)}">${icon(entry.iconName)}</span><span class="media-overview-event__copy"><strong>${escapeHtml(entry.kind)}</strong><small>${escapeHtml(entry.detail)}</small></span><time${timestamp ? ` datetime="${timestamp}"` : ""} data-overview-event-time title="${escapeHtml(formatTime(entry.at, ""))}">${escapeHtml(formatShortTime(entry.at, "Current"))}</time>`;
   if (entry.item) {
     return `<li><button class="media-overview-event" type="button" data-action="open-media-detail" data-media-id="${escapeHtml(entry.item.id)}" data-media-key="${entry.item.key}">${content}</button></li>`;
   }
@@ -2446,9 +2456,9 @@ function mediaOnlyOperationsSnapshot() {
 }
 
 function renderMediaHealthPage() {
-  const panel = renderProwlarrPanel();
-  const overview = renderOperationsOverview(mediaOnlyOperationsSnapshot(), []);
-  return panel ? `<div class="media-health-stack">${overview}${panel}</div>` : overview;
+  // The indexer panel goes inside the page so it shares the page's padding
+  // and lines up with the cards above it at every width.
+  return renderOperationsOverview(mediaOnlyOperationsSnapshot(), [], renderProwlarrPanel());
 }
 
 function mediaRecordById(id) {
@@ -4450,7 +4460,7 @@ function renderAgentOverviewCard() {
   return `<section class="system-overview-card system-overview-card--agent" aria-labelledby="system-agent-title">${header}
     <div class="agent-overview">
       <section class="agent-reports" aria-labelledby="agent-reports-title">
-        <header><h4 id="agent-reports-title">Reports</h4><button class="agent-text-button" type="button" data-action="agent-run" data-job="digest" ${digestBusy ? "disabled aria-busy=\"true\"" : ""}>${digestBusy ? "Writing summary…" : "Summarize now"}</button></header>
+        <header><h4 id="agent-reports-title">Reports</h4><button class="agent-text-button" type="button" data-action="agent-run" data-job="digest" ${digestBusy ? "aria-disabled=\"true\" aria-busy=\"true\"" : ""}>${digestBusy ? "Writing summary…" : "Summarize now"}</button></header>
         ${backgroundProposals(proposals).length ? `<div class="agent-proposals"><span class="section-kicker">Waiting for your approval</span><ul>${backgroundProposals(proposals).map(renderAgentProposal).join("")}</ul></div>` : ""}
         ${notes.length
           ? `<ul class="agent-notes">${notes.map(renderAgentNote).join("")}</ul>`
@@ -5118,6 +5128,7 @@ async function decideAgentProposal(button) {
     const result = await api(`/api/v2/agent/proposals/${id}`, { method: "POST", body: { decision } });
     state.agent.decisions.set(id, { status: result?.status || (decision === "approve" ? "approved" : "declined"), outcome: safeSessionText(result?.outcome, "", 200), label });
     showToast(decision === "approve" ? `${label}: done.` : "Declined.", "success");
+    if (decision === "approve") helmyReact("celebrate");
   } catch (error) {
     if (error?.status === 401) await initialize();
     else {
@@ -5171,6 +5182,7 @@ async function askAgent(source = "page") {
       .map((proposal) => (typeof proposal === "string" ? proposal : proposal?.id))
       .filter((id) => typeof id === "string" && /^[a-f0-9-]{36}$/u.test(id));
     state.agent.chat.push({ role: "assistant", content: String(result?.answer || "No answer."), proposals: proposalIds });
+    helmyReact("nod");
     if (result?.proposals?.length) await loadAgent();
   } catch (error) {
     if (error?.status === 401) {
@@ -5212,8 +5224,55 @@ const helper = {
   bubbleTimer: 0,
   renderedKey: "",
   announcedNote: "",
-  baselineNote: undefined
+  baselineNote: undefined,
+  // The live 3D Helmy, once loaded; the flat image stays as the fallback.
+  helmy: null,
+  helmyLoad: null,
+  onPointer: null
 };
+
+const HELMY_MODEL_URL = "./assets/helmy/helmy.glb";
+
+// Loads the 3D helper in the background. Any failure (no WebGL, an old
+// browser, a blocked file) leaves the flat picture in place.
+function loadHelmy() {
+  if (!helper.root || helper.helmy || helper.helmyLoad) return;
+  const root = helper.root;
+  const container = root.querySelector(".agent-helper__float");
+  helper.helmyLoad = import("./ui/agent-helper-3d.js")
+    .then(async ({ createHelmy, helmySupported }) => {
+      if (!helmySupported()) return;
+      const controller = await createHelmy({ container, modelUrl: HELMY_MODEL_URL, reducedMotion: helperReducedMotion() });
+      if (helper.root !== root) {
+        controller.destroy();
+        return;
+      }
+      controller.onLost = () => {
+        if (helper.helmy === controller) helper.helmy = null;
+        root.classList.remove("has-3d");
+      };
+      helper.helmy = controller;
+      root.classList.add("has-3d");
+      controller.mood(helperMood());
+    })
+    .catch(() => {
+      // The picture is already showing; nothing else to do.
+    })
+    .finally(() => {
+      if (helper.root === root) helper.helmyLoad = null;
+    });
+}
+
+function helperMood() {
+  if (state.agent.asking) return "thinking";
+  if (helper.open) return "chat";
+  const open = state.snapshot?.incidents?.open;
+  return Array.isArray(open) && open.length ? "alert" : "idle";
+}
+
+function helmyReact(name) {
+  helper.helmy?.react(name);
+}
 
 function readHelperStorage(key) {
   try {
@@ -5297,6 +5356,7 @@ function saveHelperHome() {
 
 function placeHelper(x, y, { glide = false } = {}) {
   const position = clampHelper(x, y);
+  if (glide) helper.helmy?.travel(position.x - helper.x);
   helper.x = position.x;
   helper.y = position.y;
   if (!helper.root) return;
@@ -5365,6 +5425,10 @@ function createAgentHelper() {
   helper.renderedKey = "";
 
   helper.buddy.addEventListener("pointerdown", startHelperDrag);
+  helper.buddy.addEventListener("pointerenter", () => helper.helmy?.hover(true));
+  helper.buddy.addEventListener("pointerleave", () => helper.helmy?.hover(false));
+  helper.onPointer = (event) => helper.helmy?.pointer(event.clientX, event.clientY);
+  document.addEventListener("pointermove", helper.onPointer, { passive: true });
   helper.buddy.addEventListener("click", () => {
     if (helper.suppressClick) {
       helper.suppressClick = false;
@@ -5398,19 +5462,22 @@ function createAgentHelper() {
   placeHelper(helper.home.x, helper.home.y);
   requestAnimationFrame(() => root.classList.add("is-ready"));
   scheduleHelperWander();
+  loadHelmy();
 }
 
 function removeAgentHelper() {
   clearTimeout(helper.wanderTimer);
   clearTimeout(helper.bubbleTimer);
+  helper.helmy?.destroy();
+  if (helper.onPointer) document.removeEventListener("pointermove", helper.onPointer);
   helper.root?.remove();
   document.body.classList.remove("has-agent-helper");
-  Object.assign(helper, { root: null, buddy: null, panel: null, bubble: null, open: false, drag: null, renderedKey: "" });
+  Object.assign(helper, { root: null, buddy: null, panel: null, bubble: null, open: false, drag: null, renderedKey: "", helmy: null, helmyLoad: null, onPointer: null });
 }
 
 function startHelperDrag(event) {
   if (event.button !== 0 && event.pointerType === "mouse") return;
-  helper.drag = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, originX: helper.x, originY: helper.y, moved: false };
+  helper.drag = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, originX: helper.x, originY: helper.y, moved: false, lastX: event.clientX, lastAt: event.timeStamp };
   helper.buddy.setPointerCapture?.(event.pointerId);
   helper.buddy.addEventListener("pointermove", moveHelperDrag);
   helper.buddy.addEventListener("pointerup", endHelperDrag);
@@ -5430,6 +5497,10 @@ function moveHelperDrag(event) {
   }
   placeHelper(drag.originX + dx, drag.originY + dy);
   helper.root.classList.toggle("is-facing-left", dx < 0);
+  const elapsed = Math.max(1, event.timeStamp - drag.lastAt);
+  helper.helmy?.drag(((event.clientX - drag.lastX) / elapsed) * 1000);
+  drag.lastX = event.clientX;
+  drag.lastAt = event.timeStamp;
 }
 
 function endHelperDrag(event) {
@@ -5441,6 +5512,7 @@ function endHelperDrag(event) {
   helper.buddy.removeEventListener("pointercancel", endHelperDrag);
   helper.drag = null;
   helper.root.classList.remove("is-dragging");
+  helper.helmy?.drop();
   if (drag.moved) {
     helper.suppressClick = true;
     helper.home = { x: helper.x, y: helper.y };
@@ -5482,6 +5554,7 @@ function closeAgentHelper({ returnHome = true } = {}) {
   helper.root.classList.remove("is-open");
   helper.buddy.setAttribute("aria-expanded", "false");
   helper.panel.hidden = true;
+  helper.helmy?.mood(helperMood());
   if (returnHome && helper.home) placeHelper(helper.home.x, helper.home.y, { glide: true });
   scheduleHelperWander();
 }
@@ -5508,6 +5581,7 @@ function announceHelperNote(note) {
   if (!helper.bubble || helper.open || !note || helper.announcedNote === note.id) return;
   helper.announcedNote = note.id;
   if (!["incident", "rule-action", "recovery"].includes(note.kind)) return;
+  helmyReact(note.kind === "incident" ? "alert" : note.kind === "recovery" ? "celebrate" : "nod");
   helper.bubble.textContent = note.title || "New report";
   helper.bubble.hidden = false;
   clearTimeout(helper.bubbleTimer);
@@ -5521,6 +5595,7 @@ function syncAgentHelper({ force = false } = {}) {
     return;
   }
   if (!helper.root) createAgentHelper();
+  helper.helmy?.mood(helperMood());
   const data = agentData();
   const ready = Boolean(data.config?.ai);
   const proposals = data.proposals || [];
@@ -7812,8 +7887,8 @@ function updateChrome() {
   if (pageEyebrow) pageEyebrow.textContent = systemWorkspace
     ? "All systems"
     : infrastructureWorkspace
-      ? "Infrastructure operations"
-      : "Media operations";
+      ? "Infrastructure"
+      : "Media";
   document.documentElement?.setAttribute?.("data-workspace", state.workspace);
   document.querySelectorAll("[data-action='switch-workspace']").forEach((button) => {
     const active = button.dataset.workspace === state.workspace;
@@ -7975,7 +8050,7 @@ function updateOverviewVolatile(snapshot) {
 
   for (const link of main.querySelectorAll("[data-overview-incident-id]")) {
     const incident = snapshot.incidents.find(({ id }) => id === link.dataset.overviewIncidentId);
-    if (incident) updateTimeElement(link.querySelector("[data-overview-event-time]"), incident.lastSeen || incident.firstSeen, "Current");
+    if (incident) updateTimeElement(link.querySelector("[data-overview-event-time]"), incident.lastSeen || incident.firstSeen, "Current", formatShortTime);
   }
 }
 

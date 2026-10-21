@@ -58,7 +58,7 @@ import {
 import { generateSecretToken, hashToken, StateStore, tokenMatches } from "./state.mjs";
 import { anySignal } from "./abort-signals.mjs";
 
-const DEFAULT_VERSION = "1.14.2";
+const DEFAULT_VERSION = "1.14.3";
 const requestedVersion = String(process.env.HELMSMAN_VERSION || DEFAULT_VERSION);
 const VERSION = /^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/u.test(requestedVersion)
   ? requestedVersion
@@ -96,6 +96,7 @@ const STATIC_PREFIXES = ["assets/", "src/"];
 
 const MIME_TYPES = Object.freeze({
   ".css": "text/css; charset=utf-8",
+  ".glb": "model/gltf-binary",
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
   ".jpeg": "image/jpeg",
@@ -1444,7 +1445,9 @@ function safeStaticRelativePath(pathname) {
 
 // Static files rarely change, so their bytes, ETag and gzip form are kept in
 // memory per file version (path, size and modification time).
-const STATIC_COMPRESSIBLE = new Set([".html", ".js", ".mjs", ".css", ".svg", ".json", ".webmanifest", ".md", ".txt"]);
+// .glb: the helper model's geometry compresses well even though its JPEG
+// textures do not.
+const STATIC_COMPRESSIBLE = new Set([".html", ".js", ".mjs", ".css", ".svg", ".json", ".webmanifest", ".md", ".txt", ".glb"]);
 const staticCache = new Map();
 const MAX_STATIC_CACHE_ENTRIES = 128;
 
