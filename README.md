@@ -1,4 +1,4 @@
-# Helmsman v1.14.3
+# Helmsman v1.14.4
 
 Helmsman is a self-hosted operations center for a homelab's media services and infrastructure. It runs as one portable Linux container on Docker Desktop, Linux, macOS, compatible NAS platforms, AMD64, and ARM64.
 
@@ -14,6 +14,12 @@ Helmsman is a self-hosted operations center for a homelab's media services and i
 This Helmsman is the media and infrastructure dashboard in this repository. It
 is not affiliated with or derived from the existing Kubernetes project also
 named [Helmsman](https://github.com/mkubaczyk/helmsman).
+
+## v1.14.4
+
+**The real memory leak is fixed.** With a pinned certificate, every Portainer, Proxmox and Loki request left one encrypted connection open for good. Node ignores a supplied connection when an HTTP agent is also set, so the request went out over a second connection while the checked one stayed open. One Portainer server leaked about 14 connections a minute (1,176 after 80 minutes), and their buffers, not JavaScript objects, filled the 256 MiB container until it was killed. Pinned requests now use exactly the connection whose certificate was checked, close it when they finish, and refuse to send anything if another connection is ever used. The same mistake meant the certificate pin was only checked on the unused connection; the request itself went over one that skipped certificate checks, so pinned mode now really enforces the pin.
+
+If you pinned your Portainer certificate, consider making a new Portainer access token after updating.
 
 ## v1.14.3
 
@@ -44,7 +50,7 @@ named [Helmsman](https://github.com/mkubaczyk/helmsman).
 
 ## v1.14.1
 
-**No more out-of-memory restarts.** Helmsman's memory grew slowly for as long as it ran, and with the default 256 MiB container limit it was killed and restarted every few hours. The cause was how each request to your services was given its timeout: Node kept a small record of every one of them for the life of the process. That record is no longer kept, and the in-memory artwork cache is now 32 MiB instead of 64 MiB so Helmsman stays well inside the container limit. The on-disk artwork cache is unchanged.
+**Fewer out-of-memory restarts** (the main cause was found in v1.14.4). Helmsman's memory grew slowly for as long as it ran, and with the default 256 MiB container limit it was killed and restarted every few hours. The cause was how each request to your services was given its timeout: Node kept a small record of every one of them for the life of the process. That record is no longer kept, and the in-memory artwork cache is now 32 MiB instead of 64 MiB so Helmsman stays well inside the container limit. The on-disk artwork cache is unchanged.
 
 **Faster recovery after a crash.** If Helmsman is stopped abruptly, it now waits for its old lock to expire and starts on the first try, instead of failing with "The broker data directory is already in use" until Docker's restart loop gets through.
 
@@ -324,7 +330,7 @@ Helmsman's project-owned logging mark. Original generic VM/container workload
 drawings are also bundled. See
 [the asset notices](assets/services/THIRD_PARTY_NOTICES.md).
 
-Helmsman v1.14.3 combines built-in logging, optional Loki search, Portainer monitoring, a private persistent state/artwork cache, and a small, fixed set of confirmed recovery actions under Infrastructure with targeted media recovery actions and Helmsman's cluster-aware Proxmox model:
+Helmsman v1.14.4 combines built-in logging, optional Loki search, Portainer monitoring, a private persistent state/artwork cache, and a small, fixed set of confirmed recovery actions under Infrastructure with targeted media recovery actions and Helmsman's cluster-aware Proxmox model:
 
 - Media and Infrastructure are separate workspaces inside the same authenticated application, and only the selected workspace's navigation is shown;
 - the desktop sidebar collapses to an icon rail, remembers that preference, keeps its navigation scrollable at high browser zoom, and keeps its collapse control in the sidebar's brand row (under the brand mark when collapsed);
@@ -370,7 +376,7 @@ Helmsman v1.14.3 combines built-in logging, optional Loki search, Portainer moni
 
 ## Deploy the published container
 
-Helmsman is distributed as the public Linux AMD64/ARM64 image `ghcr.io/nunesg130-boop/helmsman`. The `v1.14.3` Git tag runs the contracts and architecture smoke tests, publishes the version, `latest`, and full-commit image tags, and creates a GitHub Release containing ready-to-use `compose.yaml`, `container.env.example`, and `SHA256SUMS` assets. The release deployment files pin `ghcr.io/nunesg130-boop/helmsman` to the exact multi-architecture manifest digest (`@sha256:...`).
+Helmsman is distributed as the public Linux AMD64/ARM64 image `ghcr.io/nunesg130-boop/helmsman`. The `v1.14.4` Git tag runs the contracts and architecture smoke tests, publishes the version, `latest`, and full-commit image tags, and creates a GitHub Release containing ready-to-use `compose.yaml`, `container.env.example`, and `SHA256SUMS` assets. The release deployment files pin `ghcr.io/nunesg130-boop/helmsman` to the exact multi-architecture manifest digest (`@sha256:...`).
 
 Download those three files from the matching [GitHub Release](https://github.com/nunesg130-boop/helmsman/releases) into one directory, verify the two deployment files against `SHA256SUMS`, open a terminal there, and make sure Docker Desktop or Docker Engine is running. No source checkout, Dockerfile, Node.js installation, or server-side image build is required.
 

@@ -58,7 +58,7 @@ import {
 import { generateSecretToken, hashToken, StateStore, tokenMatches } from "./state.mjs";
 import { anySignal } from "./abort-signals.mjs";
 
-const DEFAULT_VERSION = "1.14.3";
+const DEFAULT_VERSION = "1.14.4";
 const requestedVersion = String(process.env.HELMSMAN_VERSION || DEFAULT_VERSION);
 const VERSION = /^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/u.test(requestedVersion)
   ? requestedVersion
@@ -1102,7 +1102,13 @@ export async function performProxmoxUpstreamRequest({
   // certificate has matched. This keeps a failed pin outside the credential
   // handling boundary as well as guaranteeing that no authenticated bytes are
   // sent to an unverified peer.
-  const authorization = proxmoxAuthorization(credentials);
+  let authorization;
+  try {
+    authorization = proxmoxAuthorization(credentials);
+  } catch (error) {
+    verifiedSocket?.destroy();
+    throw error;
+  }
   const headers = {
     Host: target.authority,
     Accept: "application/json",
@@ -1123,6 +1129,11 @@ export async function performProxmoxUpstreamRequest({
   if (verifiedSocket) {
     // No HTTP bytes (and no serialized API token) are created until the leaf
     // certificate has matched the configured SHA-256 pin above.
+    // Node ignores createConnection when an agent is set, and agent: false
+    // makes a fresh agent, which would open a second, unpinned connection
+    // and leave this verified one open forever. Without an agent the
+    // request is sent over exactly this socket.
+    delete requestOptions.agent;
     requestOptions.createConnection = () => verifiedSocket;
     requestOptions.rejectUnauthorized = false;
   } else {
@@ -1187,6 +1198,17 @@ export async function performProxmoxUpstreamRequest({
       });
     });
     upstream.on("error", finishReject);
+    if (verifiedSocket) {
+      // Fail closed if the request is ever sent over any other connection,
+      // and close the pinned connection once the exchange is over.
+      upstream.once("socket", (socket) => {
+        if (socket === verifiedSocket) return;
+        socket.destroy();
+        upstream.destroy();
+        finishReject(new BrokerError(502, "TLS_PIN_NOT_APPLIED", "The request did not use the pinned connection."));
+      });
+      upstream.once("close", () => verifiedSocket.destroy());
+    }
     upstream.end();
   });
 }
@@ -1339,7 +1361,13 @@ export async function performPortainerUpstreamRequest({
   // In pinned mode the access token is decoded only after the certificate
   // matches. With system trust, Node completes certificate verification before
   // it can send the serialized HTTP headers below.
-  const accessToken = authorizedRoute.credentialRequired ? portainerAccessToken(credentials) : null;
+  let accessToken;
+  try {
+    accessToken = authorizedRoute.credentialRequired ? portainerAccessToken(credentials) : null;
+  } catch (error) {
+    verifiedSocket?.destroy();
+    throw error;
+  }
   const headers = {
     Host: target.authority,
     Accept: "application/json",
@@ -1365,6 +1393,11 @@ export async function performPortainerUpstreamRequest({
       signal
     };
     if (verifiedSocket) {
+      // Node ignores createConnection when an agent is set, and agent: false
+      // makes a fresh agent, which would open a second, unpinned connection
+      // and leave this verified one open forever. Without an agent the
+      // request is sent over exactly this socket.
+      delete requestOptions.agent;
       requestOptions.createConnection = () => verifiedSocket;
       requestOptions.rejectUnauthorized = false;
     } else {
@@ -1421,6 +1454,17 @@ export async function performPortainerUpstreamRequest({
       });
     });
     upstream.on("error", finishReject);
+    if (verifiedSocket) {
+      // Fail closed if the request is ever sent over any other connection,
+      // and close the pinned connection once the exchange is over.
+      upstream.once("socket", (socket) => {
+        if (socket === verifiedSocket) return;
+        socket.destroy();
+        upstream.destroy();
+        finishReject(new BrokerError(502, "TLS_PIN_NOT_APPLIED", "The request did not use the pinned connection."));
+      });
+      upstream.once("close", () => verifiedSocket.destroy());
+    }
     upstream.end();
   });
 }
