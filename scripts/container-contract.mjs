@@ -1163,7 +1163,7 @@ if (existsSync(join(root, ".github/workflows/container.yml"))) {
   const existingReleaseJob = yamlJobBlock(workflow, "verify-existing-release");
   const usesLines = workflow.match(/^\s*uses:\s+[^\s#]+(?:\s+#.*)?$/gmu) || [];
   record(
-    usesLines.length === 14
+    usesLines.length === 16
       && usesLines.every((line) => /@[0-9a-f]{40}\s+#\s+v\d+\.\d+\.\d+\s*$/u.test(line)),
     "container workflow pins every external action to a full commit with a release comment",
     usesLines.join("; ")
@@ -1204,6 +1204,16 @@ if (existsSync(join(root, ".github/workflows/container.yml"))) {
       && /^\s{6}- publisher-syntax\s*$/mu.test(imageJob)
       && /^\s{6}- publisher-syntax\s*$/mu.test(existingReleaseJob),
     "Windows PowerShell 5.1 parses both publishers and exercises the offline bootstrap before either tagged release path can pass"
+  );
+  const visualJob = yamlJobBlock(workflow, "visual");
+  record(
+    /name: Visual layout contracts/u.test(visualJob)
+      && /playwright@\d+\.\d+\.\d+/u.test(visualJob)
+      && /playwright install --with-deps chromium/u.test(visualJob)
+      && /run: npm run check:visual/u.test(visualJob)
+      && /^\s{6}- visual\s*$/mu.test(imageJob)
+      && /^\s{6}- visual\s*$/mu.test(existingReleaseJob),
+    "the visual layout contracts run in CI with a pinned Playwright Chromium before either tagged release path can pass"
   );
   record(
     /release_exists:\s*\$\{\{ steps[.]release_state[.]outputs[.]exists \}\}/u.test(testJob)

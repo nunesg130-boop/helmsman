@@ -26,6 +26,16 @@ named [Helmsman](https://github.com/mkubaczyk/helmsman).
 - Media → Health: the Prowlarr Indexers panel now lines up with the cards above it instead of running past them.
 - Keyboard focus stays on "Summarize now" while the summary is written.
 
+**Network map.**
+
+- Each row in the Network page's list is now a dropdown: open it to see the item's state, live facts and connections, and to center it in the model. Clicking a block in the model opens its row.
+- Cables end at the edges of their blocks instead of running under them, and item names and zone titles sit on solid tags, so lines no longer cut through text. Zone titles moved inside their zones, clear of the cable runs.
+- On a phone, one finger now pans the model (before, it could only rotate), two fingers pinch and pan, the toolbar is one scrollable row, and long names wrap onto a second line instead of being cut off.
+
+**No more cut-off text.** Proxmox and Portainer tiles reflow before their values get cut off, the Portainer endpoint gets its own row, card descriptions wrap, request times in Requests & warnings are shorter, poster, calendar and request titles get two or three lines, and the header shows the workspace name ("Infrastructure") instead of a truncated "Infrastructure operations".
+
+**Visual layout tests in CI.** The two browser layout contracts (`npm run check:visual`) were updated to the current design and now run in CI.
+
 ## v1.14.2
 
 **The agent no longer reports your manual as news.** Asked "Anything happen overnight?", it could pull lines from your Manual that happened to contain the word "overnight", such as an old known-issue note or a roadmap item, and describe them as things that had just happened. Questions about a period ("overnight", "today", "this week") are now answered from Helmsman's own history only. Time words no longer select manual lines, and manual excerpts given to the model are labelled as your notes, not events. You can still ask about your notes directly.
@@ -315,7 +325,7 @@ drawings are also bundled. See
 Helmsman v1.14.3 combines built-in logging, optional Loki search, Portainer monitoring, a private persistent state/artwork cache, and a small, fixed set of confirmed recovery actions under Infrastructure with targeted media recovery actions and Helmsman's cluster-aware Proxmox model:
 
 - Media and Infrastructure are separate workspaces inside the same authenticated application, and only the selected workspace's navigation is shown;
-- the desktop sidebar collapses to an icon rail, remembers that preference, keeps its navigation scrollable at high browser zoom, and places its 44 px collapse control on the content-side edge below the shared header rule;
+- the desktop sidebar collapses to an icon rail, remembers that preference, keeps its navigation scrollable at high browser zoom, and keeps its collapse control in the sidebar's brand row (under the brand mark when collapsed);
 - Infrastructure **Overview** contains only already-configured Proxmox and Portainer connections plus their current read-only signals, while the always-available categorized **Connectors** view owns supported-provider discovery, setup, and editing;
 - the Media workspace has dedicated **Overview**, **Discover**, **Library**, **Requests**, **Activity**, **Calendar**, **Health**, and **Connections** views; the legacy `#/home` URL redirects to canonical `#/overview`;
 - Media **Connections** groups every supported integration by purpose: media server, requests, media management, indexers, download clients, and subtitles;

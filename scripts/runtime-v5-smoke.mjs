@@ -3414,7 +3414,7 @@ async function infrastructureWorkspaceContract() {
 
   await importShell(environment);
   await waitFor(() => environment.main.innerHTML.includes("operations-page"), "media workspace startup");
-  assert.equal(environment.elements.get("#page-eyebrow").textContent, "Media operations");
+  assert.equal(environment.elements.get("#page-eyebrow").textContent, "Media");
   assert.equal(environment.elements.get("#monitor-summary").attributes.get("href"), undefined, "the monitor group must leave each Media health link independent");
   assert.equal(
     environment.elements.get("#monitor-summary").attributes.get("aria-label"),
@@ -3461,7 +3461,7 @@ async function infrastructureWorkspaceContract() {
   await environment.dispatchDocument("click", { target: infrastructureSwitch });
   await waitFor(() => environment.main.innerHTML.includes("infrastructure-overview"), "Infrastructure workspace");
   assert.equal(environment.localStorageValues.get("helmsman.workspace"), "infrastructure");
-  assert.equal(environment.elements.get("#page-eyebrow").textContent, "Infrastructure operations");
+  assert.equal(environment.elements.get("#page-eyebrow").textContent, "Infrastructure");
   assert.equal(infrastructureSwitch.attributes.get("aria-pressed"), "true");
   assert.ok(environment.workspaceButtons.filter((button) => button.dataset.workspace === "media")
     .every((button) => button.attributes.get("aria-pressed") === "false"));

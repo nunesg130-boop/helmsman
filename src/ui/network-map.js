@@ -109,7 +109,7 @@ const KIND_CATEGORY = Object.freeze({
 const CELL_W = 200;
 const CELL_H = 80;
 const ZONE_PAD_X = 26;
-const ZONE_PAD_TOP = 40;
+const ZONE_PAD_TOP = 60;
 const ZONE_PAD_BOTTOM = 22;
 const ZONE_GAP = 70;
 const ROW_GAP = 80;
@@ -389,6 +389,29 @@ export function linkRoute(from, to) {
   }
   if (Math.abs(from.x - to.x) < 1) return [[from.x, from.y], [from.x, runY], [to.x, to.y]];
   return [[from.x, from.y], [from.x, runY], [to.x, runY], [to.x, to.y]];
+}
+
+/**
+ * Pulls a route's two ends back from the item centres to the edges of their
+ * blocks, so a cable meets the side of a block instead of running under it
+ * (and under its label) to the middle.
+ */
+export function trimRouteToEdges(route, from, to) {
+  if (!Array.isArray(route) || route.length < 2) return route;
+  const points = route.map(([x, y]) => [x, y]);
+  // On a single straight segment each end may use at most half of it.
+  const share = points.length === 2 ? 0.5 : 1;
+  const pull = (point, toward, box) => {
+    const dx = toward[0] - point[0];
+    const dy = toward[1] - point[1];
+    if (Math.abs(dx) >= Math.abs(dy)) point[0] += Math.sign(dx) * Math.min((box?.w || 0) / 2, Math.abs(dx) * share);
+    else point[1] += Math.sign(dy) * Math.min((box?.d || 0) / 2, Math.abs(dy) * share);
+  };
+  const last = points.length - 1;
+  const [first, second, beforeLast] = [[...points[0]], [...points[1]], [...points[last - 1]]];
+  pull(points[0], second, from);
+  pull(points[last], last - 1 === 0 ? first : beforeLast, to);
+  return points;
 }
 
 // ------------------------------------------------------------ live state --
@@ -828,7 +851,7 @@ export function createNetworkMapController(deps) {
             <span class="network-legend__item"><i class="network-legend__flow"></i>Service flow</span>
             <span class="network-legend__item"><i class="network-legend__down"></i>Down</span>
             <span class="network-legend__item"><i class="network-legend__off"></i>Stopped or planned</span>
-            <span class="network-legend__hint">Drag to rotate · Shift-drag to pan · Scroll or pinch to zoom</span>
+            <span class="network-legend__hint">Drag to rotate · Shift-drag to pan · Scroll to zoom</span>
           </div>
           <div class="network-empty" data-net-empty hidden></div>
         </div>
@@ -1077,7 +1100,7 @@ export function createNetworkMapController(deps) {
         addLine(peak, b, classes, !isDown && !isOff, delay + 0.4);
         return;
       }
-      const route = linkRoute(from, to);
+      const route = trimRouteToEdges(linkRoute(from, to), from, to);
       const kind = isDown ? "is-down" : isOff ? "is-off" : `is-${link.kind}`;
       const classes = `${kind}${touches ? " is-hot" : ""}${dim ? " is-dim" : ""}`;
       for (let step = 0; step < route.length - 1; step += 1) {
@@ -1142,7 +1165,8 @@ export function createNetworkMapController(deps) {
       } else element.setAttribute("aria-hidden", "true");
       element.textContent = zone.title;
       fragment.append(element);
-      return { element, x: zone.x0 + 6, y: zone.y0 - 18 };
+      // Inside the zone's top padding, clear of the cable runs between zones.
+      return { element, x: zone.x0 + 16, y: zone.y0 + 18 };
     });
     labels = layout.items.map((geometry) => {
       const item = itemById.get(geometry.id);
@@ -1179,7 +1203,7 @@ export function createNetworkMapController(deps) {
     // Level of detail: labels never grow wider than a grid cell on screen, and
     // guest labels thin out as the model gets smaller so names never pile up.
     const cell = CELL_W * camera.zoom;
-    const level = cell >= 150 ? "full" : cell >= 112 ? "compact" : cell >= 84 ? "names" : "minimal";
+    const level = cell >= 150 ? "full" : cell >= 112 ? "compact" : cell >= 76 ? "names" : "minimal";
     if (elements.overlay.dataset.lod !== level) elements.overlay.dataset.lod = level;
     elements.overlay.style.setProperty("--network-cell", `${Math.max(56, Math.round(cell - 10))}px`);
     const related = relatedIds();
@@ -1214,7 +1238,7 @@ export function createNetworkMapController(deps) {
     const spanY = Math.max(...corners.map((point) => point.Y)) - Math.min(...corners.map((point) => point.Y));
     // On a phone the whole model would be too small to read, so the fit stops
     // at a readable scale and the owner pans or pinches from the centre.
-    const minimum = size.width < 600 ? 0.3 : 0.18;
+    const minimum = size.width < 600 ? 0.42 : 0.18;
     const zoom = clamp(Math.min((size.width - 40) / Math.max(1, spanX), (size.height - 120) / Math.max(1, spanY)) * 0.96, minimum, 1.6);
     const centred = projector({ ...base, zoom }, 0, 0)((bounds.minX + bounds.maxX) / 2, (bounds.minY + bounds.maxY) / 2, 0);
     const target = { rx, rz: 0, zoom, panX: -centred.X, panY: -centred.Y + 16 };
@@ -1267,6 +1291,28 @@ export function createNetworkMapController(deps) {
     }).filter(({ other }) => other);
   }
 
+  function openLinkFor(item) {
+    if (item.source?.type === "guest" || item.source?.type === "node") return `<a class="button button--small" href="#/workloads">${icon("server")} Open Workloads</a>`;
+    if (item.source?.type === "container") return `<a class="button button--small" href="#/portainer">${icon("containers")} Open Portainer</a>`;
+    return "";
+  }
+
+  /** The dropdown under a row in the list: everything known about one item. */
+  function itemDetailMarkup(item, status) {
+    const connections = connectionsFor(item.id);
+    return `<div class="network-entry__detail" id="network-entry-${escape(item.id)}">
+        <div class="network-panel__meta">${statusPill(status)}${item.address ? `<span class="network-mono">${escape(item.address)}</span>` : ""}<span class="network-entry__kind">${escape(KIND_LABELS.get(item.kind) || "Item")}</span></div>
+        ${item.role ? `<p>${escape(item.role)}</p>` : ""}
+        ${item.notes ? `<p class="network-notes">${escape(item.notes)}</p>` : ""}
+        ${factsTable([["State", status.detail], ...liveFacts(item, status)])}
+        ${connections.length ? `<div class="network-panel__group"><span class="section-kicker">Connected to</span>${connections.map(({ link, other }) => {
+          const otherStatus = statuses.get(other.id) || resolveItemStatus(other, index);
+          return `<button class="network-list__item network-entry__link" type="button" data-net-select="${escape(other.id)}"><i class="network-dot tone-${otherStatus.tone}"></i><span>${escape(other.name)}<small>${escape(link.label || LINK_LABELS.get(link.kind) || "")}</small></span><small>${escape(other.address)}</small></button>`;
+        }).join("")}</div>` : ""}
+        <div class="button-row">${openLinkFor(item)}<button class="button button--small" type="button" data-net-action="centre">Center in view</button></div>
+      </div>`;
+  }
+
   function itemListMarkup() {
     const map = currentMap();
     const zones = [...layout.zones];
@@ -1275,49 +1321,30 @@ export function createNetworkMapController(deps) {
       if (!items.length) return "";
       return `<div class="network-list__group"><span class="section-kicker">${escape(zone.title)}</span>${items.map((item) => {
         const status = statuses.get(item.id) || resolveItemStatus(item, index);
-        return `<button class="network-list__item${state.selected === item.id ? " is-selected" : ""}" type="button" data-net-select="${escape(item.id)}"><i class="network-dot tone-${status.tone}"></i><span>${escape(item.name)}</span><small>${escape(item.address || status.label)}</small></button>`;
+        const open = state.selected === item.id;
+        return `<div class="network-entry${open ? " is-open" : ""}">
+          <button class="network-list__item network-entry__toggle${open ? " is-selected" : ""}" type="button" data-net-select="${escape(item.id)}" aria-expanded="${open}" aria-controls="network-entry-${escape(item.id)}"><i class="network-dot tone-${status.tone}"></i><span>${escape(item.name)}</span><small>${escape(item.address || status.label)}</small><span class="network-entry__chevron" aria-hidden="true">${icon("chevron")}</span></button>
+          ${open ? itemDetailMarkup(item, status) : ""}
+        </div>`;
       }).join("")}</div>`;
     }).join("");
     return groups ? `<div class="network-list">${groups}</div>` : "";
   }
 
   function viewPanelMarkup() {
-    const map = currentMap();
-    const item = map.items.find((entry) => entry.id === state.selected);
-    if (!item) {
-      const summary = counts();
-      return `<section class="network-panel__section">
-          <span class="section-kicker">Overview</span>
-          <h3>${summary.items ? "Select a device" : "No items yet"}</h3>
-          <p>${summary.items ? "Click any block in the model, or any row below, to see its address, live state and connections. Everything else fades so its connections stand out." : "Choose Edit map to add items, or build a first map from your Proxmox and Portainer inventory."}</p>
-          ${summary.items ? factsTable([
-            ["Items", String(summary.items)],
-            ["Live-linked", String(summary.linked)],
-            ["Healthy", String(summary.healthy)],
-            ["Needs attention", String(summary.attention)],
-            ["Down", String(summary.down)],
-            ...(summary.missing ? [["Not found", String(summary.missing)]] : [])
-          ]) : ""}
-        </section>${itemListMarkup()}`;
-    }
-    const status = statuses.get(item.id) || resolveItemStatus(item, index);
-    const zone = map.zones.find((entry) => entry.id === item.zone);
-    const connections = connectionsFor(item.id);
-    const openLink = item.source?.type === "guest" || item.source?.type === "node"
-      ? `<a class="button" href="#/workloads">${icon("server")} Open Workloads</a>`
-      : item.source?.type === "container" ? `<a class="button" href="#/portainer">${icon("containers")} Open Portainer</a>` : "";
+    const summary = counts();
     return `<section class="network-panel__section">
-        <div class="network-panel__heading"><span class="section-kicker">${escape(KIND_LABELS.get(item.kind) || "Item")}${zone ? ` · ${escape(zone.title)}` : ""}</span><button class="button button--small" type="button" data-net-action="clear-selection">Clear</button></div>
-        <h3>${escape(item.name)}</h3>
-        <div class="network-panel__meta">${item.address ? `<span class="network-mono">${escape(item.address)}</span>` : ""}${statusPill(status)}</div>
-        ${item.role ? `<p>${escape(item.role)}</p>` : ""}
-        ${item.notes ? `<p class="network-notes">${escape(item.notes)}</p>` : ""}
-        ${factsTable([["State", status.detail], ...liveFacts(item, status)])}
-        ${connections.length ? `<div class="network-panel__group"><span class="section-kicker">Connected to</span>${connections.map(({ link, other }) => {
-          const otherStatus = statuses.get(other.id) || resolveItemStatus(other, index);
-          return `<button class="network-list__item" type="button" data-net-select="${escape(other.id)}"><i class="network-dot tone-${otherStatus.tone}"></i><span>${escape(other.name)}<small>${escape(link.label || LINK_LABELS.get(link.kind) || "")}</small></span><small>${escape(other.address)}</small></button>`;
-        }).join("")}</div>` : ""}
-        <div class="button-row">${openLink}<button class="button" type="button" data-net-action="centre">Center in view</button></div>
+        <span class="section-kicker">Overview</span>
+        <h3>${summary.items ? "Your network" : "No items yet"}</h3>
+        <p>${summary.items ? "Open any row below, or click a block in the model, to see its address, live state and connections. Everything else on the model fades so its connections stand out." : "Choose Edit map to add items, or build a first map from your Proxmox and Portainer inventory."}</p>
+        ${summary.items ? factsTable([
+          ["Items", String(summary.items)],
+          ["Live-linked", String(summary.linked)],
+          ["Healthy", String(summary.healthy)],
+          ["Needs attention", String(summary.attention)],
+          ["Down", String(summary.down)],
+          ...(summary.missing ? [["Not found", String(summary.missing)]] : [])
+        ]) : ""}
       </section>${itemListMarkup()}`;
   }
 
@@ -1432,9 +1459,9 @@ export function createNetworkMapController(deps) {
     </section>`;
   }
 
-  function renderPanel({ top = false } = {}) {
+  function renderPanel({ top = false, reveal = false, focusId = null } = {}) {
     if (!elements) return;
-    if (top) elements.panel.scrollTop = 0;
+    const scrollTop = elements.panel.scrollTop;
     let markup;
     if (state.panelMode === "export" || state.panelMode === "import") markup = importExportMarkup();
     else if (!state.editing) markup = viewPanelMarkup();
@@ -1445,6 +1472,24 @@ export function createNetworkMapController(deps) {
       markup = item ? editItemMarkup(item) : zone ? editZoneMarkup(zone) : editOverviewMarkup();
     }
     deps.setMarkup(elements.panel, markup);
+    const panel = elements.panel;
+    panel.scrollTop = top ? 0 : scrollTop;
+    // A block clicked in the model scrolls its open row into view, but only
+    // inside the panel; on a phone the panel is part of the page and the page
+    // itself stays put.
+    const open = !state.editing ? panel.querySelector(".network-entry.is-open") : null;
+    if (open && (reveal || focusId) && panel.scrollHeight > panel.clientHeight + 1) {
+      const panelTop = panel.getBoundingClientRect().top;
+      const entry = open.getBoundingClientRect();
+      const top = entry.top - panelTop + panel.scrollTop - 12;
+      const bottom = entry.bottom - panelTop + panel.scrollTop + 12;
+      if (reveal) panel.scrollTop = Math.max(0, top);
+      // A row opened from the list scrolls just enough to show its dropdown.
+      else if (bottom > panel.scrollTop + panel.clientHeight) panel.scrollTop = Math.min(top, bottom - panel.clientHeight);
+    }
+    if (focusId) {
+      [...panel.querySelectorAll(".network-entry__toggle")].find((button) => button.dataset.netSelect === focusId)?.focus({ preventScroll: true });
+    }
   }
 
   // ------------------------------------------------------------ editing --
@@ -1463,12 +1508,15 @@ export function createNetworkMapController(deps) {
     if (panel) renderPanel();
   }
 
-  function selectItem(id) {
+  function selectItem(id, { fromList = false } = {}) {
     state.selected = state.selected === id && !state.editing ? null : id;
     state.selectedZone = null;
     state.panelMode = "";
     renderScene();
-    renderPanel({ top: true });
+    if (state.editing) renderPanel({ top: true });
+    // Opening a row from the list keeps the list where it is and focus on
+    // the row; choosing a block in the model brings its row into view.
+    else renderPanel({ reveal: !fromList, focusId: fromList ? id : null });
   }
 
   function addItem(zoneId) {
@@ -1693,7 +1741,7 @@ export function createNetworkMapController(deps) {
     const selectTarget = event.target.closest?.("[data-net-select]");
     if (selectTarget && root.contains(selectTarget)) {
       if (moved) return;
-      selectItem(selectTarget.dataset.netSelect);
+      selectItem(selectTarget.dataset.netSelect, { fromList: selectTarget.classList.contains("network-entry__toggle") });
       return;
     }
     const zoneTarget = event.target.closest?.("[data-net-zone]");
@@ -1922,10 +1970,12 @@ export function createNetworkMapController(deps) {
     globalThis.cancelAnimationFrame?.(animation);
     moved = false;
     if (pointers.size === 1) {
-      drag = { x: event.clientX, y: event.clientY, camera: { ...state.camera }, pan: event.shiftKey };
+      // A finger has no Shift key, so on touch screens one finger pans and
+      // the toolbar's buttons rotate.
+      drag = { x: event.clientX, y: event.clientY, camera: { ...state.camera }, pan: event.shiftKey || event.pointerType === "touch" };
     } else if (pointers.size === 2) {
       const [a, b] = [...pointers.values()];
-      drag = { pinch: Math.hypot(a.x - b.x, a.y - b.y), camera: { ...state.camera } };
+      drag = { pinch: Math.hypot(a.x - b.x, a.y - b.y), mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, camera: { ...state.camera } };
     }
   }
 
@@ -1936,6 +1986,8 @@ export function createNetworkMapController(deps) {
       const [a, b] = [...pointers.values()];
       const distance = Math.hypot(a.x - b.x, a.y - b.y);
       state.camera.zoom = clamp(drag.camera.zoom * (distance / Math.max(1, drag.pinch)), 0.15, 2.2);
+      state.camera.panX = drag.camera.panX + ((a.x + b.x) / 2 - drag.mid.x);
+      state.camera.panY = drag.camera.panY + ((a.y + b.y) / 2 - drag.mid.y);
       moved = true;
       state.cameraTouched = true;
       applyCamera();
@@ -1965,6 +2017,12 @@ export function createNetworkMapController(deps) {
     pointers.delete(event.pointerId);
     const wasDrag = moved;
     if (pointers.size === 0) drag = null;
+    else if (pointers.size === 1 && drag?.pinch) {
+      // Lifting one finger of a pinch carries on as a one-finger pan from
+      // where the other finger is, instead of a drag with no start point.
+      const [rest] = [...pointers.values()];
+      drag = { x: rest.x, y: rest.y, camera: { ...state.camera }, pan: true };
+    }
     if (!wasDrag && pointers.size === 0 && event.type === "pointerup"
       && !event.target.closest?.("[data-net-select]") && (state.selected || state.selectedZone)) {
       state.selected = null;

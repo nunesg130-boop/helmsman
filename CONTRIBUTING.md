@@ -42,8 +42,8 @@ the demo stops coming up healthy.
    ```
 
 5. When a UI change affects geometry or responsive behavior, also run
-   `npm run check:visual` in an environment with the expected Chromium
-   headless shell.
+   `npm run check:visual` (it needs Playwright and Chromium; CI runs it on
+   every pull request).
 6. Open a pull request with the problem, design, security impact, test results,
    and screenshots for meaningful visual changes.
 

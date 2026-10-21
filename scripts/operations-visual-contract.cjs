@@ -325,7 +325,11 @@ async function assertNoPageErrors(page, errors, viewport, label) {
       assert.match(focus.tagName, /^(?:A|BUTTON)$/u, `${viewport.width}px Infrastructure heading action must use native semantics`);
       assert.notEqual(focus.outlineStyle, "none", `${viewport.width}px Infrastructure heading action must retain a visible focus outline`);
       assert.ok(focus.outlineWidth >= 2, `${viewport.width}px Infrastructure heading action must retain at least a 2px focus outline`);
-      assert.ok(focus.width >= 44 && focus.height >= 44, `${viewport.width}px Infrastructure heading action must retain a 44px target`);
+      // Touch targets are 44px on phones and touch screens; with a mouse the
+      // compact 32px buttons are the design (see "Touch devices and phones"
+      // in obsidian-glass.css).
+      const minimumTarget = viewport.width <= 760 ? 44 : 32;
+      assert.ok(focus.width >= minimumTarget && focus.height >= minimumTarget, `${viewport.width}px Infrastructure heading action must retain a ${minimumTarget}px target`);
 
       const target = page.locator(".infrastructure-target").first();
       const beforeHover = await target.evaluate((element) => ({ background: getComputedStyle(element).backgroundColor, border: getComputedStyle(element).borderColor }));

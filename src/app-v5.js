@@ -808,6 +808,16 @@ function formatTime(value, fallback = "Not yet") {
   return date.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit" });
 }
 
+// A compact time for narrow lists: no seconds, and no date when it is today.
+function formatShortTime(value, fallback = "Not yet") {
+  const date = new Date(value);
+  if (!value || !Number.isFinite(date.getTime())) return fallback;
+  const sameDay = date.toDateString() === new Date().toDateString();
+  return sameDay
+    ? date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+    : date.toLocaleDateString([], { month: "short", day: "numeric" });
+}
+
 function safeCapabilityId(value) {
   const candidate = String(value || "").trim().toLowerCase();
   return /^[a-z0-9][a-z0-9._-]{0,63}$/u.test(candidate) ? candidate : "";
@@ -2036,7 +2046,7 @@ function mediaOverviewAttention(media, operations) {
 
 function renderMediaOverviewEvent(entry) {
   const timestamp = entry.stamp > 0 ? new Date(entry.stamp).toISOString() : "";
-  const content = `<span class="media-overview-event__mark is-${escapeHtml(entry.tone)}">${icon(entry.iconName)}</span><span class="media-overview-event__copy"><strong>${escapeHtml(entry.kind)}</strong><small>${escapeHtml(entry.detail)}</small></span><time${timestamp ? ` datetime="${timestamp}"` : ""} data-overview-event-time>${escapeHtml(formatTime(entry.at, "Current"))}</time>`;
+  const content = `<span class="media-overview-event__mark is-${escapeHtml(entry.tone)}">${icon(entry.iconName)}</span><span class="media-overview-event__copy"><strong>${escapeHtml(entry.kind)}</strong><small>${escapeHtml(entry.detail)}</small></span><time${timestamp ? ` datetime="${timestamp}"` : ""} data-overview-event-time title="${escapeHtml(formatTime(entry.at, ""))}">${escapeHtml(formatShortTime(entry.at, "Current"))}</time>`;
   if (entry.item) {
     return `<li><button class="media-overview-event" type="button" data-action="open-media-detail" data-media-id="${escapeHtml(entry.item.id)}" data-media-key="${entry.item.key}">${content}</button></li>`;
   }
@@ -7812,8 +7822,8 @@ function updateChrome() {
   if (pageEyebrow) pageEyebrow.textContent = systemWorkspace
     ? "All systems"
     : infrastructureWorkspace
-      ? "Infrastructure operations"
-      : "Media operations";
+      ? "Infrastructure"
+      : "Media";
   document.documentElement?.setAttribute?.("data-workspace", state.workspace);
   document.querySelectorAll("[data-action='switch-workspace']").forEach((button) => {
     const active = button.dataset.workspace === state.workspace;
@@ -7975,7 +7985,7 @@ function updateOverviewVolatile(snapshot) {
 
   for (const link of main.querySelectorAll("[data-overview-incident-id]")) {
     const incident = snapshot.incidents.find(({ id }) => id === link.dataset.overviewIncidentId);
-    if (incident) updateTimeElement(link.querySelector("[data-overview-event-time]"), incident.lastSeen || incident.firstSeen, "Current");
+    if (incident) updateTimeElement(link.querySelector("[data-overview-event-time]"), incident.lastSeen || incident.firstSeen, "Current", formatShortTime);
   }
 }
 

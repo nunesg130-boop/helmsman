@@ -18,7 +18,8 @@ import {
   normalizeImportedMap,
   projector,
   resolveItemStatus,
-  slugId
+  slugId,
+  trimRouteToEdges
 } from "../src/ui/network-map.js";
 
 function inventory() {
@@ -252,4 +253,17 @@ test("imports keep at most the map's item limit", () => {
   assert.equal(map.items.length, NETWORK_LIMITS.items);
   assert.equal(report.skippedItems, 1, "the item-count limit applies before placement");
   assert.doesNotThrow(() => canonicalNetworkMap(map));
+});
+
+test("cables meet the edges of their blocks instead of running to the centres", () => {
+  const from = { x: 0, y: 0, w: 150, d: 50 };
+  const to = { x: 400, y: 300, w: 170, d: 60 };
+  // Down out of the first block, across, then down into the second.
+  const route = [[0, 0], [0, 150], [400, 150], [400, 300]];
+  assert.deepEqual(trimRouteToEdges(route, from, to), [[0, 25], [0, 150], [400, 150], [400, 270]]);
+  // Side by side in a row: the cable runs between the facing sides.
+  assert.deepEqual(trimRouteToEdges([[0, 0], [200, 0]], from, { x: 200, y: 0, w: 150, d: 50 }), [[75, 0], [125, 0]]);
+  // Never pulled past the other end of a short segment.
+  assert.deepEqual(trimRouteToEdges([[0, 0], [0, 10]], from, from), [[0, 5], [0, 5]]);
+  assert.deepEqual(route[0], [0, 0], "the input route is not changed");
 });
