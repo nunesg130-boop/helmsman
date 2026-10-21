@@ -178,7 +178,9 @@ jobs:
 
   visual:
     name: Visual layout contracts
-    runs-on: ubuntu-latest
+    # Pinned: Playwright's browser dependency install supports this release,
+    # and the layout measurements should not shift with a runner image change.
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - name: Check out source
@@ -194,8 +196,9 @@ jobs:
 
       - name: Install the pinned Playwright Chromium
         run: |
+          set -euo pipefail
           npm install --no-save --ignore-scripts --no-audit --no-fund playwright@1.56.0
-          npx --no-install playwright install --with-deps chromium
+          ./node_modules/.bin/playwright install --with-deps chromium
 
       - name: Run visual layout contracts
         run: npm run check:visual
