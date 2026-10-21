@@ -32,6 +32,7 @@ import {
   Scene,
   TextureLoader,
   Vector3,
+  Vector4,
   WebGLRenderer
 } from "../vendor/three-helmy.js";
 
@@ -47,6 +48,9 @@ uniform mat4 helmyRestInverse;
 uniform vec3 helmyArmLeft;
 uniform vec3 helmyArmRight;
 uniform vec3 helmyHead;
+// x, y: finger curl for the left and right hand; z: how much each finger
+// differs from its neighbours; w: the ripple's phase.
+uniform vec4 helmyFingers;
 vec3 helmyPoint;
 vec3 helmyNormal;
 mat3 helmyRotX(float a) { float c = cos(a), s = sin(a); return mat3(1.0, 0.0, 0.0, 0.0, c, s, 0.0, -s, c); }
@@ -56,6 +60,19 @@ void helmyRig(vec3 restPosition, vec3 restNormal) {
   vec3 p = (helmyRest * vec4(restPosition, 1.0)).xyz;
   vec3 n = normalize(mat3(helmyRest) * restNormal);
   float side = p.x >= 0.0 ? 1.0 : -1.0;
+  // Fingers first, in the rest pose: they run out along x past the knuckles
+  // at |x| 0.83 and lie side by side along z, so each one bends a little
+  // differently as a ripple passes across the hand.
+  float hand = smoothstep(0.82, 0.94, side * p.x) * (1.0 - smoothstep(-0.13, -0.05, p.y));
+  if (hand > 0.0) {
+    float curl = side > 0.0 ? helmyFingers.y : helmyFingers.x;
+    float ripple = 1.0 + helmyFingers.z * sin(p.z * 48.0 * side + helmyFingers.w);
+    float bend = curl * ripple * hand;
+    mat3 turn = helmyRotZ(-side * bend);
+    vec3 pivot = vec3(0.83 * side, -0.25, 0.0);
+    p = pivot + turn * (p - pivot);
+    n = turn * n;
+  }
   float arm = smoothstep(0.26, 0.40, side * p.x) * (1.0 - smoothstep(-0.13, -0.05, p.y));
   if (arm > 0.0) {
     vec3 angles = (side > 0.0 ? helmyArmRight : helmyArmLeft) * arm;
@@ -93,11 +110,11 @@ function easeOutBack(t) {
 
 /** Poses: arm angles are [twist, forward, drop]; drop > 0 lowers the arm. */
 const MOODS = Object.freeze({
-  idle: { left: [0, 0.18, 1.02], right: [0, 0.18, 1.02], head: [0.18, 0.04, 0], bob: 0.035, bobSpeed: 1.7, swing: 0.07, yaw: 0.28 },
+  idle: { left: [0, 0.18, 1.02], right: [0, 0.18, 1.02], head: [0.18, 0.04, 0], bob: 0.035, bobSpeed: 1.7, swing: 0.07, yaw: 0.28, fingers: [0.35, 0.35, 0.25, 1.4] },
   // Arms folded in front, head tipped and looking up: mulling it over.
-  thinking: { left: [0, 0.95, 0.72], right: [0, 0.95, 0.72], head: [0.35, -0.2, 0.22], bob: 0.018, bobSpeed: 1.1, swing: 0.03, yaw: 0.18 },
-  alert: { left: [0, 0.35, 0.55], right: [0, 0.35, 0.55], head: [0, -0.05, 0], bob: 0.03, bobSpeed: 3.2, swing: 0.04, yaw: 0 },
-  chat: { left: [0, 0.3, 0.95], right: [0, 0.3, 0.95], head: [-0.32, 0.02, -0.05], bob: 0.028, bobSpeed: 1.6, swing: 0.05, yaw: -0.5 }
+  thinking: { left: [0, 0.95, 0.72], right: [0, 0.95, 0.72], head: [0.35, -0.2, 0.22], bob: 0.018, bobSpeed: 1.1, swing: 0.03, yaw: 0.18, fingers: [0.5, 0.55, 0.75, 8] },
+  alert: { left: [0, 0.35, 0.55], right: [0, 0.35, 0.55], head: [0, -0.05, 0], bob: 0.03, bobSpeed: 3.2, swing: 0.04, yaw: 0, fingers: [1.1, 1.1, 0.06, 2] },
+  chat: { left: [0, 0.3, 0.95], right: [0, 0.3, 0.95], head: [-0.32, 0.02, -0.05], bob: 0.028, bobSpeed: 1.6, swing: 0.05, yaw: -0.5, fingers: [0.28, 0.28, 0.3, 2.2] }
 });
 
 const REACTION_SECONDS = Object.freeze({ wave: 1.8, nod: 1.0, celebrate: 1.3, alert: 1.0, glance: 1.8, stretch: 1.6, spin: 1.1 });
@@ -141,7 +158,8 @@ export async function createHelmy({ container, modelUrl, reducedMotion = false }
     helmyRestInverse: { value: new Matrix4() },
     helmyArmLeft: { value: new Vector3() },
     helmyArmRight: { value: new Vector3() },
-    helmyHead: { value: new Vector3() }
+    helmyHead: { value: new Vector3() },
+    helmyFingers: { value: new Vector4() }
   };
   let rigged = 0;
   model.traverse((object) => {
@@ -185,7 +203,8 @@ export async function createHelmy({ container, modelUrl, reducedMotion = false }
     yaw: MOODS.idle.yaw,
     roll: 0,
     lift: 0,
-    squash: 1
+    squash: 1,
+    fingers: [0.35, 0.35, 0.25, 1.4]
   };
   const status = {
     mood: "idle",
@@ -199,7 +218,8 @@ export async function createHelmy({ container, modelUrl, reducedMotion = false }
     dragSpeed: 0,
     travel: 0,
     travelAt: -Infinity,
-    fidgetAt: 0
+    fidgetAt: 0,
+    fingerPhase: 0
   };
   let width = 0;
   let heightPx = 0;
@@ -215,7 +235,9 @@ export async function createHelmy({ container, modelUrl, reducedMotion = false }
     if (nextWidth === width && nextHeight === heightPx) return;
     width = nextWidth;
     heightPx = nextHeight;
-    renderer.setPixelRatio(Math.min(2, globalThis.devicePixelRatio || 1));
+    // At least 1.5x even on standard screens: he is small, so drawing extra
+    // pixels and scaling down keeps curved edges smooth for little cost.
+    renderer.setPixelRatio(Math.min(2, Math.max(1.5, globalThis.devicePixelRatio || 1)));
     renderer.setSize(width, heightPx, false);
     camera.aspect = width / heightPx;
     camera.updateProjectionMatrix();
@@ -242,7 +264,8 @@ export async function createHelmy({ container, modelUrl, reducedMotion = false }
       roll: 0,
       lift: 0,
       squash: 1,
-      spin: 0
+      spin: 0,
+      fingers: [...mood.fingers]
     };
     if (reducedMotion) return target;
 
@@ -265,6 +288,9 @@ export async function createHelmy({ container, modelUrl, reducedMotion = false }
     if (status.hover && !status.dragging) {
       target.lift += 0.04;
       target.squash *= 1.02;
+      target.fingers[1] = 0.15;
+      target.fingers[2] = 0.45;
+      target.fingers[3] = 5;
     }
 
     // Carried: leans against the motion and paddles his arms.
@@ -277,6 +303,8 @@ export async function createHelmy({ container, modelUrl, reducedMotion = false }
       target.right = [0, 0.1, 0.25 - paddle];
       target.head[1] = -0.12;
       target.squash = 1.05;
+      // Grabbing at the air while he is carried.
+      target.fingers = [0.45 + Math.sin(now * 9) * 0.4, 0.45 - Math.sin(now * 9) * 0.4, 0.3, 6];
     } else if (now - status.travelAt < 1.1) {
       // Gliding somewhere: turns and leans into it, arms trailing.
       const direction = Math.sign(status.travel) || 1;
@@ -298,6 +326,8 @@ export async function createHelmy({ container, modelUrl, reducedMotion = false }
         target.right = [Math.sin(elapsed * 10) * 0.35 * envelope, 0.3, 1.02 - 2.3 * envelope];
         target.head[2] = -0.12 * envelope;
         target.yaw = target.yaw * (1 - envelope) + 0.15 * envelope;
+        // An open hand whose fingers flutter as it waves.
+        target.fingers = [target.fingers[0], 0.35 - 0.5 * envelope, 0.45, 9];
       } else if (reaction === "nod") {
         target.head[1] = Math.sin(elapsed * 12) * 0.28 * envelope;
         target.lift += 0.02 * envelope;
@@ -307,12 +337,14 @@ export async function createHelmy({ container, modelUrl, reducedMotion = false }
         target.lift += Math.sin(t * Math.PI) * 0.28;
         target.spin = easeOutBack(t) * TAU;
         target.head[1] = -0.2 * envelope;
+        target.fingers = [0.35 - 0.55 * envelope, 0.35 - 0.55 * envelope, 0.35, 7];
       } else if (reaction === "alert") {
         target.roll = Math.sin(elapsed * 38) * 0.18 * (1 - t);
         target.left = [0, 0.4, 1.02 - 1.6 * envelope];
         target.right = [0, 0.4, 1.02 - 1.6 * envelope];
         target.squash = 1 - 0.06 * envelope;
         target.head[1] = -0.1;
+        target.fingers = [0.35 - 0.6 * envelope, 0.35 - 0.6 * envelope, 0.15, 3];
       } else if (reaction === "glance") {
         const side = status.glanceSide || 1;
         target.head[0] = side * 0.75 * envelope;
@@ -322,6 +354,8 @@ export async function createHelmy({ container, modelUrl, reducedMotion = false }
         target.right = [0, 0.05, 1.02 - 2.2 * envelope];
         target.head[1] = -0.25 * envelope;
         target.squash = 1 + 0.05 * envelope;
+        // Fingers spread wide at the top of the stretch.
+        target.fingers = [0.35 - 0.6 * envelope, 0.35 - 0.6 * envelope, 0.2, 2];
       } else if (reaction === "spin") {
         target.spin = easeOutBack(t) * TAU;
         target.lift += 0.08 * envelope;
@@ -343,6 +377,8 @@ export async function createHelmy({ container, modelUrl, reducedMotion = false }
     pose.roll = approach(pose.roll, target.roll, reducedMotion ? 1_000 : 10, dt);
     pose.lift = approach(pose.lift, target.lift, reducedMotion ? 1_000 : 12, dt);
     pose.squash = approach(pose.squash, target.squash, reducedMotion ? 1_000 : 14, dt);
+    for (let index = 0; index < 4; index += 1) pose.fingers[index] = approach(pose.fingers[index], target.fingers[index], reducedMotion ? 1_000 : 10, dt);
+    if (!reducedMotion) status.fingerPhase = (status.fingerPhase + dt * pose.fingers[3]) % (TAU * 1_000);
 
     // Uniforms: [twist, forward, drop] become rotations about x, y and z.
     // The right arm (x > 0) lowers with a negative z turn and swings forward
@@ -350,6 +386,7 @@ export async function createHelmy({ container, modelUrl, reducedMotion = false }
     uniforms.helmyArmRight.value.set(pose.right[0], -pose.right[1], -pose.right[2]);
     uniforms.helmyArmLeft.value.set(-pose.left[0], pose.left[1], pose.left[2]);
     uniforms.helmyHead.value.set(pose.head[0], pose.head[1], pose.head[2]);
+    uniforms.helmyFingers.value.set(pose.fingers[0], pose.fingers[1], reducedMotion ? 0 : pose.fingers[2], status.fingerPhase);
     body.rotation.set(0, pose.yaw, pose.roll);
     body.position.set(0, pose.lift, 0);
     body.scale.set(1 / Math.sqrt(pose.squash), pose.squash, 1 / Math.sqrt(pose.squash));
