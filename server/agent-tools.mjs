@@ -310,7 +310,11 @@ async function recentEvents(_snapshot, context, args) {
 // Common words that say nothing about what to look for in the manual.
 const MANUAL_STOP_WORDS = new Set(("a an and any are as at be can could did do does for from get go has have how i i'm in is it it's its "
   + "me my of on or our please show tell than that the their them then there this to up use using was we what what's when where which "
-  + "who why will with would you your yes no ok okay thanks look find search manual tool search_manual about know need want").split(" "));
+  + "who why will with would you your yes no ok okay thanks look find search manual tool search_manual about know need want "
+  // Time and "what happened" words describe when, not what: matching them pulls
+  // unrelated notes such as "memtest86+ overnight" into a history question.
+  + "anything something everything happen happened happening going on today tonight yesterday overnight night morning "
+  + "afternoon evening week weekend month lately recently recent past last since hour hours day days ago now current currently").split(" "));
 
 /** Words worth searching for in a question or query, most specific first. */
 export function manualKeywords(text, limit = 8) {
