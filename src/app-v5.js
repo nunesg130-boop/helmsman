@@ -8816,7 +8816,7 @@ function renderArrIndexers(service) {
   return `<header>
       <div><span class="section-kicker">${escapeHtml(label)}</span><h3 id="arr-indexers-title">Indexers</h3></div>
       <div class="prowlarr-panel__actions">
-        ${current.data ? `<span class="prowlarr-panel__summary">${failing ? `<b>${failing} failing</b> · ` : ""}${indexers.length} indexer${indexers.length === 1 ? "" : "s"}</span>` : ""}
+        ${current.data ? `<span class="prowlarr-panel__summary">${failing ? `<b>${failing} failing</b> · ` : ""}${indexers.length} indexer${indexers.length === 1 ? "" : "s"}${current.data.statusAvailable === false ? " · failure details not reported" : ""}</span>` : ""}
         <button class="button button--compact" type="button" data-action="arr-indexer-test-all" data-arr-service="${escapeHtml(service)}" ${disabled || !indexers.length ? "disabled" : ""}${current.busy === "test-all" ? ' aria-busy="true"' : ""}>${current.busy === "test-all" ? "Testing…" : "Test all"}</button>
         <button class="button button--compact" type="button" data-action="arr-indexer-refresh" data-arr-service="${escapeHtml(service)}" ${current.loading ? 'disabled aria-busy="true"' : ""}>${icon("refresh")}<span class="sr-only">Refresh indexers</span></button>
       </div>

@@ -699,7 +699,9 @@ label > small {
    V5 uses direct spans for empty-state copy, so release that fixed width or
    sentences collapse into a narrow vertical column. */
 .detail-page .empty-state > span,
-.settings-page-v5 .empty-state > span {
+.settings-page-v5 .empty-state > span,
+.prowlarr-panel .empty-state > span,
+.arr-indexers .empty-state > span {
   display: block;
   width: min(100%, 520px);
   height: auto;

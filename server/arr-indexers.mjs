@@ -85,6 +85,20 @@ function isoTime(value) {
 }
 
 /** GET /api/v3/indexer and /api/v3/indexerstatus as safe summaries. */
+/**
+ * Failure records are an optional extra. Some Sonarr and Radarr builds answer
+ * /api/v3/indexerstatus with 404 (or 405), so a missing endpoint means "no
+ * failure details" rather than "no indexers". Returns the status body to parse
+ * and whether failure details were available, or null for any other non-2xx
+ * answer so the caller can report it.
+ */
+export function optionalIndexerStatus(response) {
+  const status = Number(response?.status);
+  if (status >= 200 && status < 300) return { body: response.body, available: true };
+  if (status === 404 || status === 405) return { body: [], available: false };
+  return null;
+}
+
 export function parseArrIndexers(listBody, statusBody) {
   if (!Array.isArray(listBody)) throw new TypeError("invalid indexer list");
   const statuses = new Map();

@@ -19,7 +19,7 @@ import {
 import { createControlPlane, ControlPlaneError } from "./control-plane.mjs";
 import { createEventJournal } from "./event-journal.mjs";
 import { createDiagnostics, tracedDispatcher } from "./diagnostics.mjs";
-import { ARR_INDEXER_LIMITS, ARR_INDEXER_OPERATIONS, ARR_INDEXER_SERVICES, arrValidationMessage, authorizeArrIndexerStep, parseArrIndexers, parseArrTestResults } from "./arr-indexers.mjs";
+import { ARR_INDEXER_LIMITS, ARR_INDEXER_OPERATIONS, ARR_INDEXER_SERVICES, arrValidationMessage, authorizeArrIndexerStep, parseArrIndexers, parseArrTestResults, optionalIndexerStatus } from "./arr-indexers.mjs";
 import { createHealthIncidentEngine } from "./health-engine.mjs";
 import { normalizeLokiQueryResult, authorizeLokiRoute } from "./loki.mjs";
 import { probeLoki } from "./loki-probes.mjs";
@@ -2835,11 +2835,11 @@ export async function createBroker(options = {}) {
       read("/api/v3/indexer", ARR_INDEXER_LIMITS.listBytes),
       read("/api/v3/indexerstatus", ARR_INDEXER_LIMITS.resultBytes)
     ]);
-    for (const [response, what] of [[list, "indexer list"], [status, "indexer status"]]) {
-      if (response.status < 200 || response.status >= 300) throw arrIndexerStatusError(service, response.status, what);
-    }
+    if (list.status < 200 || list.status >= 300) throw arrIndexerStatusError(service, list.status, "indexer list");
+    const failures = optionalIndexerStatus(status);
+    if (!failures) throw arrIndexerStatusError(service, status.status, "indexer status");
     try {
-      return { checkedAt: new Date().toISOString(), indexers: parseArrIndexers(list.body, status.body) };
+      return { checkedAt: new Date().toISOString(), statusAvailable: failures.available, indexers: parseArrIndexers(list.body, failures.body) };
     } catch {
       throw new BrokerError(502, "UPSTREAM_CONTENT_REJECTED", `${ARR_LABELS[service]} returned an indexer list Helmsman could not read.`);
     }
