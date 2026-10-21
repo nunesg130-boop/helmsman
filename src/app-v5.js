@@ -5128,6 +5128,7 @@ async function decideAgentProposal(button) {
     const result = await api(`/api/v2/agent/proposals/${id}`, { method: "POST", body: { decision } });
     state.agent.decisions.set(id, { status: result?.status || (decision === "approve" ? "approved" : "declined"), outcome: safeSessionText(result?.outcome, "", 200), label });
     showToast(decision === "approve" ? `${label}: done.` : "Declined.", "success");
+    if (decision === "approve") helmyReact("celebrate");
   } catch (error) {
     if (error?.status === 401) await initialize();
     else {
@@ -5181,6 +5182,7 @@ async function askAgent(source = "page") {
       .map((proposal) => (typeof proposal === "string" ? proposal : proposal?.id))
       .filter((id) => typeof id === "string" && /^[a-f0-9-]{36}$/u.test(id));
     state.agent.chat.push({ role: "assistant", content: String(result?.answer || "No answer."), proposals: proposalIds });
+    helmyReact("nod");
     if (result?.proposals?.length) await loadAgent();
   } catch (error) {
     if (error?.status === 401) {
@@ -5222,8 +5224,55 @@ const helper = {
   bubbleTimer: 0,
   renderedKey: "",
   announcedNote: "",
-  baselineNote: undefined
+  baselineNote: undefined,
+  // The live 3D Helmy, once loaded; the flat image stays as the fallback.
+  helmy: null,
+  helmyLoad: null,
+  onPointer: null
 };
+
+const HELMY_MODEL_URL = "./assets/helmy/helmy.glb";
+
+// Loads the 3D helper in the background. Any failure (no WebGL, an old
+// browser, a blocked file) leaves the flat picture in place.
+function loadHelmy() {
+  if (!helper.root || helper.helmy || helper.helmyLoad) return;
+  const root = helper.root;
+  const container = root.querySelector(".agent-helper__float");
+  helper.helmyLoad = import("./ui/agent-helper-3d.js")
+    .then(async ({ createHelmy, helmySupported }) => {
+      if (!helmySupported()) return;
+      const controller = await createHelmy({ container, modelUrl: HELMY_MODEL_URL, reducedMotion: helperReducedMotion() });
+      if (helper.root !== root) {
+        controller.destroy();
+        return;
+      }
+      controller.onLost = () => {
+        if (helper.helmy === controller) helper.helmy = null;
+        root.classList.remove("has-3d");
+      };
+      helper.helmy = controller;
+      root.classList.add("has-3d");
+      controller.mood(helperMood());
+    })
+    .catch(() => {
+      // The picture is already showing; nothing else to do.
+    })
+    .finally(() => {
+      if (helper.root === root) helper.helmyLoad = null;
+    });
+}
+
+function helperMood() {
+  if (state.agent.asking) return "thinking";
+  if (helper.open) return "chat";
+  const open = state.snapshot?.incidents?.open;
+  return Array.isArray(open) && open.length ? "alert" : "idle";
+}
+
+function helmyReact(name) {
+  helper.helmy?.react(name);
+}
 
 function readHelperStorage(key) {
   try {
@@ -5307,6 +5356,7 @@ function saveHelperHome() {
 
 function placeHelper(x, y, { glide = false } = {}) {
   const position = clampHelper(x, y);
+  if (glide) helper.helmy?.travel(position.x - helper.x);
   helper.x = position.x;
   helper.y = position.y;
   if (!helper.root) return;
@@ -5375,6 +5425,10 @@ function createAgentHelper() {
   helper.renderedKey = "";
 
   helper.buddy.addEventListener("pointerdown", startHelperDrag);
+  helper.buddy.addEventListener("pointerenter", () => helper.helmy?.hover(true));
+  helper.buddy.addEventListener("pointerleave", () => helper.helmy?.hover(false));
+  helper.onPointer = (event) => helper.helmy?.pointer(event.clientX, event.clientY);
+  document.addEventListener("pointermove", helper.onPointer, { passive: true });
   helper.buddy.addEventListener("click", () => {
     if (helper.suppressClick) {
       helper.suppressClick = false;
@@ -5408,19 +5462,22 @@ function createAgentHelper() {
   placeHelper(helper.home.x, helper.home.y);
   requestAnimationFrame(() => root.classList.add("is-ready"));
   scheduleHelperWander();
+  loadHelmy();
 }
 
 function removeAgentHelper() {
   clearTimeout(helper.wanderTimer);
   clearTimeout(helper.bubbleTimer);
+  helper.helmy?.destroy();
+  if (helper.onPointer) document.removeEventListener("pointermove", helper.onPointer);
   helper.root?.remove();
   document.body.classList.remove("has-agent-helper");
-  Object.assign(helper, { root: null, buddy: null, panel: null, bubble: null, open: false, drag: null, renderedKey: "" });
+  Object.assign(helper, { root: null, buddy: null, panel: null, bubble: null, open: false, drag: null, renderedKey: "", helmy: null, helmyLoad: null, onPointer: null });
 }
 
 function startHelperDrag(event) {
   if (event.button !== 0 && event.pointerType === "mouse") return;
-  helper.drag = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, originX: helper.x, originY: helper.y, moved: false };
+  helper.drag = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, originX: helper.x, originY: helper.y, moved: false, lastX: event.clientX, lastAt: event.timeStamp };
   helper.buddy.setPointerCapture?.(event.pointerId);
   helper.buddy.addEventListener("pointermove", moveHelperDrag);
   helper.buddy.addEventListener("pointerup", endHelperDrag);
@@ -5440,6 +5497,10 @@ function moveHelperDrag(event) {
   }
   placeHelper(drag.originX + dx, drag.originY + dy);
   helper.root.classList.toggle("is-facing-left", dx < 0);
+  const elapsed = Math.max(1, event.timeStamp - drag.lastAt);
+  helper.helmy?.drag(((event.clientX - drag.lastX) / elapsed) * 1000);
+  drag.lastX = event.clientX;
+  drag.lastAt = event.timeStamp;
 }
 
 function endHelperDrag(event) {
@@ -5451,6 +5512,7 @@ function endHelperDrag(event) {
   helper.buddy.removeEventListener("pointercancel", endHelperDrag);
   helper.drag = null;
   helper.root.classList.remove("is-dragging");
+  helper.helmy?.drop();
   if (drag.moved) {
     helper.suppressClick = true;
     helper.home = { x: helper.x, y: helper.y };
@@ -5492,6 +5554,7 @@ function closeAgentHelper({ returnHome = true } = {}) {
   helper.root.classList.remove("is-open");
   helper.buddy.setAttribute("aria-expanded", "false");
   helper.panel.hidden = true;
+  helper.helmy?.mood(helperMood());
   if (returnHome && helper.home) placeHelper(helper.home.x, helper.home.y, { glide: true });
   scheduleHelperWander();
 }
@@ -5518,6 +5581,7 @@ function announceHelperNote(note) {
   if (!helper.bubble || helper.open || !note || helper.announcedNote === note.id) return;
   helper.announcedNote = note.id;
   if (!["incident", "rule-action", "recovery"].includes(note.kind)) return;
+  helmyReact(note.kind === "incident" ? "alert" : note.kind === "recovery" ? "celebrate" : "nod");
   helper.bubble.textContent = note.title || "New report";
   helper.bubble.hidden = false;
   clearTimeout(helper.bubbleTimer);
@@ -5531,6 +5595,7 @@ function syncAgentHelper({ force = false } = {}) {
     return;
   }
   if (!helper.root) createAgentHelper();
+  helper.helmy?.mood(helperMood());
   const data = agentData();
   const ready = Boolean(data.config?.ai);
   const proposals = data.proposals || [];

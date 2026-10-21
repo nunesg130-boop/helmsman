@@ -148,6 +148,7 @@ const permittedBinaryFiles = new Set([
   "assets/icon-512.png",
   "assets/icon-maskable-512.png",
   "assets/agent-helper.png",
+  "assets/helmy/helmy.glb",
   "assets/services/bazarr.png",
   "assets/services/prowlarr.png",
   "assets/services/proxmox.png",

@@ -34,6 +34,8 @@ named [Helmsman](https://github.com/mkubaczyk/helmsman).
 
 **No more cut-off text.** Proxmox and Portainer tiles reflow before their values get cut off, the Portainer endpoint gets its own row, card descriptions wrap, request times in Requests & warnings are shorter, poster, calendar and request titles get two or three lines, and the header shows the workspace name ("Infrastructure") instead of a truncated "Infrastructure operations".
 
+**Helmy comes alive.** The floating helper is now drawn live in 3D. He floats and breathes, glances around and stretches now and then, follows your mouse with his head, waves when you hover over him, folds his arms and thinks while the agent writes an answer, flinches when something breaks, celebrates (with a spin) when it recovers or when you approve an action, nods at answers, leans into it when you drag him, and turns toward the chat when it opens. He holds still when your system asks for reduced motion, draws nothing while the tab is hidden, runs at 30 frames a second at most, and falls back to the old picture if 3D can't start. The model's credits are in [assets/helmy/NOTICE.md](assets/helmy/NOTICE.md); three.js (MIT) draws him.
+
 **Visual layout tests in CI.** The two browser layout contracts (`npm run check:visual`) were updated to the current design and now run in CI.
 
 ## v1.14.2

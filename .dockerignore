@@ -31,6 +31,9 @@
 !assets/workloads
 !assets/workloads/vm.svg
 !assets/workloads/container.svg
+!assets/helmy
+!assets/helmy/helmy.glb
+!assets/helmy/NOTICE.md
 !src
 !src/app-v5.js
 !src/ui
@@ -43,6 +46,10 @@
 !src/ui/obsidian-glass.css
 !src/ui/network-map.css
 !src/ui/logging.css
+!src/ui/agent-helper-3d.js
+!src/vendor
+!src/vendor/three-helmy.js
+!src/vendor/three-LICENSE.txt
 !server
 !server/broker.mjs
 !server/control-plane.mjs

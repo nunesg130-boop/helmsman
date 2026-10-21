@@ -5826,6 +5826,29 @@ ul.manual-list > li.manual-task::before {
   50% { translate: 0 -9px; rotate: 2deg; }
 }
 
+/* The live 3D Helmy replaces the picture once it has loaded. The canvas is
+   larger than the button so raised arms and spins are never clipped, and it
+   moves itself, so the CSS float and flip turn off. */
+.agent-helper__float { position: relative; }
+
+.agent-helper__canvas {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 150%;
+  aspect-ratio: 1;
+  pointer-events: none;
+  transform: translate(-50%, -54%);
+}
+
+.agent-helper.has-3d .agent-helper__float {
+  animation: none;
+  filter: drop-shadow(0 12px 12px rgba(0, 0, 0, 0.42));
+}
+
+.agent-helper.has-3d .agent-helper__float img { visibility: hidden; }
+.agent-helper.has-3d.is-dragging .agent-helper__float { transform: none; }
+
 .agent-helper__badge {
   position: absolute;
   top: 4px;

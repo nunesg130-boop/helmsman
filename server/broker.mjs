@@ -96,6 +96,7 @@ const STATIC_PREFIXES = ["assets/", "src/"];
 
 const MIME_TYPES = Object.freeze({
   ".css": "text/css; charset=utf-8",
+  ".glb": "model/gltf-binary",
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
   ".jpeg": "image/jpeg",
@@ -1444,7 +1445,9 @@ function safeStaticRelativePath(pathname) {
 
 // Static files rarely change, so their bytes, ETag and gzip form are kept in
 // memory per file version (path, size and modification time).
-const STATIC_COMPRESSIBLE = new Set([".html", ".js", ".mjs", ".css", ".svg", ".json", ".webmanifest", ".md", ".txt"]);
+// .glb: the helper model's geometry compresses well even though its JPEG
+// textures do not.
+const STATIC_COMPRESSIBLE = new Set([".html", ".js", ".mjs", ".css", ".svg", ".json", ".webmanifest", ".md", ".txt", ".glb"]);
 const staticCache = new Map();
 const MAX_STATIC_CACHE_ENTRIES = 128;
 
