@@ -5344,12 +5344,12 @@ ul.manual-list > li.manual-task::before {
   cursor: pointer;
 }
 
-.agent-text-button:disabled {
+.agent-text-button:is(:disabled, [aria-disabled="true"]) {
   color: var(--muted);
   cursor: default;
 }
 
-.agent-text-button:is(:hover, :focus-visible):not(:disabled) {
+.agent-text-button:is(:hover, :focus-visible):not(:disabled, [aria-disabled="true"]) {
   text-decoration: underline;
 }
 

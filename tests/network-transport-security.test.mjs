@@ -133,6 +133,9 @@ test("network policy is bounded and blocks SSRF, mixed DNS, and unsafe public tr
     (error) => error.code === "DNS_MIXED_POLICY"
   );
 
+  // The lookup timer is unref'd and the fake lookup never settles, so on
+  // some Node versions nothing else keeps the test process alive.
+  const keepAlive = setTimeout(() => {}, 1_000);
   await assert.rejects(
     resolveAndAuthorizeTarget("https://timeout.test", {
       allowedCidrs: [],
@@ -143,6 +146,7 @@ test("network policy is bounded and blocks SSRF, mixed DNS, and unsafe public tr
     }),
     (error) => error.code === "DNS_FAILED"
   );
+  clearTimeout(keepAlive);
 
   const privateTarget = await resolveAndAuthorizeTarget("http://media.test:8096", PRIVATE_POLICY, {
     lookup: async () => [{ address: "10.20.30.40", family: 4 }]

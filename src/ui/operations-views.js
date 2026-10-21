@@ -1399,7 +1399,7 @@ function renderRecoveries(snapshot) {
  * event handling remains with app.js through existing data-action, route, and
  * data-service-id hooks.
  */
-export function renderOperationsOverview(value = {}, configuredInfrastructureTargets = []) {
+export function renderOperationsOverview(value = {}, configuredInfrastructureTargets = [], appendix = "") {
   const normalized = normalizeOperationsSnapshot(value, configuredInfrastructureTargets);
   const snapshot = {
     ...normalized,
@@ -1443,6 +1443,7 @@ export function renderOperationsOverview(value = {}, configuredInfrastructureTar
           ${renderRecoveries(snapshot)}
         </aside>
       </div>
+      ${appendix}
     </div>`;
 }
 

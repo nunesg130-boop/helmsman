@@ -2446,9 +2446,9 @@ function mediaOnlyOperationsSnapshot() {
 }
 
 function renderMediaHealthPage() {
-  const panel = renderProwlarrPanel();
-  const overview = renderOperationsOverview(mediaOnlyOperationsSnapshot(), []);
-  return panel ? `<div class="media-health-stack">${overview}${panel}</div>` : overview;
+  // The indexer panel goes inside the page so it shares the page's padding
+  // and lines up with the cards above it at every width.
+  return renderOperationsOverview(mediaOnlyOperationsSnapshot(), [], renderProwlarrPanel());
 }
 
 function mediaRecordById(id) {
@@ -4450,7 +4450,7 @@ function renderAgentOverviewCard() {
   return `<section class="system-overview-card system-overview-card--agent" aria-labelledby="system-agent-title">${header}
     <div class="agent-overview">
       <section class="agent-reports" aria-labelledby="agent-reports-title">
-        <header><h4 id="agent-reports-title">Reports</h4><button class="agent-text-button" type="button" data-action="agent-run" data-job="digest" ${digestBusy ? "disabled aria-busy=\"true\"" : ""}>${digestBusy ? "Writing summary…" : "Summarize now"}</button></header>
+        <header><h4 id="agent-reports-title">Reports</h4><button class="agent-text-button" type="button" data-action="agent-run" data-job="digest" ${digestBusy ? "aria-disabled=\"true\" aria-busy=\"true\"" : ""}>${digestBusy ? "Writing summary…" : "Summarize now"}</button></header>
         ${backgroundProposals(proposals).length ? `<div class="agent-proposals"><span class="section-kicker">Waiting for your approval</span><ul>${backgroundProposals(proposals).map(renderAgentProposal).join("")}</ul></div>` : ""}
         ${notes.length
           ? `<ul class="agent-notes">${notes.map(renderAgentNote).join("")}</ul>`
