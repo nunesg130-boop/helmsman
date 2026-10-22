@@ -71,6 +71,14 @@ const NOTIFICATIONS_PER_HOUR = 20;
 const RULE_ACTIONS_PER_DAY = 10;
 const DIGEST_GRACE_MS = 2 * 60 * 60_000;
 const TICK_MS = 60_000;
+// After a Proxmox node restarts, its guests and their services come back one
+// by one over several minutes, and each would open and close incidents of its
+// own. Alerts are held until every node has been up this long, then one
+// summary goes out.
+const RESTART_SETTLE_MS = 10 * 60_000;
+// A hold never lasts longer than this; after it, alerts flow normally even if
+// a node is still away.
+const RESTART_HOLD_MAX_MS = 30 * 60_000;
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u;
 const SAFE_SECRET = /^[^\u0000-\u001f\u007f-\u009f\s]{1,4096}$/u;
 const STATE_PRIORITY = Object.freeze({ healthy: 0, stale: 1, limited: 2, auth_required: 3, degraded: 3, down: 4 });
@@ -313,6 +321,9 @@ export async function createAgent(options) {
   const stuckNow = new Map();
   // Services whose incident was reported quietly; their recovery is quiet too.
   const quietServices = new Set();
+  // Restart awareness: last uptime seen per node, and the hold in progress.
+  const nodeUptime = new Map();
+  let restart = null;
   // Failing indexers the agent is testing: id -> { name, since, tests, nextAt, done, doneAt }.
   const indexerWatch = new Map();
   const indexerTestTimes = [];
@@ -646,6 +657,7 @@ export async function createAgent(options) {
       manual,
       now: () => clock(),
       timeZone: settings.timeZone,
+      restart: publicRestart(),
       propose: allowProposals ? createProposal(source, service) : null,
       indexers: typeof readIndexers === "function" && prowlarrService()
         ? { status: indexerStatusText, ...(indexersPolicy().enabled ? { test: testIndexerByName } : {}) }
@@ -876,6 +888,11 @@ export async function createAgent(options) {
     group.items = group.items.filter((item) => item.incident.id !== incident.id);
     group.items.push({ incident, change, previousState });
     incidentGroups.set(incident.service, group);
+    // While nodes restart, incidents are collected for the summary instead.
+    if (restartHolding()) {
+      restart.held.add(incident.service);
+      return;
+    }
     enqueue({ key: `incident:${incident.service}`, run: () => reportIncidents(incident.service) });
   }
 
@@ -940,6 +957,8 @@ export async function createAgent(options) {
   function onRecovery(_current, recovery) {
     const settings = config().settings;
     if (!settings.enabled || !settings.triggers.recoveries) return;
+    // Recoveries during a restart are part of the summary at its end.
+    if (restartHolding()) return;
     const items = recoveryGroups.get(recovery.service) || [];
     if (!items.some((item) => item.id === recovery.id)) items.push(recovery);
     recoveryGroups.set(recovery.service, items);
@@ -1631,10 +1650,145 @@ export async function createAgent(options) {
 
   // ------------------------------------------------------------ watching --
 
+  // ------------------------------------------------------------ restarts --
+
+  function restartHolding() {
+    return Boolean(restart && !restart.expired);
+  }
+
+  /** Which nodes are restarting right now, from Proxmox's own uptime and status. */
+  function restartSignals(current, now) {
+    const signals = [];
+    for (const environment of current?.infrastructure?.environments || []) {
+      const environmentName = plainText(environment.displayName, 40) || "Proxmox";
+      const unreachable = environment.connectionState === "down";
+      if (unreachable) signals.push({ key: `${environment.id}:*`, name: environmentName, reason: "unreachable" });
+      for (const node of environment.nodes || []) {
+        const name = plainText(node.name, 40);
+        if (!name) continue;
+        const key = `${environment.id}:${name}`;
+        const uptime = Number.isFinite(node.uptimeSeconds) && node.uptimeSeconds > 0 ? node.uptimeSeconds : null;
+        const previous = nodeUptime.get(key);
+        if (uptime !== null) nodeUptime.set(key, { uptime, at: now });
+        if (unreachable) continue;
+        if (node.status === "offline") {
+          signals.push({ key, name, reason: "offline" });
+        } else if (uptime !== null && uptime * 1_000 < RESTART_SETTLE_MS) {
+          // Up for less than the settle time: it booted recently, whether or
+          // not Helmsman saw it go away.
+          signals.push({ key, name, reason: "booting", bootedAt: now - uptime * 1_000 });
+        } else if (uptime !== null && previous && uptime < previous.uptime + (now - previous.at) / 1_000 - 180) {
+          // Uptime went backwards: it rebooted between two looks.
+          signals.push({ key, name, reason: "booting", bootedAt: now - uptime * 1_000 });
+        }
+      }
+    }
+    return signals;
+  }
+
+  function updateRestart(current) {
+    const now = clock();
+    const signals = restartSignals(current, now);
+    if (signals.length) {
+      if (!restart) {
+        restart = { since: now, nodes: new Map(), held: new Set(), expired: false, announced: false };
+        // A node or Proxmox that drops out unannounced is worth one heads-up;
+        // a reboot only seen afterwards (from its uptime) is not.
+        const away = signals.filter((signal) => signal.reason !== "booting");
+        if (away.length && config().settings.enabled) {
+          restart.announced = true;
+          const names = [...new Set(away.map((signal) => signal.name))];
+          enqueue({
+            key: "restart-start",
+            run: () => notifyNote(addNote({
+              kind: "incident",
+              title: `${listNames(names)} ${names.length === 1 ? "is" : "are"} restarting or offline`,
+              text: `Lost contact with ${listNames(names)}. I'm holding other alerts while ${names.length === 1 ? "it comes" : "they come"} back and will send one summary once everything has been up for ${RESTART_SETTLE_MS / 60_000} minutes.`
+            }))
+          });
+        }
+      }
+      for (const signal of signals) {
+        const entry = restart.nodes.get(signal.key) || { name: signal.name, reasons: new Set(), bootedAt: null };
+        entry.reasons.add(signal.reason);
+        if (signal.bootedAt) entry.bootedAt = Math.min(entry.bootedAt ?? signal.bootedAt, signal.bootedAt);
+        restart.nodes.set(signal.key, entry);
+      }
+      if (!restart.expired && now - restart.since >= RESTART_HOLD_MAX_MS) {
+        restart.expired = true;
+        releaseHeld(current, { expired: true });
+      }
+      return;
+    }
+    if (!restart) return;
+    const ended = restart;
+    restart = null;
+    if (!ended.expired) releaseHeld(current, { ended });
+  }
+
+  function listNames(names) {
+    return names.length <= 1 ? names[0] || "A node" : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+  }
+
+  // Ends a hold: one note says what restarted and what is still broken.
+  // Problems still open are marked as reported so they are not announced
+  // again one by one; their recoveries are announced as usual later.
+  function releaseHeld(current, { ended = restart, expired = false } = {}) {
+    if (!ended) return;
+    const open = current?.incidents?.open || [];
+    const openServices = new Set(open.map((incident) => incident.service));
+    for (const service of [...incidentGroups.keys()]) {
+      if (!ended.held.has(service) && !expired) continue;
+      incidentGroups.delete(service);
+    }
+    // Anything reported before the restart and fine now is covered by the
+    // summary, so its own recovery is not announced separately.
+    for (const service of [...reported.keys()]) {
+      if (!openServices.has(service)) {
+        reported.delete(service);
+        quietServices.delete(service);
+      }
+    }
+    for (const incident of open) {
+      const priority = STATE_PRIORITY[incident.state] ?? 0;
+      if ((reported.get(incident.service)?.priority ?? -1) < priority) reported.set(incident.service, { priority, at: clock() });
+    }
+    if (!config().settings.enabled) return;
+    const tz = config().settings.timeZone;
+    const names = [...new Set([...ended.nodes.values()].map((entry) => entry.name))];
+    const firstSeen = Math.min(ended.since, ...[...ended.nodes.values()].map((entry) => entry.bootedAt ?? ended.since));
+    const lines = open.slice(0, 8).map((incident) => `- ${incidentLine(current, incident, tz)}`);
+    const opening = expired
+      ? `${listNames(names)} ${names.length === 1 ? "has" : "have"} been restarting or unreachable since ${formatTime(new Date(firstSeen).toISOString(), tz)}, so I've stopped holding alerts.`
+      : `${listNames(names)} restarted around ${formatTime(new Date(firstSeen).toISOString(), tz)} and ${names.length === 1 ? "has" : "have"} been back for ${RESTART_SETTLE_MS / 60_000} minutes.`;
+    const text = open.length
+      ? `${opening} Still not working:\n${lines.join("\n")}`
+      : `${opening} Everything Helmsman watches is working again.`;
+    enqueue({
+      key: "restart-summary",
+      run: () => notifyNote(addNote({
+        kind: open.length ? "incident" : "recovery",
+        title: open.length ? `After the restart: ${open.length} problem${open.length === 1 ? "" : "s"} left` : `${listNames(names)} back after a restart`,
+        text
+      }))
+    });
+  }
+
+  function publicRestart() {
+    if (!restart) return null;
+    return {
+      since: new Date(restart.since).toISOString(),
+      holding: !restart.expired,
+      nodes: [...new Set([...restart.nodes.values()].map((entry) => entry.name))].slice(0, 12),
+      held: restart.held.size
+    };
+  }
+
   function onSnapshot(current) {
     if (!current || current.cache?.state === "cached" || !current.generatedAt) return;
     const open = Array.isArray(current.incidents?.open) ? current.incidents.open : [];
     const recent = Array.isArray(current.incidents?.recent) ? current.incidents.recent : [];
+    updateRestart(current);
     if (!seeded) {
       // Incidents already open when the agent starts are not announced again.
       for (const incident of open) {
@@ -1659,6 +1813,9 @@ export async function createAgent(options) {
         if (recovery) onRecovery(current, recovery);
       }
     }
+    // No automatic restarts or clean-ups while nodes are still coming back:
+    // the guests are starting on their own.
+    if (restartHolding()) return;
     ruleChain = ruleChain
       .then(() => evaluateRules(current))
       .catch(() => log("Agent rules could not be evaluated."))
@@ -1764,6 +1921,7 @@ export async function createAgent(options) {
         lastNotify: status.lastNotify,
         lastJobAt: status.lastJobAt,
         automaticActionsToday: automaticActionsToday(clock()),
+        restart: publicRestart(),
         configurationProblem: configStore.loadProblem
       },
       notes: activity.notes.slice(-30).reverse(),

@@ -379,6 +379,65 @@ test("an incident skipped for a rule's cooldown gets its turn once the cooldown 
   assert.equal(history[0].outcome, "succeeded");
 });
 
+function withNode(snapshot, node) {
+  snapshot.infrastructure.environments[0].nodes = [{ ...snapshot.infrastructure.environments[0].nodes[0], ...node }];
+  return snapshot;
+}
+
+test("a node restart sends one heads-up and one summary instead of an alert per service", async (t) => {
+  const { agent, context, publish } = await harness(t);
+  await configure(agent, { rules: [] });
+  const DAYS = 5 * 86_400;
+  await publish(withNode(snapshotAt(context.now), { uptimeSeconds: DAYS }));
+
+  // The node drops out, and its services start failing.
+  context.now += 60_000;
+  const firstSeen = context.now;
+  await publish(withNode(snapshotAt(context.now, { incidents: [sonarrIncident(firstSeen)] }), { status: "offline", uptimeSeconds: null }));
+  assert.equal(context.pushes.length, 1);
+  assert.match(context.pushes[0].title, /pve-1 is restarting or offline/u);
+
+  // Back, but only just booted: still holding, and no rule runs meanwhile.
+  for (let minute = 1; minute <= 9; minute += 1) {
+    context.now += 60_000;
+    const incidents = minute < 6 ? [sonarrIncident(firstSeen), sonarrIncident(context.now, { id: "radarr-1", service: "radarr" })] : [];
+    await publish(withNode(snapshotAt(context.now, { incidents }), { status: "online", uptimeSeconds: minute * 60 }));
+  }
+  assert.equal(context.pushes.length, 1, "nothing else is sent while the node settles");
+  assert.equal(context.actions.length, 0);
+  assert.equal((await api(agent, "GET", "/api/v2/agent")).payload.status.restart.holding, true);
+
+  // Up for ten minutes with everything working: one summary.
+  context.now += 2 * 60_000;
+  await publish(withNode(snapshotAt(context.now), { status: "online", uptimeSeconds: 11 * 60 }));
+  assert.equal(context.pushes.length, 2);
+  assert.match(context.pushes[1].title, /pve-1 back after a restart/u);
+  assert.match(context.pushes[1].message, /working again/u);
+  assert.equal((await api(agent, "GET", "/api/v2/agent")).payload.status.restart, null);
+});
+
+test("after a restart, the summary lists what is still broken and it is not announced again", async (t) => {
+  const { agent, context, publish } = await harness(t);
+  await configure(agent, { rules: [] });
+  // Helmsman starts while the node has only just booted (uptime 2 minutes).
+  await publish(withNode(snapshotAt(context.now), { uptimeSeconds: 120 }));
+  context.now += 60_000;
+  const firstSeen = context.now;
+  await publish(withNode(snapshotAt(context.now, { incidents: [sonarrIncident(firstSeen)] }), { uptimeSeconds: 180 }));
+  assert.equal(context.pushes.length, 0, "a reboot seen only from uptime gets no heads-up");
+
+  context.now += 9 * 60_000;
+  await publish(withNode(snapshotAt(context.now, { incidents: [sonarrIncident(firstSeen)] }), { uptimeSeconds: 12 * 60 }));
+  assert.equal(context.pushes.length, 1);
+  assert.match(context.pushes[0].title, /After the restart: 1 problem left/u);
+  assert.match(context.pushes[0].message, /Sonarr \/ status: down/u);
+
+  // The same outage is not reported a second time.
+  context.now += 60_000;
+  await publish(withNode(snapshotAt(context.now, { incidents: [sonarrIncident(firstSeen)] }), { uptimeSeconds: 13 * 60 }));
+  assert.equal(context.pushes.length, 1);
+});
+
 test("rules never run while autonomy is off or the agent is disabled", async (t) => {
   const { agent, context, publish } = await harness(t);
   await configure(agent, { autonomy: false });
