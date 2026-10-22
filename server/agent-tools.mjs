@@ -104,6 +104,9 @@ function overview(snapshot, context) {
   const plural = (count, word) => `${count} ${word}${count === 1 ? "" : "s"}`;
   lines.push(`Infrastructure: ${infra.state || "unknown"}, ${plural(infra.environmentCount ?? 0, "Proxmox environment")}, ${plural(infra.serviceCount ?? 0, "other service")}, ${(infra.affectedTargetCount ?? 0) + (infra.affectedServiceCount ?? 0)} affected.`);
   const open = allIncidents(snapshot);
+  if (context.restart) {
+    lines.push(`Restart in progress since ${formatTime(context.restart.since, tz)}: ${context.restart.nodes.join(", ") || "a Proxmox node"} ${context.restart.holding ? "restarting or just booted; alerts are held until every node has been up 10 minutes, so failures right now are expected while guests start" : "still away after 30 minutes; alerts are no longer held"}.`);
+  }
   lines.push(open.length ? `Open incidents (${open.length}):` : "Open incidents: none.");
   for (const incident of open.slice(0, 8)) lines.push(`- ${incidentLine(snapshot, incident, tz)}`);
   const recoveries = Array.isArray(snapshot.incidents?.recent) ? snapshot.incidents.recent.slice(0, 3) : [];
@@ -180,7 +183,8 @@ function workloadLines(snapshot) {
   for (const environment of snapshot.infrastructure?.environments || []) {
     const envName = untrusted(environment.displayName, 40);
     for (const node of environment.nodes || []) {
-      lines.push(`node ${untrusted(node.name, 40)} (${envName}): ${node.status}, cpu ${node.cpuPercent ?? "?"}%, memory ${percent(node.memoryUsedBytes, node.memoryTotalBytes)}`);
+      const uptime = Number.isFinite(node.uptimeSeconds) && node.uptimeSeconds > 0 ? `, up ${ago(node.uptimeSeconds).replace(/ ago$/u, "")}` : "";
+      lines.push(`node ${untrusted(node.name, 40)} (${envName}): ${node.status}${uptime}, cpu ${node.cpuPercent ?? "?"}%, memory ${percent(node.memoryUsedBytes, node.memoryTotalBytes)}`);
     }
     for (const workload of environment.workloads || []) {
       if (workload.template) continue;

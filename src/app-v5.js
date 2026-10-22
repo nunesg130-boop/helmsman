@@ -4358,6 +4358,7 @@ function agentStatus(data) {
   if (data.status?.configurationProblem) return { tone: "down", label: "Settings problem" };
   if (!data.config?.ai) return { tone: "disabled", label: "Not set up" };
   if (!data.status?.enabled) return { tone: "disabled", label: "Off" };
+  if (data.status?.restart?.holding) return { tone: "stale", label: "Holding alerts: restart" };
   if (data.status?.lastModel && data.status.lastModel.ok === false) return { tone: "degraded", label: "Model unreachable" };
   return { tone: "healthy", label: "Watching" };
 }
@@ -6197,11 +6198,17 @@ function renderInfrastructureStorageList(storage) {
     const freeBytes = entry.usedBytes !== null && entry.totalBytes !== null
       ? Math.max(0, entry.totalBytes - entry.usedBytes)
       : null;
-    const usage = entry.usagePercent === null ? "—" : `${entry.usagePercent}%`;
-    const capacity = entry.usedBytes === null || entry.totalBytes === null
-      ? "Capacity unavailable"
-      : `${formatMetricBytes(entry.usedBytes)} used · ${formatMetricBytes(freeBytes)} free · ${formatMetricBytes(entry.totalBytes)} total`;
-    return `<article class="is-${tone}"><div><strong>${escapeHtml(entry.name)}</strong><small>${escapeHtml(entry.environmentName)} · ${escapeHtml(entry.node)}${entry.type ? ` · ${escapeHtml(entry.type)}` : ""}${entry.shared ? " · Shared" : " · Local"} · Status ${escapeHtml(entry.status)}</small></div><span class="storage-usage"><i class="health-dot is-${tone}" aria-hidden="true"></i>${usage}</span><small>${capacity}</small>${entry.usagePercent === null ? "" : `<progress max="100" value="${entry.usagePercent}" aria-label="${escapeHtml(entry.name)} storage use">${entry.usagePercent}%</progress>`}</article>`;
+    // Proxmox reports an inactive storage (its disk or mount is missing on
+    // that node) with no status and zero sizes; say so instead of "0 B".
+    const inactive = ["unknown", "unavailable", "inactive", "disabled"].includes(String(entry.status || "unknown").toLowerCase())
+      && !entry.totalBytes;
+    const usage = inactive ? "Inactive" : entry.usagePercent === null ? "—" : `${entry.usagePercent}%`;
+    const capacity = inactive
+      ? `Not active on ${entry.node}: Proxmox can't reach its disk or mount there. If nothing on ${entry.node} uses it, remove it or limit it to the nodes that do.`
+      : entry.usedBytes === null || entry.totalBytes === null
+        ? "Capacity unavailable"
+        : `${formatMetricBytes(entry.usedBytes)} used · ${formatMetricBytes(freeBytes)} free · ${formatMetricBytes(entry.totalBytes)} total`;
+    return `<article class="is-${tone}"><div><strong>${escapeHtml(entry.name)}</strong><small>${escapeHtml(entry.environmentName)} · ${escapeHtml(entry.node)}${entry.type ? ` · ${escapeHtml(entry.type)}` : ""}${entry.shared ? " · Shared" : " · Local"} · ${inactive ? "Inactive" : `Status ${escapeHtml(entry.status)}`}</small></div><span class="storage-usage"><i class="health-dot is-${tone}" aria-hidden="true"></i>${usage}</span><small>${capacity}</small>${entry.usagePercent === null ? "" : `<progress max="100" value="${entry.usagePercent}" aria-label="${escapeHtml(entry.name)} storage use">${entry.usagePercent}%</progress>`}</article>`;
   }).join("")}</div>`;
 }
 
