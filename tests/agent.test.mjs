@@ -395,7 +395,9 @@ test("a node restart sends one heads-up and one summary instead of an alert per 
   const firstSeen = context.now;
   await publish(withNode(snapshotAt(context.now, { incidents: [sonarrIncident(firstSeen)] }), { status: "offline", uptimeSeconds: null }));
   assert.equal(context.pushes.length, 1);
-  assert.match(context.pushes[0].title, /pve-1 is restarting or offline/u);
+  assert.match(context.pushes[0].title, /Lost contact with pve-1/u);
+  assert.match(context.pushes[0].message, /may be restarting or may have lost its network connection/u);
+  assert.equal((await api(agent, "GET", "/api/v2/agent")).payload.status.restart.kind, "unreachable", "not called a restart while it is only unreachable");
 
   // Back, but only just booted: still holding, and no rule runs meanwhile.
   for (let minute = 1; minute <= 9; minute += 1) {
@@ -416,6 +418,51 @@ test("a node restart sends one heads-up and one summary instead of an alert per 
   assert.equal((await api(agent, "GET", "/api/v2/agent")).payload.status.restart, null);
 });
 
+test("a node that only lost its connection is not reported as a restart", async (t) => {
+  const { agent, context, publish } = await harness(t);
+  await configure(agent, { rules: [] });
+  const DAYS = 5 * 86_400;
+  await publish(withNode(snapshotAt(context.now), { uptimeSeconds: DAYS }));
+
+  // The network cable is pulled: the node shows offline for five minutes.
+  context.now += 60_000;
+  const lostAt = context.now;
+  await publish(withNode(snapshotAt(context.now), { status: "offline", uptimeSeconds: null }));
+  assert.match(context.pushes[0].title, /Lost contact with pve-1/u);
+  for (let minute = 1; minute <= 4; minute += 1) {
+    context.now += 60_000;
+    await publish(withNode(snapshotAt(context.now), { status: "offline", uptimeSeconds: null }));
+  }
+  const overview = (await api(agent, "GET", "/api/v2/agent")).payload.status.restart;
+  assert.equal(overview.kind, "unreachable");
+
+  // Plugged back in: its uptime kept counting, so it never went down.
+  context.now += 60_000;
+  await publish(withNode(snapshotAt(context.now), { status: "online", uptimeSeconds: DAYS + Math.round((context.now - lostAt) / 1_000) + 60 }));
+  assert.equal(context.pushes.length, 2);
+  assert.match(context.pushes[1].title, /pve-1 reachable again/u);
+  assert.match(context.pushes[1].message, /never went down: its uptime kept counting, so this was a network or connection problem, not a restart/u);
+  assert.doesNotMatch(context.pushes[1].message, /restarted around/u);
+});
+
+test("losing Proxmox itself and getting it back with uptime intact is a connection problem", async (t) => {
+  const { agent, context, publish } = await harness(t);
+  await configure(agent, { rules: [] });
+  const DAYS = 3 * 86_400;
+  await publish(withNode(snapshotAt(context.now), { uptimeSeconds: DAYS }));
+  context.now += 60_000;
+  const lostAt = context.now;
+  const unreachable = withNode(snapshotAt(context.now), { status: "unknown", uptimeSeconds: null });
+  unreachable.infrastructure.environments[0].connectionState = "down";
+  await publish(unreachable);
+  assert.match(context.pushes[0].title, /^Lost contact with /u);
+  context.now += 3 * 60_000;
+  await publish(withNode(snapshotAt(context.now), { status: "online", uptimeSeconds: DAYS + Math.round((context.now - lostAt) / 1_000) + 60 }));
+  assert.equal(context.pushes.length, 2);
+  assert.match(context.pushes[1].title, /reachable again/u);
+  assert.match(context.pushes[1].message, /never went down/u);
+});
+
 test("after a restart, the summary lists what is still broken and it is not announced again", async (t) => {
   const { agent, context, publish } = await harness(t);
   await configure(agent, { rules: [] });
@@ -429,7 +476,8 @@ test("after a restart, the summary lists what is still broken and it is not anno
   context.now += 9 * 60_000;
   await publish(withNode(snapshotAt(context.now, { incidents: [sonarrIncident(firstSeen)] }), { uptimeSeconds: 12 * 60 }));
   assert.equal(context.pushes.length, 1);
-  assert.match(context.pushes[0].title, /After the restart: 1 problem left/u);
+  assert.match(context.pushes[0].title, /After pve-1 came back: 1 problem left/u);
+  assert.match(context.pushes[0].message, /pve-1 restarted around/u);
   assert.match(context.pushes[0].message, /Sonarr \/ status: down/u);
 
   // The same outage is not reported a second time.
@@ -1253,4 +1301,46 @@ test("questions about a period get Helmsman's own history, and gaps are named", 
   // A question that is not about a period gets no history.
   await api(agent, "POST", "/api/v2/agent/ask", { question: "Is Sonarr up?" });
   assert.equal(context.modelCalls[1].messages.some((message) => message.tool_call_id === "seed-history"), false);
+});
+
+test("conversations are saved only when turned on, and can be rated, corrected, exported and deleted", async (t) => {
+  const { agent, context, publish } = await harness(t, { modelReplies: () => ({ content: "Sonarr is healthy." }) });
+  await configure(agent, { autonomy: false });
+  await publish(snapshotAt(context.now));
+
+  // Off by default: nothing is kept.
+  const before = await api(agent, "POST", "/api/v2/agent/ask", { question: "Is sonarr up?" });
+  assert.equal(before.payload.conversationId, null);
+  assert.equal((await api(agent, "GET", "/api/v2/agent")).payload.config.conversations.keep, false);
+
+  await api(agent, "PUT", "/api/v2/agent/conversations/settings", { keep: true, reports: true });
+  const asked = await api(agent, "POST", "/api/v2/agent/ask", { question: "Is sonarr up?" });
+  const id = asked.payload.conversationId;
+  assert.match(id, /^[a-f0-9-]{36}$/u);
+
+  const listed = await api(agent, "GET", "/api/v2/agent/conversations");
+  assert.equal(listed.payload.items[0].id, id);
+  assert.equal(listed.payload.items[0].answer, "Sonarr is healthy.");
+  assert.equal(listed.payload.status.conversations, 1);
+  const chat = await api(agent, "GET", "/api/v2/agent/conversations/chat");
+  assert.equal(chat.payload.items[0].question, "Is sonarr up?");
+
+  const rated = await api(agent, "POST", `/api/v2/agent/conversations/${id}/rating`, { correction: "Yes, Sonarr is healthy." });
+  assert.equal(rated.payload.correction, "Yes, Sonarr is healthy.");
+  assert.equal(rated.payload.rating, "up");
+  await assert.rejects(api(agent, "POST", `/api/v2/agent/conversations/${id}/rating`, { rating: "great" }), /up, down or null/u);
+
+  // The export is a JSON Lines download with the corrected answer.
+  const headers = {};
+  let body = null;
+  await agent.handleApi({ method: "GET" }, { setHeader: (name, value) => { headers[name] = value; }, end: (bytes) => { body = bytes; }, statusCode: 0 },
+    new URL("http://helmsman.test/api/v2/agent/conversations/export/rated"), { readJson: async () => ({}), sendJson: () => {} });
+  assert.match(headers["Content-Disposition"], /^attachment; filename="helmsman-train-rated-\d{4}-\d{2}-\d{2}\.jsonl"$/u);
+  const line = JSON.parse(body.toString("utf8").trim());
+  assert.equal(line.messages.at(-1).content, "Yes, Sonarr is healthy.");
+  assert.equal(line.messages[0].role, "system");
+  assert.ok(line.tools.length > 0, "the tool definitions the model was offered are included");
+
+  await api(agent, "DELETE", "/api/v2/agent/conversations");
+  assert.equal((await api(agent, "GET", "/api/v2/agent/conversations")).payload.items.length, 0);
 });

@@ -4312,6 +4312,13 @@ function emptyAgentState() {
     data: null,
     chat: [],
     decisions: new Map(),
+    // Saved conversations: ratings by conversation id, the one being
+    // corrected, and the Settings review list.
+    ratings: new Map(),
+    ratingVersion: 0,
+    editingAnswer: "",
+    chatRestored: false,
+    training: { loaded: false, loading: false, error: "", status: null, items: [], busy: "" },
     draft: "",
     helperDraft: "",
     asking: false,
@@ -4339,6 +4346,7 @@ async function loadAgent({ render = false } = {}) {
     state.agent.error = safeSessionText(error?.message, "The agent could not be reached.", 180);
   }
   state.agent.loaded = true;
+  if (!state.agent.chatRestored && state.agent.data?.config?.conversations?.keep) void restoreAgentChat();
   syncAgentHelper();
   if (render && previous !== agentFingerprint(state.agent.data) && ["system", "settings"].includes(currentRoute())) {
     state.lastMarkup = "";
@@ -4358,7 +4366,7 @@ function agentStatus(data) {
   if (data.status?.configurationProblem) return { tone: "down", label: "Settings problem" };
   if (!data.config?.ai) return { tone: "disabled", label: "Not set up" };
   if (!data.status?.enabled) return { tone: "disabled", label: "Off" };
-  if (data.status?.restart?.holding) return { tone: "stale", label: "Holding alerts: restart" };
+  if (data.status?.restart?.holding) return { tone: "stale", label: data.status.restart.kind === "restarting" ? "Holding alerts: restart" : "Holding alerts: node unreachable" };
   if (data.status?.lastModel && data.status.lastModel.ok === false) return { tone: "degraded", label: "Model unreachable" };
   return { tone: "healthy", label: "Watching" };
 }
@@ -4391,6 +4399,7 @@ function renderAgentNote(note) {
       <header><strong>${escapeHtml(note.title || AGENT_NOTE_LABELS[note.kind] || "Note")}</strong><time datetime="${escapeHtml(note.at)}">${escapeHtml(agentNoteTime(note.at))}</time></header>
       <p>${escapeHtml(note.text || "")}</p>
       <small>${escapeHtml(AGENT_NOTE_LABELS[note.kind] || "Note")}${note.model ? ` · ${escapeHtml(note.model)}` : " · Helmsman facts"}${note.notified ? " · sent to phone" : ""}</small>
+      ${note.conversationId && agentData()?.config?.conversations?.keep ? renderAnswerRating(note.conversationId, note.text) : ""}
     </div>
   </li>`;
 }
@@ -4421,6 +4430,7 @@ function renderAgentChatMessages(ready) {
   return `${messages.length ? messages.map((message) => `<li class="agent-chat__message is-${message.role}${message.error ? " is-error" : ""}">
         <p>${escapeHtml(message.content)}</p>
         ${(message.proposals || []).map(renderInlineProposal).join("")}
+        ${message.role === "assistant" && message.conversationId ? renderAnswerRating(message.conversationId, message.content) : ""}
       </li>`).join("") : `<li class="agent-chat__empty">${ready ? "Ask how things look, why something is failing, or what changed today. Answers come from your own model and Helmsman's live data." : "Connect a model server in Settings to ask questions."}</li>`}
       ${state.agent.asking ? `<li class="agent-chat__message is-assistant is-thinking"><p>Thinking…</p></li>` : ""}`;
 }
@@ -4725,6 +4735,158 @@ function renderAgentRulesCard(data) {
   </section>`;
 }
 
+// ------------------------------------------------ saved conversations --
+
+function rememberRating(item) {
+  if (!item?.id) return;
+  if (item.rating || item.correction) state.agent.ratings.set(item.id, { rating: item.rating || null, correction: item.correction || null });
+  else state.agent.ratings.delete(item.id);
+  state.agent.ratingVersion += 1;
+}
+
+// After a reload, the recent chat comes back from the saved conversations.
+async function restoreAgentChat() {
+  state.agent.chatRestored = true;
+  if (state.agent.chat.length) return;
+  try {
+    const payload = await api("/api/v2/agent/conversations/chat");
+    const items = (Array.isArray(payload?.items) ? payload.items : []).slice(0, 20).reverse();
+    if (state.agent.chat.length || !items.length) return;
+    for (const item of items) {
+      rememberRating(item);
+      state.agent.chat.push({ role: "user", content: safeSessionText(item.question, "", 2_000) });
+      state.agent.chat.push({ role: "assistant", content: safeSessionText(item.answer, "", 4_000), proposals: [], conversationId: item.id });
+    }
+    rerenderAgent();
+  } catch {
+    // The chat simply starts empty.
+  }
+}
+
+// Good, Bad and Fix answer under a saved answer. A fixed answer is what the
+// model should have said; it is the most useful training example there is.
+function renderAnswerRating(id, answer) {
+  const rating = state.agent.ratings.get(id) || {};
+  const editing = state.agent.editingAnswer === id;
+  const button = (value, label, iconName) => `<button class="agent-rating__button${rating.rating === value ? " is-active" : ""}" type="button" data-action="agent-rate" data-conversation-id="${escapeHtml(id)}" data-rating="${value}" aria-pressed="${rating.rating === value ? "true" : "false"}" title="${label}">${icon(iconName)}<span>${label}</span></button>`;
+  return `<div class="agent-rating">
+    <div class="agent-rating__buttons">
+      ${button("up", "Good", "check")}
+      ${button("down", "Bad", "x")}
+      <button class="agent-rating__button${rating.correction ? " is-active" : ""}" type="button" data-action="agent-edit-answer" data-conversation-id="${escapeHtml(id)}" title="Write the answer it should have given">${icon("edit")}<span>${rating.correction ? "Edit fix" : "Fix answer"}</span></button>
+    </div>
+    ${rating.correction && !editing ? `<p class="agent-rating__correction"><strong>Your answer:</strong> ${escapeHtml(rating.correction)}</p>` : ""}
+    ${editing ? `<form class="agent-correction-form" data-conversation-id="${escapeHtml(id)}">
+      <label class="sr-only" for="agent-correction-${escapeHtml(id)}">The answer it should have given</label>
+      <textarea id="agent-correction-${escapeHtml(id)}" name="correction" rows="3" maxlength="4000">${escapeHtml(rating.correction || answer || "")}</textarea>
+      <div class="agent-correction-form__actions">${rating.correction ? `<button class="button button--compact" type="button" data-action="agent-clear-fix" data-conversation-id="${escapeHtml(id)}">Remove fix</button>` : ""}<button class="button button--compact" type="button" data-action="agent-edit-cancel">Cancel</button><button class="button button--compact button--primary" type="submit">Save answer</button></div>
+    </form>` : ""}
+  </div>`;
+}
+
+async function rateConversation(id, body) {
+  if (!/^[a-f0-9-]{36}$/u.test(String(id || ""))) return;
+  try {
+    const updated = await api(`/api/v2/agent/conversations/${id}/rating`, { method: "POST", body });
+    rememberRating(updated);
+    const item = state.agent.training.items.find((entry) => entry.id === id);
+    if (item) Object.assign(item, { rating: updated.rating, correction: updated.correction });
+    if (body.correction !== undefined) state.agent.editingAnswer = "";
+    if (state.agent.training.loaded) void loadTraining({ render: false });
+  } catch (error) {
+    showToast(error?.message || "That rating could not be saved.", "danger");
+  }
+  rerenderAgent();
+}
+
+async function loadTraining({ render = true } = {}) {
+  const training = state.agent.training;
+  if (training.loading || !state.status?.authenticated) return;
+  training.loading = true;
+  try {
+    const payload = await api("/api/v2/agent/conversations");
+    training.status = payload?.status || null;
+    training.items = Array.isArray(payload?.items) ? payload.items : [];
+    for (const item of training.items) rememberRating(item);
+    training.error = "";
+  } catch (error) {
+    training.error = safeSessionText(error?.message, "Saved conversations could not be read.", 200);
+  } finally {
+    training.loading = false;
+    training.loaded = true;
+    if (render && currentRoute() === "settings") rerenderAgent();
+  }
+}
+
+async function saveTrainingSettings(form) {
+  const keep = form.querySelector("input[name='keep']")?.checked === true;
+  const reports = form.querySelector("input[name='reports']")?.checked === true;
+  state.agent.training.busy = "settings";
+  rerenderAgent();
+  try {
+    const payload = await api("/api/v2/agent/conversations/settings", { method: "PUT", body: { keep, reports } });
+    state.agent.training.status = payload?.status || state.agent.training.status;
+    showToast(keep ? "Conversations are being saved for training." : "Conversations are no longer saved.", "success");
+    await loadAgent();
+  } catch (error) {
+    showToast(error?.message || "That setting could not be saved.", "danger");
+  } finally {
+    state.agent.training.busy = "";
+    rerenderAgent();
+  }
+}
+
+async function deleteTraining() {
+  if (!(await confirmAgentChange("Every saved conversation, rating and fixed answer is deleted. Training files you already downloaded are not affected.", { title: "Delete all saved conversations?", confirmLabel: "Delete all" }))) return;
+  try {
+    await api("/api/v2/agent/conversations", { method: "DELETE" });
+    state.agent.ratings.clear();
+    state.agent.ratingVersion += 1;
+    for (const message of state.agent.chat) delete message.conversationId;
+    showToast("Saved conversations deleted.", "success");
+  } catch (error) {
+    showToast(error?.message || "They could not be deleted.", "danger");
+  }
+  await loadTraining();
+}
+
+function renderAgentTrainingCard(data) {
+  const training = state.agent.training;
+  if (!training.loaded && !training.loading) void loadTraining();
+  const policy = data.config?.conversations || { keep: false, reports: true };
+  const status = training.status;
+  const usable = status ? status.ratedUp + status.corrected : 0;
+  const size = status ? formatMetricBytes(status.bytes) : "";
+  const items = training.items.slice(0, 12);
+  return `<section class="glass-panel settings-card-v5 agent-training-card">
+    <header><div><span class="section-kicker">Your own model</span><h3>Training data</h3></div>${icon("book")}</header>
+    <div class="settings-card-v5__body">
+      <form id="agent-conversations-form" class="agent-training-form">
+        <label class="check-row"><input name="keep" type="checkbox" ${policy.keep ? "checked" : ""}/><span><strong>Keep conversations for training</strong><small>Saves each chat answer with everything the model was shown, so you can rate it and export training data. Secrets are scrubbed first. Stored only on this server, for 90 days or 100 MB.</small></span></label>
+        <label class="check-row"><input name="reports" type="checkbox" ${policy.reports ? "checked" : ""}/><span><strong>Include reports</strong><small>Also save incident notes, recoveries and summaries, not just chat.</small></span></label>
+        <div class="button-row"><button class="button button--primary" type="submit" ${training.busy ? "disabled" : ""}>Save</button></div>
+      </form>
+      ${status ? `<dl class="agent-facts">
+        <div><dt>Saved</dt><dd>${status.conversations.toLocaleString()} conversation${status.conversations === 1 ? "" : "s"}${status.conversations ? ` · ${escapeHtml(size)}` : ""}</dd></div>
+        <div><dt>Rated</dt><dd>${status.ratedUp} good · ${status.ratedDown} bad · ${status.corrected} fixed</dd></div>
+        <div><dt>Ready to train on</dt><dd>${usable}</dd></div>
+      </dl>` : training.error ? `<p class="form-error">${escapeHtml(training.error)}</p>` : `<p class="agent-empty">Loading…</p>`}
+      <p class="agent-voice__hint">Rate answers with Good or Bad, or use Fix answer to write what it should have said. The download includes good and fixed answers, ready for the training script; aim for a few hundred before training.</p>
+      <div class="button-row">
+        <a class="button button--compact${usable ? "" : " is-disabled"}" href="/api/v2/agent/conversations/export/rated" download ${usable ? "" : "aria-disabled=\"true\" tabindex=\"-1\""}>${icon("download")} Download good and fixed (${usable})</a>
+        <a class="button button--compact${status?.conversations ? "" : " is-disabled"}" href="/api/v2/agent/conversations/export/all" download ${status?.conversations ? "" : "aria-disabled=\"true\" tabindex=\"-1\""}>${icon("download")} Everything not rated bad</a>
+        <button class="button button--compact button--danger" type="button" data-action="agent-training-delete" ${status?.conversations ? "" : "disabled"}>Delete all</button>
+      </div>
+      ${items.length ? `<h4>Latest answers</h4><ul class="agent-training-list">${items.map((item) => `<li>
+        <div class="agent-training-list__head"><span class="agent-training-list__source">${escapeHtml(item.source === "question" ? "Chat" : AGENT_NOTE_LABELS[item.source] || "Report")}</span><time datetime="${escapeHtml(item.at)}">${escapeHtml(agentNoteTime(item.at))}</time></div>
+        ${item.question && item.source === "question" ? `<p class="agent-training-list__question">${escapeHtml(item.question)}</p>` : ""}
+        <p class="agent-training-list__answer">${escapeHtml(item.answer)}</p>
+        ${renderAnswerRating(item.id, item.answer)}
+      </li>`).join("")}</ul>` : ""}
+    </div>
+  </section>`;
+}
+
 function renderAgentSettings() {
   if (!state.agent.loaded) {
     return `<section class="agent-settings"><div class="empty-state"><span>Loading agent settings…</span></div></section>`;
@@ -4742,6 +4904,7 @@ function renderAgentSettings() {
       ${renderAgentModelCard(data)}
       ${renderAgentVoiceCard(data)}
       ${renderAgentBehaviorCard(data)}
+      ${renderAgentTrainingCard(data)}
     </div>
   </section>`;
 }
@@ -5182,7 +5345,8 @@ async function askAgent(source = "page") {
     const proposalIds = (Array.isArray(result?.proposals) ? result.proposals : [])
       .map((proposal) => (typeof proposal === "string" ? proposal : proposal?.id))
       .filter((id) => typeof id === "string" && /^[a-f0-9-]{36}$/u.test(id));
-    state.agent.chat.push({ role: "assistant", content: String(result?.answer || "No answer."), proposals: proposalIds });
+    const conversationId = typeof result?.conversationId === "string" && /^[a-f0-9-]{36}$/u.test(result.conversationId) ? result.conversationId : null;
+    state.agent.chat.push({ role: "assistant", content: String(result?.answer || "No answer."), proposals: proposalIds, conversationId });
     helmyReact("nod");
     if (result?.proposals?.length) await loadAgent();
   } catch (error) {
@@ -5615,7 +5779,7 @@ function syncAgentHelper({ force = false } = {}) {
   if (seen === null && newest) writeHelperStorage(AGENT_HELPER_SEEN_KEY, newest.id);
   if (helper.open) markHelperNotesSeen();
 
-  const key = JSON.stringify([ready, agentStatus(data).label, proposals.map(({ id }) => id), state.agent.busy, state.agent.asking, state.agent.chat.length, state.agent.chat.at(-1)?.content, [...state.agent.decisions.keys()]]);
+  const key = JSON.stringify([ready, agentStatus(data).label, proposals.map(({ id }) => id), state.agent.busy, state.agent.asking, state.agent.chat.length, state.agent.chat.at(-1)?.content, [...state.agent.decisions.keys()], state.agent.ratingVersion, state.agent.editingAnswer]);
   if (!force && key === helper.renderedKey) return;
   helper.renderedKey = key;
   const status = agentStatus(data);
@@ -11206,6 +11370,31 @@ document.addEventListener("click", async (event) => {
     await changeAgentRule(String(target.dataset.ruleId || ""), action === "agent-rule-delete" ? "delete" : "toggle");
     return;
   }
+  if (action === "agent-rate") {
+    const id = target.dataset.conversationId;
+    const current = state.agent.ratings.get(id)?.rating || null;
+    await rateConversation(id, { rating: current === target.dataset.rating ? null : target.dataset.rating });
+    return;
+  }
+  if (action === "agent-edit-answer") {
+    state.agent.editingAnswer = String(target.dataset.conversationId || "");
+    rerenderAgent();
+    requestAnimationFrame(() => document.getElementById(`agent-correction-${state.agent.editingAnswer}`)?.focus());
+    return;
+  }
+  if (action === "agent-edit-cancel") {
+    state.agent.editingAnswer = "";
+    rerenderAgent();
+    return;
+  }
+  if (action === "agent-clear-fix") {
+    await rateConversation(target.dataset.conversationId, { correction: null });
+    return;
+  }
+  if (action === "agent-training-delete") {
+    await deleteTraining();
+    return;
+  }
   if (action === "agent-proposal") {
     await decideAgentProposal(target);
     return;
@@ -11585,6 +11774,11 @@ document.addEventListener("submit", (event) => {
   if (event.target.id === "agent-health-form") submitAgentHealth(event.target);
   if (event.target.id === "agent-downloads-form") submitAgentDownloads(event.target);
   if (event.target.id === "agent-indexers-form") submitAgentIndexers(event.target);
+  if (event.target.id === "agent-conversations-form") void saveTrainingSettings(event.target);
+  if (event.target.classList?.contains("agent-correction-form")) {
+    const correction = String(new FormData(event.target).get("correction") || "").trim();
+    void rateConversation(event.target.dataset.conversationId, { correction: correction || null });
+  }
   if (event.target.id === "logging-debug-form") {
     const hours = Number(new FormData(event.target).get("hours"));
     void saveLoggingSettings(true, Number.isSafeInteger(hours) && hours >= 1 ? hours : state.logging.settings.defaultHours);

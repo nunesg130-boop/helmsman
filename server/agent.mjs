@@ -9,6 +9,8 @@ import {
   canonicalContainerHealth,
   canonicalDownloads,
   canonicalIndexers,
+  canonicalConversations,
+  defaultConversations,
   canonicalRules,
   canonicalSettings,
   createAgentConfigStore,
@@ -33,6 +35,7 @@ import {
 } from "./agent-tools.mjs";
 import { chatCompletion, estimateTokens, listModels, LlmError, validModelId } from "./llm-client.mjs";
 import { questionWindow } from "./agent-history.mjs";
+import { createConversationStore } from "./agent-conversations.mjs";
 import { parseServiceUrl, resolveAndAuthorizeExplicitTarget, resolveAndAuthorizeTarget } from "./network.mjs";
 import { OutboundJsonError, performOutboundJsonRequest } from "./outbound-json.mjs";
 
@@ -272,6 +275,7 @@ export async function createAgent(options) {
     guard
   });
   if (configStore.loadProblem) log(`Agent configuration was not loaded (${configStore.loadProblem}); the agent starts unconfigured.`);
+  const conversationStore = await createConversationStore({ dataDir, clock, guard });
 
   const activityPath = path.join(dataDir, ACTIVITY_FILE);
   const loaded = await readJsonFile(activityPath, MAX_ACTIVITY_BYTES);
@@ -406,6 +410,7 @@ export async function createAgent(options) {
       model: note.model || null,
       toolsUsed: (note.toolsUsed || []).slice(0, 12),
       proposals: (note.proposals || []).slice(0, 4),
+      conversationId: typeof note.conversationId === "string" ? note.conversationId : null,
       error: note.error || null,
       notified: false
     };
@@ -788,11 +793,14 @@ export async function createAgent(options) {
       status.lastModel = { at: new Date(clock()).toISOString(), ok: false, code: error?.code || "MODEL_REQUEST_FAILED", latencyMs: clock() - startedAt };
       throw error;
     }
+    // Small models add markdown bold despite being asked for plain text.
+    const text = plainText(String(answer || "").replace(/\*\*(.+?)\*\*/gu, "$1").replace(/__(.+?)__/gu, "$1"), MAX_NOTE_CHARS) || "The model did not give an answer.";
+    const conversationId = answer ? await saveConversation({ source, ai, messages, tools, answer: text, startedAt, service }) : null;
     return {
-      // Small models add markdown bold despite being asked for plain text.
-      text: plainText(String(answer || "").replace(/\*\*(.+?)\*\*/gu, "$1").replace(/__(.+?)__/gu, "$1"), MAX_NOTE_CHARS) || "The model did not give an answer.",
+      text,
       toolsUsed: [...new Set(toolsUsed)],
-      proposals: proposalIds
+      proposals: proposalIds,
+      conversationId
     };
   }
 
@@ -877,6 +885,7 @@ export async function createAgent(options) {
       model: result ? config().ai?.model : null,
       toolsUsed: result?.toolsUsed,
       proposals: result?.proposals,
+      conversationId: result?.conversationId || null,
       error
     });
   }
@@ -1379,6 +1388,30 @@ export async function createAgent(options) {
     return config().indexers || defaultIndexers();
   }
 
+  function conversationsPolicy() {
+    return config().conversations || defaultConversations();
+  }
+
+  // Saves one finished exchange when the owner keeps conversations. Never
+  // fails the answer itself.
+  async function saveConversation({ source, ai, messages, tools, answer, startedAt, service }) {
+    const policy = conversationsPolicy();
+    if (!policy.keep || (source !== "question" && !policy.reports)) return null;
+    try {
+      return await conversationStore.record({
+        source: ["question", "incident", "recovery", "digest", "checkIn"].includes(source) ? source : "note",
+        model: ai.model,
+        service,
+        durationMs: clock() - startedAt,
+        tools,
+        messages: [...messages.map(({ historic, ...message }) => message), { role: "assistant", content: answer }]
+      });
+    } catch {
+      log("Helmsman could not save an agent conversation.");
+      return null;
+    }
+  }
+
   function prowlarrService(current = snapshot()) {
     return (current?.services || []).find((service) => service?.id === "prowlarr" && service.connectionState === "connected") || null;
   }
@@ -1702,8 +1735,8 @@ export async function createAgent(options) {
             key: "restart-start",
             run: () => notifyNote(addNote({
               kind: "incident",
-              title: `${listNames(names)} ${names.length === 1 ? "is" : "are"} restarting or offline`,
-              text: `Lost contact with ${listNames(names)}. I'm holding other alerts while ${names.length === 1 ? "it comes" : "they come"} back and will send one summary once everything has been up for ${RESTART_SETTLE_MS / 60_000} minutes.`
+              title: `Lost contact with ${listNames(names)}`,
+              text: `Helmsman can't reach ${listNames(names)}. ${names.length === 1 ? "It" : "They"} may be restarting or may have lost ${names.length === 1 ? "its" : "their"} network connection; I'll know which once ${names.length === 1 ? "it's" : "they're"} back. I'm holding other alerts until then and will send one summary.`
             }))
           });
         }
@@ -1728,6 +1761,70 @@ export async function createAgent(options) {
 
   function listNames(names) {
     return names.length <= 1 ? names[0] || "A node" : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+  }
+
+  // Whether each node that went away actually restarted, from its uptime
+  // now: a node whose uptime started after it went away rebooted; one whose
+  // uptime kept counting stayed up, and only the connection to it dropped.
+  function returnKinds(current, ended) {
+    const now = clock();
+    const margin = 2 * 60_000;
+    const byName = new Map();
+    const rank = { restarted: 3, connection: 2, unknown: 1 };
+    const add = (name, kind, bootedAt = null) => {
+      const existing = byName.get(name);
+      if (!existing || rank[kind] > rank[existing.kind]) byName.set(name, { name, kind, bootedAt });
+    };
+    for (const [key, entry] of ended.nodes) {
+      const split = key.lastIndexOf(":");
+      const environmentId = key.slice(0, split);
+      const nodeName = key.slice(split + 1);
+      const environment = (current?.infrastructure?.environments || []).find((candidate) => candidate.id === environmentId);
+      const nodes = (environment?.nodes || []).filter((node) => nodeName === "*" || plainText(node.name, 40) === entry.name);
+      if (!nodes.length) {
+        add(entry.name, "unknown");
+        continue;
+      }
+      const kinds = nodes.map((node) => {
+        const uptime = Number.isFinite(node.uptimeSeconds) && node.uptimeSeconds > 0 ? node.uptimeSeconds : null;
+        if (uptime === null) return { kind: "unknown" };
+        const bootedAt = now - uptime * 1_000;
+        return bootedAt >= ended.since - margin || (entry.reasons.has("booting") && nodeName !== "*")
+          ? { kind: "restarted", bootedAt, name: plainText(node.name, 40) }
+          : { kind: "connection", name: plainText(node.name, 40) };
+      });
+      if (nodeName === "*") {
+        // Helmsman lost Proxmox itself: name the nodes that rebooted, or
+        // the environment when none did.
+        const rebooted = kinds.filter((item) => item.kind === "restarted");
+        if (rebooted.length) for (const item of rebooted) add(item.name || entry.name, "restarted", item.bootedAt);
+        else add(entry.name, kinds.every((item) => item.kind === "connection") ? "connection" : "unknown");
+      } else {
+        add(entry.name, kinds[0].kind, kinds[0].bootedAt ?? entry.bootedAt);
+      }
+    }
+    return [...byName.values()];
+  }
+
+  function returnOpening(kinds, ended, tz) {
+    const now = clock();
+    const minutes = Math.max(1, Math.round((now - ended.since) / 60_000));
+    const when = formatTime(new Date(ended.since).toISOString(), tz);
+    const group = (kind) => kinds.filter((item) => item.kind === kind).map((item) => item.name);
+    const restarted = group("restarted");
+    const connection = group("connection");
+    const unknown = group("unknown");
+    const parts = [];
+    if (restarted.length) {
+      const bootedAt = Math.min(...kinds.filter((item) => item.kind === "restarted").map((item) => item.bootedAt ?? ended.since));
+      parts.push(`${listNames(restarted)} restarted around ${formatTime(new Date(bootedAt).toISOString(), tz)}.`);
+    }
+    if (connection.length) {
+      const one = connection.length === 1;
+      parts.push(`Helmsman lost contact with ${listNames(connection)} at ${when} for about ${minutes} minute${minutes === 1 ? "" : "s"}, but ${one ? "it" : "they"} never went down: ${one ? "its" : "their"} uptime kept counting, so this was a network or connection problem, not a restart.`);
+    }
+    if (unknown.length) parts.push(`Helmsman lost contact with ${listNames(unknown)} at ${when} and can't tell whether ${unknown.length === 1 ? "it" : "they"} restarted.`);
+    return { text: parts.join(" "), restarted, connection, unknown };
   }
 
   // Ends a hold: one note says what restarted and what is still broken.
@@ -1758,17 +1855,27 @@ export async function createAgent(options) {
     const names = [...new Set([...ended.nodes.values()].map((entry) => entry.name))];
     const firstSeen = Math.min(ended.since, ...[...ended.nodes.values()].map((entry) => entry.bootedAt ?? ended.since));
     const lines = open.slice(0, 8).map((incident) => `- ${incidentLine(current, incident, tz)}`);
+    // Only call it a restart when uptime shows one; a dropped connection is
+    // reported as exactly that.
+    const outcome = expired ? null : returnOpening(returnKinds(current, ended), ended, tz);
     const opening = expired
-      ? `${listNames(names)} ${names.length === 1 ? "has" : "have"} been restarting or unreachable since ${formatTime(new Date(firstSeen).toISOString(), tz)}, so I've stopped holding alerts.`
-      : `${listNames(names)} restarted around ${formatTime(new Date(firstSeen).toISOString(), tz)} and ${names.length === 1 ? "has" : "have"} been back for ${RESTART_SETTLE_MS / 60_000} minutes.`;
+      ? `Helmsman has not been able to reach ${listNames(names)} since ${formatTime(new Date(firstSeen).toISOString(), tz)}, so I've stopped holding alerts.`
+      : outcome.text;
     const text = open.length
       ? `${opening} Still not working:\n${lines.join("\n")}`
       : `${opening} Everything Helmsman watches is working again.`;
+    const backTitle = !outcome
+      ? `Still can't reach ${listNames(names)}`
+      : outcome.restarted.length && !outcome.connection.length && !outcome.unknown.length
+        ? `${listNames(outcome.restarted)} back after a restart`
+        : outcome.connection.length && !outcome.restarted.length && !outcome.unknown.length
+          ? `${listNames(outcome.connection)} reachable again`
+          : `${listNames(names)} back online`;
     enqueue({
       key: "restart-summary",
       run: () => notifyNote(addNote({
         kind: open.length ? "incident" : "recovery",
-        title: open.length ? `After the restart: ${open.length} problem${open.length === 1 ? "" : "s"} left` : `${listNames(names)} back after a restart`,
+        title: open.length ? `After ${listNames(names)} came back: ${open.length} problem${open.length === 1 ? "" : "s"} left` : backTitle,
         text
       }))
     });
@@ -1779,6 +1886,9 @@ export async function createAgent(options) {
     return {
       since: new Date(restart.since).toISOString(),
       holding: !restart.expired,
+      // "restarting" once a reboot is seen; until then only that Helmsman
+      // lost contact, which may be a network problem.
+      kind: [...restart.nodes.values()].some((entry) => entry.reasons.has("booting")) ? "restarting" : "unreachable",
       nodes: [...new Set([...restart.nodes.values()].map((entry) => entry.name))].slice(0, 12),
       held: restart.held.size
     };
@@ -1885,7 +1995,8 @@ export async function createAgent(options) {
       rules,
       containerHealth: containerHealthPolicy(),
       downloads: downloadsPolicy(),
-      indexers: indexersPolicy()
+      indexers: indexersPolicy(),
+      conversations: conversationsPolicy()
     };
   }
 
@@ -2143,7 +2254,8 @@ export async function createAgent(options) {
     return {
       answer: result.text,
       toolsUsed: result.toolsUsed,
-      proposals: result.proposals.map((id) => proposals.get(id)).filter(Boolean).map(publicProposal)
+      proposals: result.proposals.map((id) => proposals.get(id)).filter(Boolean).map(publicProposal),
+      conversationId: result.conversationId || null
     };
   }
 
@@ -2252,6 +2364,54 @@ export async function createAgent(options) {
       if (route === "/rules" && method === "PUT") {
         await saveRules(await readJson(request));
         return sendJson(response, 200, publicState());
+      }
+      // Saved conversations: settings, review, ratings, training export.
+      if (route === "/conversations/settings" && method === "PUT") {
+        const body = await readJson(request);
+        requireKeys(body, ["keep", "reports"]);
+        const next = canonicalConversations({ ...conversationsPolicy(), ...body });
+        await configStore.update((draft) => { draft.conversations = next; });
+        return sendJson(response, 200, { settings: next, status: await conversationStore.status() });
+      }
+      if (route === "/conversations" && method === "GET") {
+        return sendJson(response, 200, { settings: conversationsPolicy(), status: await conversationStore.status(), items: await conversationStore.list({ limit: 100 }) });
+      }
+      if (route === "/conversations/chat" && method === "GET") {
+        return sendJson(response, 200, { items: conversationsPolicy().keep ? await conversationStore.list({ limit: 20, source: "question" }) : [] });
+      }
+      if (route === "/conversations" && method === "DELETE") {
+        await conversationStore.clear();
+        recordEvent({ level: "info", category: "configuration", event: "agent_conversations_deleted", outcome: "changed", service: "helmsman" });
+        return sendJson(response, 200, { settings: conversationsPolicy(), status: await conversationStore.status(), items: [] });
+      }
+      const ratingMatch = /^\/conversations\/([a-f0-9-]{36})\/rating$/u.exec(route);
+      if (ratingMatch && method === "POST") {
+        const body = await readJson(request);
+        if (!isPlainObject(body) || Object.keys(body).some((key) => !["rating", "correction"].includes(key)) || !Object.keys(body).length) {
+          fail(400, "INVALID_RATING", "Send a rating, a correction, or both.");
+        }
+        if (body.rating !== undefined && ![null, "up", "down"].includes(body.rating)) fail(400, "INVALID_RATING", "A rating is up, down or null.");
+        if (body.correction !== undefined && body.correction !== null && (typeof body.correction !== "string" || body.correction.length > 4_000)) {
+          fail(400, "INVALID_RATING", "A corrected answer is text of up to 4,000 characters.");
+        }
+        const updated = await conversationStore.rate(ratingMatch[1], body);
+        if (!updated) fail(404, "CONVERSATION_NOT_FOUND", "That conversation is no longer saved.");
+        return sendJson(response, 200, updated);
+      }
+      const exportMatch = /^\/conversations\/export\/(rated|all)$/u.exec(route);
+      if (exportMatch && method === "GET") {
+        const { text } = await conversationStore.exportTraining({ include: exportMatch[1] });
+        const body = Buffer.from(text, "utf8");
+        const stamp = new Date(clock()).toISOString().slice(0, 10);
+        response.setHeader("Cache-Control", "private, no-store, max-age=0");
+        response.setHeader("X-Content-Type-Options", "nosniff");
+        response.setHeader("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'; sandbox");
+        response.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
+        response.setHeader("Content-Disposition", `attachment; filename="helmsman-train-${exportMatch[1]}-${stamp}.jsonl"`);
+        response.setHeader("Content-Length", String(body.length));
+        response.statusCode = 200;
+        response.end(body);
+        return undefined;
       }
       if (route === "/ask" && method === "POST") return sendJson(response, 200, await ask(await readJson(request)));
       if (route === "/run" && method === "POST") {

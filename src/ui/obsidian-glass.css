@@ -7160,3 +7160,140 @@ body.has-agent-helper .main-content > :is(.page, .detail-page, .media-health-sta
   -webkit-line-clamp: 3;
   line-clamp: 3;
 }
+
+/* Rating saved answers ------------------------------------------------------ */
+.agent-rating {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.agent-rating__buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.agent-rating__button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 26px;
+  padding: 3px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--refresh-ink-quiet);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.agent-rating__button svg {
+  width: 12px;
+  height: 12px;
+}
+
+.agent-rating__button:is(:hover, :focus-visible) {
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+
+.agent-rating__button.is-active {
+  border-color: rgba(92, 227, 149, 0.4);
+  background: rgba(92, 227, 149, 0.1);
+  color: var(--refresh-ink-ok);
+}
+
+.agent-rating__button[data-rating="down"].is-active {
+  border-color: rgba(255, 111, 125, 0.4);
+  background: rgba(255, 111, 125, 0.1);
+  color: var(--refresh-ink-bad);
+}
+
+.agent-rating__correction {
+  margin: 0;
+  padding: 7px 9px;
+  border-left: 2px solid rgba(92, 227, 149, 0.5);
+  border-radius: 6px;
+  background: rgba(92, 227, 149, 0.05);
+  font-size: 12px;
+}
+
+.agent-correction-form {
+  display: grid;
+  gap: 6px;
+}
+
+.agent-correction-form textarea {
+  width: 100%;
+  min-height: 70px;
+  padding: 8px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.25);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  resize: vertical;
+}
+
+.agent-correction-form__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.agent-training-card {
+  grid-column: 1 / -1;
+}
+
+.agent-training-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.agent-training-list > li {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.agent-training-list__head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--refresh-ink-quiet);
+  font-size: 11px;
+}
+
+.agent-training-list__source {
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.agent-training-list__question {
+  margin: 6px 0 0;
+  color: var(--refresh-ink-quiet);
+  font-size: 12px;
+}
+
+.agent-training-list__answer {
+  margin: 4px 0 0;
+  font-size: 13px;
+}
+
+.button.is-disabled {
+  pointer-events: none;
+  opacity: 0.45;
+}
+
+.agent-training-form {
+  display: grid;
+  gap: 10px;
+}
