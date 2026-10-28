@@ -4571,6 +4571,7 @@ function renderAgentModelCard(data) {
   const limits = data?.limits || {};
   const context = limits.contextTokens || { min: 2048, max: 131072, default: 4096 };
   const timeout = limits.timeoutSeconds || { min: 10, max: 300, default: 120 };
+  const rate = limits.questionsPerHour || { min: 10, max: 2000, default: 60 };
   return `<form class="glass-panel settings-card-v5" id="agent-ai-form">
     <header><div><span class="section-kicker">Step 2 · Model</span><h3>Model server</h3></div>${icon("server")}</header>
     <div class="settings-card-v5__body">
@@ -4584,6 +4585,7 @@ function renderAgentModelCard(data) {
         <div class="form-grid form-grid--two">
           <label><span>Context size (tokens)</span><input name="contextTokens" type="number" min="${context.min}" max="${context.max}" step="256" value="${Number(ai?.contextTokens || context.default)}" /><small>Match the context your server loads the model with.</small></label>
           <label><span>Timeout (seconds)</span><input name="timeoutSeconds" type="number" min="${timeout.min}" max="${timeout.max}" value="${Number(ai?.timeoutSeconds || timeout.default)}" /></label>
+          <label><span>Questions per hour</span><input name="questionsPerHour" type="number" min="${rate.min}" max="${rate.max}" value="${Number(ai?.questionsPerHour || rate.default)}" /><small>How many chat questions the agent answers in an hour (${rate.default} to start). Raise it for a test or training-data run; it keeps a stuck script or a stolen session from tying up your model server.</small></label>
         </div>
       </details>
       <p class="agent-test-result" id="agent-ai-test-result" role="status"></p>
@@ -5132,6 +5134,8 @@ async function submitAgentModel(form) {
   const timeoutSeconds = agentFormNumber(form, "timeoutSeconds");
   if (contextTokens !== undefined) body.contextTokens = contextTokens;
   if (timeoutSeconds !== undefined) body.timeoutSeconds = timeoutSeconds;
+  const questionsPerHour = agentFormNumber(form, "questionsPerHour");
+  if (questionsPerHour !== undefined) body.questionsPerHour = questionsPerHour;
   const apiKey = String(new FormData(form).get("apiKey") || "");
   if (apiKey) {
     body.apiKey = apiKey;

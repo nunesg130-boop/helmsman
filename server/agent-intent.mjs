@@ -37,26 +37,40 @@ const STOP = new Set(("a an and any are as at be been can could did do does for 
 
 /**
  * Ids of the monitored services a question names, by name, nickname or a
- * near-miss spelling ("sonar", "qbitorent"), at most `limit`.
+ * near-miss spelling ("sonar", "qbitorent"), at most `limit`. A Proxmox
+ * environment is also named by its nodes. Ordinary short words never count
+ * as a name ("see" is not Seerr); nicknames such as "qb" or "pve" do.
  */
 export function namedServices(snapshot, text, limit = 2) {
   const items = [
     ...(snapshot?.services || []).map((service) => ({ id: service.id, names: [service.id, service.label] })),
-    ...(snapshot?.infrastructure?.environments || []).map((item) => ({ id: item.id, names: [item.displayName, "proxmox"] })),
+    ...(snapshot?.infrastructure?.environments || []).map((item) => ({
+      id: item.id,
+      names: [item.displayName, "proxmox", ...(item.nodes || []).map((node) => node?.name)]
+    })),
     ...(snapshot?.infrastructure?.services || []).map((item) => ({ id: item.id, names: [item.displayName, item.type] }))
   ];
+  const pairs = items.flatMap((item) => item.names.filter((name) => typeof name === "string" && name).map((name) => ({ id: item.id, name })));
   const found = [];
-  const words = String(text || "").toLowerCase().split(/[^a-z0-9]+/u).filter((word) => word.length >= 2 && !STOP.has(word));
+  const words = String(text || "").toLowerCase().split(/[^a-z0-9]+/u).filter((word) => word && !STOP.has(word));
   for (const word of words) {
-    if (word.length < 3 && NAME_ALIASES[word] === undefined) continue;
-    for (const nameIndex of [0, 1]) {
-      const matches = matchByName(items, word, (item) => item.names[nameIndex] || "");
-      if (matches.length === 1) {
-        if (!found.includes(matches[0].id)) found.push(matches[0].id);
-        break;
-      }
-    }
+    if (word.length < 4 && NAME_ALIASES[word] === undefined) continue;
+    const ids = [...new Set(matchByName(pairs, word, (pair) => pair.name).map((pair) => pair.id))];
+    if (ids.length === 1 && !found.includes(ids[0])) found.push(ids[0]);
     if (found.length >= limit) break;
   }
   return found;
+}
+
+/**
+ * Nicknames in a question that name something other than a monitored
+ * service, such as "vpn" for a gluetun container, as plain hints.
+ */
+export function nicknameHints(text) {
+  const hints = [];
+  for (const word of String(text || "").toLowerCase().split(/[^a-z0-9]+/u)) {
+    const target = NAME_ALIASES[word];
+    if (target && target !== word && !hints.some((hint) => hint.word === word)) hints.push({ word, target });
+  }
+  return hints.slice(0, 3);
 }

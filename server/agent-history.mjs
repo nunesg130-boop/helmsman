@@ -114,7 +114,7 @@ export function buildHistory({ from, to, label: windowLabel, healthEvents = [], 
     const at = Date.parse(event.at);
     if (!Number.isFinite(at)) continue;
     const incident = incidents.get(event.targetId) || { id: event.targetId, service: event.service, capability: event.capability, start: null, end: null, lastAt: at, codes: new Set(), worst: "warn" };
-    if (event.outcome === "recovered") incident.end = at;
+    if (event.outcome === "recovered" || ["superseded", "retired"].includes(event.operation)) incident.end = at;
     else {
       incident.start ??= at;
       if (event.level === "error") incident.worst = "error";
@@ -123,21 +123,15 @@ export function buildHistory({ from, to, label: windowLabel, healthEvents = [], 
     if (event.code) incident.codes.add(event.code);
     incidents.set(event.targetId, incident);
   }
-  // An incident that never recorded a recovery and is not open now ended
-  // without one, usually because Helmsman restarted (a restart starts every
-  // incident afresh). It ended no later than that restart; without one, at
-  // its last record.
+  // An incident that never recorded an end and is not open now ended
+  // without one (a Helmsman restart, or a record from before endings were
+  // journaled). How long it really lasted is unknown, so it is counted only
+  // up to its last record and said so, never stretched to a later restart.
   const openIds = new Set(openIncidents.map((open) => open?.id).filter(Boolean));
-  const starts = appEvents
-    .filter((event) => event?.event === "application.started")
-    .map((event) => Date.parse(event.at))
-    .filter(Number.isFinite)
-    .sort((left, right) => left - right);
   for (const incident of incidents.values()) {
     if (incident.end !== null || openIds.has(incident.id)) continue;
-    const restart = starts.find((at) => at >= incident.lastAt);
-    incident.end = restart ?? incident.lastAt;
-    incident.endedByRestart = restart !== undefined;
+    incident.end = incident.lastAt;
+    incident.noEnd = true;
   }
   for (const open of openIncidents) {
     const id = open?.id;
@@ -173,7 +167,7 @@ export function buildHistory({ from, to, label: windowLabel, healthEvents = [], 
     const ongoing = entry.episodes.some(({ ongoing }) => ongoing);
     const latest = entry.episodes.slice(0, 3).map((episode) => {
       const what = [episode.capability, [...episode.codes][0]].filter(Boolean).join(" ");
-      return `${format(new Date(episode.start).toISOString())}${episode.ongoing ? " until now (still open)" : `–${format(new Date(episode.end).toISOString()).replace(/^.*?, /u, "")}`}${what ? ` (${what})` : ""}${episode.endedByRestart ? " (ended when Helmsman restarted)" : ""}`;
+      return `${format(new Date(episode.start).toISOString())}${episode.ongoing ? " until now (still open)" : `–${format(new Date(episode.end).toISOString()).replace(/^.*?, /u, "")}`}${what ? ` (${what})` : ""}${episode.noEnd ? " (no recovery recorded; last seen then)" : ""}`;
     });
     const longest = Math.max(...entry.episodes.map(({ start, end }) => end - start));
     lines.push(`- ${nameOf(entry.service)}: ${count} problem${count === 1 ? "" : "s"}, ${minutes(entry.total)} in total${count > 1 ? `, longest ${minutes(longest)}` : ""}${ongoing ? ", one still open" : ""}. ${count > 3 ? "Latest: " : ""}${latest.join("; ")}.`);
@@ -192,6 +186,17 @@ export function buildHistory({ from, to, label: windowLabel, healthEvents = [], 
     .sort((left, right) => String(right.at).localeCompare(String(left.at)))
     .slice(0, 4);
   for (const event of contacts) lines.push(`- Node contact at ${format(event.at)}: ${event.message}`);
+  // A node reported offline with no contact record around it: say plainly
+  // that whether it restarted is unknown, rather than leave the model to
+  // guess either way.
+  const allContacts = healthEvents.filter((event) => event?.event === "node_contact").map((event) => Date.parse(event.at)).filter(Number.isFinite);
+  const offline = services
+    .flatMap((entry) => entry.episodes.filter((episode) => episode.codes.has("NODES_OFFLINE")).map((episode) => ({ ...episode, name: nameOf(entry.service) })))
+    .filter((episode) => !allContacts.some((at) => at >= episode.start - 10 * 60_000 && at <= episode.end + 10 * 60_000))
+    .slice(0, 2);
+  for (const episode of offline) {
+    lines.push(`- ${episode.name} reported a node offline at ${format(new Date(episode.start).toISOString())} for ${minutes(episode.end - episode.start)}; whether it restarted or only lost its connection was not recorded for that time.`);
+  }
   if (restartNow === null) lines.push("- Right now no node is restarting or out of contact, and no alerts are held.");
   else if (restartNow) {
     const who = (restartNow.nodes || []).join(", ") || "a Proxmox node";

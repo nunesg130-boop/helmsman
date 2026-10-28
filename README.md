@@ -1,4 +1,4 @@
-# Helmsman v1.16.0
+# Helmsman v1.16.1
 
 Helmsman is a self-hosted operations center for a homelab's media services and infrastructure. It runs as one portable Linux container on Docker Desktop, Linux, macOS, compatible NAS platforms, AMD64, and ARM64.
 
@@ -15,6 +15,17 @@ This Helmsman is the media and infrastructure dashboard in this repository. It
 is not affiliated with or derived from the existing Kubernetes project also
 named [Helmsman](https://github.com/mkubaczyk/helmsman).
 
+## v1.16.1
+
+**Adjustable question limit.** The agent answers up to 60 chat questions an hour by default, which keeps a stuck script or a stolen session from tying up your model server. Settings → Agent → Model server → Advanced → **Questions per hour** now changes it, from 10 to 2,000, for example to run a large set of test questions when collecting training data.
+
+**More accurate agent answers**, from comparing two models on the same 40 questions:
+- History no longer stretches a problem that never recorded an end to the next Helmsman restart, which could add up to a two-day "outage". Helmsman now records when a problem is replaced by a different one, or its check goes away, and history ends it there. An older problem with no recorded end is counted only up to its last record and marked "no recovery recorded".
+- When a Proxmox node was reported offline before Helmsman recorded whether it restarted or only lost its connection, history says that is unknown, so the agent no longer answers a flat "no".
+- The agent is told each Proxmox environment's node names, so a question about a node is understood as part of that environment rather than as something unmonitored.
+- Nicknames are explained alongside the container list ("vpn" usually means gluetun), so the agent finds the container.
+- Ordinary short words no longer count as service names: "What can't you see?" was being answered with Seerr's status.
+
 ## v1.16.0
 
 **Stuck downloads clear themselves, and unsafe ones go straight away.** With **Clear stuck and unsafe downloads without asking** on (Settings → Automation → Stuck downloads), Helmsman no longer needs your approval or "Let rules act":
@@ -25,9 +36,9 @@ named [Helmsman](https://github.com/mkubaczyk/helmsman).
 
 **Better answers from the agent**, from a 40-question test run against a live homelab:
 - Each question now gets only the lookups it needs. Your manual is searched for questions about addresses, procedures and notes, not added to every question, so old notes ("speed fixed on Oct 20") are no longer reported as current status. A question that names a service gets that service's own status, indexer questions get Prowlarr's indexer list, container and VM questions get the workload list, and download questions get the queue.
-- Restart, reboot, offline, lost-connection and held-alert questions are answered from history. Helmsman now records each lost contact with a node, and whether the node restarted or only dropped off the network when it came back, so "Did norco restart or lose connection?" has a real answer.
-- History is right about what is still open. A problem that recovered after the period you asked about, or that was open when Helmsman restarted, no longer shows as "still open" (one showed a 165-hour Portainer outage). Each service also shows its longest problem, and "overnight" means 22:00 to 08:00 in your time zone, not the last 14 hours.
-- Proxmox environments are named "Proxmox Main" rather than "Main", which history had listed both with problems and under "No problems".
+- Restart, reboot, offline, lost-connection and held-alert questions are answered from history. Helmsman now records each lost contact with a node, and whether the node restarted or only dropped off the network when it came back, so "Did my node restart or lose connection?" has a real answer.
+- History is right about what is still open. A problem that recovered after the period you asked about, or that was open when Helmsman restarted, no longer shows as "still open" (which could add up to a multi-day outage that never happened). Each service also shows its longest problem, and "overnight" means 22:00 to 08:00 in your time zone, not the last 14 hours.
+- Proxmox environments are named with "Proxmox" in front (for example "Proxmox Lab" rather than "Lab"), and history no longer lists one both with problems and under "No problems".
 - "approve it", "yes do it" and "approve all" get the Approve-button reply instead of going to the model, and say so when nothing is waiting.
 - The agent can look up Helmsman's own features, such as where saved conversations are kept.
 - "reboot the media vm" understands the VM after the name and lists VMs and LXCs first when nothing matches.
@@ -165,7 +176,7 @@ Asking the agent to do something now gives you something to approve. A chat mess
 
 ## v1.9.0
 
-The agent answers questions directly instead of opening every reply with a status recap, and knows what it can and can't do: it can suggest an action for you to approve, never acts by itself, and knows whether your rules are on. Questions also start with the lines of your manual that match them, so "what's the IP of norco?" is answered from the manual instead of the model offering to search it, and the manual search now ignores filler words and matches whole words. **Settings → Agent → How the agent responds** lets you tell it how to talk (length, tone, what to include), with Brief, Detailed and Friendly presets and a count of how much context the text uses. The built-in safety rules always come after your text. The old one-line extra instructions carry over and can now span several lines, up to 2,000 characters.
+The agent answers questions directly instead of opening every reply with a status recap, and knows what it can and can't do: it can suggest an action for you to approve, never acts by itself, and knows whether your rules are on. Questions also start with the lines of your manual that match them, so "what's the IP of the media server?" is answered from the manual instead of the model offering to search it, and the manual search now ignores filler words and matches whole words. **Settings → Agent → How the agent responds** lets you tell it how to talk (length, tone, what to include), with Brief, Detailed and Friendly presets and a count of how much context the text uses. The built-in safety rules always come after your text. The old one-line extra instructions carry over and can now span several lines, up to 2,000 characters.
 
 ## v1.8.0
 
@@ -364,7 +375,7 @@ Helmsman's project-owned logging mark. Original generic VM/container workload
 drawings are also bundled. See
 [the asset notices](assets/services/THIRD_PARTY_NOTICES.md).
 
-Helmsman v1.16.0 combines built-in logging, optional Loki search, Portainer monitoring, a private persistent state/artwork cache, and a small, fixed set of confirmed recovery actions under Infrastructure with targeted media recovery actions and Helmsman's cluster-aware Proxmox model:
+Helmsman v1.16.1 combines built-in logging, optional Loki search, Portainer monitoring, a private persistent state/artwork cache, and a small, fixed set of confirmed recovery actions under Infrastructure with targeted media recovery actions and Helmsman's cluster-aware Proxmox model:
 
 - Media and Infrastructure are separate workspaces inside the same authenticated application, and only the selected workspace's navigation is shown;
 - the desktop sidebar collapses to an icon rail, remembers that preference, keeps its navigation scrollable at high browser zoom, and keeps its collapse control in the sidebar's brand row (under the brand mark when collapsed);
@@ -410,7 +421,7 @@ Helmsman v1.16.0 combines built-in logging, optional Loki search, Portainer moni
 
 ## Deploy the published container
 
-Helmsman is distributed as the public Linux AMD64/ARM64 image `ghcr.io/nunesg130-boop/helmsman`. The `v1.16.0` Git tag runs the contracts and architecture smoke tests, publishes the version, `latest`, and full-commit image tags, and creates a GitHub Release containing ready-to-use `compose.yaml`, `container.env.example`, and `SHA256SUMS` assets. The release deployment files pin `ghcr.io/nunesg130-boop/helmsman` to the exact multi-architecture manifest digest (`@sha256:...`).
+Helmsman is distributed as the public Linux AMD64/ARM64 image `ghcr.io/nunesg130-boop/helmsman`. The `v1.16.1` Git tag runs the contracts and architecture smoke tests, publishes the version, `latest`, and full-commit image tags, and creates a GitHub Release containing ready-to-use `compose.yaml`, `container.env.example`, and `SHA256SUMS` assets. The release deployment files pin `ghcr.io/nunesg130-boop/helmsman` to the exact multi-architecture manifest digest (`@sha256:...`).
 
 Download those three files from the matching [GitHub Release](https://github.com/nunesg130-boop/helmsman/releases) into one directory, verify the two deployment files against `SHA256SUMS`, open a terminal there, and make sure Docker Desktop or Docker Engine is running. No source checkout, Dockerfile, Node.js installation, or server-side image build is required.
 

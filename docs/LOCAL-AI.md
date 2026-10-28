@@ -142,9 +142,11 @@ instructions inside it, and that text can't add lines or structure of its own.
 Because the model can only read, and actions need your approval or a rule you
 wrote, a crafted message has nowhere to go.
 
-Other limits: at most 40 background model jobs and 60 questions an hour, 20
-notifications an hour, and duplicate notifications within 10 minutes are
-dropped.
+Other limits: at most 40 background model jobs, 20 notifications an hour, and
+duplicate notifications within 10 minutes are dropped. Chat questions are
+limited to 60 an hour by default; change it under Settings → Agent → Model
+server → Advanced → **Questions per hour** (10 to 2,000), for example to run a
+large set of test questions for training data.
 
 ## 1. Run a model server
 

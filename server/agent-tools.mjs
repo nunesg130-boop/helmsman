@@ -250,7 +250,7 @@ function serviceNamer(snapshot) {
   for (const service of snapshot.services || []) names.set(service.id, service.label || service.id);
   const environments = new Set((snapshot.infrastructure?.environments || []).map((item) => item.id));
   for (const item of [...(snapshot.infrastructure?.environments || []), ...(snapshot.infrastructure?.services || [])]) {
-    // "Proxmox Main" rather than "Main", which reads like a node or a
+    // "Proxmox Lab" rather than "Lab", which reads like a node or a
     // second thing with the same name.
     const name = withKind(untrusted(item.displayName, 60) || item.id, environments.has(item.id) ? "Proxmox" : null);
     names.set(item.id, name);

@@ -36,7 +36,7 @@ import {
 } from "./agent-tools.mjs";
 import { chatCompletion, estimateTokens, listModels, LlmError, validModelId } from "./llm-client.mjs";
 import { questionWindow } from "./agent-history.mjs";
-import { HELMSMAN_HELP, namedServices, questionSeeds } from "./agent-intent.mjs";
+import { HELMSMAN_HELP, namedServices, nicknameHints, questionSeeds } from "./agent-intent.mjs";
 import { createConversationStore } from "./agent-conversations.mjs";
 import { parseServiceUrl, resolveAndAuthorizeExplicitTarget, resolveAndAuthorizeTarget } from "./network.mjs";
 import { OutboundJsonError, performOutboundJsonRequest } from "./outbound-json.mjs";
@@ -71,7 +71,6 @@ const MAX_PUSH_CHARS = 480;
 const MAX_QUESTION_CHARS = 1_000;
 const MAX_HISTORY_TURNS = 6;
 const BACKGROUND_JOBS_PER_HOUR = 40;
-const QUESTIONS_PER_HOUR = 60;
 const NOTIFICATIONS_PER_HOUR = 20;
 const RULE_ACTIONS_PER_DAY = 10;
 const DIGEST_GRACE_MS = 2 * 60 * 60_000;
@@ -161,9 +160,9 @@ class RateWindow {
     this.#windowMs = windowMs;
   }
 
-  take(now) {
+  take(now, limit = this.#limit) {
     this.#times = this.#times.filter((time) => now - time < this.#windowMs);
-    if (this.#times.length >= this.#limit) return false;
+    if (this.#times.length >= limit) return false;
     this.#times.push(now);
     return true;
   }
@@ -336,7 +335,7 @@ export async function createAgent(options) {
   let indexerReadAt = 0;
   let indexerReading = null;
   const backgroundRate = new RateWindow(BACKGROUND_JOBS_PER_HOUR, 3_600_000);
-  const questionRate = new RateWindow(QUESTIONS_PER_HOUR, 3_600_000);
+  const questionRate = new RateWindow(AGENT_LIMITS.questionsPerHour.default, 3_600_000);
   const notifyRate = new RateWindow(NOTIFICATIONS_PER_HOUR, 3_600_000);
   const recentPushes = new Map();
   const status = { lastModel: null, lastNotify: null, lastJobAt: null };
@@ -610,7 +609,12 @@ export async function createAgent(options) {
     const current = snapshot() || {};
     const names = [
       ...(current.services || []).map((service) => service.label || service.id),
-      ...(current.infrastructure?.environments || []).map((item) => withKind(plainText(item.displayName, 40), "Proxmox")),
+      // Node names too, so a question about a node is known to be about
+      // that Proxmox environment.
+      ...(current.infrastructure?.environments || []).map((item) => {
+        const nodes = [...new Set((item.nodes || []).map((node) => plainText(node?.name, 30)).filter(Boolean))].slice(0, 8);
+        return `${withKind(plainText(item.displayName, 40), "Proxmox")}${nodes.length ? ` (nodes ${nodes.join(", ")})` : ""}`;
+      }),
       ...(current.infrastructure?.portainer || []).map((item) => `${withKind(plainText(item.displayName, 40), "Portainer")} and its containers`),
       ...(current.infrastructure?.services || []).filter((item) => item.type === "loki").map((item) => withKind(plainText(item.displayName, 40), "Loki"))
     ].filter(Boolean);
@@ -731,7 +735,12 @@ export async function createAgent(options) {
       // The service the question names, by name or nickname.
       for (const name of namedServices(snapshot(), prompt)) await seed("service_status", { name });
       if (seeds.indexers && toolContext.indexers) await seed("indexer_status", {});
-      if (seeds.workloads) await seed("list_workloads", {});
+      if (seeds.workloads) {
+        // "vpn" usually means a gluetun container: say so, or the model
+        // looks for a container called vpn and finds none.
+        const hints = nicknameHints(prompt);
+        await seed("list_workloads", {}, hints.length ? `Nicknames in the question: ${hints.map(({ word, target }) => `"${word}" usually means ${target}`).join("; ")}.\n` : "");
+      }
       if (seeds.media) await seed("media_queue", {});
       // Manual lines only for questions about addresses, procedures and
       // Helmsman itself. Given for anything else, small models report the
@@ -2048,6 +2057,7 @@ export async function createAgent(options) {
             model: ai.model,
             contextTokens: ai.contextTokens,
             timeoutSeconds: ai.timeoutSeconds,
+            questionsPerHour: ai.questionsPerHour ?? AGENT_LIMITS.questionsPerHour.default,
             authMode: ai.authMode,
             extraInstructions: ai.extraInstructions,
             apiKeyConfigured: credentialStore.hasCredential(namespaceFor("ai", ai.url, ai.targetRevision), "apiKey"),
@@ -2145,7 +2155,7 @@ export async function createAgent(options) {
   }
 
   async function saveAi(body) {
-    requireKeys(body, ["url", "model", "contextTokens", "timeoutSeconds", "authMode", "apiKey", "clearApiKey", "extraInstructions"]);
+    requireKeys(body, ["url", "model", "contextTokens", "timeoutSeconds", "questionsPerHour", "authMode", "apiKey", "clearApiKey", "extraInstructions"]);
     const previous = config().ai;
     const url = canonicalUrl(body.url ?? previous?.url, { stripV1: true });
     const model = body.model ?? previous?.model;
@@ -2168,7 +2178,11 @@ export async function createAgent(options) {
     }
     const contextTokens = body.contextTokens ?? previous?.contextTokens ?? AGENT_LIMITS.contextTokens.default;
     const timeoutSeconds = body.timeoutSeconds ?? previous?.timeoutSeconds ?? AGENT_LIMITS.timeoutSeconds.default;
-    const { contextTokens: contextRange, timeoutSeconds: timeoutRange } = AGENT_LIMITS;
+    const questionsPerHour = body.questionsPerHour ?? previous?.questionsPerHour ?? AGENT_LIMITS.questionsPerHour.default;
+    const { contextTokens: contextRange, timeoutSeconds: timeoutRange, questionsPerHour: rateRange } = AGENT_LIMITS;
+    if (!Number.isSafeInteger(questionsPerHour) || questionsPerHour < rateRange.min || questionsPerHour > rateRange.max) {
+      fail(400, "INVALID_QUESTION_LIMIT", `Questions per hour must be from ${rateRange.min} to ${rateRange.max}.`);
+    }
     if (!Number.isSafeInteger(contextTokens) || contextTokens < contextRange.min || contextTokens > contextRange.max) {
       fail(400, "INVALID_CONTEXT_SIZE", `The context size must be from ${contextRange.min} to ${contextRange.max} tokens.`);
     }
@@ -2184,6 +2198,7 @@ export async function createAgent(options) {
         model,
         contextTokens,
         timeoutSeconds,
+        questionsPerHour,
         authMode,
         extraInstructions,
         updatedAt: new Date(clock()).toISOString()
@@ -2290,7 +2305,10 @@ export async function createAgent(options) {
       fail(400, "INVALID_QUESTION", `Ask a question of up to ${MAX_QUESTION_CHARS} characters.`);
     }
     if (!config().ai) fail(409, "AI_NOT_CONFIGURED", "Connect a model server first.");
-    if (!questionRate.take(clock())) fail(429, "AGENT_BUSY", "Too many questions in the last hour. Try again later.");
+    const perHour = config().ai.questionsPerHour ?? AGENT_LIMITS.questionsPerHour.default;
+    if (!questionRate.take(clock(), perHour)) {
+      fail(429, "AGENT_BUSY", `That's ${perHour} questions in the last hour, the limit set under Settings → Agent → Model server. Try again later, or raise it there.`);
+    }
     const history = historyInput(body.history);
     const question = plainText(body.question, MAX_QUESTION_CHARS);
     pruneProposals();
