@@ -210,6 +210,23 @@ export function canonicalIndexers(value) {
   };
 }
 
+/**
+ * Conversations: whether full model exchanges are saved for review and
+ * training data. Off by default. `reports` also saves the agent's own
+ * reports (incidents, recoveries, summaries), not only chat answers.
+ */
+export function defaultConversations() {
+  return { keep: false, reports: true };
+}
+
+export function canonicalConversations(value) {
+  exactKeys(value, ["keep", "reports"], [], "Conversations");
+  return {
+    keep: bool(value.keep, "Keep conversations"),
+    reports: bool(value.reports, "Keep reports")
+  };
+}
+
 export function emptyAgentConfig() {
   return { ai: null, notify: null, settings: defaultSettings(), rules: [] };
 }
@@ -348,7 +365,7 @@ export function canonicalRules(value) {
 export function canonicalAgentConfig(value) {
   // containerHealth is optional and only saved once the owner changes it,
   // so a configuration that never used it still loads in older versions.
-  exactKeys(value, ["ai", "notify", "settings", "rules"], ["containerHealth", "downloads", "indexers"], "The agent configuration");
+  exactKeys(value, ["ai", "notify", "settings", "rules"], ["containerHealth", "downloads", "indexers", "conversations"], "The agent configuration");
   return {
     ai: canonicalAiConfig(value.ai),
     notify: canonicalNotifyConfig(value.notify),
@@ -356,7 +373,8 @@ export function canonicalAgentConfig(value) {
     rules: canonicalRules(value.rules),
     ...(value.containerHealth === undefined ? {} : { containerHealth: canonicalContainerHealth(value.containerHealth) }),
     ...(value.downloads === undefined ? {} : { downloads: canonicalDownloads(value.downloads) }),
-    ...(value.indexers === undefined ? {} : { indexers: canonicalIndexers(value.indexers) })
+    ...(value.indexers === undefined ? {} : { indexers: canonicalIndexers(value.indexers) }),
+    ...(value.conversations === undefined ? {} : { conversations: canonicalConversations(value.conversations) })
   };
 }
 

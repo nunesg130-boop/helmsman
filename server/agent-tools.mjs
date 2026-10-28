@@ -105,7 +105,10 @@ function overview(snapshot, context) {
   lines.push(`Infrastructure: ${infra.state || "unknown"}, ${plural(infra.environmentCount ?? 0, "Proxmox environment")}, ${plural(infra.serviceCount ?? 0, "other service")}, ${(infra.affectedTargetCount ?? 0) + (infra.affectedServiceCount ?? 0)} affected.`);
   const open = allIncidents(snapshot);
   if (context.restart) {
-    lines.push(`Restart in progress since ${formatTime(context.restart.since, tz)}: ${context.restart.nodes.join(", ") || "a Proxmox node"} ${context.restart.holding ? "restarting or just booted; alerts are held until every node has been up 10 minutes, so failures right now are expected while guests start" : "still away after 30 minutes; alerts are no longer held"}.`);
+    const who = context.restart.nodes.join(", ") || "a Proxmox node";
+    lines.push(context.restart.kind === "restarting"
+      ? `Restart in progress since ${formatTime(context.restart.since, tz)}: ${who} rebooted or ${context.restart.nodes.length === 1 ? "is" : "are"} booting (uptime shows it). ${context.restart.holding ? "Alerts are held until every node has been up 10 minutes, so failures right now are expected while guests start." : "Still not settled after 30 minutes; alerts are no longer held."}`
+      : `Lost contact since ${formatTime(context.restart.since, tz)} with ${who}. Whether it restarted or only lost its network connection is not known until it is reachable again, so do not say it restarted. ${context.restart.holding ? "Alerts are held meanwhile." : "Still unreachable after 30 minutes; alerts are no longer held."}`);
   }
   lines.push(open.length ? `Open incidents (${open.length}):` : "Open incidents: none.");
   for (const incident of open.slice(0, 8)) lines.push(`- ${incidentLine(snapshot, incident, tz)}`);

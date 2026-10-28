@@ -285,6 +285,27 @@ To stop all automatic actions at once, turn off **Let rules act** on the
 **Automation** tab. To stop the agent,
 turn off **Agent on**.
 
+## Training data for your own model
+
+Settings → Agent → **Training data** can keep each conversation with the
+model: the instructions, the question, every tool call and result, and the
+answer, exactly as the model saw them. It is off by default, and stored only
+on your server for 90 days or 100 MB, oldest first. Secrets are scrubbed
+before anything is saved. **Include reports** also keeps incident notes,
+recoveries and summaries.
+
+Saved answers get **Good**, **Bad** and **Fix answer** buttons, in the chat
+and on reports. A fixed answer is what the model should have said; it
+replaces the model's answer in the export and is the most useful training
+example there is. **Download good and fixed** saves a JSON Lines file with one
+`{"messages": [...], "tools": [...]}` example per line, ready for
+fine-tuning: pass each line's `tools` to the chat template, for example
+`tokenizer.apply_chat_template(example["messages"], tools=example["tools"], tokenize=False)`.
+Answers rated Bad never export. **Delete all** removes every saved
+conversation and rating.
+
+The chat also comes back after a reload while conversations are kept.
+
 ## Using the API
 
 Everything on these screens is also available at `/api/v2/agent`, for
