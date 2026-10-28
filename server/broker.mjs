@@ -58,7 +58,7 @@ import {
 import { generateSecretToken, hashToken, StateStore, tokenMatches } from "./state.mjs";
 import { anySignal } from "./abort-signals.mjs";
 
-const DEFAULT_VERSION = "1.16.0";
+const DEFAULT_VERSION = "1.16.1";
 const requestedVersion = String(process.env.HELMSMAN_VERSION || DEFAULT_VERSION);
 const VERSION = /^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/u.test(requestedVersion)
   ? requestedVersion
@@ -3145,12 +3145,16 @@ export async function createBroker(options = {}) {
     staleAfterMs: 5 * 60_000,
     onTransition: (transition) => recordEvent({
       at: transition.at,
-      level: transition.type === "recovered"
+      level: ["recovered", "superseded", "retired"].includes(transition.type)
         ? "info"
         : ["down", "degraded", "auth_required"].includes(transition.state) ? "error" : "warn",
       category: "health",
       event: "health_incident",
       outcome: transition.type === "recovered" ? "recovered" : "changed",
+      // opened, escalated, deescalated, recovered, or superseded / retired:
+      // an incident replaced by a different problem, or whose check is gone,
+      // ends there even though nothing recovered.
+      operation: transition.type,
       service: transition.service,
       capability: transition.capability,
       code: transition.code || undefined,

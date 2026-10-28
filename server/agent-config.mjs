@@ -34,6 +34,9 @@ export const AGENT_LIMITS = Object.freeze({
   rules: 20,
   contextTokens: { min: 2_048, max: 131_072, default: 4_096 },
   timeoutSeconds: { min: 10, max: 300, default: 120 },
+  // Questions in chat per hour. Protects the model server from a runaway
+  // script or a stolen session; raise it for a test or training-data run.
+  questionsPerHour: { min: 10, max: 2_000, default: 60 },
   checkInHours: { min: 1, max: 24, default: 6 },
   ruleMinutes: { min: 1, max: 120, default: 5 },
   cooldownMinutes: { min: 10, max: 1_440, default: 60 },
@@ -236,7 +239,7 @@ export function canonicalAiConfig(value) {
   exactKeys(value, [
     "url", "targetRevision", "approvedHostCidrs", "model", "contextTokens",
     "timeoutSeconds", "authMode", "extraInstructions", "updatedAt"
-  ], [], "The AI connection");
+  ], ["questionsPerHour"], "The AI connection");
   if (typeof value.url !== "string" || !URL_TEXT.test(value.url)) invalid("The AI connection URL is invalid.");
   if (typeof value.targetRevision !== "string" || !UUID.test(value.targetRevision)) invalid("The AI connection revision is invalid.");
   if (typeof value.model !== "string" || !MODEL_ID.test(value.model)) invalid("Choose a valid model name.");
@@ -253,6 +256,9 @@ export function canonicalAiConfig(value) {
     model: value.model,
     contextTokens: integer(value.contextTokens, AGENT_LIMITS.contextTokens, "The context size"),
     timeoutSeconds: integer(value.timeoutSeconds, AGENT_LIMITS.timeoutSeconds, "The model timeout"),
+    questionsPerHour: value.questionsPerHour === undefined
+      ? AGENT_LIMITS.questionsPerHour.default
+      : integer(value.questionsPerHour, AGENT_LIMITS.questionsPerHour, "Questions per hour"),
     authMode: value.authMode,
     extraInstructions: value.extraInstructions,
     updatedAt: isoTimestamp(value.updatedAt, "The AI connection update time")

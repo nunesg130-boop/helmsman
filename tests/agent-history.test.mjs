@@ -104,7 +104,7 @@ test("overnight means last night in the owner's time zone, not the last 14 hours
   assert.equal(questionWindow("anything last night?", early, "America/New_York").to, early);
 });
 
-test("an incident cut short by a Helmsman restart ends there, not at the end of the window", () => {
+test("an incident with no recorded end is counted only to its last record, never to a later restart", () => {
   const text = buildHistory({
     from: NOW - 7 * 24 * HOUR,
     to: NOW,
@@ -123,7 +123,7 @@ test("an incident cut short by a Helmsman restart ends there, not at the end of 
     appEvents: [{ at: "2026-10-14T22:00:00.000Z", event: "application.started" }],
     restartNow: null
   });
-  assert.match(text, /- Portainer: 1 problem, 1 h in total\. .*\(ended when Helmsman restarted\)/u);
+  assert.match(text, /- Portainer: 1 problem, 1 min in total\. .*\(no recovery recorded; last seen then\)/u);
   assert.doesNotMatch(text, /still open/u);
   assert.match(text, /- Proxmox Main: 1 problem, 5 min in total/u);
   assert.doesNotMatch(text, /No problems: .*Proxmox Main/u, "a service with problems is never also listed as quiet");
@@ -147,4 +147,23 @@ test("a problem that recovered after the window ends is not called still open", 
   assert.match(text, /- prowlarr: 1 problem, 2 h 40 min in total\./u);
   assert.doesNotMatch(text, /still open/u);
   assert.match(text, /Right now: Helmsman has lost contact with norco since 10-20 20:30, and alerts are held until it settles\./u);
+});
+
+test("a superseded or retired incident ends where it was replaced, and an unrecorded node outage says so", () => {
+  const text = buildHistory({
+    from: NOW - 7 * 24 * HOUR,
+    to: NOW,
+    label: "the past week",
+    format: (iso) => iso.slice(5, 16).replace("T", " "),
+    nameOf: (id) => ({ "proxmox-main": "Proxmox Main" }[id] || id),
+    healthEvents: [
+      { at: "2026-10-18T18:00:00.000Z", event: "health_incident", outcome: "changed", operation: "opened", service: "proxmox-main", capability: "tasks", code: "TASK_HISTORY_PARTIAL", targetId: "t1" },
+      { at: "2026-10-18T18:30:00.000Z", event: "health_incident", outcome: "changed", operation: "superseded", service: "proxmox-main", capability: "tasks", targetId: "t1" },
+      { at: "2026-10-19T09:00:00.000Z", event: "health_incident", outcome: "changed", operation: "opened", service: "proxmox-main", capability: "nodes", code: "NODES_OFFLINE", targetId: "n1" },
+      { at: "2026-10-19T09:05:00.000Z", event: "health_incident", outcome: "recovered", operation: "recovered", service: "proxmox-main", targetId: "n1" }
+    ],
+    appEvents: [{ at: "2026-10-20T19:00:00.000Z", event: "application.started" }]
+  });
+  assert.match(text, /- Proxmox Main: 2 problems, 35 min in total, longest 30 min\./u, "superseded after 30 minutes, not stretched to the restart two days later");
+  assert.match(text, /Proxmox Main reported a node offline at 10-19 09:00 for 5 min; whether it restarted or only lost its connection was not recorded for that time\./u);
 });

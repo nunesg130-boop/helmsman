@@ -1434,3 +1434,42 @@ test("indexer questions start with Prowlarr's indexer list", async (t) => {
   assert.ok(asked.payload.toolsUsed.includes("indexer_status"));
   assert.match(context.modelCalls[0].messages.find((message) => message.tool_call_id?.startsWith("seed-indexer_status")).content, /Example Tracker/u);
 });
+
+test("the question limit is adjustable from the model settings and enforced per hour", async (t) => {
+  const { agent, context, publish } = await harness(t, { modelReplies: () => ({ content: "Fine." }) });
+  await configure(agent, { autonomy: false });
+  await publish(snapshotAt(context.now));
+  let state = (await api(agent, "GET", "/api/v2/agent")).payload;
+  assert.equal(state.config.ai.questionsPerHour, 60, "60 an hour unless changed");
+  assert.deepEqual(state.limits.questionsPerHour, { min: 10, max: 2000, default: 60 });
+  await assert.rejects(api(agent, "PUT", "/api/v2/agent/ai", { questionsPerHour: 5 }), { code: "INVALID_QUESTION_LIMIT" });
+  await assert.rejects(api(agent, "PUT", "/api/v2/agent/ai", { questionsPerHour: 2001 }), { code: "INVALID_QUESTION_LIMIT" });
+  state = (await api(agent, "PUT", "/api/v2/agent/ai", { questionsPerHour: 10 })).payload;
+  assert.equal(state.config.ai.questionsPerHour, 10);
+  for (let index = 0; index < 10; index += 1) await api(agent, "POST", "/api/v2/agent/ask", { question: "Is sonarr up?" });
+  await assert.rejects(api(agent, "POST", "/api/v2/agent/ask", { question: "Is sonarr up?" }), (error) => error.code === "AGENT_BUSY" && /10 questions in the last hour/u.test(error.message));
+  // Raising it takes effect at once, and an hour later the window clears.
+  await api(agent, "PUT", "/api/v2/agent/ai", { questionsPerHour: 2000 });
+  assert.ok((await api(agent, "POST", "/api/v2/agent/ask", { question: "Is sonarr up?" })).payload.answer);
+  // Other settings keep the limit.
+  state = (await api(agent, "PUT", "/api/v2/agent/ai", { timeoutSeconds: 90 })).payload;
+  assert.equal(state.config.ai.questionsPerHour, 2000);
+});
+
+test("the prompt names each Proxmox node, nicknames are explained, and ordinary words are not service names", async (t) => {
+  const { agent, context, publish } = await harness(t, { modelReplies: () => ({ content: "Fine." }) });
+  await configure(agent, { autonomy: false });
+  await publish(snapshotAt(context.now));
+  const ask = async (question) => {
+    context.modelCalls.length = 0;
+    const asked = await api(agent, "POST", "/api/v2/agent/ask", { question });
+    return { tools: asked.payload.toolsUsed, messages: context.modelCalls[0].messages };
+  };
+  let result = await ask("Did pve-1 restart or lose connection?");
+  assert.match(result.messages[0].content, /Proxmox Lab \(nodes pve-1\)/u);
+  assert.ok(result.tools.includes("service_status"), "a node name finds its Proxmox environment");
+  result = await ask("is the vpn container running");
+  assert.match(result.messages.find((message) => message.tool_call_id?.startsWith("seed-list_workloads")).content, /^Nicknames in the question: "vpn" usually means gluetun\./u);
+  result = await ask("What can't you see?");
+  assert.equal(result.tools.includes("service_status"), false, "\"see\" is not Seerr");
+});
