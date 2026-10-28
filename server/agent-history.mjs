@@ -33,14 +33,34 @@ export function questionWindow(text, now = Date.now(), timeZone = undefined) {
   if (/\b(?:past|last|previous)\s+(?:hour)\b/u.test(question)) return window(1, "the past hour");
   if (/\b(?:past|last|previous)\s+(?:day)\b/u.test(question)) return window(24, "the past day");
   if (/\b(?:past|last|previous|this)\s+week\b/u.test(question)) return window(24 * 7, "the past week");
-  if (/\b(?:last night|overnight)\b/u.test(question)) return window(14, "overnight");
   const midnight = localMidnight(now, timeZone);
+  if (/\b(?:last night|overnight|while i (?:was )?(?:slept|sleeping|asleep))\b/u.test(question)) {
+    // Last night in the owner's time zone: 22:00 the evening before until
+    // 08:00, or until now when asked before 08:00.
+    const from = midnight - 2 * HOUR;
+    return { from, to: Math.max(from + HOUR, Math.min(now, midnight + 8 * HOUR)), label: "overnight (22:00 to 08:00)" };
+  }
   if (/\byesterday\b/u.test(question)) return { from: midnight - 24 * HOUR, to: midnight, label: "yesterday" };
   if (/\b(?:today|this morning|this afternoon|so far)\b/u.test(question)) return { from: midnight, to: now, label: "today" };
   if (/\b(?:lately|recently|history|historically|been doing|been going|been like|been running|how has|how have|how's .* been|any (?:issues|problems|outages|downtime)|outages?|downtime|uptime)\b/u.test(question)) {
     return window(24, "the past 24 hours");
   }
+  // Restarts and lost connections are events, so they are answered from the
+  // record too, never from manual notes or the current state alone.
+  if (isRestartQuestion(question)) return window(24, "the past 24 hours");
   return null;
+}
+
+/**
+ * True for questions about something restarting, rebooting, going offline,
+ * losing contact or coming back, and about alerts being held for that.
+ * Plain requests ("restart sonarr") and questions about what the agent may
+ * do ("can you restart things?") are not.
+ */
+export function isRestartQuestion(text) {
+  const question = String(text || "").toLowerCase();
+  return /\b(?:restarted|rebooted|went (?:down|offline|away)|go(?:ne)? (?:down|offline)|offline|unreachable|(?:lost|lose|losing) (?:contact|connection|connectivity)|disconnect(?:ed|ion)?|came back|come back|back (?:up|online)|is \w+ back|blip|crash(?:ed)?|power(?:ed)? (?:off|cut|outage)|held alerts|alerts (?:were |are |being )?(?:held|holding|on hold)|holding alerts)\b/u.test(question)
+    || /\bdid\b.*\b(?:restart|reboot|crash|drop)\b/u.test(question);
 }
 
 // Midnight today in the owner's time zone, as a timestamp.
@@ -87,20 +107,37 @@ function unionLength(intervals) {
  * `openIncidents` are the incidents open right now; `nameOf(serviceId)` gives
  * a display name; `format(iso)` a local time.
  */
-export function buildHistory({ from, to, label: windowLabel, healthEvents = [], actionEvents = [], appEvents = [], openIncidents = [], monitored = [], nameOf = (id) => id, format = (iso) => iso, oldestEventAt = null }) {
+export function buildHistory({ from, to, label: windowLabel, healthEvents = [], actionEvents = [], appEvents = [], openIncidents = [], monitored = [], nameOf = (id) => id, format = (iso) => iso, oldestEventAt = null, restartNow = undefined }) {
   const incidents = new Map();
   for (const event of [...healthEvents].sort((left, right) => String(left.at).localeCompare(String(right.at)))) {
     if (event?.event !== "health_incident" || !event.targetId) continue;
     const at = Date.parse(event.at);
     if (!Number.isFinite(at)) continue;
-    const incident = incidents.get(event.targetId) || { id: event.targetId, service: event.service, capability: event.capability, start: null, end: null, codes: new Set(), worst: "warn" };
+    const incident = incidents.get(event.targetId) || { id: event.targetId, service: event.service, capability: event.capability, start: null, end: null, lastAt: at, codes: new Set(), worst: "warn" };
     if (event.outcome === "recovered") incident.end = at;
     else {
       incident.start ??= at;
       if (event.level === "error") incident.worst = "error";
     }
+    incident.lastAt = Math.max(incident.lastAt, at);
     if (event.code) incident.codes.add(event.code);
     incidents.set(event.targetId, incident);
+  }
+  // An incident that never recorded a recovery and is not open now ended
+  // without one, usually because Helmsman restarted (a restart starts every
+  // incident afresh). It ended no later than that restart; without one, at
+  // its last record.
+  const openIds = new Set(openIncidents.map((open) => open?.id).filter(Boolean));
+  const starts = appEvents
+    .filter((event) => event?.event === "application.started")
+    .map((event) => Date.parse(event.at))
+    .filter(Number.isFinite)
+    .sort((left, right) => left - right);
+  for (const incident of incidents.values()) {
+    if (incident.end !== null || openIds.has(incident.id)) continue;
+    const restart = starts.find((at) => at >= incident.lastAt);
+    incident.end = restart ?? incident.lastAt;
+    incident.endedByRestart = restart !== undefined;
   }
   for (const open of openIncidents) {
     const id = open?.id;
@@ -136,13 +173,30 @@ export function buildHistory({ from, to, label: windowLabel, healthEvents = [], 
     const ongoing = entry.episodes.some(({ ongoing }) => ongoing);
     const latest = entry.episodes.slice(0, 3).map((episode) => {
       const what = [episode.capability, [...episode.codes][0]].filter(Boolean).join(" ");
-      return `${format(new Date(episode.start).toISOString())}${episode.ongoing ? " until now (still open)" : `–${format(new Date(episode.end).toISOString()).replace(/^.*?, /u, "")}`}${what ? ` (${what})` : ""}`;
+      return `${format(new Date(episode.start).toISOString())}${episode.ongoing ? " until now (still open)" : `–${format(new Date(episode.end).toISOString()).replace(/^.*?, /u, "")}`}${what ? ` (${what})` : ""}${episode.endedByRestart ? " (ended when Helmsman restarted)" : ""}`;
     });
-    lines.push(`- ${nameOf(entry.service)}: ${count} problem${count === 1 ? "" : "s"}, ${minutes(entry.total)} in total${ongoing ? ", one still open" : ""}. ${count > 3 ? "Latest: " : ""}${latest.join("; ")}.`);
+    const longest = Math.max(...entry.episodes.map(({ start, end }) => end - start));
+    lines.push(`- ${nameOf(entry.service)}: ${count} problem${count === 1 ? "" : "s"}, ${minutes(entry.total)} in total${count > 1 ? `, longest ${minutes(longest)}` : ""}${ongoing ? ", one still open" : ""}. ${count > 3 ? "Latest: " : ""}${latest.join("; ")}.`);
   }
   if (services.length > 8) lines.push(`- ${services.length - 8} more services also had problems.`);
-  const quiet = monitored.filter((id) => !byService.has(id)).map(nameOf);
+  // Compared by name: the journal and the snapshot can name the same thing
+  // with different ids (proxmox-<id> and <id>).
+  const troubled = new Set(services.map((entry) => nameOf(entry.service)));
+  const quiet = [...new Set(monitored.map(nameOf))].filter((name) => !troubled.has(name));
   if (services.length && quiet.length) lines.push(`- No problems: ${quiet.slice(0, 12).join(", ")}.`);
+
+  // Lost contact with a node, and what Helmsman found when it came back:
+  // whether its uptime showed a restart or only a dropped connection.
+  const contacts = healthEvents
+    .filter((event) => event?.event === "node_contact" && typeof event.message === "string" && Date.parse(event.at) >= from && Date.parse(event.at) <= to)
+    .sort((left, right) => String(right.at).localeCompare(String(left.at)))
+    .slice(0, 4);
+  for (const event of contacts) lines.push(`- Node contact at ${format(event.at)}: ${event.message}`);
+  if (restartNow === null) lines.push("- Right now no node is restarting or out of contact, and no alerts are held.");
+  else if (restartNow) {
+    const who = (restartNow.nodes || []).join(", ") || "a Proxmox node";
+    lines.push(`- Right now: ${restartNow.kind === "restarting" ? `${who} is restarting` : `Helmsman has lost contact with ${who}`} since ${format(restartNow.since)}${restartNow.holding ? ", and alerts are held until it settles" : ""}.`);
+  }
 
   const actions = actionEvents
     .filter((event) => Date.parse(event.at) >= from && Date.parse(event.at) <= to)

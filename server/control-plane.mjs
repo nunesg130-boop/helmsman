@@ -4656,14 +4656,14 @@ export async function createControlPlane(options) {
   async function performMediaRecoveryAction(body) {
     if (!executeMediaRecoveryAction) fail(503, "ACTIONS_UNAVAILABLE", "Media recovery controls are temporarily unavailable.");
     const seasonRequest = body.operation === "requestSeasons";
-    const queueAction = body.operation === "blocklistAndSearch";
+    const queueAction = ["blocklistAndSearch", "removeAndSearch"].includes(body.operation);
     requireExactKeys(body, seasonRequest
       ? ["serviceId", "operation", "resourceId", "seasonNumbers", "targetRevision", "detailRevision"]
       : queueAction
         ? ["serviceId", "operation", "queueId", "targetRevision"]
         : ["serviceId", "operation", "resourceId", "targetRevision"]);
     const serviceId = ["seerr", "radarr", "sonarr"].includes(body.serviceId) ? body.serviceId : null;
-    const operation = ["retryRequest", "requestSeasons", "searchMovie", "searchSeries", "blocklistAndSearch"].includes(body.operation)
+    const operation = ["retryRequest", "requestSeasons", "searchMovie", "searchSeries", "blocklistAndSearch", "removeAndSearch"].includes(body.operation)
       ? body.operation
       : null;
     const resourceId = queueAction ? null : requiredActionInteger(body.resourceId, "media resource", 9_999_999_999);
@@ -4673,8 +4673,8 @@ export async function createControlPlane(options) {
     const detailRevision = seasonRequest ? requiredMediaDetailRevision(body.detailRevision) : null;
     const operationAllowed = serviceId === "seerr"
       ? ["retryRequest", "requestSeasons"].includes(operation)
-      : (serviceId === "radarr" && ["searchMovie", "blocklistAndSearch"].includes(operation))
-        || (serviceId === "sonarr" && ["searchSeries", "blocklistAndSearch"].includes(operation));
+      : (serviceId === "radarr" && ["searchMovie", "blocklistAndSearch", "removeAndSearch"].includes(operation))
+        || (serviceId === "sonarr" && ["searchSeries", "blocklistAndSearch", "removeAndSearch"].includes(operation));
     if (!serviceId || !operationAllowed) {
       fail(400, "INVALID_ACTION_TARGET", "Choose a supported media recovery action.");
     }
@@ -4687,6 +4687,7 @@ export async function createControlPlane(options) {
       fail(409, "TARGET_CHANGED", "The media service connection changed; refresh it before trying again.");
     }
     const snapshot = currentOperationsSnapshot({ liveOnly: true });
+    let searchId = null;
     const provider = serviceId === "seerr"
       ? requireCurrentSeerrProvider(snapshot, targetRevision)
       : requireCurrentActionEvidence(
@@ -4716,10 +4717,16 @@ export async function createControlPlane(options) {
       const queueState = String(queueMatches[0]?.state || "").toLowerCase();
       const blocked = typeof queueMatches[0]?.error === "string" && queueMatches[0].error.length > 0
         || /(?:blocked|failed|error)/u.test(queueState);
+      // A torrent the download client shows as stalled counts as stuck too.
+      const stalled = /(?:stalled|metadl)/u.test(String(activityMatches[0]?.state || "").toLowerCase());
       if (queueMatches.length !== 1
         || activityMatches.length !== 1
-        || !blocked) {
-        fail(409, "ACTION_NOT_AVAILABLE", `That ${serviceId} queue item is not one current blocked import.`);
+        || !(blocked || stalled)) {
+        fail(409, "ACTION_NOT_AVAILABLE", `That ${serviceId} queue item is not one current stuck download.`);
+      }
+      if (operation === "removeAndSearch") {
+        searchId = Number.isSafeInteger(queueMatches[0]?.searchId) && queueMatches[0].searchId > 0 ? queueMatches[0].searchId : null;
+        if (searchId === null) fail(409, "ACTION_NOT_AVAILABLE", `${serviceId} did not say what that download is for, so it can't be searched again.`);
       }
     } else {
       const expectedType = serviceId === "radarr" ? "movie" : "series";
@@ -4822,6 +4829,7 @@ export async function createControlPlane(options) {
               serviceId,
               operation,
               ...(queueAction ? { queueId } : { resourceId }),
+              ...(searchId !== null ? { searchId } : {}),
               connection,
               targetResolution,
               credential
@@ -5569,10 +5577,11 @@ export async function createControlPlane(options) {
     performAction(kind, body) {
       if (kind === "portainer") return performPortainerContainerAction(body);
       if (kind === "proxmox") return performProxmoxWorkloadAction(body);
-      // The agent may only clear stuck downloads: remove a blocked Radarr or
-      // Sonarr queue item, blocklist the release and search again, with the
-      // same current-inventory checks as the dashboard button.
-      if (kind === "media" && body?.operation === "blocklistAndSearch") return performMediaRecoveryAction(body);
+      // The agent may only clear stuck downloads: remove a stuck Radarr or
+      // Sonarr queue item and search again (blocklisting the release when it
+      // failed or looks unsafe), with the same current-inventory checks as
+      // the dashboard button.
+      if (kind === "media" && ["blocklistAndSearch", "removeAndSearch"].includes(body?.operation)) return performMediaRecoveryAction(body);
       // Testing indexers changes nothing in Prowlarr; the agent may test one
       // at a time (or all when the owner asks in chat).
       if (kind === "prowlarr" && ["testIndexer", "testAllIndexers"].includes(body?.operation)) return performProwlarrAction(body);

@@ -5004,7 +5004,7 @@ function renderAgentHealthCard(data) {
   </form>`;
 }
 
-const STUCK_KIND_LABELS = Object.freeze({ stalled: "Stalled", failed: "Failed", import: "Import blocked" });
+const STUCK_KIND_LABELS = Object.freeze({ stalled: "Stalled", failed: "Failed", import: "Import blocked", malware: "Unsafe file" });
 
 function renderAgentDownloadsCard(data) {
   const policy = data.config?.downloads || { enabled: false, minutes: 60, automatic: false };
@@ -5014,11 +5014,11 @@ function renderAgentDownloadsCard(data) {
   return `<form class="glass-panel settings-card-v5 agent-downloads" id="agent-downloads-form">
     <header><div><span class="section-kicker">Radarr and Sonarr queues</span><h3>Stuck downloads</h3></div>${icon("download")}</header>
     <div class="settings-card-v5__body">
-      <p>When a download stays stalled, failed or blocked from importing, Helmsman offers to remove it, blocklist that release and search for another, the same as the "Block release &amp; search again" button.</p>
+      <p>When a download stays stalled, failed or blocked from importing, or a release turns out to hold a potentially dangerous file, Helmsman removes it and searches again: stalled ones without blocklisting the release (unless the same release stalls twice), failed and dangerous ones with it, the same as the "Block release &amp; search again" button.</p>
       ${connected ? "" : `<div class="security-note">${icon("link")}<div><strong>Radarr or Sonarr isn't connected</strong><span>Connect one under Media → Connections for this to have anything to watch.</span></div></div>`}
       <label class="check-row"><input name="enabled" type="checkbox" ${policy.enabled ? "checked" : ""}/><span><strong>Watch for stuck downloads</strong><small>You get a notification and an Approve button for each one.</small></span></label>
       <label><span>Stuck for at least (minutes)</span><input name="minutes" type="number" min="${limits.min}" max="${limits.max}" value="${Number(policy.minutes)}" required /><small>Stalled torrents sometimes recover on their own, so give them a while.</small></label>
-      <label class="check-row"><input name="automatic" type="checkbox" ${policy.automatic ? "checked" : ""}/><span><strong>Clear stalled and failed downloads by myself</strong><small>Needs “Let rules act”. Blocked imports always ask first, since the file may be fine and only need a manual import.</small></span></label>
+      <label class="check-row"><input name="automatic" type="checkbox" ${policy.automatic ? "checked" : ""}/><span><strong>Clear stuck and unsafe downloads without asking</strong><small>Stalled, failed and dangerous downloads are cleared on their own; dangerous ones straight away, without the wait. Blocked imports always ask first, since the file may be fine and only need a manual import.</small></span></label>
       ${policy.enabled ? `<h4>Right now</h4>${stuck.length ? `<ul class="agent-health__seen">${stuck.map((item) => `<li><i class="health-dot is-${item.kind === "import" ? "limited" : "degraded"}" aria-hidden="true"></i><div><strong>${escapeHtml(item.title)} <small>${escapeHtml(item.service === "radarr" ? "Radarr" : "Sonarr")} · ${escapeHtml(STUCK_KIND_LABELS[item.kind] || "Stuck")}</small></strong><small>${escapeHtml(item.message || "")}</small><small>${item.pendingApproval ? "Waiting for your approval on the Overview" : item.waitingMinutes > 0 ? `Stuck ${item.stuckMinutes} min · Helmsman acts after ${item.waitingMinutes} more` : `Stuck ${item.stuckMinutes} min`}</small></div></li>`).join("")}</ul>` : `<p class="agent-empty">Nothing is stuck.</p>`}` : ""}
       <div class="button-row"><button class="button button--primary" type="submit">Save</button></div>
     </div>
@@ -5032,10 +5032,7 @@ async function submitAgentDownloads(form) {
     minutes: Number(String(data.get("minutes") || "").trim()),
     automatic: data.get("automatic") === "on"
   };
-  const autonomy = Boolean(agentData()?.config?.settings?.autonomy);
-  await agentMutation("/downloads", "PUT", body, body.automatic && !autonomy
-    ? "Saved. Turn on “Let rules act” for automatic clean-up; until then each one asks first."
-    : "Stuck downloads saved.");
+  await agentMutation("/downloads", "PUT", body, "Stuck downloads saved.");
 }
 
 function renderAgentAutomationTab() {

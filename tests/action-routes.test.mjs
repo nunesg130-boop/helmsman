@@ -76,7 +76,15 @@ test("fixed action authorizers construct only approved provider requests", () =>
       "/api/v3/queue/501?removeFromClient=true&blocklist=true&skipRedownload=false&changeCategory=false"
     );
     assert.equal(replacement.body, "");
+    const removal = authorizeMediaAction("removeFromQueue", { service, queueId: 501 });
+    assert.equal(removal.method, "DELETE");
+    assert.equal(removal.upstreamPathAndQuery, "/api/v3/queue/501?removeFromClient=true&blocklist=false&skipRedownload=true&changeCategory=false");
   }
+  const episode = authorizeMediaAction("searchEpisodes", { service: "sonarr", resourceId: 77 });
+  assert.equal(episode.upstreamPath, "/api/v3/command");
+  assert.deepEqual(JSON.parse(episode.body), { name: "EpisodeSearch", episodeIds: [77] });
+  assert.equal(authorizeMediaAction("searchEpisodes", { service: "radarr", resourceId: 77 }).allowed, false);
+  assert.equal(authorizeMediaAction("removeFromQueue", { service: "radarr", resourceId: 77 }).allowed, false);
 });
 
 test("Proxmox action acknowledgements require one bounded UPID and never need exposure", () => {

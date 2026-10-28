@@ -183,13 +183,28 @@ const MEDIA_ACTIONS = Object.freeze({
     path: () => "/api/v3/command",
     body: (id) => JSON.stringify({ name: "SeriesSearch", seriesId: id })
   }),
+  searchEpisodes: Object.freeze({
+    service: "sonarr",
+    path: () => "/api/v3/command",
+    body: (id) => JSON.stringify({ name: "EpisodeSearch", episodeIds: [id] })
+  }),
   blocklistAndSearch: Object.freeze({
     services: Object.freeze(["radarr", "sonarr"]),
     method: "DELETE",
     path: (id) => `/api/v3/queue/${id}?removeFromClient=true&blocklist=true&skipRedownload=false&changeCategory=false`,
     body: ""
+  }),
+  // Removes a download from the queue and the client without blocklisting
+  // the release; the caller searches again separately (removeAndSearch).
+  removeFromQueue: Object.freeze({
+    services: Object.freeze(["radarr", "sonarr"]),
+    method: "DELETE",
+    path: (id) => `/api/v3/queue/${id}?removeFromClient=true&blocklist=false&skipRedownload=true&changeCategory=false`,
+    body: ""
   })
 });
+
+const QUEUE_ACTIONS = new Set(["blocklistAndSearch", "removeFromQueue"]);
 
 /**
  * Builds the complete path and body for a narrowly supported media recovery
@@ -199,7 +214,7 @@ export function authorizeMediaAction(operationValue, parameters = {}) {
   const operation = typeof operationValue === "string" ? operationValue : "";
   const definition = MEDIA_ACTIONS[operation];
   const service = canonicalServiceId(parameters?.service);
-  const queueAction = operation === "blocklistAndSearch";
+  const queueAction = QUEUE_ACTIONS.has(operation);
   const resourceId = queueAction ? null : normalizePositiveResourceId(parameters?.resourceId, 9_999_999_999);
   const queueId = queueAction ? normalizePositiveResourceId(parameters?.queueId, 2_147_483_647) : null;
   const suppliedSeasons = parameters?.seasonNumbers;

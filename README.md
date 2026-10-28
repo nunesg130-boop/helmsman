@@ -1,4 +1,4 @@
-# Helmsman v1.15.0
+# Helmsman v1.16.0
 
 Helmsman is a self-hosted operations center for a homelab's media services and infrastructure. It runs as one portable Linux container on Docker Desktop, Linux, macOS, compatible NAS platforms, AMD64, and ARM64.
 
@@ -14,6 +14,23 @@ Helmsman is a self-hosted operations center for a homelab's media services and i
 This Helmsman is the media and infrastructure dashboard in this repository. It
 is not affiliated with or derived from the existing Kubernetes project also
 named [Helmsman](https://github.com/mkubaczyk/helmsman).
+
+## v1.16.0
+
+**Stuck downloads clear themselves, and unsafe ones go straight away.** With **Clear stuck and unsafe downloads without asking** on (Settings → Automation → Stuck downloads), Helmsman no longer needs your approval or "Let rules act":
+- A stalled download is removed and searched for again without blocklisting the release, since it may only be short of seeders. If the same release stalls again, it is blocklisted the second time.
+- A failed download is removed, that release blocklisted, and searched for again.
+- A release Radarr or Sonarr flags for a potentially dangerous file (an `.exe`, `.lnk`, script and the like) is removed, blocklisted and searched for again as soon as it is seen, without the usual wait.
+- Blocked imports still ask first, since the file may be fine and only need a manual import. Torrents qBittorrent shows as stalled now count as stuck even when Radarr or Sonarr shows no error.
+
+**Better answers from the agent**, from a 40-question test run against a live homelab:
+- Each question now gets only the lookups it needs. Your manual is searched for questions about addresses, procedures and notes, not added to every question, so old notes ("speed fixed on Oct 20") are no longer reported as current status. A question that names a service gets that service's own status, indexer questions get Prowlarr's indexer list, container and VM questions get the workload list, and download questions get the queue.
+- Restart, reboot, offline, lost-connection and held-alert questions are answered from history. Helmsman now records each lost contact with a node, and whether the node restarted or only dropped off the network when it came back, so "Did norco restart or lose connection?" has a real answer.
+- History is right about what is still open. A problem that recovered after the period you asked about, or that was open when Helmsman restarted, no longer shows as "still open" (one showed a 165-hour Portainer outage). Each service also shows its longest problem, and "overnight" means 22:00 to 08:00 in your time zone, not the last 14 hours.
+- Proxmox environments are named "Proxmox Main" rather than "Main", which history had listed both with problems and under "No problems".
+- "approve it", "yes do it" and "approve all" get the Approve-button reply instead of going to the model, and say so when nothing is waiting.
+- The agent can look up Helmsman's own features, such as where saved conversations are kept.
+- "reboot the media vm" understands the VM after the name and lists VMs and LXCs first when nothing matches.
 
 ## v1.15.0
 
@@ -347,7 +364,7 @@ Helmsman's project-owned logging mark. Original generic VM/container workload
 drawings are also bundled. See
 [the asset notices](assets/services/THIRD_PARTY_NOTICES.md).
 
-Helmsman v1.15.0 combines built-in logging, optional Loki search, Portainer monitoring, a private persistent state/artwork cache, and a small, fixed set of confirmed recovery actions under Infrastructure with targeted media recovery actions and Helmsman's cluster-aware Proxmox model:
+Helmsman v1.16.0 combines built-in logging, optional Loki search, Portainer monitoring, a private persistent state/artwork cache, and a small, fixed set of confirmed recovery actions under Infrastructure with targeted media recovery actions and Helmsman's cluster-aware Proxmox model:
 
 - Media and Infrastructure are separate workspaces inside the same authenticated application, and only the selected workspace's navigation is shown;
 - the desktop sidebar collapses to an icon rail, remembers that preference, keeps its navigation scrollable at high browser zoom, and keeps its collapse control in the sidebar's brand row (under the brand mark when collapsed);
@@ -393,7 +410,7 @@ Helmsman v1.15.0 combines built-in logging, optional Loki search, Portainer moni
 
 ## Deploy the published container
 
-Helmsman is distributed as the public Linux AMD64/ARM64 image `ghcr.io/nunesg130-boop/helmsman`. The `v1.15.0` Git tag runs the contracts and architecture smoke tests, publishes the version, `latest`, and full-commit image tags, and creates a GitHub Release containing ready-to-use `compose.yaml`, `container.env.example`, and `SHA256SUMS` assets. The release deployment files pin `ghcr.io/nunesg130-boop/helmsman` to the exact multi-architecture manifest digest (`@sha256:...`).
+Helmsman is distributed as the public Linux AMD64/ARM64 image `ghcr.io/nunesg130-boop/helmsman`. The `v1.16.0` Git tag runs the contracts and architecture smoke tests, publishes the version, `latest`, and full-commit image tags, and creates a GitHub Release containing ready-to-use `compose.yaml`, `container.env.example`, and `SHA256SUMS` assets. The release deployment files pin `ghcr.io/nunesg130-boop/helmsman` to the exact multi-architecture manifest digest (`@sha256:...`).
 
 Download those three files from the matching [GitHub Release](https://github.com/nunesg130-boop/helmsman/releases) into one directory, verify the two deployment files against `SHA256SUMS`, open a terminal there, and make sure Docker Desktop or Docker Engine is running. No source checkout, Dockerfile, Node.js installation, or server-side image build is required.
 
@@ -609,7 +626,7 @@ Use the workspace switcher to keep media activity separate from host, virtualiza
 
 Overview keeps existing data visible while a refresh is in flight and patches volatile progress, speed, ETA, state, counts, and timestamps in place. Its Now Playing signal comes from one fixed, bounded Jellyfin sessions query and omits session identity metadata. Continue Watching leads only when Jellyfin supplies current resume data; otherwise Downloads & Imports is promoted into that position. Requests and service warnings share the attention card, while compact columns continue to distinguish connection health from service health. Initial loads may use placeholders, but polling does not deliberately replace the whole page or reset stable artwork URLs. Discover presents Seerr's read-only discovery feed; items without a request are labeled **Not requested** rather than exposing an internal unknown state, and only Jellyfin evidence can label a title available in Helmsman's library. Library correlates Jellyfin availability with Radarr/Sonarr monitoring and import state. Requests preserve separate request IDs, approval state, acquisition state, requested seasons, and 4K scope; completed workflow rows become **Available** from Seerr's media availability, an exact Jellyfin movie match, or—when a series request is season-scoped—the matching Seerr media-season availability rather than the request-season workflow status. Activity and Calendar expose current read-only workflow state, while Health contains pipeline/service incidents and Connections owns service enrollment.
 
-The only Media writes are a Helmsman-confirmed Seerr failed-request retry, a selected standard-season request for one exact current series through Seerr, a targeted Radarr/Sonarr search when Helmsman can resolve one exact current record, and **Block release & search again** for one exact current errored Sonarr/Radarr queue item. The blocked-queue action warns that it removes the download and its data from the download client, blocklists that release, and allows Sonarr/Radarr to seek a replacement according to its settings. It appears only from fresh, connected, revision-matched error evidence and is revalidated after its explicit danger confirmation. Series and parent-resolved episode drawers load a bounded current season catalog from Seerr on demand. The operator can select requestable standard seasons, review the exact selection in Helmsman's confirmation dialog, and submit one standard-quality request. Specials, 4K selection, arbitrary Seerr users, servers, profiles, root folders, and request bodies are not exposed. Helmsman revalidates the current record, target revision, and action-specific detail immediately before dispatch. Each action uses a Helmsman-styled confirmation dialog; browser-native confirmation prompts are not used. Helmsman cannot approve requests or delete requests, request movies or 4K/Specials, choose Seerr routing/profile fields, change monitoring, pause downloads, remove healthy or arbitrary downloads, alter any other files, or run a free-form search.
+The only Media writes are a Helmsman-confirmed Seerr failed-request retry, a selected standard-season request for one exact current series through Seerr, a targeted Radarr/Sonarr search when Helmsman can resolve one exact current record, and **Block release & search again** for one exact current errored Sonarr/Radarr queue item. The blocked-queue action warns that it removes the download and its data from the download client, blocklists that release, and allows Sonarr/Radarr to seek a replacement according to its settings. It appears only from fresh, connected, revision-matched error evidence and is revalidated after its explicit danger confirmation. With automatic download clean-up on, the agent may also remove a currently stalled queue item without blocklisting it and send one fixed search for the same movie or episode. Series and parent-resolved episode drawers load a bounded current season catalog from Seerr on demand. The operator can select requestable standard seasons, review the exact selection in Helmsman's confirmation dialog, and submit one standard-quality request. Specials, 4K selection, arbitrary Seerr users, servers, profiles, root folders, and request bodies are not exposed. Helmsman revalidates the current record, target revision, and action-specific detail immediately before dispatch. Each action uses a Helmsman-styled confirmation dialog; browser-native confirmation prompts are not used. Helmsman cannot approve requests or delete requests, request movies or 4K/Specials, choose Seerr routing/profile fields, change monitoring, pause downloads, remove healthy or arbitrary downloads, alter any other files, or run a free-form search.
 
 Each media record uses provider and service identifiers to join evidence from multiple systems. Its five-stage lifecycle indicates which of **Requested**, **Monitored**, **Downloading**, **Imported**, and **Available** have actually been observed rather than inferring progress from position alone. qBittorrent transfers are correlated to Sonarr/Radarr queue rows by download identifiers; a bounded sanitized queue error is displayed when the service supplies one. Titles, identifiers, progress, and bounded sanitized errors may appear in the last normalized persistent snapshot so the dashboard can recover after a restart; the UI clearly marks that data cached until a live cycle replaces it.
 

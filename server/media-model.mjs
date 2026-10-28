@@ -665,6 +665,9 @@ function arrQueue(service, body) {
       }),
       id: identifier(own(item, "id")) || hash,
       ...(positiveInteger(own(item, "id"), 2_147_483_647) ? { queueId: positiveInteger(own(item, "id"), 2_147_483_647) } : {}),
+      // What to search for again after removing this download: the movie in
+      // Radarr, the episode in Sonarr.
+      ...(queueSearchId(service, item) ? { searchId: queueSearchId(service, item) } : {}),
       downloadId: hash,
       state: text(own(item, "trackedDownloadState") ?? own(item, "trackedDownloadStatus") ?? own(item, "status"), 64)?.toLowerCase() || "unknown",
       ...(progress !== null ? { progress: Math.round(progress * 10) / 10 } : {}),
@@ -672,6 +675,13 @@ function arrQueue(service, body) {
       error: statusMessage(item)
     }];
   });
+}
+
+function queueSearchId(service, item) {
+  const value = service === "radarr"
+    ? own(item, "movieId") ?? own(record(own(item, "movie")), "id")
+    : own(item, "episodeId") ?? own(record(own(item, "episode")), "id");
+  return positiveInteger(value, 2_147_483_647);
 }
 
 function arrCalendar(service, body) {
@@ -957,6 +967,8 @@ function revalidateInventoryItem(service, category, item) {
   if (["radarr", "sonarr"].includes(service) && category === "activity") {
     const queueId = positiveInteger(own(item, "queueId"), 2_147_483_647);
     if (queueId) output.queueId = queueId;
+    const searchId = positiveInteger(own(item, "searchId"), 2_147_483_647);
+    if (searchId) output.searchId = searchId;
   }
   if (service === "seerr") {
     if (category === "requests") {

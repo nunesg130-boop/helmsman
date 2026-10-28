@@ -87,7 +87,11 @@ Radarr/Sonarr search actions for one exact current record, plus one fixed
 blocked-queue recovery for an exact current errored Sonarr/Radarr queue item.
 That recovery's danger confirmation states that it removes the download and
 its data from the client, blocklists the release, and permits normal replacement
-handling under the Arr service's settings. Each action revalidates its selected
+handling under the Arr service's settings. For a stalled queue item the agent
+may instead remove the download without blocklisting it and send one fixed
+search for the same movie or episode (two fixed requests); it does this only
+for an item that is currently stalled or errored, when the owner has turned on
+automatic download clean-up. Each action revalidates its selected
 record after approval and sends a fixed method, path, query, and request-body
 template. The browser cannot provide an arbitrary upstream path or body.
 Helmsman exposes no general upstream or Docker API proxy, SSH, shell, console,

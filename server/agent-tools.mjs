@@ -7,6 +7,7 @@
 // owner approves it, and the control plane re-checks everything when it runs.
 
 import { buildHistory, readWindow } from "./agent-history.mjs";
+import { HELMSMAN_HELP } from "./agent-help.mjs";
 
 const MAX_TOOL_OUTPUT_CHARS = 1_400;
 const MAX_LINES = 30;
@@ -237,12 +238,21 @@ function mediaQueue(snapshot, context) {
   return lines.join("\n");
 }
 
+/** `name` with `kind` in front, unless the name already says it. */
+export function withKind(name, kind) {
+  if (!kind) return name;
+  return new RegExp(`\\b${kind}\\b`, "iu").test(name) ? name : `${kind} ${name}`;
+}
+
 // Display names for services and infrastructure, as the journal names them.
 function serviceNamer(snapshot) {
   const names = new Map();
   for (const service of snapshot.services || []) names.set(service.id, service.label || service.id);
+  const environments = new Set((snapshot.infrastructure?.environments || []).map((item) => item.id));
   for (const item of [...(snapshot.infrastructure?.environments || []), ...(snapshot.infrastructure?.services || [])]) {
-    const name = untrusted(item.displayName, 60) || item.id;
+    // "Proxmox Main" rather than "Main", which reads like a node or a
+    // second thing with the same name.
+    const name = withKind(untrusted(item.displayName, 60) || item.id, environments.has(item.id) ? "Proxmox" : null);
     names.set(item.id, name);
     names.set(`proxmox-${item.id}`, name);
     names.set(`portainer-${item.id}`, name);
@@ -267,9 +277,12 @@ async function historyTool(snapshot, context, args) {
   let appEvents;
   try {
     [healthEvents, actionEvents, appEvents] = await Promise.all([
-      readWindow(context.events, { ...window, category: "health", maxPages: 10 }),
+      // Health and start events are read up to now, so a problem that
+      // recovered after the window, or ended at a restart, is not reported
+      // as still open.
+      readWindow(context.events, { from: window.from, to: now, category: "health", maxPages: 10 }),
       readWindow(context.events, { ...window, category: "action", maxPages: 3 }),
-      readWindow(context.events, { ...window, category: "application", maxPages: 3 })
+      readWindow(context.events, { from: window.from, to: now, category: "application", maxPages: 3 })
     ]);
   } catch {
     return "The event journal could not be read, so there is no history to report.";
@@ -282,10 +295,12 @@ async function historyTool(snapshot, context, args) {
     openIncidents: allIncidents(snapshot),
     monitored: [
       ...(snapshot.services || []).map((service) => service.id),
-      ...(snapshot.infrastructure?.environments || []).map((item) => item.id)
+      ...(snapshot.infrastructure?.environments || []).map((item) => item.id),
+      ...(snapshot.infrastructure?.services || []).map((item) => item.id)
     ],
     nameOf: serviceNamer(snapshot),
-    format: (iso) => formatTime(iso, context.timeZone)
+    format: (iso) => formatTime(iso, context.timeZone),
+    restartNow: context.restart === undefined ? undefined : context.restart
   });
 }
 
@@ -357,8 +372,8 @@ export function manualMatches(markdown, words, limit = 6) {
 }
 
 function searchManual(_snapshot, context, args) {
-  const markdown = context.manual?.() || "";
-  if (!markdown.trim()) return "The owner has not written a manual yet.";
+  // Helmsman's own help is searched too, after the owner's notes.
+  const markdown = `${context.manual?.() || ""}\n\n${HELMSMAN_HELP}`;
   const words = manualKeywords(args.query, 6);
   if (!words.length) return "Give one or more words to search for.";
   const hits = manualMatches(markdown, words);
@@ -562,7 +577,7 @@ const DEFINITIONS = [
   },
   {
     name: "search_manual",
-    description: "Search the owner's homelab manual for hosts, addresses, procedures and known issues.",
+    description: "Search the owner's homelab manual for hosts, addresses, procedures and known issues, and Helmsman's own help.",
     parameters: {
       type: "object",
       properties: { query: { type: "string", description: "A few words to look for." } },
@@ -644,7 +659,7 @@ export function validServiceName(value) {
 // button; nothing here runs anything.
 
 const COMMAND = /^(?:(?:hey|ok|okay)[, ]+)?(?:(?:please|pls|can you|could you|would you|will you|go ahead and|i want you to|i need you to)\s+)*(restart|start|stop|reboot|shut\s*down|power\s+on|power\s+off|boot)\s+(?:up\s+)?(?:the\s+)?(?:(container|vm|lxc|guest)\s+)?(.{1,80}?)(?:\s+(?:container|vm|lxc|guest))?(?:\s+(?:please|pls|for me|now|again))*\s*[.!?]*$/iu;
-const APPROVAL = /^(?:approve[ds]?|yes|yes please|yep|yeah|do it|go ahead|go for it|confirm(?:ed)?|ok(?:ay)?,? do it|sure)[.! ]*$/iu;
+const APPROVAL = /^(?:(?:yes|yep|yeah|ok(?:ay)?|sure|please)[,.! ]+)?(?:approve[ds]?|yes|yep|yeah|do it|go ahead|go for it|confirm(?:ed)?|sure|run it|send it)(?:\s+(?:it|that|this|them|all(?: of them| (?:the )?(?:actions|requests))?|the (?:request|action|restart|reboot)))?(?:[,.! ]+(?:please|now|thanks))?[.! ]*$/iu;
 
 const GENERAL_TARGETS = new Set(["services", "service", "things", "stuff", "everything", "anything", "something", "it", "them", "that", "this", "all", "containers", "vms", "guests", "apps", "the server", "server", "servers"]);
 
@@ -733,7 +748,9 @@ export function parseActionCommand(text, snapshot) {
   const match = COMMAND.exec(String(text || "").trim());
   if (!match) return null;
   const verb = match[1].toLowerCase().replace(/\s+/gu, " ").replace("shut down", "shutdown");
-  const typeWord = match[2]?.toLowerCase() || "";
+  // "reboot the media vm" names the kind after the name.
+  const trailingType = /\b(container|vm|lxc|guest)(?:\s+(?:please|pls|for me|now|again))*\s*[.!?]*$/iu.exec(text)?.[1];
+  const typeWord = (match[2] || trailingType || "").toLowerCase();
   const rawName = match[3].trim().replace(/^["'`]|["'`]$/gu, "");
   const wanted = looseName(rawName);
   if (!wanted) return null;
@@ -758,11 +775,13 @@ export function parseActionCommand(text, snapshot) {
   // question, or a general word, for the model unless it names something.
   if (found === 0 && (/\?\s*$/u.test(text) || GENERAL_TARGETS.has(rawName.toLowerCase()))) return null;
   if (found === 0) {
-    const names = [
-      ...(snapshot?.infrastructure?.portainer || []).flatMap((server) => (server.inventory?.containers || []).map((container) => container.name)),
-      ...(snapshot?.infrastructure?.environments || []).flatMap((environment) => (environment.workloads || []).filter((workload) => !workload.template).map((workload) => `${workload.name} (${workload.vmid})`))
-    ];
-    return { error: `I couldn't find a container, VM or LXC called "${untrusted(rawName, 60)}".${names.length ? ` I can see: ${[...new Set(names)].slice(0, 20).join(", ")}.` : " No Portainer or Proxmox connection is set up."}` };
+    // VMs and LXCs first: there are fewer of them, and a list cut off after
+    // twenty containers would leave them out.
+    const guestNames = typeWord === "container" ? [] : (snapshot?.infrastructure?.environments || []).flatMap((environment) => (environment.workloads || []).filter((workload) => !workload.template).map((workload) => `${workload.name} (${workload.type === "lxc" ? "LXC" : "VM"} ${workload.vmid})`));
+    const containerNames = ["vm", "lxc", "guest"].includes(typeWord) ? [] : (snapshot?.infrastructure?.portainer || []).flatMap((server) => (server.inventory?.containers || []).map((container) => container.name));
+    const names = [...new Set([...guestNames, ...containerNames])];
+    const kind = { vm: "VM", lxc: "LXC", guest: "VM or LXC", container: "container" }[typeWord] || "container, VM or LXC";
+    return { error: `I couldn't find a ${kind} called "${untrusted(rawName, 60)}".${names.length ? ` I can see: ${names.slice(0, 30).join(", ")}${names.length > 30 ? ` and ${names.length - 30} more` : ""}.` : " No Portainer or Proxmox connection is set up."}` };
   }
   if (found > 1) {
     const options = [
