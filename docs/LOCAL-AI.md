@@ -81,19 +81,27 @@ Helmsman can restart it. Settings → Automation → **Unhealthy containers**:
   repeat offenders.
 
 **3. Clearing stuck downloads.** When a Radarr or Sonarr download stays
-stalled, failed or blocked from importing, Helmsman can remove it, blocklist
-that release and ask Radarr or Sonarr to search for another. It's the same
-action, with the same checks, as the **Block release & search again** button.
+stalled, failed or blocked from importing, or a release holds a potentially
+dangerous file (an `.exe`, `.lnk`, script or similar, as Radarr or Sonarr
+reports it), Helmsman can remove it and ask Radarr or Sonarr to search again.
 Settings → Automation → **Stuck downloads**:
 
 - Off by default. When on, each download stuck past the wait (10 minutes to a
   day, an hour to start with) gets one notification and an Approve button on
   the Overview and in the helper. The suggestion waits up to 12 hours, and
   closes itself if the download recovers.
-- **Clear stalled and failed downloads by myself** lets Helmsman do it without
-  asking, while **Let rules act** is on. It shares the 10-a-day cap with the
-  other automatic actions. Blocked imports always ask first, since the file
-  may be fine and only need a manual import.
+- **Clear stuck and unsafe downloads without asking** lets Helmsman do it on
+  its own, with no approval and whether or not **Let rules act** is on:
+  - Stalled: removed and searched again, without blocklisting the release,
+    since it may only lack seeders. If the same release stalls again, it is
+    blocklisted the second time.
+  - Failed: removed, that release blocklisted, and searched again.
+  - Potentially dangerous file: removed, blocklisted and searched again as
+    soon as it's seen, without waiting.
+  - Blocked imports always ask first, since the file may be fine and only
+    need a manual import.
+  - It shares the 10-a-day cap with the other automatic actions; past it,
+    each one asks.
 - While it's on, a Radarr or Sonarr incident that is only about the queue
   stays a quiet note, so one stuck download doesn't send two notifications.
 - Approving checks the queue again first: an item that is no longer stuck is
@@ -281,8 +289,9 @@ click it and it moves to the right edge and opens a mini chat. A badge means
 something is waiting for approval or there's a new report. Hide it with the
 eye button in its chat, or under **Settings → Agent → In this browser**.
 
-To stop all automatic actions at once, turn off **Let rules act** on the
-**Automation** tab. To stop the agent,
+To stop automatic rules at once, turn off **Let rules act** on the
+**Automation** tab; automatic download clean-up has its own switch under
+**Stuck downloads**. To stop the agent,
 turn off **Agent on**.
 
 ## Training data for your own model

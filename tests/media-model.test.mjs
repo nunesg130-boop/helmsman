@@ -1123,6 +1123,17 @@ test("keeps providerless Arr records and queue activity in separate public ID na
   assert.deepEqual(activity.queueActionTarget, { service: "sonarr", queueId: 501 });
 });
 
+test("Arr queue items keep the movie or episode to search for again", async () => {
+  const { inventoryFromProbeBody, normalizeServiceMediaInventory } = await import("../server/media-model.mjs");
+  const radarr = inventoryFromProbeBody("radarr", "queue", { records: [{ id: 7, movieId: 22, movie: { id: 22, title: "Example Movie" }, trackedDownloadState: "downloading" }] });
+  assert.equal(radarr.activity[0].searchId, 22);
+  const sonarr = inventoryFromProbeBody("sonarr", "queue", { records: [{ id: 8, episodeId: 77, series: { id: 90, title: "Example Show" }, trackedDownloadState: "downloading" }] });
+  assert.equal(sonarr.activity[0].searchId, 77);
+  // The id survives the inventory's own revalidation, and junk does not.
+  assert.equal(normalizeServiceMediaInventory("sonarr", sonarr).activity[0].searchId, 77);
+  assert.equal(normalizeServiceMediaInventory("sonarr", { activity: [{ ...sonarr.activity[0], searchId: "77; drop" }] }).activity[0].searchId, undefined);
+});
+
 test("uses fast Radarr poster metadata and Seerr's fixed image proxy for future movies", () => {
   const media = buildMediaSnapshot([
     service("radarr", {

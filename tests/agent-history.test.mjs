@@ -60,7 +60,7 @@ test("history pairs incidents into episodes with durations, actions and restarts
   });
   assert.match(text, /^History for the past 24 hours/u);
   assert.match(text, /- Sonarr: 1 problem, 1 h 40 min in total, one still open\. 10-20 19:00 until now \(still open\) \(health\)\./u);
-  assert.match(text, /- Radarr: 2 problems, 37 min in total\./u, "7 minutes plus 30 before the window's start");
+  assert.match(text, /- Radarr: 2 problems, 37 min in total, longest 30 min\./u, "7 minutes plus 30 before the window's start");
   assert.match(text, /- No problems: Jellyfin\./u);
   assert.match(text, /- Actions taken: 1\. restart container qbittorrent at 10-20 19:30\./u);
   assert.match(text, /Helmsman itself started 1 time/u);
@@ -82,4 +82,69 @@ test("history reads the journal page by page and leaves out debug entries", asyn
   assert.deepEqual(entries.map(({ level }) => level), ["error", "info"]);
   assert.equal(queries[1].cursor, "next");
   assert.equal(queries[0].from, new Date(NOW - HOUR).toISOString());
+});
+
+test("restart and lost-connection questions are history questions; requests and capability questions are not", async () => {
+  const { isRestartQuestion } = await import("../server/agent-history.mjs");
+  for (const text of ["Did norco restart or lose connection?", "Did my server reboot?", "Why were alerts held?", "Is a node unreachable?", "Is norco back?", "When did the node come back?", "Why did main go offline?", "Did proxmox lose contact?", "was that a blip"]) {
+    assert.equal(isRestartQuestion(text), true, text);
+    assert.equal(questionWindow(text, NOW, "America/New_York")?.label, "the past 24 hours", text);
+  }
+  for (const text of ["restart qbit", "Can you restart services?", "Will you restart things without asking?", "Is sonarr up?", "How's my wifi?"]) {
+    assert.equal(isRestartQuestion(text), false, text);
+  }
+});
+
+test("overnight means last night in the owner's time zone, not the last 14 hours", () => {
+  // 16:40 in New York: last night is 22:00 the evening before until 08:00.
+  const afternoon = questionWindow("What happened overnight?", NOW, "America/New_York");
+  assert.deepEqual(afternoon, { from: Date.parse("2026-10-20T02:00:00Z"), to: Date.parse("2026-10-20T12:00:00Z"), label: "overnight (22:00 to 08:00)" });
+  // Asked at 06:00, it runs until now.
+  const early = Date.parse("2026-10-20T10:00:00Z");
+  assert.equal(questionWindow("anything last night?", early, "America/New_York").to, early);
+});
+
+test("an incident cut short by a Helmsman restart ends there, not at the end of the window", () => {
+  const text = buildHistory({
+    from: NOW - 7 * 24 * HOUR,
+    to: NOW,
+    label: "the past week",
+    format: (iso) => iso.slice(5, 16).replace("T", " "),
+    nameOf: (id) => ({ portainer: "Portainer", "proxmox-main": "Proxmox Main", main: "Proxmox Main" }[id] || id),
+    monitored: ["main", "portainer"],
+    healthEvents: [
+      // Opened, then Helmsman restarted and the incident never recorded a recovery.
+      { at: "2026-10-14T21:00:00.000Z", event: "health_incident", outcome: "changed", service: "portainer", capability: "containers", targetId: "p1" },
+      { at: "2026-10-20T19:38:00.000Z", event: "health_incident", outcome: "changed", service: "proxmox-main", capability: "nodes", code: "NODES_OFFLINE", targetId: "m1" },
+      { at: "2026-10-20T19:43:00.000Z", event: "health_incident", outcome: "recovered", service: "proxmox-main", targetId: "m1" },
+      { at: "2026-10-20T19:38:00.000Z", event: "node_contact", outcome: "changed", service: "helmsman", message: "Helmsman lost contact with norco; whether it restarted or only lost its network connection is not known yet." },
+      { at: "2026-10-20T19:43:00.000Z", event: "node_contact", outcome: "recovered", service: "helmsman", message: "Helmsman lost contact with norco at 19:38 for about 5 minutes, but it never went down." }
+    ],
+    appEvents: [{ at: "2026-10-14T22:00:00.000Z", event: "application.started" }],
+    restartNow: null
+  });
+  assert.match(text, /- Portainer: 1 problem, 1 h in total\. .*\(ended when Helmsman restarted\)/u);
+  assert.doesNotMatch(text, /still open/u);
+  assert.match(text, /- Proxmox Main: 1 problem, 5 min in total/u);
+  assert.doesNotMatch(text, /No problems: .*Proxmox Main/u, "a service with problems is never also listed as quiet");
+  assert.match(text, /- Node contact at 10-20 19:43: Helmsman lost contact with norco at 19:38 for about 5 minutes, but it never went down\./u);
+  assert.match(text, /- Right now no node is restarting or out of contact, and no alerts are held\./u);
+});
+
+test("a problem that recovered after the window ends is not called still open", () => {
+  const text = buildHistory({
+    from: NOW - 24 * HOUR,
+    to: NOW - 4 * HOUR,
+    label: "yesterday",
+    format: (iso) => iso.slice(5, 16).replace("T", " "),
+    nameOf: (id) => id,
+    healthEvents: [
+      { at: "2026-10-20T14:00:00.000Z", event: "health_incident", outcome: "changed", service: "prowlarr", targetId: "x" },
+      { at: "2026-10-20T19:00:00.000Z", event: "health_incident", outcome: "recovered", service: "prowlarr", targetId: "x" }
+    ],
+    restartNow: { kind: "unreachable", nodes: ["norco"], since: "2026-10-20T20:30:00.000Z", holding: true }
+  });
+  assert.match(text, /- prowlarr: 1 problem, 2 h 40 min in total\./u);
+  assert.doesNotMatch(text, /still open/u);
+  assert.match(text, /Right now: Helmsman has lost contact with norco since 10-20 20:30, and alerts are held until it settles\./u);
 });

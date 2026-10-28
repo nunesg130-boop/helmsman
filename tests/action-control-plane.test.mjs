@@ -128,6 +128,7 @@ async function start() {
         provider: input.serviceId,
         operation: input.operation,
         ...(input.queueId ? { queueId: input.queueId } : { resourceId: input.resourceId }),
+        ...(input.searchId ? { searchId: input.searchId } : {}),
         ...(input.seasonNumbers ? { seasonNumbers: [...input.seasonNumbers] } : {}),
         credential: input.credential.toString("utf8")
       });
@@ -679,6 +680,35 @@ test("minor controls require CSRF, current inventory, exact revisions, and saved
     assert.equal(acceptedRestart.status, 200, JSON.stringify(acceptedRestart.json));
     assert.equal(context.calls.length, 8);
 
+    // A stalled download is removed and searched again without a blocklist:
+    // it needs the movie or episode the queue item is for.
+    const stalledSnapshot = structuredClone(currentSnapshot);
+    stalledSnapshot.media.activity.push(
+      { service: "radarr", queueId: 503, queueActionTarget: { service: "radarr", queueId: 503 }, downloadId: "d".repeat(40), state: "stalleddl", error: null },
+      { service: "radarr", queueId: 504, queueActionTarget: { service: "radarr", queueId: 504 }, downloadId: "e".repeat(40), state: "stalleddl", error: null }
+    );
+    const stalledRadarr = stalledSnapshot.services.find((service) => service.id === "radarr");
+    stalledRadarr.inventory.activity.push(
+      { service: "radarr", queueId: 503, downloadId: "d".repeat(40), state: "downloading", searchId: 22 },
+      { service: "radarr", queueId: 504, downloadId: "e".repeat(40), state: "downloading" }
+    );
+    context.setSnapshot(stalledSnapshot);
+    const searchedAgain = await context.controlPlane.performAction("media", { serviceId: "radarr", operation: "removeAndSearch", queueId: 503, targetRevision: media.radarr.targetRevision });
+    assert.equal(searchedAgain.queueId, 503);
+    assert.deepEqual(context.calls.at(-1), { provider: "radarr", operation: "removeAndSearch", queueId: 503, searchId: 22, credential: context.calls.at(-1).credential });
+    await assert.rejects(
+      context.controlPlane.performAction("media", { serviceId: "radarr", operation: "removeAndSearch", queueId: 504, targetRevision: media.radarr.targetRevision }),
+      { code: "ACTION_NOT_AVAILABLE" },
+      "without the movie it is for, it can't be searched again"
+    );
+    await assert.rejects(
+      context.controlPlane.performAction("media", { serviceId: "radarr", operation: "removeAndSearch", queueId: 502, targetRevision: media.radarr.targetRevision }),
+      { code: "ACTION_NOT_AVAILABLE" },
+      "a download that is only downloading is not stuck"
+    );
+    assert.equal(context.calls.length, 9);
+    context.setSnapshot(currentSnapshot);
+
     const ambiguousSnapshot = structuredClone(currentSnapshot);
     ambiguousSnapshot.media.requests.push({ requestId: 43, requestStatus: "failed" });
     context.setSnapshot(ambiguousSnapshot);
@@ -706,7 +736,7 @@ test("minor controls require CSRF, current inventory, exact revisions, and saved
     });
     assert.equal(ambiguousRetry.status, 409);
     assert.equal(ambiguousRetry.json.code, "ACTION_RECENTLY_ACCEPTED");
-    assert.equal(context.calls.length, 8);
+    assert.equal(context.calls.length, 9);
   } finally {
     await stop(context);
   }

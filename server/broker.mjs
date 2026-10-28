@@ -58,7 +58,7 @@ import {
 import { generateSecretToken, hashToken, StateStore, tokenMatches } from "./state.mjs";
 import { anySignal } from "./abort-signals.mjs";
 
-const DEFAULT_VERSION = "1.15.0";
+const DEFAULT_VERSION = "1.16.0";
 const requestedVersion = String(process.env.HELMSMAN_VERSION || DEFAULT_VERSION);
 const VERSION = /^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/u.test(requestedVersion)
   ? requestedVersion
@@ -2801,6 +2801,20 @@ export async function createBroker(options = {}) {
   }
 
   async function executeMediaRecoveryAction(input) {
+    // Remove a download without blocklisting it, then search for the same
+    // movie or episode again: two narrowly authorized requests in order.
+    if (input?.operation === "removeAndSearch") {
+      const removed = await executeMediaRecoveryAction({ ...input, operation: "removeFromQueue" });
+      const searched = await executeMediaRecoveryAction({
+        serviceId: input.serviceId,
+        operation: input.serviceId === "radarr" ? "searchMovie" : "searchEpisodes",
+        resourceId: input.searchId,
+        connection: input.connection,
+        targetResolution: input.targetResolution,
+        credential: input.credential
+      });
+      return { ok: true, provider: removed.provider, operation: "removeAndSearch", queueId: removed.queueId, providerStatus: searched.providerStatus };
+    }
     const route = authorizeMediaAction(input?.operation, {
       service: input?.serviceId,
       resourceId: input?.resourceId,

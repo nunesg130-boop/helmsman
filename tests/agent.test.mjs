@@ -679,10 +679,10 @@ test("questions start with the manual lines that match them", async (t) => {
   const seeded = context.modelCalls[0].messages.find((message) => message.tool_call_id === "seed-manual");
   assert.match(seeded.content, /\[Hosts\] \| media \| 10\.1\.0\.5 \|/u);
 
-  // A bare follow-up borrows the words of the previous question.
+  // A short follow-up borrows the words of the previous question.
   context.modelCalls.length = 0;
   await api(agent, "POST", "/api/v2/agent/ask", {
-    question: "yes",
+    question: "and its gateway?",
     history: [{ role: "user", content: "What's the IP of the media host?" }, { role: "assistant", content: "Want me to look?" }]
   });
   assert.ok(context.modelCalls[0].messages.some((message) => message.tool_call_id === "seed-manual"));
@@ -744,7 +744,7 @@ test("a chat message that is only a command becomes a proposal without the model
 
   // Unknown names are answered plainly, listing what exists.
   const unknown = await api(agent, "POST", "/api/v2/agent/ask", { question: "restart plex" });
-  assert.match(unknown.payload.answer, /couldn't find a container, VM or LXC called "plex"\. I can see: sonarr, radarr, media \(105\)/u);
+  assert.match(unknown.payload.answer, /couldn't find a container, VM or LXC called "plex"\. I can see: media \(VM 105\), sonarr, radarr/u);
   assert.equal(unknown.payload.proposals.length, 0);
 
   // Questions about actions still go to the model, and bold is stripped.
@@ -1016,17 +1016,57 @@ test("a stuck-download suggestion survives another Sonarr problem recovering", a
   assert.equal(state.proposals.length, 1, "the download is still stuck, so its suggestion stays");
 });
 
-test("automatic clean-up waits for approval while autonomy is off; settings are validated", async (t) => {
+test("automatic clean-up needs no approval, even with Let rules act off; settings are validated", async (t) => {
   const { agent, context, publish } = await downloadsHarness(t, { autonomy: false, policy: { automatic: true } });
   await publish(withStuckDownload(snapshotAt(context.now), { error: "", state: "downloadfailed" }));
   context.now += 10 * 60_000;
   await publish(withStuckDownload(snapshotAt(context.now), { error: "", state: "downloadfailed" }));
+  assert.deepEqual(context.actions.map(({ body }) => body.operation), ["blocklistAndSearch"], "a failed download is blocklisted");
+  const state = (await api(agent, "GET", "/api/v2/agent")).payload;
+  assert.equal(state.proposals.length, 0);
+  assert.match(state.notes.find((note) => note.kind === "rule-action").text, /I removed it, blocklisted that release/u);
+  await assert.rejects(api(agent, "PUT", "/api/v2/agent/downloads", { minutes: 5 }), { code: "INVALID_AGENT_CONFIG" });
+  await assert.rejects(api(agent, "PUT", "/api/v2/agent/downloads", { extra: 1 }), { code: "INVALID_REQUEST" });
+});
+
+test("a stalled download is searched again without a blocklist, and blocklisted if the same release stalls twice", async (t) => {
+  const { agent, context, publish } = await downloadsHarness(t, { policy: { automatic: true } });
+  await publish(withStuckDownload(snapshotAt(context.now)));
+  context.now += 10 * 60_000;
+  await publish(withStuckDownload(snapshotAt(context.now)));
+  assert.deepEqual(context.actions.map(({ body }) => body.operation), ["removeAndSearch"]);
+  let state = (await api(agent, "GET", "/api/v2/agent")).payload;
+  assert.match(state.notes.find((note) => note.kind === "rule-action").text, /without blocklisting the release/u);
+
+  // The download leaves the queue; the new search grabs the same release,
+  // which stalls again under a new queue id.
+  context.now += 60_000;
+  await publish(snapshotAt(context.now));
+  await publish(withStuckDownload(snapshotAt(context.now), { queueId: 44 }));
+  context.now += 10 * 60_000;
+  await publish(withStuckDownload(snapshotAt(context.now), { queueId: 44 }));
+  assert.deepEqual(context.actions.map(({ body }) => body.operation), ["removeAndSearch", "blocklistAndSearch"]);
+  state = (await api(agent, "GET", "/api/v2/agent")).payload;
+  assert.match(state.notes.find((note) => note.kind === "rule-action").text, /had stalled before, so this time I removed it, blocklisted that release/u);
+});
+
+test("a release with a dangerous file is blocklisted and searched again at once", async (t) => {
+  const { agent, context, publish } = await downloadsHarness(t, { policy: { automatic: true } });
+  await publish(withStuckDownload(snapshotAt(context.now), { error: "Caution: Found potentially dangerous file with extension: .lnk", state: "importblocked" }));
+  assert.deepEqual(context.actions.map(({ body }) => body.operation), ["blocklistAndSearch"], "no wait for an unsafe release");
+  const state = (await api(agent, "GET", "/api/v2/agent")).payload;
+  const note = state.notes.find((entry) => entry.kind === "rule-action");
+  assert.equal(note.title, "Removed unsafe download: Example Show S01E02");
+  assert.match(note.text, /flagged for a potentially dangerous file\. Sonarr says/u);
+});
+
+test("with automatic clean-up off, an unsafe download asks first", async (t) => {
+  const { agent, context, publish } = await downloadsHarness(t);
+  await publish(withStuckDownload(snapshotAt(context.now), { error: "Caution: Found executable file with extension: '.exe'", state: "importblocked" }));
   assert.equal(context.actions.length, 0);
   const state = (await api(agent, "GET", "/api/v2/agent")).payload;
   assert.equal(state.proposals.length, 1);
-  assert.match(state.notes[0].text, /Sonarr shows it as downloadfailed\..*paused because "Let rules act" is off/u);
-  await assert.rejects(api(agent, "PUT", "/api/v2/agent/downloads", { minutes: 5 }), { code: "INVALID_AGENT_CONFIG" });
-  await assert.rejects(api(agent, "PUT", "/api/v2/agent/downloads", { extra: 1 }), { code: "INVALID_REQUEST" });
+  assert.match(state.notes.find((note) => note.title.startsWith("Unsafe download")).text, /Approve to remove it, blocklist that release/u);
 });
 
 const PROWLARR_REVISION = "ffffffff-ffff-4fff-8fff-ffffffffffff";
@@ -1294,7 +1334,7 @@ test("questions about a period get Helmsman's own history, and gaps are named", 
   assert.deepEqual(asked.payload.toolsUsed.includes("history"), true);
   const [system, ...rest] = context.modelCalls[0].messages;
   assert.match(system.content, /Helmsman monitors only: /u);
-  assert.match(system.content, /does not monitor the internet connection/u);
+  assert.match(system.content, /does not monitor anything else, such as the internet connection/u);
   const history = rest.find((message) => message.tool_call_id === "seed-history");
   assert.match(history.content, /History for the past 24 hours/u);
   assert.match(history.content, /Sonarr: 1 problem, 10 min in total/u);
@@ -1343,4 +1383,54 @@ test("conversations are saved only when turned on, and can be rated, corrected, 
 
   await api(agent, "DELETE", "/api/v2/agent/conversations");
   assert.equal((await api(agent, "GET", "/api/v2/agent/conversations")).payload.items.length, 0);
+});
+
+test("each question gets only the lookups it needs, and manual notes only when asked about", async (t) => {
+  const { agent, context, publish } = await harness(t, { modelReplies: () => ({ content: "Fine." }) });
+  await configure(agent, { autonomy: false });
+  await publish(snapshotAt(context.now));
+  context.manualText = "# Lab\n## Known issues\n| Sonarr | appeared down after the NFS outage |\n## Network\n| Internet | speed fixed on Oct 20 |";
+  const toolsFor = async (question) => {
+    context.modelCalls.length = 0;
+    const asked = await api(agent, "POST", "/api/v2/agent/ask", { question });
+    return { tools: asked.payload.toolsUsed, messages: context.modelCalls[0]?.messages || [], answer: asked.payload.answer };
+  };
+
+  let result = await toolsFor("Why is sonarr down?");
+  assert.deepEqual(result.tools, ["overview", "service_status"], "a named service gets its own status, not manual notes");
+  assert.match(result.messages.find((message) => message.role === "tool" && message.tool_call_id.startsWith("seed-service_status")).content, /^Sonarr: /u);
+
+  result = await toolsFor("how's sonar");
+  assert.deepEqual(result.tools, ["overview", "service_status"], "nicknames too");
+
+  result = await toolsFor("Has my internet been dropping?");
+  assert.deepEqual(result.tools, ["overview"], "no manual notes for something Helmsman doesn't monitor");
+
+  result = await toolsFor("What containers are running?");
+  assert.deepEqual(result.tools, ["overview", "list_workloads"]);
+
+  result = await toolsFor("Any stuck downloads?");
+  assert.deepEqual(result.tools, ["overview", "media_queue"]);
+
+  result = await toolsFor("Did the Lab node restart or lose connection?");
+  assert.ok(result.tools.includes("history"), "restart questions are answered from history");
+  assert.equal(result.tools.includes("search_manual"), false);
+  assert.match(result.messages.find((message) => message.tool_call_id === "seed-history").content, /Right now no node is restarting/u);
+
+  result = await toolsFor("Where are my conversations saved?");
+  assert.ok(result.tools.includes("search_manual"));
+  assert.match(result.messages.find((message) => message.tool_call_id === "seed-manual").content, /agent-conversations/u, "Helmsman's own help is searched");
+
+  // Approval phrases never reach the model, pending request or not.
+  result = await toolsFor("approve it");
+  assert.equal(result.messages.length, 0);
+  assert.match(result.answer, /nothing waiting for your approval/u);
+});
+
+test("indexer questions start with Prowlarr's indexer list", async (t) => {
+  const { agent, context } = await indexerHarness(t);
+  context.modelCalls.length = 0;
+  const asked = await api(agent, "POST", "/api/v2/agent/ask", { question: "Which indexers are failing?" });
+  assert.ok(asked.payload.toolsUsed.includes("indexer_status"));
+  assert.match(context.modelCalls[0].messages.find((message) => message.tool_call_id?.startsWith("seed-indexer_status")).content, /Example Tracker/u);
 });
