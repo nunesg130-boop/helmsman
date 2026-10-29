@@ -36,7 +36,7 @@ import {
 } from "./agent-tools.mjs";
 import { chatCompletion, estimateTokens, listModels, LlmError, validModelId } from "./llm-client.mjs";
 import { questionWindow } from "./agent-history.mjs";
-import { HELMSMAN_HELP, isFollowUp, mergeSeeds, namedServices, nicknameHints, questionSeeds, workloadQuery } from "./agent-intent.mjs";
+import { HELMSMAN_HELP, isFollowUp, mergeSeeds, namedServices, nicknameHints, questionSeeds, withoutWorkloadNames, workloadQuery } from "./agent-intent.mjs";
 import { createConversationStore } from "./agent-conversations.mjs";
 import { parseServiceUrl, resolveAndAuthorizeExplicitTarget, resolveAndAuthorizeTarget } from "./network.mjs";
 import { OutboundJsonError, performOutboundJsonRequest } from "./outbound-json.mjs";
@@ -744,23 +744,31 @@ export async function createAgent(options) {
         toolsUsed.push(name);
       };
       // The service the question names, by name or nickname.
-      const named = namedServices(snapshot(), prompt);
-      const services = named.length || !followUp ? named : namedServices(snapshot(), earlierQuestion);
+      // Guest and host names taken out first: "Jelly-Arr" is a VM, not "jelly".
+      const plainPrompt = withoutWorkloadNames(snapshot(), prompt);
+      const plainEarlier = withoutWorkloadNames(snapshot(), earlierQuestion);
+      const named = namedServices(snapshot(), plainPrompt);
+      const services = named.length || !followUp ? named : namedServices(snapshot(), plainEarlier);
       // "overseerr" here means Seerr: say so, or the model reports Overseerr
       // as unmonitored while looking at Seerr's status.
-      const serviceHints = nicknameHints(followUp && !named.length ? earlierQuestion : prompt).filter(({ target }) => services.includes(target));
+      const serviceHints = nicknameHints(followUp && !named.length ? plainEarlier : plainPrompt).filter(({ target }) => services.includes(target));
       const hintText = serviceHints.length ? `Nicknames in the question: ${serviceHints.map(({ word, target }) => `"${word}" means ${(snapshot()?.services || []).find((service) => service.id === target)?.label || target}`).join("; ")}.\n` : "";
       for (const name of services) await seed("service_status", { name }, hintText);
       if (seeds.indexers && toolContext.indexers) await seed("indexer_status", {});
       // The VM, LXC and container list, narrowed to what the question names.
       // Not for address and procedure questions ("the IP of the media
       // host"), which the manual answers, unless they ask about workloads.
-      const workloads = seeds.manual && !seeds.workloads ? null : workloadQuery(snapshot(), prompt, { workloadWords: seeds.workloads })
-        || (followUp ? workloadQuery(snapshot(), earlierQuestion, { workloadWords: seeds.workloads }) : null);
+      // "Which host is paperless-db-1 on" is both: the manual for the host,
+      // and the container's own line, which says where it runs.
+      const asksWhere = /\b(?:(?:which|what) (?:host|node|server|machine)|where)\b/iu.test(prompt);
+      const workloads = seeds.manual && !seeds.workloads
+        ? (asksWhere ? workloadQuery(snapshot(), prompt, { namesOnly: true }) : null)
+        : workloadQuery(snapshot(), prompt, { workloadWords: seeds.workloads })
+          || (followUp ? workloadQuery(snapshot(), earlierQuestion, { workloadWords: seeds.workloads }) : null);
       if (workloads) {
         // "vpn" usually means a gluetun container: say so, or the model
         // looks for a container called vpn and finds none.
-        const hints = nicknameHints(prompt);
+        const hints = nicknameHints(plainPrompt);
         await seed("list_workloads", workloads.filter ? { filter: workloads.filter } : {}, hints.length ? `Nicknames in the question: ${hints.map(({ word, target }) => `"${word}" usually means ${target}`).join("; ")}.\n` : "");
       }
       if (seeds.media) await seed("media_queue", {});

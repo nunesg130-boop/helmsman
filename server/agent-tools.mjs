@@ -193,9 +193,11 @@ function workloadLines(snapshot) {
     for (const workload of environment.workloads || []) {
       if (workload.template) continue;
       const kind = workload.type === "lxc" ? "lxc" : "vm";
+      // Said either way, so "when was X backed up" never meets silence and
+      // gets answered with "Helmsman doesn't track backups".
       const backup = workload.backup?.status
         ? `, backup ${workload.backup.status} ${ago(workload.backup.ageSeconds)}`
-        : "";
+        : ", no backup recorded";
       lines.push(`${kind} ${workload.vmid} ${untrusted(workload.name, 40)} on ${untrusted(workload.node, 40)} (${envName}): ${workload.status}${workload.status === "running" ? `, cpu ${workload.cpuPercent ?? "?"}%, memory ${percent(workload.memoryUsedBytes, workload.memoryTotalBytes)}` : ""}${backup}${workload.lock ? `, locked ${untrusted(workload.lock, 20)}` : ""}`);
     }
   }
@@ -275,6 +277,18 @@ function workloadSummary(snapshot, only = null) {
     }));
     if (nodes.length) lines.push(`Nodes: ${nodes.join("; ")}.`);
   }
+  // One line for VMs and LXCs together, so "how many guests are running"
+  // is copied, not added up (models added 6 + 12 and wrote 10).
+  if (!only) {
+    const guests = environments.flatMap((environment) => (environment.workloads || []).filter((workload) => !workload.template));
+    const vms = guests.filter((workload) => workload.type !== "lxc");
+    if (vms.length && vms.length < guests.length) {
+      const up = (list) => list.filter((workload) => workload.status === "running").length;
+      const lxcs = guests.filter((workload) => workload.type === "lxc");
+      const count = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+      lines.push(`Guests: ${guests.length} in total (${count(vms.length, "VM")}, ${count(lxcs.length, "LXC")}), ${up(guests)} running (${count(up(vms), "VM")}, ${count(up(lxcs), "LXC")}).`);
+    }
+  }
   for (const [kind, label] of [["vm", "VMs"], ["lxc", "LXCs"]]) {
     if (!want(kind)) continue;
     const all = environments.flatMap((environment) => (environment.workloads || [])
@@ -328,12 +342,15 @@ const WORKLOAD_METRICS = Object.freeze({ memory: "memory", ram: "memory", cpu: "
 
 /**
  * Every VM and LXC ranked by one measure, for "which uses the most memory"
- * or "what hasn't been backed up": the short summary has no numbers.
+ * or "what hasn't been backed up": the short summary has no numbers. With a
+ * kind ("memory vms"), only that kind: asked "which VM is busiest", models
+ * named the busiest LXC when the list mixed both.
  */
-function workloadMetric(snapshot, metric) {
+function workloadMetric(snapshot, metric, kind = null) {
   const guests = (snapshot.infrastructure?.environments || []).flatMap((environment) => (environment.workloads || [])
-    .filter((workload) => !workload.template));
-  if (!guests.length) return "No Proxmox inventory is connected.";
+    .filter((workload) => !workload.template && (!kind || (workload.type === "lxc" ? "lxc" : "vm") === kind)));
+  const noun = kind === "vm" ? "VM" : kind === "lxc" ? "LXC" : "VM and LXC";
+  if (!guests.length) return kind ? `There are no ${noun}s in what Helmsman can see.` : "No Proxmox inventory is connected.";
   const name = (workload) => `${untrusted(workload.name, 40)} (${workload.type === "lxc" ? "LXC" : "VM"} ${workload.vmid}, ${untrusted(workload.node, 30)})`;
   const stopped = guests.filter((workload) => workload.status !== "running");
   const stoppedNote = stopped.length ? ` Not running, so no usage: ${stopped.map(name).join(", ")}.` : "";
@@ -343,7 +360,8 @@ function workloadMetric(snapshot, metric) {
     const backed = guests.filter((workload) => workload.backup?.status)
       .sort((left, right) => (right.backup.ageSeconds ?? 0) - (left.backup.ageSeconds ?? 0));
     const none = guests.filter((workload) => !workload.backup?.status);
-    const parts = [];
+    const which = kind ? (guests.length === 1 ? noun : `${noun}s`) : guests.length === 1 ? "guest" : "guests";
+    const parts = [`Backups of ${guests.length} ${which}: ${backed.length} ${backed.length === 1 ? "has" : "have"} one, ${none.length} ${none.length === 1 ? "has" : "have"} none.`];
     if (backed.length) parts.push(`These have a backup (oldest first): ${backed.map((workload) => `${name(workload)}: ${untrusted(workload.backup.status, 20)} ${ago(workload.backup.ageSeconds)}`).join(", ")}.`);
     if (none.length) parts.push(`These have no backup recorded at all: ${none.map(name).join(", ")}.`);
     return parts.join("\n");
@@ -354,7 +372,8 @@ function workloadMetric(snapshot, metric) {
     : (Number.isFinite(workload.memoryUsedBytes) && workload.memoryTotalBytes > 0 ? workload.memoryUsedBytes / workload.memoryTotalBytes : -1));
   const ranked = running.sort((left, right) => value(right) - value(left))
     .map((workload) => `${name(workload)}: ${metric === "cpu" ? `${workload.cpuPercent ?? "?"}%` : percent(workload.memoryUsedBytes, workload.memoryTotalBytes)}`);
-  return `${metric === "cpu" ? "CPU" : "Memory"} use of each running VM and LXC, highest first (percent of its own allowance): ${ranked.join(", ")}.${stoppedNote}`;
+  if (!ranked.length) return `No ${noun} is running.${stoppedNote}`;
+  return `${metric === "cpu" ? "CPU" : "Memory"} use of each running ${noun}, highest first (percent of its own allowance): ${ranked.join(", ")}.${stoppedNote}`;
 }
 
 /** The node's own line and the guests on it, for "what's running on <node>". */
@@ -366,9 +385,39 @@ function nodeLines(snapshot, nodeName) {
   });
 }
 
+/** Names of the hosts Portainer reaches ("Main Docker", "PVE-2"). */
+export function containerHostNames(snapshot) {
+  return [...new Set((snapshot?.infrastructure?.portainer || []).flatMap((server) => (server.inventory?.containers || [])
+    .map((container) => container?.environmentName)).filter((name) => typeof name === "string" && name))];
+}
+
+/** One host's containers in full: counts, what's not running, then every running name. */
+function containerHostLines(snapshot, hostName) {
+  const wanted = hostName.toLowerCase();
+  return containerGroups(snapshot).filter((group) => group.label.toLowerCase().startsWith(`${wanted} (`)).map((group) => {
+    const details = [
+      group.stopped.length ? `not running: ${group.stopped.join(", ")}` : "",
+      group.unhealthy.length ? `running but unhealthy: ${group.unhealthy.join(", ")}` : ""
+    ].filter(Boolean);
+    const head = `Containers on ${group.label}: ${group.total}, ${group.runningCount} running${details.length ? `; ${details.join("; ")}` : ", none stopped or unhealthy"}`;
+    return group.running.length ? `${head}. Running: ${namesWithin(group.running, SUMMARY_BUDGET)}.` : `${head}.`;
+  });
+}
+
+/** "memory", "cpu vms", "backups lxcs": a measure and, optionally, one kind of guest. */
+function metricFilter(filter) {
+  const words = filter.split(/\s+/u);
+  const metric = WORKLOAD_METRICS[words[0]];
+  if (!metric || words.length > 2) return null;
+  const kind = words[1] ? WORKLOAD_KINDS[words[1]] : null;
+  if (words[1] && kind !== "vm" && kind !== "lxc") return null;
+  return { metric, kind };
+}
+
 function listWorkloads(snapshot, _context, args) {
   const filter = typeof args.filter === "string" ? args.filter.trim().toLowerCase().slice(0, 60) : "";
-  if (WORKLOAD_METRICS[filter]) return workloadMetric(snapshot, WORKLOAD_METRICS[filter]);
+  const measure = metricFilter(filter);
+  if (measure) return workloadMetric(snapshot, measure.metric, measure.kind);
   const nodeNames = (snapshot.infrastructure?.environments || []).flatMap((environment) => (environment.nodes || []).map((node) => String(node?.name || "")));
   const node = nodeNames.find((name) => name.toLowerCase() === filter);
   if (node) {
@@ -379,13 +428,24 @@ function listWorkloads(snapshot, _context, args) {
   // Any other text: the full lines that mention it.
   // A word that is also a guest's name ("docker" as a VM) means that guest.
   const isName = workloadNames(snapshot).some((name) => name.toLowerCase() === filter);
-  const kind = isName ? null : WORKLOAD_KINDS[filter];
+  const host = containerHostNames(snapshot).find((name) => name.toLowerCase() === filter);
+  const kind = isName || host ? null : WORKLOAD_KINDS[filter];
   if (!filter || kind) {
     const summary = workloadSummary(snapshot, kind || null);
     if (summary.length) return summary.join("\n");
     return kind ? `There are no ${filter} in what Helmsman can see.` : "No Proxmox or Portainer inventory is connected.";
   }
-  const lines = workloadLines(snapshot).filter((line) => line.toLowerCase().includes(filter));
+  const all = workloadLines(snapshot);
+  // An exact name means that one thing, not everything containing the word:
+  // "docker" is the two VMs named docker, not docker-socket-proxy as well.
+  // A Portainer host ("Main Docker", or "Jelly-Arr" as both VM and host)
+  // also gets its containers, named.
+  const exact = all.filter((line) => {
+    const match = /^(?:vm|lxc) \d+ (.+?) on /u.exec(line) || /^container (.+?) \(/u.exec(line);
+    return match && match[1].toLowerCase() === filter;
+  });
+  const lines = exact.length || host ? exact : all.filter((line) => line.toLowerCase().includes(filter));
+  if (host) lines.push(...containerHostLines(snapshot, host));
   if (!lines.length) return `Nothing matches "${untrusted(filter, 40)}".`;
   // Two guests with the same name ("docker" as VM 109 and VM 201): say so,
   // so the answer covers both instead of picking one.
@@ -393,6 +453,14 @@ function listWorkloads(snapshot, _context, args) {
     .filter((workload) => !workload.template && String(workload.name || "").toLowerCase() === filter));
   if (guests.length > 1) {
     lines.unshift(`Note: ${guests.length} guests are named ${untrusted(filter, 40)}: ${guests.map((workload) => `${workload.type === "lxc" ? "LXC" : "VM"} ${workload.vmid} on ${untrusted(workload.node, 30)}`).join(", ")}.`);
+  }
+  // A guest named after a kind ("docker"): the containers might be meant
+  // too, so their counts per host follow, without the names.
+  if (exact.length && WORKLOAD_KINDS[filter] === "container") {
+    const groups = containerGroups(snapshot);
+    if (groups.length) {
+      lines.push(`Docker containers, in case those are meant: ${groups.map((group) => `${group.label} ${group.total}, ${group.runningCount} running${group.stopped.length ? ` (not running: ${group.stopped.join(", ")})` : ""}`).join("; ")}.`);
+    }
   }
   return lines.join("\n");
 }
@@ -532,7 +600,7 @@ async function recentEvents(_snapshot, context, args) {
 // Common words that say nothing about what to look for in the manual.
 const MANUAL_STOP_WORDS = new Set(("a an and any are as at be can could did do does for from get go has have how i i'm in is it it's its "
   + "me my of on or our please show tell than that the their them then there this to up use using was we what what's when where which "
-  + "who why will with would you your yes no ok okay thanks look find search manual tool search_manual about know need want runs run "
+  + "who why will with would you your yes no ok okay thanks look find search manual tool search_manual about know need want runs run used use purpose role host hosts "
   // Time and "what happened" words describe when, not what: matching them pulls
   // unrelated notes such as "memtest86+ overnight" into a history question.
   + "anything something everything happen happened happening going on today tonight yesterday overnight night morning "
