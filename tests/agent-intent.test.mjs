@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { isFollowUp, mergeSeeds, namedServices, questionSeeds, workloadQuery, withoutWorkloadNames } from "../server/agent-intent.mjs";
+import { isFollowUp, mergeSeeds, namedServices, questionSeeds, workloadQueries, workloadQuery, withoutWorkloadNames } from "../server/agent-intent.mjs";
 import { parseActionCommand, runTool } from "../server/agent-tools.mjs";
 import { questionWindow } from "../server/agent-history.mjs";
 
@@ -49,7 +49,7 @@ const context = (snapshot) => ({ snapshot: () => snapshot, now: () => NOW, timeZ
 
 test("a long inventory is summarised so the containers are never cut off", async () => {
   const output = await runTool("list_workloads", {}, context(lab()));
-  assert.match(output, /^Nodes: alpha \(Proxmox Lab\) online, up 7d, cpu 3%, memory 50%\./mu);
+  assert.match(output, /^Nodes: alpha \(Proxmox Lab\) online, up 7d, cpu 3%, memory 50%, 2 guests \(1 VM, 1 LXC\), 1 running\./mu);
   assert.match(output, /^VMs: 1 in total, 1 running\. Running: Media-Box \(100, alpha\)\.$/mu);
   assert.match(output, /^LXCs: 1 in total, 0 running; not running or locked: dns \(101, alpha\) \(stopped\)\.$/mu);
   assert.match(output, /^Containers on local \(Portainer Docker host\): 44, 43 running; not running: paperless-webserver-1 \(exited\); running but unhealthy: gluetun\.$/mu, "a broad question gets counts and the problems");
@@ -61,7 +61,7 @@ test("a long inventory is summarised so the containers are never cut off", async
   assert.doesNotMatch(containers, /shortened|more lines not shown/u);
   // A kind gives just that kind; a name gives its full line.
   assert.match(await runTool("list_workloads", { filter: "lxcs" }, context(lab())), /^LXCs: 1 in total, 0 running; not running or locked: dns \(101, alpha\) \(stopped\)\.$/u);
-  assert.match(await runTool("list_workloads", { filter: "gluetun" }, context(lab())), /^container gluetun \(Docker host\/local\): running, Up 2 days \(unhealthy\)$/u);
+  assert.match(await runTool("list_workloads", { filter: "gluetun" }, context(lab())), /^container gluetun on Docker host local \(Portainer Docker host\): running, Up 2 days \(unhealthy\)$/u);
 });
 
 test("the workload list is narrowed to what a question names", () => {
@@ -118,7 +118,7 @@ test("containers are grouped per host, and same-named guests are both shown", as
   const all = await runTool("list_workloads", {}, context(snapshot));
   assert.match(all, /^Containers on local \(Portainer Docker host\): 6, 5 running; /mu);
   assert.match(all, /^Containers on second \(Portainer Docker host\): 1, 1 running, none stopped or unhealthy\.$/mu);
-  assert.match(await runTool("list_workloads", { filter: "docker" }, context(snapshot)), /^Note: 2 guests are named docker: VM 109 on alpha, VM 201 on beta\.$/mu);
+  assert.match(await runTool("list_workloads", { filter: "docker" }, context(snapshot)), /^Note: 2 guests are named docker: VM 109 on node alpha, VM 201 on node beta\.$/mu);
 });
 
 test("Proxmox, Portainer and nicknamed services get their own status, not a workload list", () => {
@@ -147,8 +147,8 @@ test("guests ranked by memory, CPU or backup age, and a node's own guests", asyn
     { vmid: 112, name: "old", type: "qemu", node: "beta", status: "stopped" }
   ];
   assert.match(await runTool("list_workloads", { filter: "memory" }, context(snapshot)),
-    /highest first .*: haos \(VM 102, beta\): 90%, Media-Box \(VM 100, alpha\): 75%, dns \(LXC 101, beta\): 10%\. Not running, so no usage: old \(VM 112, beta\)/u);
-  assert.match(await runTool("list_workloads", { filter: "cpu" }, context(snapshot)), /: haos \(VM 102, beta\): 30%, Media-Box/u);
+    /highest first .*: 1\. haos \(VM 102, beta\): 90%, 2\. Media-Box \(VM 100, alpha\): 75%, 3\. dns \(LXC 101, beta\): 10%\. Not running, so no usage: old \(VM 112, beta\)/u);
+  assert.match(await runTool("list_workloads", { filter: "cpu" }, context(snapshot)), /: 1\. haos \(VM 102, beta\): 30%, 2\. Media-Box/u);
   const backups = await runTool("list_workloads", { filter: "backups" }, context(snapshot));
   assert.match(backups, /^These have a backup \(oldest first\): dns \(LXC 101, beta\): success 50d ago, Media-Box \(VM 100, alpha\): success 5d ago\.$/mu);
   assert.match(backups, /^These have no backup recorded at all: haos \(VM 102, beta\), old \(VM 112, beta\)\.$/mu);
@@ -168,7 +168,7 @@ test("guests ranked by memory, CPU or backup age, and a node's own guests", asyn
   assert.match(lxcBackups, /^Backups of 1 LXC: 1 has one, 0 have none\.$/mu);
   assert.doesNotMatch(lxcBackups, /Media-Box/u);
   assert.match(backups, /^Backups of 4 guests: 2 have one, 2 have none\.$/mu);
-  assert.match(await runTool("list_workloads", { filter: "haos" }, context(snapshot)), /^vm 102 haos on beta .*, no backup recorded$/mu, "a guest without a backup says so");
+  assert.match(await runTool("list_workloads", { filter: "haos" }, context(snapshot)), /^vm 102 haos on node beta: .*, no backup recorded$/mu, "a guest without a backup says so");
   assert.deepEqual(query("which guests haven't been backed up recently?"), { filter: "backups" });
   assert.deepEqual(query("how much memory is haos using"), { filter: "haos" }, "a named guest gets its own line");
   assert.deepEqual(query("what's running on beta"), { filter: "beta" });
@@ -198,14 +198,14 @@ test("an exact name is that guest, a Portainer host gets its containers, and gue
   );
   const run = (filter) => runTool("list_workloads", { filter }, context(snapshot));
   const docker = await run("docker");
-  assert.match(docker, /^Note: 2 guests are named docker: VM 109 on alpha, VM 201 on alpha\.$/mu);
+  assert.match(docker, /^Note: 2 guests are named docker: VM 109 on node alpha, VM 201 on node alpha\.$/mu);
   assert.doesNotMatch(docker, /^container docker-socket-proxy/mu, "not every container containing the word");
   assert.match(docker, /^Docker containers, in case those are meant: local \(Portainer Docker host\) 6, 5 running .*Main Docker \(Portainer Docker host\) 2, 1 running \(not running: docker-socket-proxy \(exited\)\)/mu);
   const host = await run("Main Docker");
   assert.match(host, /^Containers on Main Docker \(Portainer Docker host\): 2, 1 running; not running: docker-socket-proxy \(exited\)\. Running: aliasvault\.$/mu);
   const both = await run("Jelly-Box");
-  assert.match(both, /^vm 110 Jelly-Box on alpha /mu, "the VM's own line");
-  assert.match(both, /^Containers on Jelly-Box \(Portainer Docker host\): 1, 1 running, none stopped or unhealthy\. Running: navidrome\.$/mu, "and the containers on it");
+  assert.match(both, /^vm 110 Jelly-Box on node alpha: /mu, "the VM's own line");
+  assert.match(both, /^Containers on Jelly-Box \(Portainer Docker host, VM 110 on node alpha\): 1, 1 running, none stopped or unhealthy\. Running: navidrome\.$/mu, "and the containers on it");
   assert.match(await run(""), /^Guests: 5 in total \(4 VMs, 1 LXC\), 4 running \(4 VMs, 0 LXCs\)\.$/mu);
 
   const query = (text) => workloadQuery(snapshot, text, { workloadWords: questionSeeds(text).workloads });
@@ -218,4 +218,138 @@ test("an exact name is that guest, a Portainer host gets its containers, and gue
   assert.deepEqual(namedServices(snapshot, withoutWorkloadNames(snapshot, "how's Seerr on Jelly-Box?")), ["seerr"]);
   assert.equal(questionSeeds("what does semaphore do?").manual, true);
   assert.equal(questionSeeds("what is pihole for?").manual, true);
+});
+
+/** A cluster named like one of its nodes, as in "Main" with nodes Main and norco. */
+function cluster() {
+  const GB = 1024 ** 3;
+  return {
+    generatedAt: new Date(NOW).toISOString(),
+    services: [{ id: "seerr", label: "Seerr", state: "healthy" }],
+    infrastructure: {
+      environments: [{
+        id: "env-main",
+        displayName: "Main",
+        nodes: [
+          { name: "Main", status: "online", uptimeSeconds: 8 * 86_400, cpuPercent: 2, cpuCores: 8, memoryUsedBytes: 20 * GB, memoryTotalBytes: 32 * GB },
+          { name: "norco", status: "online", uptimeSeconds: 3 * 86_400, cpuPercent: 17, cpuCores: 12, memoryUsedBytes: 39 * GB, memoryTotalBytes: 63 * GB }
+        ],
+        workloads: [
+          { vmid: 100, name: "Jelly-Arr", type: "qemu", node: "Main", status: "running", cpuPercent: 12, cpuCores: 4, memoryUsedBytes: 5.8 * GB, memoryTotalBytes: 8 * GB, uptimeSeconds: 8 * 86_400 },
+          { vmid: 104, name: "seerr", type: "lxc", node: "Main", status: "running", cpuPercent: 0.1, cpuCores: 1, memoryUsedBytes: 0.6 * GB, memoryTotalBytes: 2 * GB },
+          { vmid: 108, name: "wizarr", type: "lxc", node: "Main", status: "running", cpuPercent: 0, cpuCores: 1, memoryUsedBytes: 0.7 * GB, memoryTotalBytes: 2 * GB },
+          { vmid: 102, name: "haos-17.2", type: "qemu", node: "norco", status: "running", cpuPercent: 1.4, cpuCores: 2, memoryUsedBytes: 3.7 * GB, memoryTotalBytes: 4 * GB },
+          { vmid: 106, name: "pihole", type: "lxc", node: "norco", status: "running", cpuPercent: 0.1, cpuCores: 1, memoryUsedBytes: 0.1 * GB, memoryTotalBytes: 1 * GB, backup: { status: "success", ageSeconds: 58 * 86_400 } },
+          { vmid: 109, name: "docker", type: "qemu", node: "norco", status: "running", cpuPercent: 1, cpuCores: 4, memoryUsedBytes: 3.3 * GB, memoryTotalBytes: 8 * GB, backup: { status: "success", ageSeconds: 58 * 86_400 } },
+          { vmid: 112, name: "RHEL-10.0-1", type: "qemu", node: "norco", status: "stopped", cpuCores: 2, memoryTotalBytes: 4 * GB },
+          { vmid: 114, name: "ollama", type: "lxc", node: "norco", status: "running", cpuPercent: 35, cpuCores: 4, memoryUsedBytes: 2 * GB, memoryTotalBytes: 16 * GB }
+        ]
+      }],
+      services: [{ id: "portainer-1", displayName: "Portainer", type: "portainer", state: "healthy", checks: [] }],
+      portainer: [{
+        id: "p-1",
+        displayName: "Portainer",
+        inventory: {
+          containers: [
+            { name: "radarr", state: "running", status: "Up 7 days", environmentName: "Jelly-Arr", image: "lscr.io/linuxserver/radarr:latest", stack: "arr", ports: [{ privatePort: 7878, publicPort: 7878, protocol: "tcp" }] },
+            { name: "suggestarr", state: "exited", status: "Exited (0) 7 weeks ago", environmentName: "Jelly-Arr", ports: [] },
+            { name: "aliasvault", state: "running", status: "Up 2 days", environmentName: "Main Docker", ports: [{ privatePort: 80, publicPort: null, protocol: "tcp" }] }
+          ]
+        }
+      }]
+    }
+  };
+}
+
+test("a cluster named like one of its nodes says which is which, and nodes count their guests", async () => {
+  const snapshot = cluster();
+  const all = await runTool("list_workloads", {}, context(snapshot));
+  assert.match(all, /^Note: "Main" is the Proxmox cluster \(nodes Main, norco\) and also one of its nodes; a guest "on Main" means on node Main only\.$/mu);
+  assert.match(all, /Main \(Proxmox Main\) online, up 8d, cpu 2%, memory 63% of 32 GB, 3 guests \(1 VM, 2 LXCs\), 3 running/u);
+  const main = await runTool("list_workloads", { filter: "main" }, context(snapshot));
+  assert.match(main, /^Note: "Main" is the Proxmox cluster/u);
+  assert.match(main, /^node Main \(Proxmox Main\): online, up 8d, cpu 2% of 8 cores, memory 63% \(20 of 32 GB\), 3 guests \(1 VM, 2 LXCs\), 3 running$/mu);
+  assert.match(main, /^Guests on node Main:\nvm 100 Jelly-Arr: running, cpu 12%, memory 73% \(5\.8 of 8 GB\), no backup$/mu, "each guest in short form under its node");
+  assert.doesNotMatch(main, /haos|norco:/u, "only the node's own guests");
+  assert.match(await runTool("list_workloads", { filter: "Jelly-Arr" }, context(snapshot)), /^vm 100 Jelly-Arr on node Main: running, cpu 12% of 4 cores, memory 73% \(5\.8 of 8 GB\), up 8d, no backup recorded$/mu, "a guest's own line has cores, sizes and uptime");
+  assert.match(await runTool("list_workloads", { filter: "RHEL-10.0-1" }, context(snapshot)), /^vm 112 RHEL-10\.0-1 on node norco: stopped, 2 cores, 4 GB memory assigned, no backup recorded$/u);
+});
+
+test("a container's line has its image, stack, ports and the guest its Docker host runs on", async () => {
+  const snapshot = cluster();
+  assert.match(await runTool("list_workloads", { filter: "radarr" }, context(snapshot)),
+    /^container radarr on Docker host Jelly-Arr \(Portainer\): running, Up 7 days; image lscr\.io\/linuxserver\/radarr:latest; stack arr; ports 7878->7878\/tcp; Docker host Jelly-Arr is VM 100 on node Main$/u);
+  assert.match(await runTool("list_workloads", { filter: "aliasvault" }, context(snapshot)), /; ports 80\/tcp unpublished$/u, "no guest named Main Docker, so no claim about where it runs");
+  assert.match(await runTool("list_workloads", { filter: "suggestarr" }, context(snapshot)), /Exited \(0\) 7 weeks ago; no ports; Docker host Jelly-Arr is VM 100/u);
+  const portainer = await runTool("service_status", { name: "portainer" }, context(snapshot));
+  assert.match(portainer, /^Docker hosts it manages \(Portainer environments, not Proxmox nodes\): Jelly-Arr \(Portainer, VM 100 on node Main\) 2 containers, 1 running; Main Docker \(Portainer\) 1 containers, 1 running\.$/mu);
+});
+
+test("guests by number, several names at once, and rankings for one node", async () => {
+  const snapshot = cluster();
+  const queries = (text) => workloadQueries(snapshot, text, { workloadWords: questionSeeds(text).workloads });
+  assert.deepEqual(queries("Is VM 109 powered on?"), [{ filter: "109" }]);
+  assert.deepEqual(queries("Show the names for guest IDs 100, 102, and 104."), [{ filter: "100" }, { filter: "102" }, { filter: "104" }]);
+  assert.deepEqual(queries("vm 150 node?"), [{ filter: "vms" }], "an ID that isn't a guest is not looked up");
+  assert.match(await runTool("list_workloads", { filter: "109" }, context(snapshot)), /^vm 109 docker on node norco: running/u);
+  assert.match(await runTool("list_workloads", { filter: "999" }, context(snapshot)), /^There is no VM or LXC with ID 999\.$/u);
+  assert.deepEqual(queries("Is seerr or wizarr using more CPU?"), [{ filter: "seerr" }, { filter: "wizarr" }], "both names, not only the first");
+  assert.deepEqual(queries("Rank pihole, ollama, and haos-17.2 by current CPU usage."), [{ filter: "pihole" }, { filter: "ollama" }, { filter: "haos-17.2" }]);
+  assert.deepEqual(queries("Rank VMs on norco by current CPU usage."), [{ filter: "cpu vms norco" }]);
+  assert.deepEqual(queries("Show the newest backup for every guest on Main."), [{ filter: "backups main" }]);
+  assert.deepEqual(queries("compare the current CPU load on Main and norco."), [{ filter: "main" }, { filter: "norco" }]);
+  const ranked = await runTool("list_workloads", { filter: "cpu vms norco" }, context(snapshot));
+  assert.match(ranked, /^CPU use of each running VM on node norco, highest first \(percent of its own allowance\): 1\. haos-17\.2 \(VM 102, norco\): 1\.4% of 2 cores, 2\. docker \(VM 109, norco\): 1% of 4 cores\. Not running, so no usage: RHEL-10\.0-1 \(VM 112, norco\)\.$/u);
+  assert.doesNotMatch(ranked, /Jelly-Arr|ollama/u);
+  const mainBackups = await runTool("list_workloads", { filter: "backups main" }, context(snapshot));
+  assert.match(mainBackups, /^Backups of 3 guests on node Main: 0 have one, 3 have none\.$/mu);
+  assert.match(mainBackups, /^Note: "Main" is the Proxmox cluster/u);
+});
+
+test("backup answers count the ages and the nodes, and say what Helmsman can't see", async () => {
+  const backups = await runTool("list_workloads", { filter: "backups" }, context(cluster()));
+  assert.match(backups, /^Latest backup ages: 0 under 1 day old, 0 1 to 7 days old, 0 7 to 30 days old, 2 over 30 days old\.$/mu);
+  assert.match(backups, /^By node: Main 0 of 3 have one, norco 2 of 5 have one\.$/mu);
+  assert.match(backups, /^Helmsman sees only each guest's latest backup result and its age: not backup jobs, schedules/mu);
+  const memory = await runTool("list_workloads", { filter: "memory" }, context(cluster()));
+  assert.match(memory, /: 1\. haos-17\.2 \(VM 102, norco\): 93% \(3\.7 of 4 GB\), 2\. Jelly-Arr/u, "sizes in GB beside the share");
+});
+
+test("two-word names and Home Assistant find their guests", () => {
+  const snapshot = cluster();
+  const queries = (text) => workloadQueries(snapshot, text, { workloadWords: questionSeeds(text).workloads });
+  assert.deepEqual(queries("how's pi hole doing?"), [{ filter: "pihole" }]);
+  assert.deepEqual(queries("which node is pi-hole on?"), [{ filter: "pihole" }]);
+  assert.deepEqual(queries("What node hosts home assistant?"), [{ filter: "haos-17.2" }]);
+  assert.deepEqual(queries("Is Home Assistant OS a VM or an LXC?"), [{ filter: "haos-17.2" }]);
+  assert.equal(questionSeeds("What's the QDevice for?").manual, true, "the QDevice is in the manual");
+});
+
+test("Docker hosts, guests by name and number, and ordinary words that only look like names", async () => {
+  const snapshot = cluster();
+  snapshot.infrastructure.environments[0].workloads.push({ vmid: 201, name: "docker", type: "qemu", node: "norco", status: "running", cpuPercent: 3 });
+  snapshot.infrastructure.portainer[0].inventory.containers.push(
+    { name: "prowlarr", state: "running", status: "Up 7 days", environmentName: "Jelly-Arr", ports: [] },
+    { name: "authentik-worker-1", state: "running", status: "Up 2 days", environmentName: "PVE-2", stack: "authentik", ports: [] },
+    { name: "portainer_agent", state: "running", status: "Up 2 days", environmentName: "PVE-2", ports: [] }
+  );
+  const queries = (text) => workloadQueries(snapshot, text, { workloadWords: questionSeeds(text).workloads });
+  const where = (text) => workloadQueries(snapshot, text, { namesOnly: true });
+  assert.deepEqual(queries("Does docker 201 have a backup?"), [{ filter: "201" }], "a name with its number is that guest");
+  assert.deepEqual(queries("Which Docker host has prowlarr?"), [{ filter: "prowlarr" }], "Docker host is not the VM named docker");
+  assert.deepEqual(where("Which Docker host contains authentik-worker-1?"), [{ filter: "authentik-worker-1" }]);
+  assert.deepEqual(queries("Is prowlarr in Jelly-Arr or Main Docker?"), [{ filter: "prowlarr" }, { filter: "Main Docker" }, { filter: "Jelly-Arr" }], "the container and both hosts");
+  assert.deepEqual(queries("list the Main Docker containers"), [{ filter: "Main Docker" }]);
+  assert.deepEqual(queries("Which running LXC is doing the least work?"), [{ filter: "cpu lxcs" }], "work is not authentik-worker-1");
+  assert.deepEqual(queries("Which VMs have a working guest agent?"), [{ filter: "vms" }], "agent is not portainer_agent");
+  assert.deepEqual(queries("Which containers publish host ports?"), [{ filter: "containers ports" }]);
+  assert.deepEqual(queries("Which containers use an image tagged latest?"), [{ filter: "containers images" }]);
+  assert.deepEqual(queries("what Docker stacks are visible?"), [{ filter: "containers stacks" }]);
+  assert.deepEqual(queries("Who is the largest RAM consumer among guests with no backup?"), [{ filter: "memory" }, { filter: "backups" }], "both measures it names");
+  assert.deepEqual(queries("Where does ollama rank among LXCs for memory use?"), [{ filter: "ollama" }, { filter: "memory lxcs" }], "its line and the ranking");
+  assert.deepEqual(queries("How much physical RAM is installed in Main?"), [{ filter: "main" }], "the node itself, not its guests' ranking");
+  const ports = await runTool("list_workloads", { filter: "containers ports" }, context(snapshot));
+  assert.match(ports, /^Docker host Jelly-Arr \(VM 100 on node Main\), 3 containers: radarr 7878->7878\/tcp; suggestarr no ports; prowlarr no ports\.$/mu);
+  const stacks = await runTool("list_workloads", { filter: "containers stacks" }, context(snapshot));
+  assert.match(stacks, /^Docker host PVE-2, 2 containers: stack authentik: authentik-worker-1; no stack: portainer_agent\.$/mu);
 });
