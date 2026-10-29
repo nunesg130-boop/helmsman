@@ -7,14 +7,14 @@
 // for "is X up" or "why is X down"; indexer, container and queue lists when
 // the question is about those; one service's own status when it names one.
 
-import { matchByName, NAME_ALIASES, workloadNames } from "./agent-tools.mjs";
+import { containerHostNames, matchByName, NAME_ALIASES, workloadNames } from "./agent-tools.mjs";
 
 export { HELMSMAN_HELP } from "./agent-help.mjs";
 
-const MANUAL = /\b(?:ip|ips|address(?:es)?|subnet|gateway|dns|vlan|mac|hostname|ports?|where (?:is|are|does|do|did|can)|how (?:do|to|should|can|did) i|how do you|procedure|runbook|notes?|manual|documented|docs|steps|which hosts?|serial|model number|password policy|backup(?:s)? (?:stored|go|location)|hardware|specs?|layout|topology|wiring|cabling|vlans?|motherboard|what (?:cpu|gpu)|which (?:cpu|gpu)|drives?|disks?|what (?:runs|is running|is) on (?:vm|lxc|ct)|used for|purpose of|role of)\b/u;
+const MANUAL = /\b(?:ip|ips|address(?:es)?|subnet|gateway|dns|vlan|mac|hostname|ports?|where (?:is|are|does|do|did|can)|how (?:do|to|should|can|did) i|how do you|procedure|runbook|notes?|manual|documented|docs|steps|which hosts?|serial|model number|password policy|backup(?:s)? (?:stored|go|location)|hardware|specs?|layout|topology|wiring|cabling|vlans?|motherboard|what (?:cpu|gpu)|which (?:cpu|gpu)|drives?|disks?|what (?:runs|is running|is) on (?:vm|lxc|ct)|used for|purpose of|role of|what does \S+(?: \S+)? do|what (?:is|'s) \S+(?: \S+)? for)\b/u;
 const HELP = /\b(?:helmsman|helmy|training|conversations?|rate|rating|fix answer|debug|logs?|logging|export|refresh|approve|approval|connections?|settings|holding alerts|alerts held)\b/u;
 const INDEXERS = /\b(?:indexers?|trackers?)\b/u;
-const WORKLOADS = /\b(?:containers?|vms?|virtual machines?|lxcs?|guests?|nodes?|stopped|running|vpn|gluetun|memory|ram|cpu|busiest|uptime|been up|what'?s on|running on|docker|backed up|backups?|last backup)\b/u;
+const WORKLOADS = /\b(?:containers?|vms?|virtual machines?|lxcs?|guests?|nodes?|stopped|running|vpn|gluetun|memory|ram|cpu|busiest|busy|uptime|been up|online|what'?s on|running on|docker|backed up|backups?|last backup)\b/u;
 const MEDIA = /\b(?:download(?:ing|s|ed)?|queue|stuck|stalled|imports?|imported|requests?|requested|upcoming|coming out|comes? out|releases?|episodes?|premieres?|air(?:s|ing)?|subtitles?|eta|finish(?:ed)?|added recently)\b/u;
 
 /** Which lookups a question needs. */
@@ -91,9 +91,15 @@ const KIND_WORDS = [
  * monitored service ("is sonarr up") is left to that service's own status
  * unless the question asks about its container or VM.
  */
-export function workloadQuery(snapshot, text, { workloadWords = false } = {}) {
+export function workloadQuery(snapshot, text, { workloadWords = false, namesOnly = false } = {}) {
   const question = String(text || "").toLowerCase();
   const names = workloadNames(snapshot);
+  const nodes = new Set((snapshot?.infrastructure?.environments || []).flatMap((environment) => (environment.nodes || []).map((node) => String(node?.name || "").toLowerCase())).filter(Boolean));
+  // A Portainer host named in full ("Main Docker", "PVE-2", "Jelly-Arr"):
+  // its containers, before any single word of it ("main") is read as a node.
+  const hosts = containerHostNames(snapshot).sort((left, right) => right.length - left.length);
+  const host = hosts.find((name) => new RegExp(`(?:^|[^a-z0-9])${name.toLowerCase().replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}(?:$|[^a-z0-9])`, "u").test(question));
+  if (host && !namesOnly) return { filter: host };
   // Everything answered by its own status: media services, Proxmox and
   // Portainer themselves, by name, type or nickname ("jelly", "portainer").
   const services = new Set([
@@ -105,26 +111,57 @@ export function workloadQuery(snapshot, text, { workloadWords = false } = {}) {
   const candidates = [...words, ...nicknameHints(question).map(({ target }) => target)];
   for (const word of candidates) {
     if (word.length < 4 && NAME_ALIASES[word] === undefined) continue;
-    if (!workloadWords && (services.has(word) || services.has(NAME_ALIASES[word]))) continue;
+    // A node by its exact name ("list everything on Main", "is norco busy")
+    // is that node and its guests, even when it also names the Proxmox
+    // environment. Not for address questions, which the manual answers.
+    if (nodes.has(word)) {
+      if (namesOnly) continue;
+      return { filter: word };
+    }
+    // "Which host is radarr on": the container's line says, even though
+    // Radarr also has a status of its own.
+    const asService = services.has(word) || services.has(NAME_ALIASES[word]);
+    if (!workloadWords && !namesOnly && asService) continue;
     // "docker containers" means containers, even with a VM named docker.
     if (word === "docker" && /\bcontainers?\b/u.test(question)) continue;
-    const matches = [...new Set(matchByName(names, word, (name) => name))];
+    const matches = [...new Set(matchByName(names, word, (name) => name))].filter((name) => !nodes.has(name.toLowerCase()));
     if (!matches.length) continue;
     // Several that share the word ("paperless-db-1", "paperless-webserver-1"):
     // show them all by filtering on the word itself.
     if (matches.length > 1 && !matches.every((name) => name.toLowerCase().includes(word))) continue;
     const name = matches.length === 1 ? matches[0] : word;
-    if (services.has(name.toLowerCase()) && !workloadWords) continue;
+    if (services.has(name.toLowerCase()) && !workloadWords && !namesOnly) continue;
     return { filter: name };
   }
-  if (!workloadWords) return null;
+  if (!workloadWords || namesOnly) return null;
   // "Which VM uses the most memory", "what hasn't been backed up": every
-  // guest ranked by that number. Where backups are stored is a manual question.
-  if (/\b(?:backed up|last backup|backups?)\b/u.test(question) && !/\b(?:stored|where|location|kept)\b/u.test(question)) return { filter: "backups" };
-  if (/\b(?:memory|ram)\b/u.test(question)) return { filter: "memory" };
-  if (/\b(?:cpu|busiest|load)\b/u.test(question) && !/\bnodes?\b/u.test(question)) return { filter: "cpu" };
+  // guest ranked by that number, only VMs or only LXCs when the question
+  // says so. Where backups are stored is a manual question.
+  const only = /\b(?:vms?|virtual machines?)\b/u.test(question) ? " vms" : /\blxcs?\b/u.test(question) ? " lxcs" : "";
+  if (/\b(?:backed up|last backup|backups?)\b/u.test(question) && !/\b(?:stored|where|location|kept)\b/u.test(question)) return { filter: `backups${only}` };
+  if (/\b(?:memory|ram)\b/u.test(question)) return { filter: `memory${only}` };
+  if (/\b(?:cpu|busiest|busy|load)\b/u.test(question) && !/\bnodes?\b/u.test(question)) return { filter: `cpu${only}` };
   for (const [pattern, kind] of KIND_WORDS) if (pattern.test(question)) return { filter: kind };
   return { filter: "" };
+}
+
+/**
+ * The question with multi-part guest and host names taken out
+ * ("Jelly-Arr status" becomes " status"), for finding the services it names:
+ * "jelly" inside "Jelly-Arr" is the VM, not a nickname for Jellyfin.
+ */
+export function withoutWorkloadNames(snapshot, text) {
+  let question = String(text || "");
+  // Not node names: "pve-1" names its Proxmox environment.
+  const nodes = new Set((snapshot?.infrastructure?.environments || []).flatMap((environment) => (environment.nodes || []).map((node) => node?.name)));
+  const names = [...workloadNames(snapshot), ...containerHostNames(snapshot)]
+    .filter((name) => !nodes.has(name) && /[^A-Za-z0-9]/u.test(name))
+    .sort((left, right) => right.length - left.length);
+  for (const name of names) {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+    question = question.replace(new RegExp(`(^|[^A-Za-z0-9])${escaped}(?=$|[^A-Za-z0-9])`, "giu"), "$1 ");
+  }
+  return question;
 }
 
 /**
