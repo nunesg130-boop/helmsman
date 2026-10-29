@@ -50,12 +50,17 @@ const context = (snapshot) => ({ snapshot: () => snapshot, now: () => NOW, timeZ
 test("a long inventory is summarised so the containers are never cut off", async () => {
   const output = await runTool("list_workloads", {}, context(lab()));
   assert.match(output, /^Nodes: alpha \(Proxmox Lab\) online, up 7d, cpu 3%, memory 50%\./mu);
-  assert.match(output, /^VMs: 100 Media-Box on alpha running\./mu);
-  assert.match(output, /^LXCs: 101 dns on alpha stopped\./mu);
-  assert.match(output, /Containers on Portainer Docker host: .*gluetun running unhealthy, sonarr running, paperless-db-1 running, paperless-webserver-1 exited\./u, "the last containers are included");
+  assert.match(output, /^VMs \(1\): 100 Media-Box on alpha running\./mu);
+  assert.match(output, /^LXCs \(1\): 101 dns on alpha stopped\./mu);
+  assert.match(output, /^Containers on local \(Portainer Docker host\): 44, 43 running; not running or unhealthy: gluetun unhealthy, paperless-webserver-1 exited\.$/mu, "a broad question gets counts and the problems");
   assert.ok(output.length <= 1_400);
+  // Asking for containers lists them, problems first, and says how many did not fit.
+  const containers = await runTool("list_workloads", { filter: "containers" }, context(lab({ containers: 200 })));
+  assert.match(containers, /^Containers on local \(Portainer Docker host\): \d+, \d+ running; not running or unhealthy: gluetun unhealthy, paperless-webserver-1 exited\. Running: .* …and \d+ more\.$/mu);
+  assert.ok(containers.length <= 1_400, "fits without being shortened");
+  assert.doesNotMatch(containers, /shortened|more lines not shown/u);
   // A kind gives just that kind; a name gives its full line.
-  assert.match(await runTool("list_workloads", { filter: "lxcs" }, context(lab())), /^LXCs: 101 dns on alpha stopped\.$/u);
+  assert.match(await runTool("list_workloads", { filter: "lxcs" }, context(lab())), /^LXCs \(1\): 101 dns on alpha stopped\.$/u);
   assert.match(await runTool("list_workloads", { filter: "gluetun" }, context(lab())), /^container gluetun \(Docker host\/local\): running, Up 2 days \(unhealthy\)$/u);
 });
 
@@ -101,4 +106,32 @@ test("an app nickname never becomes a VM reboot by a loose match", () => {
   const result = parseActionCommand("restart jelly", snapshot);
   assert.match(result.error, /There's no container, VM or LXC called jellyfin\. Did you mean VM 102 \(Jelly-Arr\)\?/u);
   assert.equal(parseActionCommand("restart the torrent client", { infrastructure: { portainer: [{ id: "p", inventory: { containers: [{ name: "qbittorrent" }] } }] } }).target.label, "container qbittorrent");
+});
+
+test("containers are grouped per host, and same-named guests are both shown", async () => {
+  const snapshot = lab({ containers: 2 });
+  snapshot.infrastructure.portainer[0].inventory.containers.push({ name: "grafana", state: "running", status: "Up", environmentName: "second" });
+  snapshot.infrastructure.environments[0].workloads.push(
+    { vmid: 109, name: "docker", type: "qemu", node: "alpha", status: "running" },
+    { vmid: 201, name: "docker", type: "qemu", node: "beta", status: "running" }
+  );
+  const all = await runTool("list_workloads", {}, context(snapshot));
+  assert.match(all, /^Containers on local \(Portainer Docker host\): 6, 5 running; /mu);
+  assert.match(all, /^Containers on second \(Portainer Docker host\): 1, 1 running, none stopped or unhealthy\.$/mu);
+  assert.match(await runTool("list_workloads", { filter: "docker" }, context(snapshot)), /^Note: 2 guests are named docker: VM 109 on alpha, VM 201 on beta\.$/mu);
+});
+
+test("Proxmox, Portainer and nicknamed services get their own status, not a workload list", () => {
+  const snapshot = lab({ containers: 2 });
+  snapshot.services.push({ id: "jellyfin", label: "Jellyfin", state: "healthy" });
+  snapshot.infrastructure.services = [{ id: "portainer-1", displayName: "Docker host", type: "portainer" }];
+  snapshot.infrastructure.portainer[0].inventory.containers.push({ name: "portainer_agent", state: "running", status: "Up", environmentName: "local" });
+  snapshot.infrastructure.environments[0].workloads.push({ vmid: 102, name: "Jelly-Arr", type: "qemu", node: "alpha", status: "running" });
+  const query = (text) => workloadQuery(snapshot, text, { workloadWords: questionSeeds(text).workloads });
+  assert.equal(query("is portainer healthy?"), null);
+  assert.equal(query("is jelly ok?"), null);
+  snapshot.infrastructure.environments[0].workloads.push({ vmid: 109, name: "docker", type: "qemu", node: "alpha", status: "running" });
+  assert.deepEqual(query("is the docker vm up?"), { filter: "docker" });
+  assert.deepEqual(query("which docker containers are stopped?"), { filter: "containers" });
+  assert.deepEqual(query("is the portainer_agent container running?"), { filter: "portainer_agent" });
 });
