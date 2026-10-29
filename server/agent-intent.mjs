@@ -7,15 +7,15 @@
 // for "is X up" or "why is X down"; indexer, container and queue lists when
 // the question is about those; one service's own status when it names one.
 
-import { matchByName, NAME_ALIASES } from "./agent-tools.mjs";
+import { matchByName, NAME_ALIASES, workloadNames } from "./agent-tools.mjs";
 
 export { HELMSMAN_HELP } from "./agent-help.mjs";
 
-const MANUAL = /\b(?:ip|ips|address(?:es)?|subnet|gateway|dns|vlan|mac|hostname|ports?|where (?:is|are|does|do|did|can)|how (?:do|to|should|can|did) i|how do you|procedure|runbook|notes?|manual|documented|docs|steps|which hosts?|serial|model number|password policy|backup(?:s)? (?:stored|go|location))\b/u;
+const MANUAL = /\b(?:ip|ips|address(?:es)?|subnet|gateway|dns|vlan|mac|hostname|ports?|where (?:is|are|does|do|did|can)|how (?:do|to|should|can|did) i|how do you|procedure|runbook|notes?|manual|documented|docs|steps|which hosts?|serial|model number|password policy|backup(?:s)? (?:stored|go|location)|hardware|specs?|layout|topology|wiring|cabling|vlans?|motherboard|what (?:cpu|gpu)|which (?:cpu|gpu)|drives?|disks?)\b/u;
 const HELP = /\b(?:helmsman|helmy|training|conversations?|rate|rating|fix answer|debug|logs?|logging|export|refresh|approve|approval|connections?|settings|holding alerts|alerts held)\b/u;
 const INDEXERS = /\b(?:indexers?|trackers?)\b/u;
 const WORKLOADS = /\b(?:containers?|vms?|virtual machines?|lxcs?|guests?|nodes?|stopped|running|vpn|gluetun|memory|ram|cpu|busiest|uptime|been up|what'?s on|running on|docker)\b/u;
-const MEDIA = /\b(?:download(?:ing|s|ed)?|queue|stuck|stalled|imports?|imported|requests?|requested|upcoming|coming out|releases?|subtitles?|eta|finish(?:ed)?|added recently)\b/u;
+const MEDIA = /\b(?:download(?:ing|s|ed)?|queue|stuck|stalled|imports?|imported|requests?|requested|upcoming|coming out|comes? out|releases?|episodes?|premieres?|air(?:s|ing)?|subtitles?|eta|finish(?:ed)?|added recently)\b/u;
 
 /** Which lookups a question needs. */
 export function questionSeeds(text) {
@@ -73,4 +73,60 @@ export function nicknameHints(text) {
     if (target && target !== word && !hints.some((hint) => hint.word === word)) hints.push({ word, target });
   }
   return hints.slice(0, 3);
+}
+
+const KIND_WORDS = [
+  [/\b(?:containers?|docker|portainer)\b/u, "containers"],
+  [/\b(?:vms?|virtual machines?)\b/u, "vms"],
+  [/\b(?:lxcs?)\b/u, "lxcs"],
+  [/\b(?:nodes?)\b/u, "nodes"]
+];
+
+/**
+ * Whether a question needs the VM, LXC and container list, and how to narrow
+ * it: one workload's full details when the question names one ("is gluetun
+ * running", or "vpn" for gluetun), one kind when it names a kind ("which
+ * containers are stopped"), otherwise everything in compact form. Returns
+ * null when the question is not about workloads. A name that is also a
+ * monitored service ("is sonarr up") is left to that service's own status
+ * unless the question asks about its container or VM.
+ */
+export function workloadQuery(snapshot, text, { workloadWords = false } = {}) {
+  const question = String(text || "").toLowerCase();
+  const names = workloadNames(snapshot);
+  const services = new Set((snapshot?.services || []).flatMap((service) => [service.id, String(service.label || "").toLowerCase()]));
+  const words = question.split(/[^a-z0-9._-]+/u).filter((word) => word && !STOP.has(word));
+  const candidates = [...words, ...nicknameHints(question).map(({ target }) => target)];
+  for (const word of candidates) {
+    if (word.length < 4 && NAME_ALIASES[word] === undefined) continue;
+    const matches = [...new Set(matchByName(names, word, (name) => name))];
+    if (!matches.length) continue;
+    // Several that share the word ("paperless-db-1", "paperless-webserver-1"):
+    // show them all by filtering on the word itself.
+    if (matches.length > 1 && !matches.every((name) => name.toLowerCase().includes(word))) continue;
+    const name = matches.length === 1 ? matches[0] : word;
+    if (services.has(name.toLowerCase()) && !workloadWords) continue;
+    return { filter: name };
+  }
+  if (!workloadWords) return null;
+  for (const [pattern, kind] of KIND_WORDS) if (pattern.test(question)) return { filter: kind };
+  return { filter: "" };
+}
+
+/**
+ * A short reply that continues the previous question: "and main?", "what
+ * about radarr?", "is it healthy?", "which was the longest?". Thanks and
+ * acknowledgements are not.
+ */
+export function isFollowUp(text) {
+  const question = String(text || "").trim().toLowerCase();
+  if (!question || /^(?:ok(?:ay)?|thanks?|thank you|ty|cool|great|nice|never ?mind|nvm|got it|lol)\b/u.test(question)) return false;
+  const words = question.split(/\s+/u).length;
+  return /^(?:and|also|what about|how about|same for|is it|are they|which|why|when|how long|is that)\b/u.test(question) || words <= 4;
+}
+
+/** Two sets of lookups combined. */
+export function mergeSeeds(left, right) {
+  if (!right) return left;
+  return Object.fromEntries(Object.keys(left).map((key) => [key, Boolean(left[key] || right[key])]));
 }

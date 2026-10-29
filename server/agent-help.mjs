@@ -14,4 +14,7 @@ export const HELMSMAN_HELP = `# About Helmsman
 - Stuck downloads: Settings → Automation → Stuck downloads clears stalled, failed and unsafe downloads and searches again.
 - Holding alerts: while a Proxmox node restarts or is out of contact, Helmsman holds other alerts for up to 30 minutes and then sends one summary.
 - Connections: add or change services under Media → Connections and Infrastructure.
+- Network map: Infrastructure → Network shows a map of your network that you can edit, export and import.
+- Logs export: the Logs page has a Download button that saves Helmsman's event log as a file; Server output shows Helmsman's own console log.
+- Questions per hour: Settings → Agent → Model server → Advanced sets how many chat questions the agent answers in an hour.
 - Helmy: the helper can be hidden with the eye button in its chat or under Settings → Agent → In this browser.`;

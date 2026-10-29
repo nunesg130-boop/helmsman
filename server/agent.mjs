@@ -36,7 +36,7 @@ import {
 } from "./agent-tools.mjs";
 import { chatCompletion, estimateTokens, listModels, LlmError, validModelId } from "./llm-client.mjs";
 import { questionWindow } from "./agent-history.mjs";
-import { HELMSMAN_HELP, namedServices, nicknameHints, questionSeeds } from "./agent-intent.mjs";
+import { HELMSMAN_HELP, isFollowUp, mergeSeeds, namedServices, nicknameHints, questionSeeds, workloadQuery } from "./agent-intent.mjs";
 import { createConversationStore } from "./agent-conversations.mjs";
 import { parseServiceUrl, resolveAndAuthorizeExplicitTarget, resolveAndAuthorizeTarget } from "./network.mjs";
 import { OutboundJsonError, performOutboundJsonRequest } from "./outbound-json.mjs";
@@ -149,6 +149,10 @@ function localParts(now, timeZone) {
   }).formatToParts(new Date(now)).filter(({ type }) => type !== "literal").map(({ type, value }) => [type, value]));
   return { date: `${parts.year}-${parts.month}-${parts.day}`, minutes: Number(parts.hour) * 60 + Number(parts.minute) };
 }
+
+// What a manual question asks about, as opposed to which host or app it
+// names: "and main?" after "what's the ip of norco?" borrows "ip" only.
+const MANUAL_TOPIC_WORDS = /^(?:ip|ips|address(?:es)?|subnet|gateway|dns|vlans?|mac|hostname|ports?|hardware|specs?|cpu|gpu|ram|memory|disks?|drives?|storage|backups?|stored|location|notes?|procedure|steps|restart|reboot|update|upgrade|password|layout|config(?:uration)?|version|model|serial|os)$/u;
 
 class RateWindow {
   #limit;
@@ -722,7 +726,11 @@ export async function createAgent(options) {
       // by themselves and repeat whatever background they are given, so
       // the right lookups are made for them, the same as if they had
       // called the tools.
-      const seeds = questionSeeds(prompt);
+      // A short follow-up ("and main?", "is it healthy?") is about the same
+      // thing as the question before it, so it gets the same lookups.
+      const earlierQuestion = [...history].reverse().find((turn) => turn.role === "user")?.content || "";
+      const followUp = Boolean(earlierQuestion) && isFollowUp(prompt);
+      const seeds = mergeSeeds(questionSeeds(prompt), followUp ? questionSeeds(earlierQuestion) : null);
       const seed = async (name, args, prefix = "") => {
         const output = await runTool(name, args, toolContext);
         const id = `seed-${name}-${toolsUsed.length}`;
@@ -733,13 +741,24 @@ export async function createAgent(options) {
         toolsUsed.push(name);
       };
       // The service the question names, by name or nickname.
-      for (const name of namedServices(snapshot(), prompt)) await seed("service_status", { name });
+      const named = namedServices(snapshot(), prompt);
+      const services = named.length || !followUp ? named : namedServices(snapshot(), earlierQuestion);
+      // "overseerr" here means Seerr: say so, or the model reports Overseerr
+      // as unmonitored while looking at Seerr's status.
+      const serviceHints = nicknameHints(followUp && !named.length ? earlierQuestion : prompt).filter(({ target }) => services.includes(target));
+      const hintText = serviceHints.length ? `Nicknames in the question: ${serviceHints.map(({ word, target }) => `"${word}" means ${(snapshot()?.services || []).find((service) => service.id === target)?.label || target}`).join("; ")}.\n` : "";
+      for (const name of services) await seed("service_status", { name }, hintText);
       if (seeds.indexers && toolContext.indexers) await seed("indexer_status", {});
-      if (seeds.workloads) {
+      // The VM, LXC and container list, narrowed to what the question names.
+      // Not for address and procedure questions ("the IP of the media
+      // host"), which the manual answers, unless they ask about workloads.
+      const workloads = seeds.manual && !seeds.workloads ? null : workloadQuery(snapshot(), prompt, { workloadWords: seeds.workloads })
+        || (followUp ? workloadQuery(snapshot(), earlierQuestion, { workloadWords: seeds.workloads }) : null);
+      if (workloads) {
         // "vpn" usually means a gluetun container: say so, or the model
         // looks for a container called vpn and finds none.
         const hints = nicknameHints(prompt);
-        await seed("list_workloads", {}, hints.length ? `Nicknames in the question: ${hints.map(({ word, target }) => `"${word}" usually means ${target}`).join("; ")}.\n` : "");
+        await seed("list_workloads", workloads.filter ? { filter: workloads.filter } : {}, hints.length ? `Nicknames in the question: ${hints.map(({ word, target }) => `"${word}" usually means ${target}`).join("; ")}.\n` : "");
       }
       if (seeds.media) await seed("media_queue", {});
       // Manual lines only for questions about addresses, procedures and
@@ -749,8 +768,13 @@ export async function createAgent(options) {
       if ((seeds.manual || seeds.help) && !period) {
         let words = manualKeywords(prompt);
         if (words.length < 2) {
-          const earlier = [...history].reverse().find((turn) => turn.role === "user");
-          words = [...new Set([...words, ...manualKeywords(earlier?.content || "")])].slice(0, 8);
+          // Borrow what the earlier question asked about ("ip"), but not
+          // what it named: "and main?" after "the ip of norco?" is about
+          // main, not norco.
+          // "its gateway?" refers back to the same thing, so borrow it all.
+          const refersBack = /\b(?:it|its|that|this|their|them|they)\b/iu.test(prompt);
+          const borrowed = manualKeywords(earlierQuestion).filter((word) => !words.length || refersBack || MANUAL_TOPIC_WORDS.test(word));
+          words = [...new Set([...words, ...borrowed])].slice(0, 8);
         }
         const markdown = `${manual?.() || ""}\n\n${HELMSMAN_HELP}`;
         const hits = manualMatches(markdown, words);
