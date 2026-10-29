@@ -1473,3 +1473,23 @@ test("the prompt names each Proxmox node, nicknames are explained, and ordinary 
   result = await ask("What can't you see?");
   assert.equal(result.tools.includes("service_status"), false, "\"see\" is not Seerr");
 });
+
+test("follow-ups get the earlier question's lookups, and nicknames for services are explained", async (t) => {
+  const { agent, context, publish } = await harness(t, { modelReplies: () => ({ content: "Fine." }) });
+  await configure(agent, { autonomy: false });
+  await publish(snapshotAt(context.now));
+  context.manualText = "# Lab\n## Hosts\n| host | ip |\n| --- | --- |\n| norco | 10.0.0.10 |\n| main | 10.0.0.4 |";
+  const ask = async (question, history = []) => {
+    context.modelCalls.length = 0;
+    const asked = await api(agent, "POST", "/api/v2/agent/ask", { question, history });
+    return { tools: asked.payload.toolsUsed, messages: context.modelCalls[0].messages };
+  };
+  let result = await ask("and main?", [{ role: "user", content: "what's the ip of norco?" }, { role: "assistant", content: "10.0.0.10." }]);
+  const manual = result.messages.find((message) => message.tool_call_id === "seed-manual");
+  assert.match(manual.content, /main \| 10\.0\.0\.4/u);
+  assert.match(JSON.parse(result.messages.find((message) => message.tool_calls?.[0]?.id === "seed-manual").tool_calls[0].function.arguments).query, /^main ip$/u, "the earlier topic, not the earlier host");
+  result = await ask("why?", [{ role: "user", content: "is sonarr ok?" }, { role: "assistant", content: "Yes." }]);
+  assert.ok(result.tools.includes("service_status"), "\"why?\" is about the service asked about");
+  result = await ask("sonnar status");
+  assert.match(result.messages.find((message) => message.tool_call_id?.startsWith("seed-service_status"))?.content || "", /^Nicknames in the question: "sonnar" means Sonarr\./u);
+});

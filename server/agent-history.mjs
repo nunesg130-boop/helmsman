@@ -40,6 +40,14 @@ export function questionWindow(text, now = Date.now(), timeZone = undefined) {
     const from = midnight - 2 * HOUR;
     return { from, to: Math.max(from + HOUR, Math.min(now, midnight + 8 * HOUR)), label: "overnight (22:00 to 08:00)" };
   }
+  if (/\b(?:the |this |last |over the )?weekend\b/u.test(question)) {
+    // The most recent Saturday 00:00 to Monday 00:00 in the owner's time
+    // zone, or until now during the weekend.
+    const day = localWeekday(now, timeZone);
+    const daysSinceSaturday = (day + 1) % 7;
+    const from = midnight - daysSinceSaturday * 24 * HOUR;
+    return { from, to: Math.min(now, from + 48 * HOUR), label: "the weekend" };
+  }
   if (/\byesterday\b/u.test(question)) return { from: midnight - 24 * HOUR, to: midnight, label: "yesterday" };
   if (/\b(?:today|this morning|this afternoon|so far)\b/u.test(question)) return { from: midnight, to: now, label: "today" };
   if (/\b(?:lately|recently|history|historically|been doing|been going|been like|been running|how has|how have|how's .* been|any (?:issues|problems|outages|downtime)|outages?|downtime|uptime)\b/u.test(question)) {
@@ -48,6 +56,11 @@ export function questionWindow(text, now = Date.now(), timeZone = undefined) {
   // Restarts and lost connections are events, so they are answered from the
   // record too, never from manual notes or the current state alone.
   if (isRestartQuestion(question)) return window(24, "the past 24 hours");
+  // "When was the last problem", "has anything recovered", "how long has
+  // everything been healthy": the past week of records answers them.
+  if (/\b(?:last (?:problem|issue|outage|incident|failure|alert)|recover(?:ed|y|ies)?|how long has .* been (?:healthy|up|ok|fine|stable)|since when|most recent (?:problem|issue|outage))\b/u.test(question)) {
+    return window(24 * 7, "the past week");
+  }
   return null;
 }
 
@@ -61,6 +74,16 @@ export function isRestartQuestion(text) {
   const question = String(text || "").toLowerCase();
   return /\b(?:restarted|rebooted|went (?:down|offline|away)|go(?:ne)? (?:down|offline)|offline|unreachable|(?:lost|lose|losing) (?:contact|connection|connectivity)|disconnect(?:ed|ion)?|came back|come back|back (?:up|online)|is \w+ back|blip|crash(?:ed)?|power(?:ed)? (?:off|cut|outage)|held alerts|alerts (?:were |are |being )?(?:held|holding|on hold)|holding alerts)\b/u.test(question)
     || /\bdid\b.*\b(?:restart|reboot|crash|drop)\b/u.test(question);
+}
+
+// Day of the week in the owner's time zone, 0 for Sunday.
+function localWeekday(now, timeZone) {
+  try {
+    const name = new Intl.DateTimeFormat("en-US", { timeZone, weekday: "short" }).format(new Date(now));
+    return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(name);
+  } catch {
+    return new Date(now).getDay();
+  }
 }
 
 // Midnight today in the owner's time zone, as a timestamp.

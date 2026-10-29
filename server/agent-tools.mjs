@@ -208,11 +208,70 @@ function workloadLines(snapshot) {
   return lines;
 }
 
+const WORKLOAD_KINDS = Object.freeze({
+  node: "node", nodes: "node", vm: "vm", vms: "vm", lxc: "lxc", lxcs: "lxc",
+  container: "container", containers: "container", docker: "container", portainer: "container"
+});
+
+/**
+ * Everything in one compact block, one line per kind, so a long inventory
+ * still fits: a line per workload would be cut off after about 30, and the
+ * Portainer containers, listed last, never reached the model.
+ */
+function workloadSummary(snapshot, only = null) {
+  const lines = [];
+  const want = (kind) => !only || only === kind;
+  const environments = snapshot.infrastructure?.environments || [];
+  if (want("node")) {
+    const nodes = environments.flatMap((environment) => (environment.nodes || []).map((node) => {
+      const uptime = Number.isFinite(node.uptimeSeconds) && node.uptimeSeconds > 0 ? `, up ${ago(node.uptimeSeconds).replace(/ ago$/u, "")}` : "";
+      return `${untrusted(node.name, 40)} (${withKind(untrusted(environment.displayName, 40), "Proxmox")}) ${node.status}${uptime}, cpu ${node.cpuPercent ?? "?"}%, memory ${percent(node.memoryUsedBytes, node.memoryTotalBytes)}`;
+    }));
+    if (nodes.length) lines.push(`Nodes: ${nodes.join("; ")}.`);
+  }
+  for (const [kind, label] of [["vm", "VMs"], ["lxc", "LXCs"]]) {
+    if (!want(kind)) continue;
+    const items = environments.flatMap((environment) => (environment.workloads || [])
+      .filter((workload) => !workload.template && (workload.type === "lxc" ? "lxc" : "vm") === kind)
+      .map((workload) => `${workload.vmid} ${untrusted(workload.name, 40)} on ${untrusted(workload.node, 30)} ${workload.status}${workload.lock ? ` (locked ${untrusted(workload.lock, 20)})` : ""}`));
+    if (items.length) lines.push(`${label}: ${items.join(", ")}.`);
+  }
+  if (want("container")) {
+    for (const server of snapshot.infrastructure?.portainer || []) {
+      const items = (server.inventory?.containers || []).map((container) => {
+        const health = /\bunhealthy\b/iu.test(String(container.status || "")) ? " unhealthy" : "";
+        return `${untrusted(container.name, 50)} ${untrusted(container.state, 20)}${health}`;
+      });
+      if (items.length) lines.push(`Containers on ${withKind(untrusted(server.displayName, 40), "Portainer")}: ${items.join(", ")}.`);
+    }
+  }
+  return lines;
+}
+
 function listWorkloads(snapshot, _context, args) {
   const filter = typeof args.filter === "string" ? args.filter.trim().toLowerCase().slice(0, 60) : "";
-  const lines = workloadLines(snapshot).filter((line) => !filter || line.toLowerCase().includes(filter));
-  if (!lines.length) return filter ? `Nothing matches "${untrusted(filter, 40)}".` : "No Proxmox or Portainer inventory is connected.";
+  // No filter, or a kind ("containers", "vms"): the compact summary.
+  // Any other text: the full lines that mention it.
+  const kind = WORKLOAD_KINDS[filter];
+  if (!filter || kind) {
+    const summary = workloadSummary(snapshot, kind || null);
+    if (summary.length) return summary.join("\n");
+    return kind ? `There are no ${filter} in what Helmsman can see.` : "No Proxmox or Portainer inventory is connected.";
+  }
+  const lines = workloadLines(snapshot).filter((line) => line.toLowerCase().includes(filter));
+  if (!lines.length) return `Nothing matches "${untrusted(filter, 40)}".`;
   return lines.join("\n");
+}
+
+/** Names of the VMs, LXCs and containers, for matching a question to them. */
+export function workloadNames(snapshot) {
+  return [
+    ...(snapshot?.infrastructure?.environments || []).flatMap((environment) => [
+      ...(environment.nodes || []).map((node) => node?.name),
+      ...(environment.workloads || []).filter((workload) => !workload.template).map((workload) => workload?.name)
+    ]),
+    ...(snapshot?.infrastructure?.portainer || []).flatMap((server) => (server.inventory?.containers || []).map((container) => container?.name))
+  ].filter((name) => typeof name === "string" && name);
 }
 
 function mediaQueue(snapshot, context) {
@@ -228,9 +287,16 @@ function mediaQueue(snapshot, context) {
     lines.push("Requests needing attention:");
     for (const request of pending) lines.push(`- ${untrusted(request.title, 60)}: ${request.requestStatus}`);
   }
-  const upcoming = (media.calendar || []).slice(0, 5);
+  // Only releases still ahead, soonest first: the calendar also holds ones
+  // that already came out, which read as "coming out this week".
+  const now = typeof context.now === "function" ? context.now() : Date.now();
+  const upcoming = (media.calendar || [])
+    .filter((item) => Date.parse(item?.releaseAt) >= now - 6 * HISTORY_HOUR)
+    .sort((left, right) => Date.parse(left.releaseAt) - Date.parse(right.releaseAt))
+    .slice(0, 6);
+  if (!upcoming.length) lines.push("Upcoming releases: none in the calendar.");
   if (upcoming.length) {
-    lines.push("Upcoming:");
+    lines.push("Upcoming releases (release dates, not downloads):");
     for (const item of upcoming) {
       lines.push(`- ${untrusted(item.title, 60)}${item.episodeNumber ? ` S${item.seasonNumber}E${item.episodeNumber}` : ""} ${formatTime(item.releaseAt, context.timeZone)}`);
     }
@@ -534,7 +600,7 @@ const DEFINITIONS = [
   },
   {
     name: "list_workloads",
-    description: "Proxmox nodes, VMs and LXCs, and Portainer containers with their state. Optional filter text, such as sonarr or stopped.",
+    description: "Proxmox nodes, VMs, LXCs and Portainer containers with their state. Optional filter: a name, or containers, vms, lxcs or nodes.",
     parameters: {
       type: "object",
       properties: { filter: { type: "string", description: "Only show lines containing this text." } },
@@ -687,6 +753,8 @@ function looseName(value) {
 // app usually has. Matching still has to find a real service or container.
 export const NAME_ALIASES = Object.freeze({
   qbit: "qbittorrent", qb: "qbittorrent", qbt: "qbittorrent", qbitorrent: "qbittorrent", qbittorent: "qbittorrent", torrent: "qbittorrent", torrents: "qbittorrent",
+  torrentclient: "qbittorrent", downloadclient: "qbittorrent", downloader: "qbittorrent", indexermanager: "prowlarr", requestapp: "seerr",
+  sonnar: "sonarr", sonnarr: "sonarr", raddar: "radarr", prowlar: "prowlarr", portaner: "portainer",
   sonar: "sonarr", radar: "radarr", prowler: "prowlarr", prowl: "prowlarr", bazar: "bazarr", lidar: "lidarr", readar: "readarr",
   jelly: "jellyfin", jf: "jellyfin", jellyfish: "jellyfin",
   overseerr: "seerr", jellyseerr: "seerr", overseer: "seerr", jellyseer: "seerr", seer: "seerr", requests: "seerr",
@@ -768,6 +836,14 @@ export function parseActionCommand(text, snapshot) {
   const matches = vmid !== null
     ? allGuests.filter(({ workload }) => workload.vmid === vmid)
     : matchByName([...allContainers, ...allGuests], rawName, (entry) => entry.name);
+  // A nickname for an app ("jelly" for Jellyfin) that only loosely matches
+  // something else ("Jelly-Arr", a whole VM) is not taken as that: rebooting
+  // a VM is not what "restart jelly" asked for. Ask for the exact name.
+  const aliasTarget = NAME_ALIASES[wanted] !== undefined ? looseName(NAME_ALIASES[wanted]) : "";
+  if (aliasTarget && matches.length && !matches.some((entry) => looseName(entry.name).includes(aliasTarget))) {
+    const options = matches.slice(0, 3).map((entry) => (entry.workload ? `${entry.workload.type === "lxc" ? "LXC" : "VM"} ${entry.workload.vmid} (${untrusted(entry.name, 40)})` : untrusted(entry.name, 40)));
+    return { error: `There's no container, VM or LXC called ${NAME_ALIASES[wanted]}. Did you mean ${options.join(" or ")}? Say it by its exact name, such as "${verb} ${untrusted(matches[0].name, 40)}", and I'll set it up for you to approve.` };
+  }
   const containers = matches.filter((entry) => entry.container);
   const guests = matches.filter((entry) => entry.workload);
   const found = containers.length + guests.length;

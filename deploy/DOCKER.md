@@ -1,4 +1,4 @@
-# Helmsman Docker deployment — v1.16.1
+# Helmsman Docker deployment — v1.16.2
 
 > [!WARNING]
 > Back up the `/data` volume before every update, run only the newest published
@@ -31,7 +31,7 @@ authoritative.
 
 ## 1. Prepare
 
-The GitHub Release for `v1.16.1` publishes three deployment assets:
+The GitHub Release for `v1.16.2` publishes three deployment assets:
 
 - `compose.yaml` — the pull-only production service definition pinned to the released multi-architecture image digest;
 - `container.env.example` — the same digest-pinned image reference plus non-secret bind-address and port settings;
@@ -50,9 +50,9 @@ Download and verify the public release assets on Linux:
 ```sh
 sudo install -d -o "$(id -u)" -g "$(id -g)" -m 0755 /opt/helmsman
 cd /opt/helmsman
-curl -fLO https://github.com/nunesg130-boop/helmsman/releases/download/v1.16.1/compose.yaml
-curl -fLO https://github.com/nunesg130-boop/helmsman/releases/download/v1.16.1/container.env.example
-curl -fLO https://github.com/nunesg130-boop/helmsman/releases/download/v1.16.1/SHA256SUMS
+curl -fLO https://github.com/nunesg130-boop/helmsman/releases/download/v1.16.2/compose.yaml
+curl -fLO https://github.com/nunesg130-boop/helmsman/releases/download/v1.16.2/container.env.example
+curl -fLO https://github.com/nunesg130-boop/helmsman/releases/download/v1.16.2/SHA256SUMS
 sha256sum --strict --check SHA256SUMS
 ```
 
@@ -510,9 +510,9 @@ not only the image line:
 ```sh
 set -euo pipefail
 cd /opt/helmsman
-cp -- compose.yaml.before-1.16.1 compose.yaml
-if [ -f .env.before-1.16.1 ]; then
-  cp -- .env.before-1.16.1 .env
+cp -- compose.yaml.before-1.16.2 compose.yaml
+if [ -f .env.before-1.16.2 ]; then
+  cp -- .env.before-1.16.2 .env
   helmsman_env_file=.env
 else
   rm -f -- .env
@@ -663,7 +663,7 @@ exactly `compose.yaml`, `container.env.example`, and `SHA256SUMS`. It downloads
 those assets into a new `helmsman-<version>-deployment-assets` directory beside
 the source folder, verifies both checksums, rejects placeholders, and requires
 the two configuration files to contain the same expected digest-pinned image.
-For v1.16.1, the workflow publishes Linux AMD64 and ARM64 images under the
+For v1.16.2, the workflow publishes Linux AMD64 and ARM64 images under the
 version, `latest`, and full-commit tags.
 
 The publisher deliberately does not execute candidate source while maintainer
@@ -684,7 +684,7 @@ The complete recovery and manual command sequence is in [GITHUB.md](../GITHUB.md
 After a successful release, verify that:
 
 - `ghcr.io/nunesg130-boop/helmsman:<version>` contains Linux AMD64 and ARM64 manifests;
-- the GitHub Release is stable for v1.16.1;
+- the GitHub Release is stable for v1.16.2;
 - `compose.yaml`, `container.env.example`, and `SHA256SUMS` are attached;
 - both downloaded deployment files contain the same
   `ghcr.io/nunesg130-boop/helmsman@sha256:...` manifest reference and no source

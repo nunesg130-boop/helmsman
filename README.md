@@ -1,4 +1,4 @@
-# Helmsman v1.16.1
+# Helmsman v1.16.2
 
 Helmsman is a self-hosted operations center for a homelab's media services and infrastructure. It runs as one portable Linux container on Docker Desktop, Linux, macOS, compatible NAS platforms, AMD64, and ARM64.
 
@@ -14,6 +14,17 @@ Helmsman is a self-hosted operations center for a homelab's media services and i
 This Helmsman is the media and infrastructure dashboard in this repository. It
 is not affiliated with or derived from the existing Kubernetes project also
 named [Helmsman](https://github.com/mkubaczyk/helmsman).
+
+## v1.16.2
+
+**The agent sees everything it's asked about**, from a 500-question test run:
+- **Containers no longer go missing.** The VM, LXC and container list was cut off after about 30 lines to fit small models, and Portainer containers, listed last, were usually lost, so the agent said running containers weren't there. The list is now one compact line per kind, and a question that names something ("is gluetun running", or "vpn" for gluetun) gets just that one in full. "Which containers are stopped" gets only the containers.
+- **Follow-ups keep their context.** "and the backup server?" after "what's the IP of the media server?" searches your manual again for the backup server's IP, and "why?" or "is it healthy?" look up the same thing as the question before.
+- **More questions are answered from history:** "over the weekend" (the most recent Saturday and Sunday), "when was the last problem", "has anything recovered" and "how long has everything been healthy".
+- **Hardware and layout questions search your manual** ("what hardware is the backup server", "my network layout").
+- **Upcoming releases are only those still ahead**, soonest first, labelled as release dates. Past releases were being listed as "coming out this week".
+- **Safer command nicknames.** "restart jelly" no longer offers to reboot a whole VM whose name only starts with "jelly"; it asks for the exact name. "the torrent client", "the downloader" and a few common misspellings now find the right app, and "overseerr" is explained as Seerr.
+- Helmsman's help, which the agent can search, now covers the network map, exporting logs and the questions-per-hour setting.
 
 ## v1.16.1
 
@@ -375,7 +386,7 @@ Helmsman's project-owned logging mark. Original generic VM/container workload
 drawings are also bundled. See
 [the asset notices](assets/services/THIRD_PARTY_NOTICES.md).
 
-Helmsman v1.16.1 combines built-in logging, optional Loki search, Portainer monitoring, a private persistent state/artwork cache, and a small, fixed set of confirmed recovery actions under Infrastructure with targeted media recovery actions and Helmsman's cluster-aware Proxmox model:
+Helmsman v1.16.2 combines built-in logging, optional Loki search, Portainer monitoring, a private persistent state/artwork cache, and a small, fixed set of confirmed recovery actions under Infrastructure with targeted media recovery actions and Helmsman's cluster-aware Proxmox model:
 
 - Media and Infrastructure are separate workspaces inside the same authenticated application, and only the selected workspace's navigation is shown;
 - the desktop sidebar collapses to an icon rail, remembers that preference, keeps its navigation scrollable at high browser zoom, and keeps its collapse control in the sidebar's brand row (under the brand mark when collapsed);
@@ -421,7 +432,7 @@ Helmsman v1.16.1 combines built-in logging, optional Loki search, Portainer moni
 
 ## Deploy the published container
 
-Helmsman is distributed as the public Linux AMD64/ARM64 image `ghcr.io/nunesg130-boop/helmsman`. The `v1.16.1` Git tag runs the contracts and architecture smoke tests, publishes the version, `latest`, and full-commit image tags, and creates a GitHub Release containing ready-to-use `compose.yaml`, `container.env.example`, and `SHA256SUMS` assets. The release deployment files pin `ghcr.io/nunesg130-boop/helmsman` to the exact multi-architecture manifest digest (`@sha256:...`).
+Helmsman is distributed as the public Linux AMD64/ARM64 image `ghcr.io/nunesg130-boop/helmsman`. The `v1.16.2` Git tag runs the contracts and architecture smoke tests, publishes the version, `latest`, and full-commit image tags, and creates a GitHub Release containing ready-to-use `compose.yaml`, `container.env.example`, and `SHA256SUMS` assets. The release deployment files pin `ghcr.io/nunesg130-boop/helmsman` to the exact multi-architecture manifest digest (`@sha256:...`).
 
 Download those three files from the matching [GitHub Release](https://github.com/nunesg130-boop/helmsman/releases) into one directory, verify the two deployment files against `SHA256SUMS`, open a terminal there, and make sure Docker Desktop or Docker Engine is running. No source checkout, Dockerfile, Node.js installation, or server-side image build is required.
 
