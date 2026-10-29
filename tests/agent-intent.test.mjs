@@ -50,8 +50,8 @@ const context = (snapshot) => ({ snapshot: () => snapshot, now: () => NOW, timeZ
 test("a long inventory is summarised so the containers are never cut off", async () => {
   const output = await runTool("list_workloads", {}, context(lab()));
   assert.match(output, /^Nodes: alpha \(Proxmox Lab\) online, up 7d, cpu 3%, memory 50%\./mu);
-  assert.match(output, /^VMs \(1\): 100 Media-Box on alpha running\./mu);
-  assert.match(output, /^LXCs \(1\): 101 dns on alpha stopped\./mu);
+  assert.match(output, /^VMs: 1 in total, 1 running\. Running: 100 Media-Box on alpha\.$/mu);
+  assert.match(output, /^LXCs: 1 in total, 0 running; not running or locked: 101 dns on alpha \(stopped\)\.$/mu);
   assert.match(output, /^Containers on local \(Portainer Docker host\): 44, 43 running; not running or unhealthy: gluetun unhealthy, paperless-webserver-1 exited\.$/mu, "a broad question gets counts and the problems");
   assert.ok(output.length <= 1_400);
   // Asking for containers lists them, problems first, and says how many did not fit.
@@ -60,7 +60,7 @@ test("a long inventory is summarised so the containers are never cut off", async
   assert.ok(containers.length <= 1_400, "fits without being shortened");
   assert.doesNotMatch(containers, /shortened|more lines not shown/u);
   // A kind gives just that kind; a name gives its full line.
-  assert.match(await runTool("list_workloads", { filter: "lxcs" }, context(lab())), /^LXCs \(1\): 101 dns on alpha stopped\.$/u);
+  assert.match(await runTool("list_workloads", { filter: "lxcs" }, context(lab())), /^LXCs: 1 in total, 0 running; not running or locked: 101 dns on alpha \(stopped\)\.$/u);
   assert.match(await runTool("list_workloads", { filter: "gluetun" }, context(lab())), /^container gluetun \(Docker host\/local\): running, Up 2 days \(unhealthy\)$/u);
 });
 
@@ -134,4 +134,37 @@ test("Proxmox, Portainer and nicknamed services get their own status, not a work
   assert.deepEqual(query("is the docker vm up?"), { filter: "docker" });
   assert.deepEqual(query("which docker containers are stopped?"), { filter: "containers" });
   assert.deepEqual(query("is the portainer_agent container running?"), { filter: "portainer_agent" });
+});
+
+test("guests ranked by memory, CPU or backup age, and a node's own guests", async () => {
+  const snapshot = lab({ containers: 2 });
+  const env = snapshot.infrastructure.environments[0];
+  env.nodes.push({ name: "beta", status: "online", uptimeSeconds: 3600, cpuPercent: 9, memoryUsedBytes: 1, memoryTotalBytes: 4 });
+  env.workloads = [
+    { vmid: 100, name: "Media-Box", type: "qemu", node: "alpha", status: "running", cpuPercent: 4, memoryUsedBytes: 3, memoryTotalBytes: 4, backup: { status: "success", ageSeconds: 5 * 86_400 } },
+    { vmid: 102, name: "haos", type: "qemu", node: "beta", status: "running", cpuPercent: 30, memoryUsedBytes: 9, memoryTotalBytes: 10 },
+    { vmid: 101, name: "dns", type: "lxc", node: "beta", status: "running", cpuPercent: 1, memoryUsedBytes: 1, memoryTotalBytes: 10, backup: { status: "success", ageSeconds: 50 * 86_400 } },
+    { vmid: 112, name: "old", type: "qemu", node: "beta", status: "stopped" }
+  ];
+  assert.match(await runTool("list_workloads", { filter: "memory" }, context(snapshot)),
+    /highest first .*: 102 haos \(VM on beta\) 90%, 100 Media-Box \(VM on alpha\) 75%, 101 dns \(LXC on beta\) 10%\. Not running, so no usage: 112 old/u);
+  assert.match(await runTool("list_workloads", { filter: "cpu" }, context(snapshot)), /: 102 haos \(VM on beta\) 30%, 100 Media-Box/u);
+  const backups = await runTool("list_workloads", { filter: "backups" }, context(snapshot));
+  assert.match(backups, /^Last backups, oldest first: 101 dns \(LXC on beta\) success 50d ago, 100 Media-Box \(VM on alpha\) success 5d ago\.$/mu);
+  assert.match(backups, /^No backup recorded: 102 haos \(VM on beta\), 112 old \(VM on beta\)\.$/mu);
+  const beta = await runTool("list_workloads", { filter: "beta" }, context(snapshot));
+  assert.match(beta, /^node beta /mu);
+  assert.doesNotMatch(beta, /Media-Box|node alpha/u, "only what runs on that node");
+  const query = (text) => workloadQuery(snapshot, text, { workloadWords: questionSeeds(text).workloads });
+  assert.deepEqual(query("Which VM is using the most memory?"), { filter: "memory" });
+  assert.deepEqual(query("which guests haven't been backed up recently?"), { filter: "backups" });
+  assert.deepEqual(query("how much memory is haos using"), { filter: "haos" }, "a named guest gets its own line");
+  assert.deepEqual(query("what's running on beta"), { filter: "beta" });
+  assert.equal(questionSeeds("What runs on VM 109?").manual, true, "roles are in the manual");
+});
+
+test("a container total is given when containers are on several hosts", async () => {
+  const snapshot = lab({ containers: 2 });
+  snapshot.infrastructure.portainer[0].inventory.containers.push({ name: "grafana", state: "running", status: "Up", environmentName: "second" });
+  assert.match(await runTool("list_workloads", { filter: "containers" }, context(snapshot)), /^Containers: 7 in total on 2 hosts, 6 running, 2 not running or unhealthy\.$/mu);
 });

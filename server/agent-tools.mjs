@@ -274,15 +274,30 @@ function workloadSummary(snapshot, only = null) {
   }
   for (const [kind, label] of [["vm", "VMs"], ["lxc", "LXCs"]]) {
     if (!want(kind)) continue;
-    const items = environments.flatMap((environment) => (environment.workloads || [])
-      .filter((workload) => !workload.template && (workload.type === "lxc" ? "lxc" : "vm") === kind))
-      // Stopped and locked first, so a cut never hides a problem.
-      .sort((left, right) => Number(left.status === "running" && !left.lock) - Number(right.status === "running" && !right.lock))
-      .map((workload) => `${workload.vmid} ${untrusted(workload.name, 40)} on ${untrusted(workload.node, 30)} ${workload.status}${workload.lock ? ` (locked ${untrusted(workload.lock, 20)})` : ""}`);
-    if (items.length) lines.push(`${label} (${items.length}): ${namesWithin(items, only ? SUMMARY_BUDGET : 420)}.`);
+    const all = environments.flatMap((environment) => (environment.workloads || [])
+      .filter((workload) => !workload.template && (workload.type === "lxc" ? "lxc" : "vm") === kind));
+    if (!all.length) continue;
+    // Counts first, then what is not running, then the rest: a model reads
+    // "6 of 8 running; stopped: …" correctly, but misreads a list that
+    // simply starts with the stopped ones.
+    const name = (workload) => `${workload.vmid} ${untrusted(workload.name, 40)} on ${untrusted(workload.node, 30)}`;
+    const problems = all.filter((workload) => workload.status !== "running" || workload.lock);
+    const running = all.filter((workload) => workload.status === "running" && !workload.lock);
+    const head = `${label}: ${all.length} in total, ${all.filter((workload) => workload.status === "running").length} running`;
+    const notRunning = problems.length
+      ? `; not running or locked: ${problems.map((workload) => `${name(workload)} (${workload.lock ? `locked ${untrusted(workload.lock, 20)}` : workload.status})`).join(", ")}`
+      : "";
+    lines.push(`${head}${notRunning}.${running.length ? ` Running: ${namesWithin(running.map(name), only ? SUMMARY_BUDGET : 420)}.` : ""}`);
   }
   if (want("container")) {
     const groups = containerGroups(snapshot);
+    // One total across hosts, so the model copies the number instead of adding.
+    if (groups.length > 1) {
+      const total = groups.reduce((sum, group) => sum + group.total, 0);
+      const running = groups.reduce((sum, group) => sum + group.runningCount, 0);
+      const problems = groups.reduce((sum, group) => sum + group.problems.length, 0);
+      lines.push(`Containers: ${total} in total on ${groups.length} hosts, ${running} running, ${problems} not running or unhealthy.`);
+    }
     let left = SUMMARY_BUDGET - lines.join("\n").length;
     groups.forEach((group, index) => {
       const head = `Containers on ${group.label}: ${group.total}, ${group.runningCount} running${group.problems.length ? `; not running or unhealthy: ${group.problems.join(", ")}` : ", none stopped or unhealthy"}`;
@@ -299,8 +314,55 @@ function workloadSummary(snapshot, only = null) {
   return lines;
 }
 
+const WORKLOAD_METRICS = Object.freeze({ memory: "memory", ram: "memory", cpu: "cpu", backup: "backup", backups: "backup" });
+
+/**
+ * Every VM and LXC ranked by one measure, for "which uses the most memory"
+ * or "what hasn't been backed up": the short summary has no numbers.
+ */
+function workloadMetric(snapshot, metric) {
+  const guests = (snapshot.infrastructure?.environments || []).flatMap((environment) => (environment.workloads || [])
+    .filter((workload) => !workload.template));
+  if (!guests.length) return "No Proxmox inventory is connected.";
+  const name = (workload) => `${workload.vmid} ${untrusted(workload.name, 40)} (${workload.type === "lxc" ? "LXC" : "VM"} on ${untrusted(workload.node, 30)})`;
+  const stopped = guests.filter((workload) => workload.status !== "running");
+  const stoppedNote = stopped.length ? ` Not running, so no usage: ${stopped.map(name).join(", ")}.` : "";
+  if (metric === "backup") {
+    const backed = guests.filter((workload) => workload.backup?.status)
+      .sort((left, right) => (right.backup.ageSeconds ?? 0) - (left.backup.ageSeconds ?? 0));
+    const none = guests.filter((workload) => !workload.backup?.status);
+    const parts = [];
+    if (backed.length) parts.push(`Last backups, oldest first: ${backed.map((workload) => `${name(workload)} ${untrusted(workload.backup.status, 20)} ${ago(workload.backup.ageSeconds)}`).join(", ")}.`);
+    if (none.length) parts.push(`No backup recorded: ${none.map(name).join(", ")}.`);
+    return parts.join("\n");
+  }
+  const running = guests.filter((workload) => workload.status === "running");
+  const value = (workload) => (metric === "cpu"
+    ? (Number.isFinite(workload.cpuPercent) ? workload.cpuPercent : -1)
+    : (Number.isFinite(workload.memoryUsedBytes) && workload.memoryTotalBytes > 0 ? workload.memoryUsedBytes / workload.memoryTotalBytes : -1));
+  const ranked = running.sort((left, right) => value(right) - value(left))
+    .map((workload) => `${name(workload)} ${metric === "cpu" ? `${workload.cpuPercent ?? "?"}%` : percent(workload.memoryUsedBytes, workload.memoryTotalBytes)}`);
+  return `${metric === "cpu" ? "CPU" : "Memory"} use of each running VM and LXC, highest first (percent of its own allowance): ${ranked.join(", ")}.${stoppedNote}`;
+}
+
+/** The node's own line and the guests on it, for "what's running on <node>". */
+function nodeLines(snapshot, nodeName) {
+  const wanted = nodeName.toLowerCase();
+  return workloadLines(snapshot).filter((line) => {
+    const lower = line.toLowerCase();
+    return lower.startsWith(`node ${wanted} (`) || lower.includes(` on ${wanted} (`);
+  });
+}
+
 function listWorkloads(snapshot, _context, args) {
   const filter = typeof args.filter === "string" ? args.filter.trim().toLowerCase().slice(0, 60) : "";
+  if (WORKLOAD_METRICS[filter]) return workloadMetric(snapshot, WORKLOAD_METRICS[filter]);
+  const nodeNames = (snapshot.infrastructure?.environments || []).flatMap((environment) => (environment.nodes || []).map((node) => String(node?.name || "")));
+  const node = nodeNames.find((name) => name.toLowerCase() === filter);
+  if (node) {
+    const lines = nodeLines(snapshot, node);
+    if (lines.length) return lines.join("\n");
+  }
   // No filter, or a kind ("containers", "vms"): the compact summary.
   // Any other text: the full lines that mention it.
   // A word that is also a guest's name ("docker" as a VM) means that guest.
@@ -458,7 +520,7 @@ async function recentEvents(_snapshot, context, args) {
 // Common words that say nothing about what to look for in the manual.
 const MANUAL_STOP_WORDS = new Set(("a an and any are as at be can could did do does for from get go has have how i i'm in is it it's its "
   + "me my of on or our please show tell than that the their them then there this to up use using was we what what's when where which "
-  + "who why will with would you your yes no ok okay thanks look find search manual tool search_manual about know need want "
+  + "who why will with would you your yes no ok okay thanks look find search manual tool search_manual about know need want runs run "
   // Time and "what happened" words describe when, not what: matching them pulls
   // unrelated notes such as "memtest86+ overnight" into a history question.
   + "anything something everything happen happened happening going on today tonight yesterday overnight night morning "
@@ -482,19 +544,45 @@ export function manualKeywords(text, limit = 8) {
  */
 export function manualMatches(markdown, words, limit = 6) {
   if (!words.length) return [];
+  // Hyphens and dots don't separate names: "pihole" finds "Pi-hole".
+  const loose = (value) => value.replace(/[._-]/gu, "");
+  const wanted = words.map((word) => ({ word, loose: loose(word) }));
+  const matches = (pool, { word, loose: looseWord }) => pool.some((token) => token === word || loose(token) === looseWord
+    || (word.length >= 4 && (token.startsWith(word) || loose(token).startsWith(looseWord))));
   let heading = "";
-  const hits = [];
+  const lines = [];
   for (const raw of String(markdown || "").split("\n")) {
     const line = raw.trim();
     if (/^#{1,4}\s/u.test(line)) heading = line.replace(/^#+\s*/u, "");
     if (!line || /^\|?\s*:?-{3,}/u.test(line)) continue;
-    const tokens = line.toLowerCase().split(/[^a-z0-9._-]+/u).filter(Boolean);
-    const headingTokens = heading.toLowerCase().split(/[^a-z0-9._-]+/u).filter(Boolean);
-    const matches = (pool, word) => pool.some((token) => token === word || (word.length >= 4 && token.startsWith(word)));
-    const score = words.reduce((sum, word) => sum + (matches(tokens, word) ? 2 : matches(headingTokens, word) ? 1 : 0), 0);
-    if (score) hits.push({ score, text: `${heading ? `[${untrusted(heading, 40)}] ` : ""}${untrusted(line, 200)}` });
+    lines.push({
+      line,
+      heading,
+      tokens: line.toLowerCase().split(/[^a-z0-9._-]+/u).filter(Boolean),
+      headingTokens: heading.toLowerCase().split(/[^a-z0-9._-]+/u).filter(Boolean)
+    });
   }
-  return hits.sort((left, right) => right.score - left.score).slice(0, limit).map(({ text }) => text);
+  // A word found on few lines says more than a common one: "pihole" beats
+  // "ip", so Pi-hole's row ranks above every table header with an IP column.
+  const weight = new Map(wanted.map((entry) => {
+    const found = lines.filter(({ tokens }) => matches(tokens, entry)).length;
+    return [entry.word, Math.log(1 + lines.length / (1 + found))];
+  }));
+  const hits = [];
+  lines.forEach(({ line, heading: lineHeading, tokens, headingTokens }, index) => {
+    let score = 0;
+    let found = 0;
+    for (const entry of wanted) {
+      if (matches(tokens, entry)) {
+        score += 2 * weight.get(entry.word);
+        found += 1;
+      } else if (matches(headingTokens, entry)) score += weight.get(entry.word);
+    }
+    // Lines with every word first.
+    if (found === wanted.length && wanted.length > 1) score *= 1.5;
+    if (score) hits.push({ score, index, text: `${lineHeading ? `[${untrusted(lineHeading, 40)}] ` : ""}${untrusted(line, 200)}` });
+  });
+  return hits.sort((left, right) => right.score - left.score || left.index - right.index).slice(0, limit).map(({ text }) => text);
 }
 
 function searchManual(_snapshot, context, args) {
@@ -660,7 +748,7 @@ const DEFINITIONS = [
   },
   {
     name: "list_workloads",
-    description: "Proxmox nodes, VMs, LXCs and Portainer containers with their state. Optional filter: a name, or containers, vms, lxcs or nodes.",
+    description: "Proxmox nodes, VMs, LXCs and Portainer containers with their state. Optional filter: a name, or containers, vms, lxcs, nodes, memory, cpu or backups.",
     parameters: {
       type: "object",
       properties: { filter: { type: "string", description: "Only show lines containing this text." } },

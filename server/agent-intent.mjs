@@ -11,10 +11,10 @@ import { matchByName, NAME_ALIASES, workloadNames } from "./agent-tools.mjs";
 
 export { HELMSMAN_HELP } from "./agent-help.mjs";
 
-const MANUAL = /\b(?:ip|ips|address(?:es)?|subnet|gateway|dns|vlan|mac|hostname|ports?|where (?:is|are|does|do|did|can)|how (?:do|to|should|can|did) i|how do you|procedure|runbook|notes?|manual|documented|docs|steps|which hosts?|serial|model number|password policy|backup(?:s)? (?:stored|go|location)|hardware|specs?|layout|topology|wiring|cabling|vlans?|motherboard|what (?:cpu|gpu)|which (?:cpu|gpu)|drives?|disks?)\b/u;
+const MANUAL = /\b(?:ip|ips|address(?:es)?|subnet|gateway|dns|vlan|mac|hostname|ports?|where (?:is|are|does|do|did|can)|how (?:do|to|should|can|did) i|how do you|procedure|runbook|notes?|manual|documented|docs|steps|which hosts?|serial|model number|password policy|backup(?:s)? (?:stored|go|location)|hardware|specs?|layout|topology|wiring|cabling|vlans?|motherboard|what (?:cpu|gpu)|which (?:cpu|gpu)|drives?|disks?|what (?:runs|is running|is) on (?:vm|lxc|ct)|used for|purpose of|role of)\b/u;
 const HELP = /\b(?:helmsman|helmy|training|conversations?|rate|rating|fix answer|debug|logs?|logging|export|refresh|approve|approval|connections?|settings|holding alerts|alerts held)\b/u;
 const INDEXERS = /\b(?:indexers?|trackers?)\b/u;
-const WORKLOADS = /\b(?:containers?|vms?|virtual machines?|lxcs?|guests?|nodes?|stopped|running|vpn|gluetun|memory|ram|cpu|busiest|uptime|been up|what'?s on|running on|docker)\b/u;
+const WORKLOADS = /\b(?:containers?|vms?|virtual machines?|lxcs?|guests?|nodes?|stopped|running|vpn|gluetun|memory|ram|cpu|busiest|uptime|been up|what'?s on|running on|docker|backed up|backups?|last backup)\b/u;
 const MEDIA = /\b(?:download(?:ing|s|ed)?|queue|stuck|stalled|imports?|imported|requests?|requested|upcoming|coming out|comes? out|releases?|episodes?|premieres?|air(?:s|ing)?|subtitles?|eta|finish(?:ed)?|added recently)\b/u;
 
 /** Which lookups a question needs. */
@@ -118,6 +118,11 @@ export function workloadQuery(snapshot, text, { workloadWords = false } = {}) {
     return { filter: name };
   }
   if (!workloadWords) return null;
+  // "Which VM uses the most memory", "what hasn't been backed up": every
+  // guest ranked by that number. Where backups are stored is a manual question.
+  if (/\b(?:backed up|last backup|backups?)\b/u.test(question) && !/\b(?:stored|where|location|kept)\b/u.test(question)) return { filter: "backups" };
+  if (/\b(?:memory|ram)\b/u.test(question)) return { filter: "memory" };
+  if (/\b(?:cpu|busiest|load)\b/u.test(question) && !/\bnodes?\b/u.test(question)) return { filter: "cpu" };
   for (const [pattern, kind] of KIND_WORDS) if (pattern.test(question)) return { filter: kind };
   return { filter: "" };
 }

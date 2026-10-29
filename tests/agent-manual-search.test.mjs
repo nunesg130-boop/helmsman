@@ -81,3 +81,15 @@ test("only plain approvals count as approval messages", () => {
   for (const text of ["approved", "Approve", "yes", "go ahead!", "ok do it"]) assert.equal(isApprovalMessage(text), true, text);
   for (const text of ["yes, but why is it down?", "approve the sonarr restart later", "restart it"]) assert.equal(isApprovalMessage(text), false, text);
 });
+
+test("a rare word outranks a common one, and hyphens don't split names", () => {
+  const manual = [
+    "## 3.1 Network edge", "| Device | IP | Role |", "| ER605 | 192.168.0.1 | Router |",
+    "## 3.8 QDevice", "| IP | 192.168.0.11 |",
+    "## 5.2 norco guests", "| VMID | Name | Type | IP | Role |", "| 106 | pihole | LXC | 192.168.0.106 | DNS + Unbound |",
+    "## Appendix A", "| 192.168.0.106 | Pi-hole | norco LXC 106 |"
+  ].join("\n");
+  const hits = manualMatches(manual, ["ip", "pihole"]);
+  assert.match(hits[0], /pihole \| LXC \| 192\.168\.0\.106/u, "Pi-hole's row first, not a table header");
+  assert.ok(hits.slice(0, 2).some((hit) => /Pi-hole/u.test(hit)), "Pi-hole spelled with a hyphen still matches");
+});
