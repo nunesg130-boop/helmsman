@@ -713,7 +713,10 @@ export async function createAgent(options) {
       // A question about a period gets Helmsman's own record of that period,
       // worked out by code, so the model reports history instead of
       // describing the current state as if it were history.
-      const period = questionWindow(prompt, clock(), settings.timeZone);
+      // Backup questions ("not backed up recently") are about guests' backup
+      // ages, which the workload lookup gives; the incident history only adds noise.
+      const aboutBackups = /\b(?:backed up|backups?|last backup)\b/iu.test(prompt);
+      const period = aboutBackups ? null : questionWindow(prompt, clock(), settings.timeZone);
       if (period) {
         const history = await runTool("history", period, toolContext);
         messages.push(

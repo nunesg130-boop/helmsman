@@ -245,11 +245,14 @@ function containerGroups(snapshot) {
       const serverName = withKind(untrusted(server.displayName, 40), "Portainer");
       const label = environment ? `${untrusted(environment, 40)} (${serverName})` : serverName;
       const unhealthy = (container) => /\bunhealthy\b/iu.test(String(container.status || ""));
-      const problems = containers
-        .filter((container) => container.state !== "running" || unhealthy(container))
-        .map((container) => `${untrusted(container.name, 50)} ${container.state !== "running" ? untrusted(container.state, 20) : "unhealthy"}`);
+      // Stopped and unhealthy kept apart: a stopped container isn't
+      // "unhealthy", and one list for both made the model call them all that.
+      const stopped = containers.filter((container) => container.state !== "running")
+        .map((container) => `${untrusted(container.name, 50)} (${untrusted(container.state, 20)})`);
+      const sick = containers.filter((container) => container.state === "running" && unhealthy(container))
+        .map((container) => untrusted(container.name, 50));
       const running = containers.filter((container) => container.state === "running" && !unhealthy(container)).map((container) => untrusted(container.name, 50));
-      groups.push({ label, total: containers.length, runningCount: containers.filter((container) => container.state === "running").length, problems, running });
+      groups.push({ label, total: containers.length, runningCount: containers.filter((container) => container.state === "running").length, stopped, unhealthy: sick, problems: [...stopped, ...sick], running });
     }
   }
   return groups;
@@ -280,7 +283,9 @@ function workloadSummary(snapshot, only = null) {
     // Counts first, then what is not running, then the rest: a model reads
     // "6 of 8 running; stopped: …" correctly, but misreads a list that
     // simply starts with the stopped ones.
-    const name = (workload) => `${workload.vmid} ${untrusted(workload.name, 40)} on ${untrusted(workload.node, 30)}`;
+    // Name first, number inside: "haos-17.2 (102, norco)". A number in front
+    // ran into the percentages after it ("102 haos 92%" read as "102%").
+    const name = (workload) => `${untrusted(workload.name, 40)} (${workload.vmid}, ${untrusted(workload.node, 30)})`;
     const problems = all.filter((workload) => workload.status !== "running" || workload.lock);
     const running = all.filter((workload) => workload.status === "running" && !workload.lock);
     const head = `${label}: ${all.length} in total, ${all.filter((workload) => workload.status === "running").length} running`;
@@ -295,12 +300,17 @@ function workloadSummary(snapshot, only = null) {
     if (groups.length > 1) {
       const total = groups.reduce((sum, group) => sum + group.total, 0);
       const running = groups.reduce((sum, group) => sum + group.runningCount, 0);
-      const problems = groups.reduce((sum, group) => sum + group.problems.length, 0);
-      lines.push(`Containers: ${total} in total on ${groups.length} hosts, ${running} running, ${problems} not running or unhealthy.`);
+      const stopped = groups.reduce((sum, group) => sum + group.stopped.length, 0);
+      const sick = groups.reduce((sum, group) => sum + group.unhealthy.length, 0);
+      lines.push(`Containers: ${total} in total on ${groups.length} hosts, ${running} running (${sick} of them unhealthy), ${stopped} not running.`);
     }
     let left = SUMMARY_BUDGET - lines.join("\n").length;
     groups.forEach((group, index) => {
-      const head = `Containers on ${group.label}: ${group.total}, ${group.runningCount} running${group.problems.length ? `; not running or unhealthy: ${group.problems.join(", ")}` : ", none stopped or unhealthy"}`;
+      const details = [
+        group.stopped.length ? `not running: ${group.stopped.join(", ")}` : "",
+        group.unhealthy.length ? `running but unhealthy: ${group.unhealthy.join(", ")}` : ""
+      ].filter(Boolean);
+      const head = `Containers on ${group.label}: ${group.total}, ${group.runningCount} running${details.length ? `; ${details.join("; ")}` : ", none stopped or unhealthy"}`;
       if (!only) {
         lines.push(`${head}.`);
         return;
@@ -324,16 +334,18 @@ function workloadMetric(snapshot, metric) {
   const guests = (snapshot.infrastructure?.environments || []).flatMap((environment) => (environment.workloads || [])
     .filter((workload) => !workload.template));
   if (!guests.length) return "No Proxmox inventory is connected.";
-  const name = (workload) => `${workload.vmid} ${untrusted(workload.name, 40)} (${workload.type === "lxc" ? "LXC" : "VM"} on ${untrusted(workload.node, 30)})`;
+  const name = (workload) => `${untrusted(workload.name, 40)} (${workload.type === "lxc" ? "LXC" : "VM"} ${workload.vmid}, ${untrusted(workload.node, 30)})`;
   const stopped = guests.filter((workload) => workload.status !== "running");
   const stoppedNote = stopped.length ? ` Not running, so no usage: ${stopped.map(name).join(", ")}.` : "";
   if (metric === "backup") {
+    // Two plain lists, each said in words, so "has a backup" and "has none"
+    // can't be mixed up.
     const backed = guests.filter((workload) => workload.backup?.status)
       .sort((left, right) => (right.backup.ageSeconds ?? 0) - (left.backup.ageSeconds ?? 0));
     const none = guests.filter((workload) => !workload.backup?.status);
     const parts = [];
-    if (backed.length) parts.push(`Last backups, oldest first: ${backed.map((workload) => `${name(workload)} ${untrusted(workload.backup.status, 20)} ${ago(workload.backup.ageSeconds)}`).join(", ")}.`);
-    if (none.length) parts.push(`No backup recorded: ${none.map(name).join(", ")}.`);
+    if (backed.length) parts.push(`These have a backup (oldest first): ${backed.map((workload) => `${name(workload)}: ${untrusted(workload.backup.status, 20)} ${ago(workload.backup.ageSeconds)}`).join(", ")}.`);
+    if (none.length) parts.push(`These have no backup recorded at all: ${none.map(name).join(", ")}.`);
     return parts.join("\n");
   }
   const running = guests.filter((workload) => workload.status === "running");
@@ -341,7 +353,7 @@ function workloadMetric(snapshot, metric) {
     ? (Number.isFinite(workload.cpuPercent) ? workload.cpuPercent : -1)
     : (Number.isFinite(workload.memoryUsedBytes) && workload.memoryTotalBytes > 0 ? workload.memoryUsedBytes / workload.memoryTotalBytes : -1));
   const ranked = running.sort((left, right) => value(right) - value(left))
-    .map((workload) => `${name(workload)} ${metric === "cpu" ? `${workload.cpuPercent ?? "?"}%` : percent(workload.memoryUsedBytes, workload.memoryTotalBytes)}`);
+    .map((workload) => `${name(workload)}: ${metric === "cpu" ? `${workload.cpuPercent ?? "?"}%` : percent(workload.memoryUsedBytes, workload.memoryTotalBytes)}`);
   return `${metric === "cpu" ? "CPU" : "Memory"} use of each running VM and LXC, highest first (percent of its own allowance): ${ranked.join(", ")}.${stoppedNote}`;
 }
 

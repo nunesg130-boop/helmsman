@@ -50,17 +50,17 @@ const context = (snapshot) => ({ snapshot: () => snapshot, now: () => NOW, timeZ
 test("a long inventory is summarised so the containers are never cut off", async () => {
   const output = await runTool("list_workloads", {}, context(lab()));
   assert.match(output, /^Nodes: alpha \(Proxmox Lab\) online, up 7d, cpu 3%, memory 50%\./mu);
-  assert.match(output, /^VMs: 1 in total, 1 running\. Running: 100 Media-Box on alpha\.$/mu);
-  assert.match(output, /^LXCs: 1 in total, 0 running; not running or locked: 101 dns on alpha \(stopped\)\.$/mu);
-  assert.match(output, /^Containers on local \(Portainer Docker host\): 44, 43 running; not running or unhealthy: gluetun unhealthy, paperless-webserver-1 exited\.$/mu, "a broad question gets counts and the problems");
+  assert.match(output, /^VMs: 1 in total, 1 running\. Running: Media-Box \(100, alpha\)\.$/mu);
+  assert.match(output, /^LXCs: 1 in total, 0 running; not running or locked: dns \(101, alpha\) \(stopped\)\.$/mu);
+  assert.match(output, /^Containers on local \(Portainer Docker host\): 44, 43 running; not running: paperless-webserver-1 \(exited\); running but unhealthy: gluetun\.$/mu, "a broad question gets counts and the problems");
   assert.ok(output.length <= 1_400);
   // Asking for containers lists them, problems first, and says how many did not fit.
   const containers = await runTool("list_workloads", { filter: "containers" }, context(lab({ containers: 200 })));
-  assert.match(containers, /^Containers on local \(Portainer Docker host\): \d+, \d+ running; not running or unhealthy: gluetun unhealthy, paperless-webserver-1 exited\. Running: .* …and \d+ more\.$/mu);
+  assert.match(containers, /^Containers on local \(Portainer Docker host\): \d+, \d+ running; not running: paperless-webserver-1 \(exited\); running but unhealthy: gluetun\. Running: .* …and \d+ more\.$/mu);
   assert.ok(containers.length <= 1_400, "fits without being shortened");
   assert.doesNotMatch(containers, /shortened|more lines not shown/u);
   // A kind gives just that kind; a name gives its full line.
-  assert.match(await runTool("list_workloads", { filter: "lxcs" }, context(lab())), /^LXCs: 1 in total, 0 running; not running or locked: 101 dns on alpha \(stopped\)\.$/u);
+  assert.match(await runTool("list_workloads", { filter: "lxcs" }, context(lab())), /^LXCs: 1 in total, 0 running; not running or locked: dns \(101, alpha\) \(stopped\)\.$/u);
   assert.match(await runTool("list_workloads", { filter: "gluetun" }, context(lab())), /^container gluetun \(Docker host\/local\): running, Up 2 days \(unhealthy\)$/u);
 });
 
@@ -147,11 +147,11 @@ test("guests ranked by memory, CPU or backup age, and a node's own guests", asyn
     { vmid: 112, name: "old", type: "qemu", node: "beta", status: "stopped" }
   ];
   assert.match(await runTool("list_workloads", { filter: "memory" }, context(snapshot)),
-    /highest first .*: 102 haos \(VM on beta\) 90%, 100 Media-Box \(VM on alpha\) 75%, 101 dns \(LXC on beta\) 10%\. Not running, so no usage: 112 old/u);
-  assert.match(await runTool("list_workloads", { filter: "cpu" }, context(snapshot)), /: 102 haos \(VM on beta\) 30%, 100 Media-Box/u);
+    /highest first .*: haos \(VM 102, beta\): 90%, Media-Box \(VM 100, alpha\): 75%, dns \(LXC 101, beta\): 10%\. Not running, so no usage: old \(VM 112, beta\)/u);
+  assert.match(await runTool("list_workloads", { filter: "cpu" }, context(snapshot)), /: haos \(VM 102, beta\): 30%, Media-Box/u);
   const backups = await runTool("list_workloads", { filter: "backups" }, context(snapshot));
-  assert.match(backups, /^Last backups, oldest first: 101 dns \(LXC on beta\) success 50d ago, 100 Media-Box \(VM on alpha\) success 5d ago\.$/mu);
-  assert.match(backups, /^No backup recorded: 102 haos \(VM on beta\), 112 old \(VM on beta\)\.$/mu);
+  assert.match(backups, /^These have a backup \(oldest first\): dns \(LXC 101, beta\): success 50d ago, Media-Box \(VM 100, alpha\): success 5d ago\.$/mu);
+  assert.match(backups, /^These have no backup recorded at all: haos \(VM 102, beta\), old \(VM 112, beta\)\.$/mu);
   const beta = await runTool("list_workloads", { filter: "beta" }, context(snapshot));
   assert.match(beta, /^node beta /mu);
   assert.doesNotMatch(beta, /Media-Box|node alpha/u, "only what runs on that node");
@@ -166,5 +166,5 @@ test("guests ranked by memory, CPU or backup age, and a node's own guests", asyn
 test("a container total is given when containers are on several hosts", async () => {
   const snapshot = lab({ containers: 2 });
   snapshot.infrastructure.portainer[0].inventory.containers.push({ name: "grafana", state: "running", status: "Up", environmentName: "second" });
-  assert.match(await runTool("list_workloads", { filter: "containers" }, context(snapshot)), /^Containers: 7 in total on 2 hosts, 6 running, 2 not running or unhealthy\.$/mu);
+  assert.match(await runTool("list_workloads", { filter: "containers" }, context(snapshot)), /^Containers: 7 in total on 2 hosts, 6 running \(1 of them unhealthy\), 1 not running\.$/mu);
 });
