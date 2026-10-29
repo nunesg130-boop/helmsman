@@ -193,9 +193,19 @@ export function buildHistory({ from, to, label: windowLabel, healthEvents = [], 
       return `${format(new Date(episode.start).toISOString())}${episode.ongoing ? " until now (still open)" : `–${format(new Date(episode.end).toISOString()).replace(/^.*?, /u, "")}`}${what ? ` (${what})` : ""}${episode.noEnd ? " (no recovery recorded; last seen then)" : ""}`;
     });
     const longest = Math.max(...entry.episodes.map(({ start, end }) => end - start));
-    lines.push(`- ${nameOf(entry.service)}: ${count} problem${count === 1 ? "" : "s"}, ${minutes(entry.total)} in total${count > 1 ? `, longest ${minutes(longest)}` : ""}${ongoing ? ", one still open" : ""}. ${count > 3 ? "Latest: " : ""}${latest.join("; ")}.`);
+    lines.push(`- ${nameOf(entry.service)}: ${count} problem${count === 1 ? "" : "s"}, ${minutes(entry.total)} in total${count > 1 ? `, longest single problem ${minutes(longest)}` : ""}${ongoing ? ", one still open" : ""}. ${count > 3 ? "Latest: " : ""}${latest.join("; ")}.`);
   }
   if (services.length > 8) lines.push(`- ${services.length - 8} more services also had problems.`);
+  // "Which lasted longest" means one problem, not a service's total.
+  const episodes = services.flatMap((entry) => entry.episodes.map((episode) => ({ ...episode, service: entry.service })));
+  if (episodes.length > 1) {
+    const top = episodes.reduce((best, episode) => (episode.end - episode.start > best.end - best.start ? episode : best));
+    lines.push(`- Longest single problem: ${nameOf(top.service)}, ${minutes(top.end - top.start)}, from ${format(new Date(top.start).toISOString())}${top.ongoing ? " and still open" : ` to ${format(new Date(top.end).toISOString()).replace(/^.*?, /u, "")}`}.`);
+  }
+  const recovered = services
+    .map((entry) => [nameOf(entry.service), entry.episodes.filter((episode) => !episode.ongoing && !episode.noEnd && episode.end < to).length])
+    .filter(([, count]) => count > 0);
+  if (recovered.length) lines.push(`- Recovered in this window: ${recovered.map(([name, count]) => `${name} (${count} time${count === 1 ? "" : "s"})`).join(", ")}.`);
   // Compared by name: the journal and the snapshot can name the same thing
   // with different ids (proxmox-<id> and <id>).
   const troubled = new Set(services.map((entry) => nameOf(entry.service)));

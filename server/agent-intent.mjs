@@ -94,11 +94,20 @@ const KIND_WORDS = [
 export function workloadQuery(snapshot, text, { workloadWords = false } = {}) {
   const question = String(text || "").toLowerCase();
   const names = workloadNames(snapshot);
-  const services = new Set((snapshot?.services || []).flatMap((service) => [service.id, String(service.label || "").toLowerCase()]));
+  // Everything answered by its own status: media services, Proxmox and
+  // Portainer themselves, by name, type or nickname ("jelly", "portainer").
+  const services = new Set([
+    ...(snapshot?.services || []).flatMap((service) => [service.id, service.label]),
+    ...(snapshot?.infrastructure?.environments || []).flatMap((item) => [item.displayName, "proxmox"]),
+    ...(snapshot?.infrastructure?.services || []).flatMap((item) => [item.displayName, item.type])
+  ].filter((name) => typeof name === "string" && name).map((name) => name.toLowerCase()));
   const words = question.split(/[^a-z0-9._-]+/u).filter((word) => word && !STOP.has(word));
   const candidates = [...words, ...nicknameHints(question).map(({ target }) => target)];
   for (const word of candidates) {
     if (word.length < 4 && NAME_ALIASES[word] === undefined) continue;
+    if (!workloadWords && (services.has(word) || services.has(NAME_ALIASES[word]))) continue;
+    // "docker containers" means containers, even with a VM named docker.
+    if (word === "docker" && /\bcontainers?\b/u.test(question)) continue;
     const matches = [...new Set(matchByName(names, word, (name) => name))];
     if (!matches.length) continue;
     // Several that share the word ("paperless-db-1", "paperless-webserver-1"):

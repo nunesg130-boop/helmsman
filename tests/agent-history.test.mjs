@@ -18,6 +18,10 @@ test("nicknames, prefixes and near-miss spellings find the right name", () => {
   assert.deepEqual(match("overseerr"), ["jellyseerr"]);
   assert.deepEqual(match("qbitorent"), ["qbittorrent"], "a typo");
   assert.deepEqual(match("sonnarr"), ["sonarr"]);
+  assert.deepEqual(match("snoarr"), ["sonarr"], "two swapped letters count as one typo");
+  assert.deepEqual(match("raadrr"), ["radarr"]);
+  assert.deepEqual(matchByName(["cloudflared", "paperless-db-1"], "loud", (name) => name), [], "a word inside another word is not a name");
+  assert.deepEqual(matchByName(["cloudflared", "paperless-db-1"], "paperless", (name) => name), ["paperless-db-1"]);
   assert.deepEqual(match("home auto"), ["home-automation"]);
   assert.deepEqual(match("vpn"), ["gluetun"]);
   assert.deepEqual(match("plex"), [], "nothing invented");
@@ -60,7 +64,9 @@ test("history pairs incidents into episodes with durations, actions and restarts
   });
   assert.match(text, /^History for the past 24 hours/u);
   assert.match(text, /- Sonarr: 1 problem, 1 h 40 min in total, one still open\. 10-20 19:00 until now \(still open\) \(health\)\./u);
-  assert.match(text, /- Radarr: 2 problems, 37 min in total, longest 30 min\./u, "7 minutes plus 30 before the window's start");
+  assert.match(text, /- Radarr: 2 problems, 37 min in total, longest single problem 30 min\./u, "7 minutes plus 30 before the window's start");
+  assert.match(text, /- Longest single problem: Sonarr, 1 h 40 min, from 10-20 19:00 and still open\./u, "one problem, not a service's total");
+  assert.match(text, /- Recovered in this window: Radarr \(2 times\)\./u);
   assert.match(text, /- No problems: Jellyfin\./u);
   assert.match(text, /- Actions taken: 1\. restart container qbittorrent at 10-20 19:30\./u);
   assert.match(text, /Helmsman itself started 1 time/u);
@@ -164,6 +170,6 @@ test("a superseded or retired incident ends where it was replaced, and an unreco
     ],
     appEvents: [{ at: "2026-10-20T19:00:00.000Z", event: "application.started" }]
   });
-  assert.match(text, /- Proxmox Main: 2 problems, 35 min in total, longest 30 min\./u, "superseded after 30 minutes, not stretched to the restart two days later");
+  assert.match(text, /- Proxmox Main: 2 problems, 35 min in total, longest single problem 30 min\./u, "superseded after 30 minutes, not stretched to the restart two days later");
   assert.match(text, /Proxmox Main reported a node offline at 10-19 09:00 for 5 min; whether it restarted or only lost its connection was not recorded for that time\./u);
 });

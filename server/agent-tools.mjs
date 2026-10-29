@@ -213,10 +213,53 @@ const WORKLOAD_KINDS = Object.freeze({
   container: "container", containers: "container", docker: "container", portainer: "container"
 });
 
+const SUMMARY_BUDGET = 1300;
+
+/** Names joined until `budget` characters, then "…and N more" rather than a silent cut. */
+function namesWithin(names, budget) {
+  const shown = [];
+  let used = 0;
+  for (const [index, name] of names.entries()) {
+    const more = names.length - index - 1;
+    const reserve = more ? 16 : 0;
+    if (shown.length && used + name.length + 2 + reserve > budget) {
+      return `${shown.join(", ")} …and ${names.length - index} more`;
+    }
+    shown.push(name);
+    used += name.length + 2;
+  }
+  return shown.join(", ");
+}
+
+/** Containers grouped by the Portainer environment (host) they run on. */
+function containerGroups(snapshot) {
+  const groups = [];
+  for (const server of snapshot.infrastructure?.portainer || []) {
+    const byEnvironment = new Map();
+    for (const container of server.inventory?.containers || []) {
+      const key = String(container.environmentName || "");
+      if (!byEnvironment.has(key)) byEnvironment.set(key, []);
+      byEnvironment.get(key).push(container);
+    }
+    for (const [environment, containers] of byEnvironment) {
+      const serverName = withKind(untrusted(server.displayName, 40), "Portainer");
+      const label = environment ? `${untrusted(environment, 40)} (${serverName})` : serverName;
+      const unhealthy = (container) => /\bunhealthy\b/iu.test(String(container.status || ""));
+      const problems = containers
+        .filter((container) => container.state !== "running" || unhealthy(container))
+        .map((container) => `${untrusted(container.name, 50)} ${container.state !== "running" ? untrusted(container.state, 20) : "unhealthy"}`);
+      const running = containers.filter((container) => container.state === "running" && !unhealthy(container)).map((container) => untrusted(container.name, 50));
+      groups.push({ label, total: containers.length, runningCount: containers.filter((container) => container.state === "running").length, problems, running });
+    }
+  }
+  return groups;
+}
+
 /**
- * Everything in one compact block, one line per kind, so a long inventory
- * still fits: a line per workload would be cut off after about 30, and the
- * Portainer containers, listed last, never reached the model.
+ * Everything in one compact block that always fits. Problems come first.
+ * Broad questions get counts and only the names of what is wrong; asking
+ * for one kind ("which containers are running") lists names, per host,
+ * ending in "…and N more" when they don't all fit, never a silent cut.
  */
 function workloadSummary(snapshot, only = null) {
   const lines = [];
@@ -232,18 +275,26 @@ function workloadSummary(snapshot, only = null) {
   for (const [kind, label] of [["vm", "VMs"], ["lxc", "LXCs"]]) {
     if (!want(kind)) continue;
     const items = environments.flatMap((environment) => (environment.workloads || [])
-      .filter((workload) => !workload.template && (workload.type === "lxc" ? "lxc" : "vm") === kind)
-      .map((workload) => `${workload.vmid} ${untrusted(workload.name, 40)} on ${untrusted(workload.node, 30)} ${workload.status}${workload.lock ? ` (locked ${untrusted(workload.lock, 20)})` : ""}`));
-    if (items.length) lines.push(`${label}: ${items.join(", ")}.`);
+      .filter((workload) => !workload.template && (workload.type === "lxc" ? "lxc" : "vm") === kind))
+      // Stopped and locked first, so a cut never hides a problem.
+      .sort((left, right) => Number(left.status === "running" && !left.lock) - Number(right.status === "running" && !right.lock))
+      .map((workload) => `${workload.vmid} ${untrusted(workload.name, 40)} on ${untrusted(workload.node, 30)} ${workload.status}${workload.lock ? ` (locked ${untrusted(workload.lock, 20)})` : ""}`);
+    if (items.length) lines.push(`${label} (${items.length}): ${namesWithin(items, only ? SUMMARY_BUDGET : 420)}.`);
   }
   if (want("container")) {
-    for (const server of snapshot.infrastructure?.portainer || []) {
-      const items = (server.inventory?.containers || []).map((container) => {
-        const health = /\bunhealthy\b/iu.test(String(container.status || "")) ? " unhealthy" : "";
-        return `${untrusted(container.name, 50)} ${untrusted(container.state, 20)}${health}`;
-      });
-      if (items.length) lines.push(`Containers on ${withKind(untrusted(server.displayName, 40), "Portainer")}: ${items.join(", ")}.`);
-    }
+    const groups = containerGroups(snapshot);
+    let left = SUMMARY_BUDGET - lines.join("\n").length;
+    groups.forEach((group, index) => {
+      const head = `Containers on ${group.label}: ${group.total}, ${group.runningCount} running${group.problems.length ? `; not running or unhealthy: ${group.problems.join(", ")}` : ", none stopped or unhealthy"}`;
+      if (!only) {
+        lines.push(`${head}.`);
+        return;
+      }
+      const budget = Math.max(60, Math.floor((left - head.length) / (groups.length - index)));
+      const line = group.running.length ? `${head}. Running: ${namesWithin(group.running, budget)}.` : `${head}.`;
+      left -= line.length;
+      lines.push(line);
+    });
   }
   return lines;
 }
@@ -252,7 +303,9 @@ function listWorkloads(snapshot, _context, args) {
   const filter = typeof args.filter === "string" ? args.filter.trim().toLowerCase().slice(0, 60) : "";
   // No filter, or a kind ("containers", "vms"): the compact summary.
   // Any other text: the full lines that mention it.
-  const kind = WORKLOAD_KINDS[filter];
+  // A word that is also a guest's name ("docker" as a VM) means that guest.
+  const isName = workloadNames(snapshot).some((name) => name.toLowerCase() === filter);
+  const kind = isName ? null : WORKLOAD_KINDS[filter];
   if (!filter || kind) {
     const summary = workloadSummary(snapshot, kind || null);
     if (summary.length) return summary.join("\n");
@@ -260,6 +313,13 @@ function listWorkloads(snapshot, _context, args) {
   }
   const lines = workloadLines(snapshot).filter((line) => line.toLowerCase().includes(filter));
   if (!lines.length) return `Nothing matches "${untrusted(filter, 40)}".`;
+  // Two guests with the same name ("docker" as VM 109 and VM 201): say so,
+  // so the answer covers both instead of picking one.
+  const guests = (snapshot.infrastructure?.environments || []).flatMap((environment) => (environment.workloads || [])
+    .filter((workload) => !workload.template && String(workload.name || "").toLowerCase() === filter));
+  if (guests.length > 1) {
+    lines.unshift(`Note: ${guests.length} guests are named ${untrusted(filter, 40)}: ${guests.map((workload) => `${workload.type === "lxc" ? "LXC" : "VM"} ${workload.vmid} on ${untrusted(workload.node, 30)}`).join(", ")}.`);
+  }
   return lines.join("\n");
 }
 
@@ -762,8 +822,11 @@ export const NAME_ALIASES = Object.freeze({
   plex: "plex", sab: "sabnzbd", nzbget: "nzbget", gluetun: "gluetun", vpn: "gluetun", flare: "flaresolverr"
 });
 
+// Edits needed to turn one name into the other, counting a swap of two
+// neighbouring letters ("snoarr" for "sonarr") as one edit.
 function editDistance(left, right, limit) {
   if (Math.abs(left.length - right.length) > limit) return limit + 1;
+  let before = null;
   let previous = Array.from({ length: right.length + 1 }, (_, index) => index);
   for (let row = 1; row <= left.length; row += 1) {
     const current = [row];
@@ -771,12 +834,25 @@ function editDistance(left, right, limit) {
     for (let column = 1; column <= right.length; column += 1) {
       const cost = left[row - 1] === right[column - 1] ? 0 : 1;
       current[column] = Math.min(previous[column] + 1, current[column - 1] + 1, previous[column - 1] + cost);
+      if (before && row > 1 && column > 1 && left[row - 1] === right[column - 2] && left[row - 2] === right[column - 1]) {
+        current[column] = Math.min(current[column], before[column - 2] + 1);
+      }
       best = Math.min(best, current[column]);
     }
     if (best > limit) return limit + 1;
+    before = previous;
     previous = current;
   }
   return previous[right.length];
+}
+
+/** Whether `part` starts a word of `name` ("db" in "paperless-db-1", not "loud" in "cloudflared"). */
+function startsWord(name, part) {
+  const words = String(name || "").toLowerCase().split(/[^a-z0-9]+/u).filter(Boolean);
+  for (let index = 0; index < words.length; index += 1) {
+    if (words.slice(index).join("").startsWith(part)) return true;
+  }
+  return false;
 }
 
 /**
@@ -789,7 +865,7 @@ function editDistance(left, right, limit) {
 export function matchByName(items, typed, nameOf) {
   const wanted = looseName(typed);
   if (!wanted) return [];
-  const named = items.map((item) => ({ item, name: looseName(nameOf(item)) })).filter(({ name }) => name);
+  const named = items.map((item) => ({ item, raw: nameOf(item), name: looseName(nameOf(item)) })).filter(({ name }) => name);
   const alias = NAME_ALIASES[wanted] !== undefined ? looseName(NAME_ALIASES[wanted]) : "";
   const levels = [
     ({ name }) => name === wanted,
@@ -797,7 +873,7 @@ export function matchByName(items, typed, nameOf) {
     ({ name }) => Boolean(alias) && name.startsWith(alias),
     ({ name }) => alias.length >= 4 && name.includes(alias),
     ({ name }) => wanted.length >= 3 && name.startsWith(wanted),
-    ({ name }) => wanted.length >= 4 && name.includes(wanted),
+    ({ raw }) => wanted.length >= 4 && startsWord(raw, wanted),
     ({ name }) => wanted.length >= 5 && editDistance(wanted, name, wanted.length >= 8 ? 2 : 1) <= (wanted.length >= 8 ? 2 : 1)
   ];
   for (const level of levels) {
