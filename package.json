@@ -1,6 +1,6 @@
 {
   "name": "helmsman",
-  "version": "1.16.6",
+  "version": "1.16.7",
   "private": true,
   "description": "Local-first media and infrastructure operations center with a hardened self-hosted control plane.",
   "license": "AGPL-3.0-only",

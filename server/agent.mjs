@@ -32,11 +32,12 @@ import {
   manualMatches,
   isApprovalMessage,
   withKind,
-  parseActionCommand
+  parseActionCommand,
+  sharedNameNotes
 } from "./agent-tools.mjs";
 import { chatCompletion, estimateTokens, listModels, LlmError, validModelId } from "./llm-client.mjs";
 import { questionWindow } from "./agent-history.mjs";
-import { HELMSMAN_HELP, isFollowUp, mergeSeeds, namedServices, nicknameHints, questionSeeds, withoutWorkloadNames, workloadQuery } from "./agent-intent.mjs";
+import { guestIds, HELMSMAN_HELP, isFollowUp, mergeSeeds, namedServices, namesSomething, nicknameHints, questionSeeds, withoutWorkloadNames, workloadQueries } from "./agent-intent.mjs";
 import { createConversationStore } from "./agent-conversations.mjs";
 import { parseServiceUrl, resolveAndAuthorizeExplicitTarget, resolveAndAuthorizeTarget } from "./network.mjs";
 import { OutboundJsonError, performOutboundJsonRequest } from "./outbound-json.mjs";
@@ -637,11 +638,18 @@ export async function createAgent(options) {
     const style = source === "question"
       ? "Answer the owner's question directly, in one to three plain sentences. The lookups you are given were made for this question: use only what answers it. A warning is not an outage. Call tools yourself when you need more; never tell the owner to use a tool."
       : "Answer in plain sentences without markdown tables. Be brief: what is wrong, the likely cause, one next step.";
+    const roomy = !Number.isFinite(ai.contextTokens) || ai.contextTokens >= 4096;
     return [
       "You are the Helmsman agent, a homelab assistant.",
       monitoredLine(),
       "It does not monitor anything else, such as the internet connection, ISP, Wi-Fi, router, network speed, temperatures, Plex or other devices. If asked about those, say Helmsman does not monitor them.",
       "Your tools look up health, containers, VMs and LXCs, history, the media queue and the owner's manual.",
+      // Kept out of a tiny context, where they would crowd out the lookups.
+      ...(roomy ? [
+        "Guests (VMs, LXCs) run on Proxmox nodes; Docker containers run on Docker hosts (Portainer environments), which are not nodes. A guest ID is not an IP address.",
+        ...sharedNameNotes(snapshot() || {}),
+        "Helmsman does not record snapshots, disks, storage, backup jobs, sizes or locations, restart policies or counts, temperatures or quorum. Asked about these, say so; never answer \"none\" as if you had checked."
+      ] : []),
       "Answer questions about the past only from the history tool, never from the current state.",
       "Give no shell commands unless asked.",
       allowProposals
@@ -761,15 +769,22 @@ export async function createAgent(options) {
       // "Which host is paperless-db-1 on" is both: the manual for the host,
       // and the container's own line, which says where it runs.
       const asksWhere = /\b(?:(?:which|what) (?:host|node|server|machine)|where)\b/iu.test(prompt);
-      const workloads = seeds.manual && !seeds.workloads
-        ? (asksWhere ? workloadQuery(snapshot(), prompt, { namesOnly: true }) : null)
-        : workloadQuery(snapshot(), prompt, { workloadWords: seeds.workloads })
-          || (followUp ? workloadQuery(snapshot(), earlierQuestion, { workloadWords: seeds.workloads }) : null);
-      if (workloads) {
+      // Every thing the question names gets its own lookup, up to four, so
+      // "is seerr or wizarr busier" sees both rather than only the first.
+      const ownQueries = seeds.manual && !seeds.workloads
+        ? (asksWhere || guestIds(snapshot(), prompt).length ? workloadQueries(snapshot(), prompt, { namesOnly: true }) : [])
+        : workloadQueries(snapshot(), prompt, { workloadWords: seeds.workloads });
+      // A follow-up that names nothing ("which one is busier?") is about what
+      // the question before it named, so those come first.
+      const earlierNamed = followUp && !ownQueries.some(namesSomething)
+        ? workloadQueries(snapshot(), earlierQuestion, { workloadWords: seeds.workloads }) : [];
+      const workloads = followUp && !ownQueries.length ? earlierNamed
+        : [...earlierNamed.filter(namesSomething), ...ownQueries.filter((query) => query.filter || !earlierNamed.some(namesSomething))].slice(0, 4);
+      for (const [index, query] of workloads.entries()) {
         // "vpn" usually means a gluetun container: say so, or the model
         // looks for a container called vpn and finds none.
-        const hints = nicknameHints(plainPrompt);
-        await seed("list_workloads", workloads.filter ? { filter: workloads.filter } : {}, hints.length ? `Nicknames in the question: ${hints.map(({ word, target }) => `"${word}" usually means ${target}`).join("; ")}.\n` : "");
+        const hints = index === 0 ? nicknameHints(plainPrompt) : [];
+        await seed("list_workloads", query.filter ? { filter: query.filter } : {}, hints.length ? `Nicknames in the question: ${hints.map(({ word, target }) => `"${word}" usually means ${target}`).join("; ")}.\n` : "");
       }
       if (seeds.media) await seed("media_queue", {});
       // Manual lines only for questions about addresses, procedures and
@@ -787,6 +802,10 @@ export async function createAgent(options) {
           const borrowed = manualKeywords(earlierQuestion).filter((word) => !words.length || refersBack || MANUAL_TOPIC_WORDS.test(word));
           words = [...new Set([...words, ...borrowed])].slice(0, 8);
         }
+        // "What is LXC 105 for": the manual may name it by number or by name.
+        const idNames = guestIds(snapshot(), prompt).flatMap((id) => (snapshot()?.infrastructure?.environments || [])
+          .flatMap((environment) => (environment.workloads || []).filter((workload) => String(workload.vmid) === id).map((workload) => plainText(workload.name, 40).toLowerCase())));
+        words = [...new Set([...words, ...idNames.filter(Boolean)])].slice(0, 8);
         const markdown = `${manual?.() || ""}\n\n${HELMSMAN_HELP}`;
         const hits = manualMatches(markdown, words);
         if (hits.length) {
