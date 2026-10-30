@@ -268,7 +268,7 @@ test("a cluster named like one of its nodes says which is which, and nodes count
   assert.match(all, /Main \(Proxmox Main\) online, up 8d, cpu 2%, memory 63% of 32 GB, 3 guests \(1 VM, 2 LXCs\), 3 running/u);
   const main = await runTool("list_workloads", { filter: "main" }, context(snapshot));
   assert.match(main, /^Note: "Main" is the Proxmox cluster/u);
-  assert.match(main, /^node Main \(Proxmox Main\): online, up 8d, cpu 2% of 8 cores, memory 63% \(20 of 32 GB\), 3 guests \(1 VM, 2 LXCs\), 3 running$/mu);
+  assert.match(main, /^node Main \(Proxmox Main\): online, up 8d, cpu 2% of 8 cores, memory 63% \(20 of 32 GB, 12 GB free\), 3 guests \(1 VM, 2 LXCs\), 3 running$/mu);
   assert.match(main, /^Guests on node Main:\nvm 100 Jelly-Arr: running, cpu 12%, memory 73% \(5\.8 of 8 GB\), no backup$/mu, "each guest in short form under its node");
   assert.doesNotMatch(main, /haos|norco:/u, "only the node's own guests");
   assert.match(await runTool("list_workloads", { filter: "Jelly-Arr" }, context(snapshot)), /^vm 100 Jelly-Arr on node Main: running, cpu 12% of 4 cores, memory 73% \(5\.8 of 8 GB\), up 8d, no backup recorded$/mu, "a guest's own line has cores, sizes and uptime");
@@ -312,7 +312,7 @@ test("backup answers count the ages and the nodes, and say what Helmsman can't s
   assert.match(backups, /^By node: Main 0 of 3 have one, norco 2 of 5 have one\.$/mu);
   assert.match(backups, /^Helmsman sees only each guest's latest backup result and its age: not backup jobs, schedules/mu);
   const memory = await runTool("list_workloads", { filter: "memory" }, context(cluster()));
-  assert.match(memory, /: 1\. haos-17\.2 \(VM 102, norco\): 93% \(3\.7 of 4 GB\), 2\. Jelly-Arr/u, "sizes in GB beside the share");
+  assert.match(memory, /: 1\. haos-17\.2 \(VM 102, norco\): 93% \(3\.7 of 4 GB, 0\.3 GB free\), 2\. Jelly-Arr/u, "sizes in GB beside the share");
 });
 
 test("two-word names and Home Assistant find their guests", () => {
@@ -372,15 +372,55 @@ test("node figures with node rankings, uptime and size rankings, container detai
   assert.deepEqual(queries("What else runs on the same node as ollama?"), [{ filter: "ollama" }, { filter: "norco" }]);
   assert.deepEqual(queries("what runs alongside radarr?"), [{ filter: "radarr" }, { filter: "Jelly-Arr" }]);
   const tool = (filter) => runTool("list_workloads", { filter }, context(snapshot));
-  assert.match(await tool("cpu main"), /^The node itself: node Main \(Proxmox Main\): online, up 8d, cpu 2% of 8 cores, memory 63% \(20 of 32 GB\), 3 guests \(1 VM, 2 LXCs\), 3 running\nCPU use of each running VM and LXC on node Main/mu, "the node's own figures before its guests");
+  assert.match(await tool("cpu main"), /^The node itself: node Main \(Proxmox Main\): online, up 8d, cpu 2% of 8 cores, memory 63% \(20 of 32 GB, 12 GB free\), 3 guests \(1 VM, 2 LXCs\), 3 running\nCPU use of each running VM and LXC on node Main/mu, "the node's own figures before its guests");
   assert.match(await tool("uptime vms"), /^How long each running VM has been up, longest first \(since its last start\): Jelly-Arr \(VM 100, Main\) up 8d, /u);
   assert.equal(await tool("cores vms"), "CPU cores assigned to each VM, most first (what each was given, not what it uses), 12 cores in total: Jelly-Arr (VM 100, Main) 4 cores, docker (VM 109, norco) 4 cores, haos-17.2 (VM 102, norco) 2 cores, RHEL-10.0-1 (VM 112, norco) 2 cores (stopped).");
   assert.equal(await tool("allocated lxcs"), "Memory assigned to each LXC, most first (what each was given, not what it uses), 21 GB in total: ollama (LXC 114, norco) 16 GB, seerr (LXC 104, Main) 2 GB, wizarr (LXC 108, Main) 2 GB, pihole (LXC 106, norco) 1 GB.");
   const images = await tool("containers images");
-  assert.match(images, /^Image of each container \(no tag shown means :latest\):\nDocker host Jelly-Arr \(VM 100 on node Main\), 3 containers: radarr lscr\.io\/linuxserver\/radarr; /u, "short tags when every host is listed");
+  assert.match(images, /^Image of each container, the latest-tag ones listed without the ":latest":\nDocker host Jelly-Arr \(VM 100 on node Main\), 3 containers: 2 on the latest tag: radarr lscr\.io\/linuxserver\/radarr, sonarr lscr\.io\/linuxserver\/sonarr; image unknown: suggestarr\.$/mu, "latest-tag ones apart, said in words");
   const jellyImages = await tool("containers images jelly-arr");
   assert.match(jellyImages, /radarr lscr\.io\/linuxserver\/radarr:latest/u, "one host: tags in full");
   assert.doesNotMatch(jellyImages, /Main Docker|aliasvault/u);
   assert.equal(await tool("stack arr"), "Compose stack arr on Docker host Jelly-Arr (VM 100 on node Main), 2 containers: radarr (running, Up 7 days; image lscr.io/linuxserver/radarr:latest; ports 7878->7878/tcp), sonarr (running, Up 7 days (healthy); image lscr.io/linuxserver/sonarr:latest; ports 8989->8989/tcp).");
   assert.match(await tool("containers health"), /^Docker host Jelly-Arr \(VM 100 on node Main\), 3 containers: no healthcheck 1: radarr; not running \(exited\) 1: suggestarr; healthy 1: sonarr\.$/mu);
+});
+
+test("Docker hosts matched to guests from the manual, ID ranges, neighbours of a host, and docker-named", async () => {
+  const snapshot = cluster();
+  snapshot.infrastructure.environments[0].workloads.push(
+    { vmid: 201, name: "docker", type: "qemu", node: "norco", status: "running", cpuPercent: 3, cpuCores: 2 },
+    { vmid: 152, name: "frigate", type: "lxc", node: "norco", status: "running", cpuPercent: 4 }
+  );
+  snapshot.infrastructure.portainer[0].inventory.containers.push(
+    { name: "paperless-webserver-1", state: "running", status: "Up 2 days (healthy)", environmentName: "Main Docker", image: "ghcr.io/paperless-ngx/paperless-ngx:3.0.5", stack: "paperless", ports: [] },
+    { name: "donetick", state: "running", status: "Up 2 days", environmentName: "Main Docker", image: "donetick/donetick", stack: "donetick", ports: [] },
+    { name: "grafana", state: "running", status: "Up 2 days", environmentName: "PVE-2", image: "grafana/grafana:latest", stack: "grafana", ports: [] },
+    { name: "loki", state: "running", status: "Up 2 days", environmentName: "PVE-2", image: "grafana/loki:3", stack: "loki", ports: [] }
+  );
+  const manual = [
+    "| VMID | Name | Type | IP | Role |",
+    "| 109 | docker | VM | 10.0.0.9 | Paperless, AliasVault, Donetick, Portainer agent |",
+    "| 201 | docker | VM | 10.0.0.21 | Grafana, Loki, Portainer agent |",
+    "Grafana dashboards live on the logging host."
+  ].join("\n");
+  const withManual = { ...context(snapshot), manual: () => manual };
+  const aliasvault = await runTool("list_workloads", { filter: "aliasvault" }, withManual);
+  assert.match(aliasvault, /; Docker host Main Docker is VM 109 docker on node norco, per your manual$/u, "Main Docker is the docker VM 109");
+  const pve2 = await runTool("list_workloads", { filter: "PVE-2" }, withManual);
+  assert.match(pve2, /Containers on PVE-2 \(Portainer, VM 201 docker on node norco, per your manual\)/u);
+  assert.doesNotMatch(await runTool("list_workloads", { filter: "aliasvault" }, context(snapshot)), /per your manual/u, "no manual, no claim");
+
+  const queries = (text) => workloadQueries(snapshot, text, { workloadWords: questionSeeds(text).workloads });
+  assert.deepEqual(queries("List guests with IDs above 150."), [{ filter: "ids 151-999999999" }]);
+  assert.deepEqual(queries("Which guests are in the 100 through 110 ID range?"), [{ filter: "ids 100-110" }]);
+  assert.deepEqual(queries("Which LXCs are colocated with Jelly-Arr?"), [{ filter: "Jelly-Arr" }, { filter: "Main" }], "a host that is also a guest adds its node");
+  assert.deepEqual(queries("What VMs share norco with haos-17.2?"), [{ filter: "haos-17.2" }, { filter: "norco" }]);
+  assert.deepEqual(queries("What else shares the Docker host with radarr?"), [{ filter: "radarr" }, { filter: "Jelly-Arr" }]);
+  assert.deepEqual(queries("How many docker-named VMs are running?").slice(0, 1), [{ filter: "docker" }], "docker-named is the name docker");
+  assert.deepEqual(queries("Which guest on Main is closest to its memory limit?"), [{ filter: "memory main" }], "closest to a limit is use, not size");
+
+  const above = await runTool("list_workloads", { filter: "ids 151-999999999" }, context(snapshot));
+  assert.equal(above, "2 guests with IDs above 150, in order: 152 frigate (LXC, norco, running), 201 docker (VM, norco, running).");
+  const span = await runTool("list_workloads", { filter: "ids 100-108" }, context(snapshot));
+  assert.match(span, /^5 guests with IDs from 100 to 108, in order: 100 Jelly-Arr .*, 102 haos-17\.2 .*, 104 seerr .*, 106 pihole .*, 108 wizarr /u);
 });

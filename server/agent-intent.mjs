@@ -24,7 +24,9 @@ const MEDIA = /\b(?:download(?:ing|s|ed)?|queue|stuck|stalled|imports?|imported|
 export function normalizeQuestion(text) {
   return String(text || "")
     .replace(/\bpi[\s-]+hole\b/giu, "pihole")
-    .replace(/\bhome[\s-]+assistant(?:[\s-]+os)?\b/giu, "homeassistant");
+    .replace(/\bhome[\s-]+assistant(?:[\s-]+os)?\b/giu, "homeassistant")
+    // "docker-named VMs": the name on its own, so it is matched.
+    .replace(/\b([a-z0-9]+)-(named|called)\b/giu, "$2 $1");
 }
 
 /** Which lookups a question needs. */
@@ -185,7 +187,7 @@ const MEASURES = [
 
 // Sizes given rather than use: "which VM has the most cores", "RAM assigned
 // to each LXC". cpu then means assigned cores and memory the allowance.
-const ALLOCATION = /\b(?:allocat\w*|assigned|provisioned|configured with|sized?|biggest|largest|smallest|how many (?:cores|vcpus?)|(?:most|fewest|least|more|fewer) (?:cores|vcpus?)|(?:cores|vcpus?) (?:each|per|does|do)|given)\b/u;
+const ALLOCATION = /\b(?:allocat\w*|assigned|provisioned|configured(?: with)?|limits?|sized?|biggest|largest|smallest|how many (?:cores|vcpus?)|(?:most|fewest|least|more|fewer) (?:cores|vcpus?)|(?:cores|vcpus?) (?:each|per|does|do)|given)\b/u;
 
 /** The measures a question asks to rank by, in the order it names them, with "vms"/"lxcs" when it says only one kind. */
 function measuresIn(question) {
@@ -194,7 +196,7 @@ function measuresIn(question) {
   const only = vms && !lxcs ? " vms" : lxcs && !vms ? " lxcs" : "";
   // About nodes alone ("is norco busy", "node cpu"), not guests: the node's lines answer it.
   const nodesOnly = /\bnodes?\b/u.test(question) && !/\b(?:guests?|vms?|lxcs?)\b/u.test(question);
-  const allocation = ALLOCATION.test(question) && !/\b(?:using|uses|used|use|usage|consum\w*|hog\w*|busy|busiest|load|free)\b/u.test(question);
+  const allocation = ALLOCATION.test(question) && !/\b(?:using|uses|used|use|usage|consum\w*|hog\w*|close to|closest|near|busy|busiest|load|free)\b/u.test(question);
   const containers = /\b(?:containers?|docker|portainer|stacks?)\b/u.test(question) && !/\b(?:vms?|lxcs?|guests?)\b/u.test(question);
   return MEASURES
     .filter(([metric, pattern]) => pattern.test(question)
@@ -208,7 +210,18 @@ function measuresIn(question) {
 
 // "What else is on the same node as frigate", "what runs alongside radarr":
 // the named thing's node or Docker host, with everything on it.
-const COLOCATED = /\b(?:co-?located|same (?:node|host|machine|server|vm|docker host) as|alongside|next to|neighbou?rs?|shares? (?:a |the |its )?(?:node|host|machine)|sharing (?:a |the |its )?(?:node|host)|what else (?:is|runs|lives) on)\b/u;
+const COLOCATED = /\b(?:co-?located|same (?:[a-z-]+ )?(?:node|host|machine|server|vm|environment) as|alongside|next to|neighbou?rs?|shar(?:e|es|ed|ing) (?:[a-z0-9._-]+ ){0,3}with|shares? (?:a |the |its )?(?:node|host|machine|environment)|what else (?:is|runs|lives) on)\b/u;
+
+/** "IDs above 150", "the 100 through 110 ID range": that range as "ids 151-999999999". */
+function idRange(question) {
+  const above = /\b(?:ids?|vmids?|guest ids?|numbers?)\s+(?:above|over|greater than|higher than|bigger than|more than|>)\s*(\d{1,9})\b/u.exec(question);
+  if (above) return `ids ${Number(above[1]) + 1}-999999999`;
+  const below = /\b(?:ids?|vmids?|guest ids?|numbers?)\s+(?:below|under|less than|lower than|smaller than|<)\s*(\d{1,9})\b/u.exec(question);
+  if (below) return `ids 0-${Math.max(0, Number(below[1]) - 1)}`;
+  if (!/\b(?:ids?|vmids?|range|between)\b/u.test(question)) return null;
+  const span = /\b(\d{2,9})\s*(?:-|–|to|through|thru|and)\s*(\d{2,9})\b/u.exec(question);
+  return span ? `ids ${span[1]}-${span[2]}` : null;
+}
 
 /** Where a guest or container runs: its node's name, or its Docker host's. */
 function homeOf(snapshot, name) {
@@ -280,6 +293,9 @@ export function workloadQueries(snapshot, text, { workloadWords = false, namesOn
       rest = rest.replace(pattern, "$1 ");
     }
   }
+  // "IDs above 150": the guests in that range, sorted by code.
+  const range = namesOnly ? null : idRange(question);
+  if (range) return [{ filter: range }];
   // "VM 109", "guest IDs 100, 102 and 104", "docker 201": those guests by number.
   const ids = guestIds(snapshot, question);
   const named = namedInQuestion(snapshot, rest, { workloadWords, namesOnly });
@@ -293,6 +309,12 @@ export function workloadQueries(snapshot, text, { workloadWords = false, namesOn
   const things = named.filter((item) => item.name && (item.exact || !sure) && !idNames.has(item.name.toLowerCase())).map((item) => item.name);
   // "Images on Jelly-Arr", "stacks in Main Docker": that one detail, for that host.
   const hostDetail = CONTAINER_DETAILS.find(([, pattern]) => pattern.test(rest));
+  // "Which LXCs are colocated with Jelly-Arr": a host that is also a guest
+  // adds that guest's node, with everything on it.
+  if (hosts.length && !namesOnly && !ids.length && !things.length && COLOCATED.test(question)) {
+    const homes = [...new Set(hosts.flatMap((host) => homeOf(snapshot, host)))].filter((home) => !hosts.some((host) => host.toLowerCase() === home.toLowerCase()));
+    if (homes.length) return [...hosts.slice(0, 2), ...homes.slice(0, 2)].map((filter) => ({ filter }));
+  }
   if (hosts.length && !namesOnly && !ids.length && !things.length) {
     return hosts.slice(0, 2).map((host) => ({ filter: hostDetail ? `containers ${hostDetail[0]} ${host.toLowerCase()}` : host }));
   }
@@ -339,7 +361,7 @@ export function workloadQueries(snapshot, text, { workloadWords = false, namesOn
 /** Whether a lookup names one thing ("seerr", "109") rather than a kind or a ranking. */
 export function namesSomething(query) {
   const filter = String(query?.filter || "").toLowerCase();
-  return Boolean(filter) && !/^(?:containers?|vms|lxcs|nodes|memory|cpu|backups|uptime|cores|allocated)\b/u.test(filter);
+  return Boolean(filter) && !/^(?:containers?|vms|lxcs|nodes|memory|cpu|backups|uptime|cores|allocated|ids)\b/u.test(filter);
 }
 
 /**
