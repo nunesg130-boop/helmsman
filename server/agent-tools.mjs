@@ -434,7 +434,10 @@ function workloadSummary(snapshot, only = null) {
   return lines;
 }
 
-const WORKLOAD_METRICS = Object.freeze({ memory: "memory", ram: "memory", cpu: "cpu", backup: "backup", backups: "backup" });
+const WORKLOAD_METRICS = Object.freeze({
+  memory: "memory", ram: "memory", cpu: "cpu", backup: "backup", backups: "backup",
+  uptime: "uptime", cores: "cores", allocated: "allocated", allocation: "allocated"
+});
 
 /**
  * Every VM and LXC ranked by one measure, for "which uses the most memory"
@@ -481,7 +484,32 @@ function workloadMetric(snapshot, metric, kind = null, node = null) {
     parts.push("Helmsman sees only each guest's latest backup result and its age: not backup jobs, schedules, running tasks, how many backups exist, file sizes, where they are stored, retention or verification.");
     return parts.join("\n");
   }
+  // A node's own figures first: "Main cpu %" or "how long has Main been up" is about the node, and a list
+  // of its guests alone was answered as if it were the node's number.
+  const nodeOwn = node ? workloadLines(snapshot).filter((line) => line.toLowerCase().startsWith(`node ${node.toLowerCase()} (`)) : [];
+  if (nodeOwn.length) notes.push(...nodeOwn.map((line) => `The node itself: ${line}`));
+  // What each guest was given, not what it uses: "which VM has the most
+  // cores", "how much RAM is assigned to the LXCs". Stopped guests count too.
+  if (metric === "cores" || metric === "allocated") {
+    const size = (workload) => (metric === "cores" ? (Number.isSafeInteger(workload.cpuCores) ? workload.cpuCores : -1) : (Number.isFinite(workload.memoryTotalBytes) ? workload.memoryTotalBytes : -1));
+    const shown = (workload) => (metric === "cores"
+      ? (size(workload) > 0 ? `${size(workload)} core${size(workload) === 1 ? "" : "s"}` : "cores unknown")
+      : (gigabytes(workload.memoryTotalBytes) ? `${gigabytes(workload.memoryTotalBytes)} GB` : "memory unknown"));
+    const sorted = [...guests].sort((left, right) => size(right) - size(left));
+    const total = metric === "cores"
+      ? `${sorted.reduce((sum, workload) => sum + Math.max(0, size(workload)), 0)} cores`
+      : `${gigabytes(sorted.reduce((sum, workload) => sum + Math.max(0, size(workload)), 0)) || "?"} GB`;
+    const lines = sorted.map((workload) => `${name(workload)} ${shown(workload)}${workload.status === "running" ? "" : ` (${workload.status})`}`);
+    return [...notes, `${metric === "cores" ? "CPU cores" : "Memory"} assigned to each ${noun}${onNode}, most first (what each was given, not what it uses), ${total} in total: ${lines.join(", ")}.`].join("\n");
+  }
   const running = guests.filter((workload) => workload.status === "running");
+  if (metric === "uptime") {
+    const up = (workload) => (Number.isFinite(workload.uptimeSeconds) ? workload.uptimeSeconds : -1);
+    const ranked = [...running].sort((left, right) => up(right) - up(left))
+      .map((workload) => `${name(workload)} ${up(workload) > 0 ? `up ${ago(workload.uptimeSeconds).replace(/ ago$/u, "")}` : "uptime unknown"}`);
+    if (!ranked.length) return `No ${noun}${onNode} is running.${stoppedNote}`;
+    return [...notes, `How long each running ${noun}${onNode} has been up, longest first (since its last start): ${ranked.join(", ")}.${stoppedNote}`].join("\n");
+  }
   const value = (workload) => (metric === "cpu"
     ? (Number.isFinite(workload.cpuPercent) ? workload.cpuPercent : -1)
     : (Number.isFinite(workload.memoryUsedBytes) && workload.memoryTotalBytes > 0 ? workload.memoryUsedBytes / workload.memoryTotalBytes : -1));
@@ -559,7 +587,7 @@ function guestLinesById(snapshot, filter) {
  * containers publish ports" or "which use an image tagged latest", which the
  * summary's names can't answer and full lines for all would not fit.
  */
-function containerDetails(snapshot, detail) {
+function containersByHost(snapshot) {
   const byHost = new Map();
   for (const server of snapshot.infrastructure?.portainer || []) {
     for (const container of server.inventory?.containers || []) {
@@ -568,15 +596,48 @@ function containerDetails(snapshot, detail) {
       byHost.get(host).push(container);
     }
   }
+  return byHost;
+}
+
+/** "healthy", "unhealthy", "starting" or "no healthcheck", from Docker's status text. */
+function healthOf(container) {
+  const match = /\((healthy|unhealthy|health: starting)\)/iu.exec(String(container.status || ""));
+  return match ? match[1].toLowerCase().replace("health: ", "") : "no healthcheck";
+}
+
+function containerDetails(snapshot, detail, hostFilter = null) {
+  let byHost = containersByHost(snapshot);
   if (!byHost.size) return "No Portainer inventory is connected.";
+  if (hostFilter) {
+    const wanted = hostFilter.toLowerCase();
+    byHost = new Map([...byHost].filter(([host]) => host.toLowerCase() === wanted));
+    if (!byHost.size) return `There is no Docker host named ${untrusted(hostFilter, 40)}.`;
+  }
   const name = (container) => untrusted(container.name, 40);
+  // Unfiltered, every image in full ran past the output limit; ":latest" is
+  // left off and said once instead.
+  const shortTags = detail === "images" && !hostFilter;
   const lines = [];
   for (const [host, containers] of byHost) {
     let items;
     if (detail === "ports") items = containers.map((container) => `${name(container)} ${Array.isArray(container.ports) ? portsText(container.ports).replace(/^ports /u, "") : "ports unknown"}`);
-    else if (detail === "images") items = containers.map((container) => `${name(container)} ${container.image ? untrusted(container.image, 60).replace(/^(?:docker\.io\/)?(?:library\/)?/u, "") : "image unknown"}`);
-    else if (detail === "uptime") items = containers.map((container) => `${name(container)} ${untrusted(container.status, 40) || untrusted(container.state, 20)}`);
-    else {
+    else if (detail === "images") {
+      items = containers.map((container) => {
+        if (!container.image) return `${name(container)} image unknown`;
+        const image = untrusted(container.image, 60).replace(/^(?:docker\.io\/)?(?:library\/)?/u, "");
+        return `${name(container)} ${shortTags ? image.replace(/:latest$/u, "") : image}`;
+      });
+    } else if (detail === "uptime") items = containers.map((container) => `${name(container)} ${untrusted(container.status, 40) || untrusted(container.state, 20)}`);
+    else if (detail === "health") {
+      // Grouped by health, so "which have no healthcheck" is a list to copy.
+      const groups = new Map();
+      for (const container of containers) {
+        const health = container.state === "running" ? healthOf(container) : `not running (${untrusted(container.state, 20) || "unknown"})`;
+        if (!groups.has(health)) groups.set(health, []);
+        groups.get(health).push(name(container));
+      }
+      items = [...groups].map(([health, members]) => `${health} ${members.length}: ${members.join(", ")}`);
+    } else {
       const stacks = new Map();
       for (const container of containers) {
         const stack = container.stack ? untrusted(container.stack, 40) : "";
@@ -589,11 +650,48 @@ function containerDetails(snapshot, detail) {
     const guest = hostGuest(snapshot, host);
     lines.push(`Docker host ${host}${guest ? ` (${guest})` : ""}, ${containers.length} containers: ${items.join("; ")}.`);
   }
-  const what = { ports: "Published ports (host->container) of each container", images: "Image of each container", uptime: "State of each container as Docker reports it", stacks: "Compose stacks on each Docker host" }[detail];
+  const what = {
+    ports: "Published ports (host->container) of each container",
+    images: `Image of each container${shortTags ? " (no tag shown means :latest)" : ""}`,
+    uptime: "State of each container as Docker reports it",
+    health: "Healthcheck result of each container (running ones; many images define no healthcheck, which is not a fault)",
+    stacks: "Compose stacks on each Docker host"
+  }[detail];
   return [`${what}:`, ...lines].join("\n");
 }
 
-const CONTAINER_DETAIL_FILTERS = Object.freeze({ "containers ports": "ports", "containers images": "images", "containers stacks": "stacks", "containers uptime": "uptime" });
+const CONTAINER_DETAILS_BY_WORD = Object.freeze({ ports: "ports", images: "images", stacks: "stacks", uptime: "uptime", health: "health" });
+
+/** "containers images", "containers stacks jelly-arr": a detail and, optionally, one Docker host. */
+function containerDetailFilter(snapshot, filter) {
+  const match = /^containers (ports|images|stacks|uptime|health)(?: (.+))?$/u.exec(filter);
+  if (!match) return null;
+  return { detail: CONTAINER_DETAILS_BY_WORD[match[1]], host: match[2] || null };
+}
+
+/** Compose stack names across every Docker host ("arrstack", "paperless"). */
+export function containerStackNames(snapshot) {
+  return [...new Set([...containersByHost(snapshot).values()].flat()
+    .map((container) => (typeof container.stack === "string" ? container.stack : "")).filter(Boolean))];
+}
+
+/** One compose stack's containers in short form, wherever it runs. */
+function stackLines(snapshot, stackName) {
+  const wanted = stackName.toLowerCase();
+  const lines = [];
+  for (const [host, containers] of containersByHost(snapshot)) {
+    const members = containers.filter((container) => String(container.stack || "").toLowerCase() === wanted);
+    if (!members.length) continue;
+    const guest = hostGuest(snapshot, host);
+    const items = members.map((container) => {
+      const state = container.state === "running" ? `running, ${untrusted(container.status, 40) || "up"}` : untrusted(container.status, 40) || untrusted(container.state, 20);
+      const image = container.image ? `; image ${untrusted(container.image, 60).replace(/^(?:docker\.io\/)?(?:library\/)?/u, "")}` : "";
+      return `${untrusted(container.name, 40)} (${state}${image}; ${portsText(container.ports)})`;
+    });
+    lines.push(`Compose stack ${untrusted(stackName, 40)} on Docker host ${host}${guest ? ` (${guest})` : ""}, ${members.length} container${members.length === 1 ? "" : "s"}: ${items.join(", ")}.`);
+  }
+  return lines;
+}
 
 function listWorkloads(snapshot, _context, args) {
   const filter = typeof args.filter === "string" ? args.filter.trim().toLowerCase().slice(0, 60) : "";
@@ -601,7 +699,15 @@ function listWorkloads(snapshot, _context, args) {
   if (measure) return workloadMetric(snapshot, measure.metric, measure.kind, measure.node);
   const byId = guestLinesById(snapshot, filter);
   if (byId) return byId.join("\n");
-  if (CONTAINER_DETAIL_FILTERS[filter]) return containerDetails(snapshot, CONTAINER_DETAIL_FILTERS[filter]);
+  const detail = containerDetailFilter(snapshot, filter);
+  if (detail) return containerDetails(snapshot, detail.detail, detail.host);
+  // "stack arrstack", or a stack's bare name that isn't also a container's.
+  const stackName = /^stack (.+)$/u.exec(filter)?.[1] || filter;
+  const stack = containerStackNames(snapshot).find((name) => name.toLowerCase() === stackName);
+  if (stack && (stackName !== filter || !workloadNames(snapshot).some((name) => name.toLowerCase() === filter))) {
+    const lines = stackLines(snapshot, stack);
+    if (lines.length) return lines.join("\n");
+  }
   const nodeNames = (snapshot.infrastructure?.environments || []).flatMap((environment) => (environment.nodes || []).map((node) => String(node?.name || "")));
   const node = nodeNames.find((name) => name.toLowerCase() === filter);
   if (node) {
