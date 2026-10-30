@@ -92,3 +92,19 @@ test("an empty inventory yields no questions", () => {
   assert.deepEqual(generateQuestions({ infrastructure: {} }, { count: 50 }), []);
   assert.deepEqual(generateQuestions(null), []);
 });
+
+test("a malformed portainer section never throws and yields no container questions", () => {
+  const baseline = generateQuestions(labSnapshot(), { count: 500 });
+  const containerNames = /radarr|suggestarr|aliasvault|Jelly-Arr container|Main Docker/u;
+  for (const portainer of [[null], {}, [{ inventory: null }], [{ inventory: { containers: { a: 1 } } }], [{ inventory: { containers: [null, 5] } }]]) {
+    const snapshot = labSnapshot();
+    snapshot.infrastructure.portainer = portainer;
+    let questions;
+    assert.doesNotThrow(() => { questions = generateQuestions(snapshot, { count: 500 }); }, JSON.stringify(portainer));
+    assert.ok(questions.length > 0);
+    assert.ok(questions.some((q) => q.category === "guest-lookup"), "other questions remain");
+    assert.equal(questions.some((q) => q.category === "containers" || /same host|docker host/iu.test(q.text) && q.category === "neighbours"), false, JSON.stringify(portainer));
+    assert.equal(questions.some((q) => containerNames.test(q.text) && q.category !== "guest-lookup" && q.category !== "backups" && q.category !== "neighbours" && q.category !== "manual" && q.category !== "follow-up"), false);
+    assert.ok(questions.length < baseline.length);
+  }
+});

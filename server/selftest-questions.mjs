@@ -38,14 +38,25 @@ function finish(text) {
   return text.replace(CONTROL, " ").replace(/ {2,}/gu, " ").trim().slice(0, MAX_TEXT);
 }
 
+const objects = (value) => (Array.isArray(value) ? value.filter((item) => item && typeof item === "object") : []);
+
+/** Portainer servers reduced to well-formed entries, so a malformed one is skipped rather than thrown on. */
+function portainerOf(snapshot) {
+  return objects(snapshot?.infrastructure?.portainer).map((server) => ({
+    inventory: { containers: objects(server.inventory?.containers) }
+  }));
+}
+
 /** What the snapshot holds, reduced to the names and facts templates need. */
 function facts(snapshot) {
-  const environments = Array.isArray(snapshot?.infrastructure?.environments) ? snapshot.infrastructure.environments : [];
+  const environments = objects(snapshot?.infrastructure?.environments);
+  const portainer = portainerOf(snapshot);
+  const safe = { infrastructure: { portainer } };
   const nodes = [];
   const guests = [];
   for (const environment of environments) {
-    for (const node of environment?.nodes || []) if (nonEmpty(node?.name)) nodes.push(clean(node.name));
-    for (const workload of environment?.workloads || []) {
+    for (const node of objects(environment.nodes)) if (nonEmpty(node?.name)) nodes.push(clean(node.name));
+    for (const workload of objects(environment.workloads)) {
       if (workload?.template || !nonEmpty(workload?.name)) continue;
       guests.push({
         name: clean(workload.name),
@@ -60,17 +71,17 @@ function facts(snapshot) {
     // Same-named guests can only be told apart by number.
     guest.ref = counts.get(guest.name.toLowerCase()) > 1 && guest.vmid !== null ? `${guest.name} ${guest.kind} ${guest.vmid}` : guest.name;
   }
-  const containers = (snapshot?.infrastructure?.portainer || []).flatMap((server) => server?.inventory?.containers || [])
+  const containers = portainer.flatMap((server) => server.inventory.containers)
     .filter((container) => nonEmpty(container?.name))
     .map((container) => ({ name: clean(container.name), stack: nonEmpty(container.stack) ? clean(container.stack) : "" }));
-  const services = (Array.isArray(snapshot?.services) ? snapshot.services : [])
+  const services = objects(snapshot?.services)
     .map((service) => (nonEmpty(service?.label) ? service.label : service?.id)).filter(nonEmpty).map(clean);
   return {
     nodes: [...new Set(nodes)],
     guests,
     containers: [...new Map(containers.map((container) => [container.name.toLowerCase(), container])).values()],
-    hosts: containerHostNames(snapshot).filter(nonEmpty).map(clean),
-    stacks: containerStackNames(snapshot).filter(nonEmpty).map(clean),
+    hosts: containerHostNames(safe).filter(nonEmpty).map(clean),
+    stacks: containerStackNames(safe).filter(nonEmpty).map(clean),
     services: [...new Set(services)]
   };
 }
