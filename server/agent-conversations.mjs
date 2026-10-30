@@ -29,6 +29,9 @@ export const CONVERSATION_LIMITS = Object.freeze({
   maximumRatings: 50_000,
   maximumCorrectionChars: 4_000,
   maximumList: 100,
+  // Only list({ selfTest: "only" }) may return this many, so a whole
+  // self-test batch can be reviewed.
+  maximumSelfTestList: 2_000,
   maximumExport: 20_000
 });
 
@@ -262,7 +265,8 @@ export async function createConversationStore({ dataDir, clock = Date.now, guard
 
   /** The newest conversations first, as summaries. */
   async function list({ limit = 50, source = null, selfTest = undefined } = {}) {
-    const wanted = Math.min(bounds.maximumList, Math.max(1, Number.isSafeInteger(limit) ? limit : 50));
+    const ceiling = selfTest === "only" ? bounds.maximumSelfTestList : bounds.maximumList;
+    const wanted = Math.min(ceiling, Math.max(1, Number.isSafeInteger(limit) ? limit : 50));
     const results = [];
     for (const segment of (await segments()).reverse()) {
       const records = (await readSegment(segment.name)).reverse();

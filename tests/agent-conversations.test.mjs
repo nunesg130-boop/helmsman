@@ -140,3 +140,22 @@ test("export is unchanged by the marker", async (t) => {
   assert.deepEqual(Object.keys(b), Object.keys(a));
   assert.ok(!lines[1].includes("selfTest"));
 });
+
+test("a self-test listing may return more than the normal list ceiling", async (t) => {
+  const { conversations } = await store(t);
+  for (let index = 0; index < 130; index += 1) {
+    await conversations.record({ source: "question", model: "m", messages: exchange(`q${index}`, `a${index}`), selfTest: { id: `q-${index}`, category: "node" } });
+  }
+  assert.equal((await conversations.list({ selfTest: "only", limit: 5000 })).length, 130);
+  assert.equal((await conversations.list({ limit: 5000 })).length, 100, "a plain list is still capped at 100");
+  assert.equal((await conversations.list({ selfTest: "exclude", limit: 5000 })).length, 0);
+  assert.equal((await conversations.list({ source: "question", limit: 5000 })).length, 100);
+});
+
+test("the self-test listing ceiling can be lowered through limits", async (t) => {
+  const { conversations } = await store(t, { limits: { maximumSelfTestList: 3 } });
+  for (let index = 0; index < 5; index += 1) {
+    await conversations.record({ source: "question", model: "m", messages: exchange(`q${index}`, `a${index}`), selfTest: { id: `q-${index}`, category: "node" } });
+  }
+  assert.equal((await conversations.list({ selfTest: "only", limit: 5000 })).length, 3);
+});

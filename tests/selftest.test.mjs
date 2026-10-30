@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -63,7 +63,7 @@ function fakeAgent(conversations, behave = () => undefined) {
   return { askSelfTest, calls };
 }
 
-async function setup(t, { behave, keep = true, snapshot = labSnapshot(), dataDir = null, conversations = null } = {}) {
+async function setup(t, { behave, keep = true, snapshot = labSnapshot(), dataDir = null, conversations = null, realSleep = false } = {}) {
   const dir = dataDir || await mkdtemp(path.join(os.tmpdir(), "helmsman-selftest-"));
   if (!dataDir) t.after(() => rm(dir, { recursive: true, force: true }));
   let now = Date.parse("2026-10-30T12:00:00Z");
@@ -84,7 +84,7 @@ async function setup(t, { behave, keep = true, snapshot = labSnapshot(), dataDir
     conversationsKept: () => keep,
     clock,
     seed: () => SEED,
-    sleep: async (ms) => { sleeps.push(ms); }
+    sleep: realSleep ? undefined : async (ms) => { sleeps.push(ms); }
   });
   return { selfTest, agent, store, dataDir: dir, sleeps };
 }
@@ -407,4 +407,190 @@ test("review lists unrated first, pages 25 at a time, and flags changedFromBefor
   assert.ok(byCategory.items.every((item) => item.category === "node"));
 
   assert.equal((await selfTest.status()).unrated, 28);
+});
+
+const tick = () => new Promise((resolve) => setImmediate(resolve));
+
+test("two starts in the same tick run one loop", async (t) => {
+  const { selfTest, agent } = await setup(t);
+  const results = await Promise.allSettled([selfTest.start({ count: 6 }), selfTest.start({ count: 6 })]);
+  assert.deepEqual(results.map((result) => result.status).sort(), ["fulfilled", "rejected"]);
+  const rejected = results.find((result) => result.status === "rejected").reason;
+  assert.equal(rejected.code, "SELFTEST_RUNNING");
+  await selfTest.whenIdle();
+  const ids = agent.calls.map((call) => call.selfTest.id);
+  assert.deepEqual(ids, expected(6).map((q) => q.id), "each question asked once, in order");
+  const status = await selfTest.status();
+  assert.equal(status.done, 6);
+  assert.equal(status.asked, 6);
+});
+
+test("start and continue in the same tick run one loop", async (t) => {
+  const holds = new Map([[1, deferred()], [4, deferred()]]);
+  const { selfTest, agent, dataDir } = await setup(t, { behave: (call) => holds.get(call.index)?.promise });
+  await selfTest.start({ count: 8 });
+  const pairs = [() => [selfTest.continueRun(), selfTest.start({ count: 8 })], () => [selfTest.continueRun(), selfTest.continueRun()]];
+  for (const [round, index] of [1, 4].entries()) {
+    while (agent.calls.length < index + 1) await tick();
+    const stopping = selfTest.stop();
+    holds.get(index).resolve();
+    assert.ok((await stopping).queued > 0, "questions are left to continue");
+    const results = await Promise.allSettled(pairs[round]());
+    assert.equal(results.filter((result) => result.status === "rejected" && result.reason.code === "SELFTEST_RUNNING").length, 1);
+    assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
+  }
+  await selfTest.whenIdle();
+  const ids = agent.calls.map((call) => call.selfTest.id);
+  assert.equal(new Set(ids).size, ids.length, "no question asked twice");
+  const disk = await readState(dataDir);
+  assert.equal(new Set(disk.asked).size, disk.asked.length);
+  assert.equal(disk.asked.length, ids.length);
+});
+
+test("a write from something else stops the run with SELFTEST_CONFLICT and memory follows the file", async (t) => {
+  const hold = deferred();
+  const { selfTest, agent, dataDir } = await setup(t, { behave: (call) => (call.index === 2 ? hold.promise : undefined) });
+  await selfTest.start({ count: 8 });
+  while (agent.calls.length < 3) await tick();
+  const theirs = {
+    version: 1,
+    asked: ["q-theirs000001"],
+    queue: [],
+    current: null,
+    counts: { done: 0, failed: 0, categories: {} },
+    failures: [],
+    revision: "22222222-2222-4222-8222-222222222222",
+    updatedAt: "2026-10-30T13:00:00.000Z"
+  };
+  await writeFile(path.join(dataDir, "selftest.json"), `${JSON.stringify(theirs)}\n`, { mode: 0o600 });
+  hold.resolve();
+  await selfTest.whenIdle();
+  assert.equal(agent.calls.length, 3, "nothing more is asked");
+  const status = await selfTest.status();
+  assert.equal(status.running, false);
+  assert.match(status.reason, /SELFTEST_CONFLICT/u);
+  assert.equal(status.queued, 0, "memory holds what the file holds");
+  assert.equal(status.asked, 1);
+  assert.equal(status.done, 0);
+  assert.deepEqual(await readState(dataDir), theirs, "the other writer's file is left alone");
+});
+
+test("a batch of more than 100 is reviewed and counted in full", async (t) => {
+  const { selfTest } = await setup(t);
+  await selfTest.start({ count: 500 });
+  await selfTest.whenIdle();
+  const total = expected(500).length;
+  assert.ok(total > 100);
+  const status = await selfTest.status();
+  assert.equal(status.done, total);
+  assert.equal(status.unrated, total);
+  const items = [];
+  let cursor = null;
+  do {
+    const page = await selfTest.review({ cursor });
+    items.push(...page.items);
+    cursor = page.next;
+  } while (cursor);
+  assert.equal(items.length, total);
+  assert.equal(new Set(items.map((item) => item.conversationId)).size, total);
+});
+
+test("status shows the unasked questions left and a short batch is visible", async (t) => {
+  const { selfTest } = await setup(t);
+  const all = expected(500).length;
+  assert.equal((await selfTest.status()).unaskedLeft, generateQuestions(labSnapshot(), { seed: 1, count: 100_000 }).length);
+  const small = await selfTest.start({ count: 10 });
+  assert.equal(small.requested, 10);
+  assert.equal(small.queued, 10);
+  await selfTest.whenIdle();
+  const left = generateQuestions(labSnapshot(), { seed: SEED, count: 100_000, exclude: new Set(expected(10).map((q) => q.id)) }).length;
+  assert.ok(left > 0 && left < all);
+  assert.equal((await selfTest.status()).unaskedLeft, left);
+  const big = await selfTest.start({ count: 500 });
+  assert.equal(big.requested, 500);
+  assert.equal(big.queued, left, "the batch is shorter than asked for");
+  await selfTest.whenIdle();
+  // Questions whose text repeats one already used can still come with a new
+  // id, so a later batch may hold a few more; unaskedLeft predicts each one.
+  let predicted = (await selfTest.status()).unaskedLeft;
+  for (let round = 0; predicted > 0; round += 1) {
+    assert.ok(round < 10, "the questions run out");
+    const next = await selfTest.start({ count: 500 });
+    assert.equal(next.queued, predicted);
+    await selfTest.whenIdle();
+    predicted = (await selfTest.status()).unaskedLeft;
+  }
+  await assert.rejects(selfTest.start({ count: 5 }), (error) => error instanceof SelfTestError && error.status === 409 && error.code === "SELFTEST_EXHAUSTED");
+  assert.equal((await selfTest.status()).unaskedLeft, 0);
+});
+
+test("unaskedLeft is 0 with no snapshot", async (t) => {
+  const { selfTest } = await setup(t, { snapshot: null });
+  assert.equal((await selfTest.status()).unaskedLeft, 0);
+});
+
+test("stop resolves promptly when AGENT_BUSY arrives after stop", async (t) => {
+  const hold = deferred();
+  const { selfTest, agent } = await setup(t, {
+    realSleep: true,
+    behave: async (call) => {
+      if (call.index === 1) {
+        await hold.promise;
+        throw busy();
+      }
+      return undefined;
+    }
+  });
+  await selfTest.start({ count: 5 });
+  while (agent.calls.length < 2) await tick();
+  const startedAt = Date.now();
+  const stopping = selfTest.stop();
+  hold.resolve();
+  const status = await stopping;
+  assert.ok(Date.now() - startedAt < 2000, "no busy wait after stop");
+  assert.equal(status.running, false);
+  assert.equal(status.reason, "stopped");
+  assert.equal(agent.calls.length, 2);
+});
+
+test("stop during a busy wait resolves promptly and clears the timer", async (t) => {
+  let rejected = false;
+  const { selfTest, agent } = await setup(t, {
+    realSleep: true,
+    behave: (call) => {
+      if (call.index === 1 && !rejected) {
+        rejected = true;
+        throw busy();
+      }
+      return undefined;
+    }
+  });
+  const timers = () => process.getActiveResourcesInfo().filter((name) => name === "Timeout").length;
+  const before = timers();
+  await selfTest.start({ count: 5 });
+  while (agent.calls.length < 2) await tick();
+  for (let index = 0; index < 20; index += 1) await tick();
+  assert.equal(timers(), before + 1, "the busy wait holds one timer");
+  const startedAt = Date.now();
+  const status = await selfTest.stop();
+  assert.ok(Date.now() - startedAt < 2000);
+  assert.equal(status.running, false);
+  assert.equal(timers(), before, "the busy-wait timer is cleared");
+});
+
+test("a readable but unusable selftest.json is moved aside and the runner works", async (t) => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "helmsman-selftest-"));
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const bad = { version: 1, asked: "nope", queue: [], revision: "33333333-3333-4333-8333-333333333333" };
+  await writeFile(path.join(dataDir, "selftest.json"), `${JSON.stringify(bad)}\n`, { mode: 0o600 });
+  const { selfTest, agent } = await setup(t, { dataDir });
+  const status = await selfTest.status();
+  assert.equal(status.asked, 0);
+  assert.equal(status.reason, null);
+  await access(path.join(dataDir, "selftest.json.bad"));
+  assert.deepEqual(JSON.parse(await readFile(path.join(dataDir, "selftest.json.bad"), "utf8")), bad);
+  await selfTest.start({ count: 3 });
+  await selfTest.whenIdle();
+  assert.equal(agent.calls.length, 3);
+  assert.equal((await readState(dataDir)).asked.length, 3);
 });
