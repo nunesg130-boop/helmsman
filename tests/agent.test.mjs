@@ -107,7 +107,7 @@ async function harness(t, { modelReplies = null, lookupAddress = "10.1.0.20" } =
     if (host === "ai.test") {
       if (requestPath === "/v1/models") return { status: 200, json: { data: [{ id: "qwen2.5:3b" }] } };
       context.modelCalls.push(body);
-      const reply = modelReplies ? modelReplies(body, context) : { content: "Model note." };
+      const reply = modelReplies ? await modelReplies(body, context) : { content: "Model note." };
       return {
         status: 200,
         json: { choices: [{ message: { role: "assistant", content: reply.content ?? "", ...(reply.tool_calls ? { tool_calls: reply.tool_calls } : {}) } }] }
@@ -1492,4 +1492,143 @@ test("follow-ups get the earlier question's lookups, and nicknames for services 
   assert.ok(result.tools.includes("service_status"), "\"why?\" is about the service asked about");
   result = await ask("sonnar status");
   assert.match(result.messages.find((message) => message.tool_call_id?.startsWith("seed-service_status"))?.content || "", /^Nicknames in the question: "sonnar" means Sonarr\./u);
+});
+
+// ------------------------------------------------------------ self-test --
+
+const SELF_TEST = { id: "st-0001", category: "status" };
+
+function userQuestion(body) {
+  return body.messages.find((message) => message.role === "user")?.content || "";
+}
+
+test("askSelfTest saves a conversation marked with its id and category", async (t) => {
+  const { agent, context, publish } = await harness(t, { modelReplies: () => ({ content: "Sonarr is healthy." }) });
+  await configure(agent, { autonomy: false });
+  await publish(snapshotAt(context.now));
+  await api(agent, "PUT", "/api/v2/agent/conversations/settings", { keep: true, reports: false });
+  assert.equal(agent.conversationsKept(), true);
+
+  const result = await agent.askSelfTest({ question: "Is sonarr up?", history: [], selfTest: SELF_TEST });
+  assert.equal(result.answer, "Sonarr is healthy.");
+  assert.ok(result.toolsUsed.includes("overview"), "self-test questions start with the overview, like chat questions");
+  assert.match(result.conversationId, /^[a-f0-9-]{36}$/u);
+  assert.deepEqual(Object.keys(result).sort(), ["answer", "conversationId", "toolsUsed"]);
+
+  const listed = (await api(agent, "GET", "/api/v2/agent/conversations")).payload.items;
+  assert.equal(listed.length, 1);
+  assert.equal(listed[0].id, result.conversationId);
+  assert.equal(listed[0].source, "question");
+  assert.deepEqual(listed[0].selfTest, SELF_TEST);
+
+  // Validated the same way as a chat question.
+  await assert.rejects(agent.askSelfTest({ question: "  ", history: [], selfTest: SELF_TEST }), { code: "INVALID_QUESTION" });
+  await assert.rejects(agent.askSelfTest({ question: "x".repeat(5000), history: [], selfTest: SELF_TEST }), { code: "INVALID_QUESTION" });
+
+  await api(agent, "PUT", "/api/v2/agent/conversations/settings", { keep: false, reports: false });
+  assert.equal(agent.conversationsKept(), false);
+  const unsaved = await agent.askSelfTest({ question: "Is sonarr up?", history: [], selfTest: SELF_TEST });
+  assert.equal(unsaved.conversationId, null);
+});
+
+test("askSelfTest needs a model server", async (t) => {
+  const { agent, context, publish } = await harness(t);
+  await configure(agent, { autonomy: false, ai: false });
+  await publish(snapshotAt(context.now));
+  await assert.rejects(agent.askSelfTest({ question: "Is sonarr up?", history: [], selfTest: SELF_TEST }), { code: "AI_NOT_CONFIGURED" });
+});
+
+test("askSelfTest never proposes actions", async (t) => {
+  // A model that answers "restart sonarr" by proposing the restart, even
+  // when the tool is not offered, until it is told to answer.
+  const { agent, context, publish } = await harness(t, {
+    modelReplies: (body) => (body.messages.some((message) => message.tool_calls?.some((call) => call.function.name === "propose_action")
+      || (message.role === "user" && /^Answer now/u.test(message.content)))
+      ? { content: "Sonarr should be restarted." }
+      : { tool_calls: [{ id: "p1", type: "function", function: { name: "propose_action", arguments: JSON.stringify({ target: "container:sonarr", action: "restart", reason: "Asked to." }) } }] })
+  });
+  await configure(agent, { autonomy: false });
+  await publish(snapshotAt(context.now, { incidents: [sonarrIncident(context.now)] }));
+  await agent.idle();
+  const before = (await api(agent, "GET", "/api/v2/agent")).payload.proposals.length;
+
+  const result = await agent.askSelfTest({ question: "restart sonarr", history: [], selfTest: SELF_TEST });
+  assert.ok(context.modelCalls.length >= 1, "the command shortcut is skipped: the model answers it");
+  const offered = context.modelCalls.flatMap((body) => (body.tools || []).map((tool) => tool.function?.name));
+  assert.equal(offered.includes("propose_action"), false, "propose_action is never offered");
+  assert.equal(result.proposals, undefined);
+  assert.equal(result.answer, "Sonarr should be restarted.");
+  const state = (await api(agent, "GET", "/api/v2/agent")).payload;
+  assert.equal(state.proposals.length, before, "no proposal was created");
+  assert.equal(state.proposals.filter(({ status }) => status === "pending").length, before);
+  assert.equal(context.actions.length, 0);
+
+  // The same words in chat do become a proposal, so the check above is real.
+  const chat = await api(agent, "POST", "/api/v2/agent/ask", { question: "restart sonarr" });
+  assert.equal(chat.payload.proposals.length, 1);
+});
+
+test("askSelfTest counts against the hourly limit", async (t) => {
+  const { agent, context, publish } = await harness(t, { modelReplies: () => ({ content: "Fine." }) });
+  await configure(agent, { autonomy: false });
+  await publish(snapshotAt(context.now));
+  await api(agent, "PUT", "/api/v2/agent/ai", { questionsPerHour: 10 });
+  for (let index = 0; index < 10; index += 1) {
+    await agent.askSelfTest({ question: "Is sonarr up?", history: [], selfTest: { id: `st-${index}`, category: "status" } });
+  }
+  await assert.rejects(agent.askSelfTest({ question: "Is sonarr up?", history: [], selfTest: SELF_TEST }),
+    (error) => error.code === "AGENT_BUSY" && /10 questions in the last hour/u.test(error.message));
+  // The owner's chat shares the same budget.
+  await assert.rejects(api(agent, "POST", "/api/v2/agent/ask", { question: "Is sonarr up?" }), { code: "AGENT_BUSY" });
+  context.now += 3_600_001;
+  assert.ok((await agent.askSelfTest({ question: "Is sonarr up?", history: [], selfTest: SELF_TEST })).answer);
+});
+
+test("askSelfTest is not shown in the chat's recent questions", async (t) => {
+  const { agent, context, publish } = await harness(t, { modelReplies: (body) => ({ content: `Answer to ${userQuestion(body)}` }) });
+  await configure(agent, { autonomy: false });
+  await publish(snapshotAt(context.now));
+  await api(agent, "PUT", "/api/v2/agent/conversations/settings", { keep: true, reports: false });
+  await api(agent, "POST", "/api/v2/agent/ask", { question: "Is radarr up?" });
+  await agent.askSelfTest({ question: "Is sonarr up?", history: [], selfTest: SELF_TEST });
+
+  const chat = (await api(agent, "GET", "/api/v2/agent/conversations/chat")).payload.items;
+  assert.deepEqual(chat.map(({ question }) => question), ["Is radarr up?"]);
+  const all = (await api(agent, "GET", "/api/v2/agent/conversations")).payload.items;
+  assert.equal(all.length, 2, "the review list still shows both");
+});
+
+test("askSelfTest runs behind a waiting chat question", async (t) => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let blockedStarted;
+  const started = new Promise((resolve) => { blockedStarted = resolve; });
+  const { agent, context, publish } = await harness(t, {
+    modelReplies: async (body) => {
+      const question = userQuestion(body);
+      if (question === "first self-test") {
+        blockedStarted();
+        await gate;
+      }
+      return { content: `Answer to ${question}` };
+    }
+  });
+  await configure(agent, { autonomy: false });
+  await publish(snapshotAt(context.now));
+
+  const finished = [];
+  const track = (label, promise) => promise.then((result) => { finished.push(label); return result; });
+  const first = track("first self-test", agent.askSelfTest({ question: "first self-test", history: [], selfTest: { id: "st-1", category: "status" } }));
+  await started;
+  const second = track("second self-test", agent.askSelfTest({ question: "second self-test", history: [], selfTest: { id: "st-2", category: "status" } }));
+  // Let the second self-test reach the queue before the chat question arrives.
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const chat = track("chat", api(agent, "POST", "/api/v2/agent/ask", { question: "chat question" }));
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  // A self-test question arriving after the chat question waits behind it too.
+  const third = track("third self-test", agent.askSelfTest({ question: "third self-test", history: [], selfTest: { id: "st-3", category: "status" } }));
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  release();
+  await Promise.all([first, second, chat, third]);
+  assert.deepEqual(finished, ["first self-test", "chat", "second self-test", "third self-test"]);
 });

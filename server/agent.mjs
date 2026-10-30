@@ -680,7 +680,7 @@ export async function createAgent(options) {
     return total() <= budget;
   }
 
-  async function converse({ prompt, history = [], allowProposals, source, service = null, maxReplyTokens = MAX_REPLY_TOKENS, seedOverview = false }) {
+  async function converse({ prompt, history = [], allowProposals, source, service = null, maxReplyTokens = MAX_REPLY_TOKENS, seedOverview = false, selfTest = undefined }) {
     const { ai, settings } = config();
     if (!ai) throw new AgentError(409, "AI_NOT_CONFIGURED", "Connect a model server first.");
     const sender = modelSender(ai);
@@ -886,7 +886,7 @@ export async function createAgent(options) {
     }
     // Small models add markdown bold despite being asked for plain text.
     const text = plainText(String(answer || "").replace(/\*\*(.+?)\*\*/gu, "$1").replace(/__(.+?)__/gu, "$1"), MAX_NOTE_CHARS) || "The model did not give an answer.";
-    const conversationId = answer ? await saveConversation({ source, ai, messages, tools, answer: text, startedAt, service }) : null;
+    const conversationId = answer ? await saveConversation({ source, ai, messages, tools, answer: text, startedAt, service, selfTest }) : null;
     return {
       text,
       toolsUsed: [...new Set(toolsUsed)],
@@ -1514,7 +1514,7 @@ export async function createAgent(options) {
 
   // Saves one finished exchange when the owner keeps conversations. Never
   // fails the answer itself.
-  async function saveConversation({ source, ai, messages, tools, answer, startedAt, service }) {
+  async function saveConversation({ source, ai, messages, tools, answer, startedAt, service, selfTest = undefined }) {
     const policy = conversationsPolicy();
     if (!policy.keep || (source !== "question" && !policy.reports)) return null;
     try {
@@ -1524,7 +1524,8 @@ export async function createAgent(options) {
         service,
         durationMs: clock() - startedAt,
         tools,
-        messages: [...messages.map(({ historic, ...message }) => message), { role: "assistant", content: answer }]
+        messages: [...messages.map(({ historic, ...message }) => message), { role: "assistant", content: answer }],
+        ...(selfTest ? { selfTest } : {})
       });
     } catch {
       log("Helmsman could not save an agent conversation.");
@@ -2353,8 +2354,9 @@ export async function createAgent(options) {
     });
   }
 
-  async function ask(body) {
-    requireKeys(body, ["question", "history"]);
+  // Checks a question and takes one slot of the hourly question limit.
+  // Shared by the owner's chat and the self-test, so both count the same.
+  function acceptQuestion(body) {
     if (typeof body.question !== "string" || !body.question.trim() || body.question.length > MAX_QUESTION_CHARS) {
       fail(400, "INVALID_QUESTION", `Ask a question of up to ${MAX_QUESTION_CHARS} characters.`);
     }
@@ -2363,8 +2365,12 @@ export async function createAgent(options) {
     if (!questionRate.take(clock(), perHour)) {
       fail(429, "AGENT_BUSY", `That's ${perHour} questions in the last hour, the limit set under Settings → Agent → Model server. Try again later, or raise it there.`);
     }
-    const history = historyInput(body.history);
-    const question = plainText(body.question, MAX_QUESTION_CHARS);
+    return { history: historyInput(body.history), question: plainText(body.question, MAX_QUESTION_CHARS) };
+  }
+
+  async function ask(body) {
+    requireKeys(body, ["question", "history"]);
+    const { history, question } = acceptQuestion(body);
     pruneProposals();
     const pending = [...proposals.values()].filter((proposal) => proposal.status === "pending");
     // Approval only ever happens through the button, so a typed "yes" can
@@ -2401,6 +2407,27 @@ export async function createAgent(options) {
       answer: result.text,
       toolsUsed: result.toolsUsed,
       proposals: result.proposals.map((id) => proposals.get(id)).filter(Boolean).map(publicProposal),
+      conversationId: result.conversationId || null
+    };
+  }
+
+  // The self-test's way in: the same model path as a chat question, but it
+  // can never propose an action (no command shortcut, no propose_action),
+  // waits behind anything already queued so the owner's chat goes first,
+  // and marks its saved conversation. Not reachable over HTTP.
+  async function askSelfTest(body) {
+    requireKeys(body, ["question", "history", "selfTest"]);
+    const { history, question } = acceptQuestion(body);
+    const selfTest = body.selfTest;
+    const job = enqueue({
+      key: `selftest:${randomUUID()}`,
+      run: () => converse({ prompt: question, history, allowProposals: false, source: "question", seedOverview: true, selfTest })
+    });
+    if (!job) fail(429, "AGENT_BUSY", "The agent is busy. Try again in a moment.");
+    const result = await job;
+    return {
+      answer: result.text,
+      toolsUsed: result.toolsUsed,
       conversationId: result.conversationId || null
     };
   }
@@ -2523,7 +2550,7 @@ export async function createAgent(options) {
         return sendJson(response, 200, { settings: conversationsPolicy(), status: await conversationStore.status(), items: await conversationStore.list({ limit: 100 }) });
       }
       if (route === "/conversations/chat" && method === "GET") {
-        return sendJson(response, 200, { items: conversationsPolicy().keep ? await conversationStore.list({ limit: 20, source: "question" }) : [] });
+        return sendJson(response, 200, { items: conversationsPolicy().keep ? await conversationStore.list({ limit: 20, source: "question", selfTest: "exclude" }) : [] });
       }
       if (route === "/conversations" && method === "DELETE") {
         await conversationStore.clear();
@@ -2585,6 +2612,8 @@ export async function createAgent(options) {
   return {
     handleApi,
     onSnapshot,
+    askSelfTest,
+    conversationsKept: () => conversationsPolicy().keep,
     start() {
       if (started) return;
       started = true;
