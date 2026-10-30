@@ -1,4 +1,4 @@
-# Helmsman v1.16.7
+# Helmsman v1.16.8
 
 Helmsman is a self-hosted operations center for a homelab's media services and infrastructure. It runs as one portable Linux container on Docker Desktop, Linux, macOS, compatible NAS platforms, AMD64, and ARM64.
 
@@ -14,6 +14,17 @@ Helmsman is a self-hosted operations center for a homelab's media services and i
 This Helmsman is the media and infrastructure dashboard in this repository. It
 is not affiliated with or derived from the existing Kubernetes project also
 named [Helmsman](https://github.com/mkubaczyk/helmsman).
+
+## v1.16.8
+
+**Lookups for what was still missing**, from a graded run of 1,000 questions on v1.16.7 (68% right, up from 61%):
+- **A node's own figures come first:** "Main cpu %", "RAM norco is using" and "how long has Main been up" put the node's line ahead of its guests' ranking. With only the guests listed, the model answered with a guest's number as the node's.
+- **Size rankings:** "which VM has the most cores" and "RAM assigned to each LXC" rank what each guest was given, stopped ones included, with the total. They used to get the CPU or memory use ranking.
+- **Uptime ranking:** "which VM has been up longest" ranks the running guests by uptime.
+- **Container details for one host:** "images on Jelly-Arr" and "stacks in Main Docker" get that detail for that host only. The images list for every host leaves off ":latest" and says so, because in full it ran past the output limit and got cut off.
+- **Compose stacks by name:** "arrstack" and "the paperless stack" list that stack's containers with their state, image and ports.
+- **Container health:** "which containers have no healthcheck" gets each host's containers grouped by health, noting that a missing healthcheck is not a fault.
+- **Neighbours:** "what else is on the same node as frigate" and "what runs alongside radarr" add the node or Docker host it runs on, with everything else there. These were answered "none".
 
 ## v1.16.7
 
@@ -439,7 +450,7 @@ Helmsman's project-owned logging mark. Original generic VM/container workload
 drawings are also bundled. See
 [the asset notices](assets/services/THIRD_PARTY_NOTICES.md).
 
-Helmsman v1.16.7 combines built-in logging, optional Loki search, Portainer monitoring, a private persistent state/artwork cache, and a small, fixed set of confirmed recovery actions under Infrastructure with targeted media recovery actions and Helmsman's cluster-aware Proxmox model:
+Helmsman v1.16.8 combines built-in logging, optional Loki search, Portainer monitoring, a private persistent state/artwork cache, and a small, fixed set of confirmed recovery actions under Infrastructure with targeted media recovery actions and Helmsman's cluster-aware Proxmox model:
 
 - Media and Infrastructure are separate workspaces inside the same authenticated application, and only the selected workspace's navigation is shown;
 - the desktop sidebar collapses to an icon rail, remembers that preference, keeps its navigation scrollable at high browser zoom, and keeps its collapse control in the sidebar's brand row (under the brand mark when collapsed);
@@ -485,7 +496,7 @@ Helmsman v1.16.7 combines built-in logging, optional Loki search, Portainer moni
 
 ## Deploy the published container
 
-Helmsman is distributed as the public Linux AMD64/ARM64 image `ghcr.io/nunesg130-boop/helmsman`. The `v1.16.7` Git tag runs the contracts and architecture smoke tests, publishes the version, `latest`, and full-commit image tags, and creates a GitHub Release containing ready-to-use `compose.yaml`, `container.env.example`, and `SHA256SUMS` assets. The release deployment files pin `ghcr.io/nunesg130-boop/helmsman` to the exact multi-architecture manifest digest (`@sha256:...`).
+Helmsman is distributed as the public Linux AMD64/ARM64 image `ghcr.io/nunesg130-boop/helmsman`. The `v1.16.8` Git tag runs the contracts and architecture smoke tests, publishes the version, `latest`, and full-commit image tags, and creates a GitHub Release containing ready-to-use `compose.yaml`, `container.env.example`, and `SHA256SUMS` assets. The release deployment files pin `ghcr.io/nunesg130-boop/helmsman` to the exact multi-architecture manifest digest (`@sha256:...`).
 
 Download those three files from the matching [GitHub Release](https://github.com/nunesg130-boop/helmsman/releases) into one directory, verify the two deployment files against `SHA256SUMS`, open a terminal there, and make sure Docker Desktop or Docker Engine is running. No source checkout, Dockerfile, Node.js installation, or server-side image build is required.
 

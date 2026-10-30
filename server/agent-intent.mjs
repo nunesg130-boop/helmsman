@@ -7,7 +7,7 @@
 // for "is X up" or "why is X down"; indexer, container and queue lists when
 // the question is about those; one service's own status when it names one.
 
-import { containerHostNames, matchByName, NAME_ALIASES, workloadNames } from "./agent-tools.mjs";
+import { containerHostNames, containerStackNames, matchByName, NAME_ALIASES, workloadNames } from "./agent-tools.mjs";
 
 export { HELMSMAN_HELP } from "./agent-help.mjs";
 
@@ -179,8 +179,13 @@ function namedInQuestion(snapshot, question, { workloadWords, namesOnly }) {
 const MEASURES = [
   ["backups", /\b(?:backed up|last backup|backups?)\b/u],
   ["memory", /\b(?:memory|ram|gb)\b/u],
-  ["cpu", /\b(?:cpu|vcpus?|cores?|busiest|busy|busier|load|active|activity|idle|quiet(?:est)?|least work|doing the least)\b/u]
+  ["cpu", /\b(?:cpu|vcpus?|cores?|busiest|busy|busier|load|active|activity|idle|quiet(?:est)?|least work|doing the least)\b/u],
+  ["uptime", /\b(?:uptime|been up|up (?:the )?longest|longest[- ]running|running (?:the )?longest|(?:most|least) recently (?:started|restarted|rebooted)|(?:last|recently) (?:started|restarted|rebooted))\b/u]
 ];
+
+// Sizes given rather than use: "which VM has the most cores", "RAM assigned
+// to each LXC". cpu then means assigned cores and memory the allowance.
+const ALLOCATION = /\b(?:allocat\w*|assigned|provisioned|configured with|sized?|biggest|largest|smallest|how many (?:cores|vcpus?)|(?:most|fewest|least|more|fewer) (?:cores|vcpus?)|(?:cores|vcpus?) (?:each|per|does|do)|given)\b/u;
 
 /** The measures a question asks to rank by, in the order it names them, with "vms"/"lxcs" when it says only one kind. */
 function measuresIn(question) {
@@ -189,13 +194,49 @@ function measuresIn(question) {
   const only = vms && !lxcs ? " vms" : lxcs && !vms ? " lxcs" : "";
   // About nodes alone ("is norco busy", "node cpu"), not guests: the node's lines answer it.
   const nodesOnly = /\bnodes?\b/u.test(question) && !/\b(?:guests?|vms?|lxcs?)\b/u.test(question);
+  const allocation = ALLOCATION.test(question) && !/\b(?:using|uses|used|use|usage|consum\w*|hog\w*|busy|busiest|load|free)\b/u.test(question);
+  const containers = /\b(?:containers?|docker|portainer|stacks?)\b/u.test(question) && !/\b(?:vms?|lxcs?|guests?)\b/u.test(question);
   return MEASURES
     .filter(([metric, pattern]) => pattern.test(question)
       && !(metric === "backups" && /\b(?:stored|where|location|kept)\b/u.test(question))
+      && !(metric === "uptime" && containers)
       && !(metric !== "backups" && nodesOnly))
-    .map(([metric, pattern]) => ({ filter: `${metric}${only}`, at: question.search(pattern) }))
+    .map(([metric, pattern]) => ({ metric: allocation ? { cpu: "cores", memory: "allocated" }[metric] || metric : metric, at: question.search(pattern) }))
     .sort((left, right) => left.at - right.at)
-    .map(({ filter }) => filter);
+    .map(({ metric }) => `${metric}${only}`);
+}
+
+// "What else is on the same node as frigate", "what runs alongside radarr":
+// the named thing's node or Docker host, with everything on it.
+const COLOCATED = /\b(?:co-?located|same (?:node|host|machine|server|vm|docker host) as|alongside|next to|neighbou?rs?|shares? (?:a |the |its )?(?:node|host|machine)|sharing (?:a |the |its )?(?:node|host)|what else (?:is|runs|lives) on)\b/u;
+
+/** Where a guest or container runs: its node's name, or its Docker host's. */
+function homeOf(snapshot, name) {
+  const wanted = String(name || "").toLowerCase();
+  const homes = new Set();
+  for (const environment of snapshot?.infrastructure?.environments || []) {
+    for (const workload of environment.workloads || []) {
+      if (!workload.template && String(workload.name || "").toLowerCase() === wanted && workload.node) homes.add(String(workload.node));
+    }
+  }
+  for (const server of snapshot?.infrastructure?.portainer || []) {
+    for (const container of server.inventory?.containers || []) {
+      if (String(container.name || "").toLowerCase() === wanted && container.environmentName) homes.add(String(container.environmentName));
+    }
+  }
+  return [...homes];
+}
+
+/** Compose stacks the question names whole ("arrstack", "the paperless stack"). */
+function stacksIn(snapshot, question) {
+  const containerNames = workloadNames(snapshot).map((name) => String(name || "").toLowerCase());
+  const saysStack = /\b(?:stacks?|compose)\b/u.test(question);
+  return containerStackNames(snapshot).filter((stack) => {
+    const lower = stack.toLowerCase();
+    if (!new RegExp(`(^|[^a-z0-9])${escapeRegex(lower)}(?=$|[^a-z0-9])`, "u").test(question)) return false;
+    // A stack named like one of its containers ("grafana") is that container unless "stack" is said.
+    return saysStack || !containerNames.some((name) => name === lower || name.startsWith(`${lower}-`) || name.startsWith(`${lower}_`));
+  });
 }
 
 // Questions about a whole container's details, answered for every container
@@ -204,6 +245,7 @@ const CONTAINER_DETAILS = [
   ["ports", /\b(?:ports?|published|publish(?:es|ing)?|expos(?:e|es|ed|ing))\b/u],
   ["images", /\b(?:images?|tags?|tagged|ghcr|linuxserver|registry|repository|repositories)\b/u],
   ["stacks", /\b(?:stacks?|compose)\b/u],
+  ["health", /\b(?:health|healthy|healthchecks?|health checks?)\b/u],
   ["uptime", /\b(?:uptime|up for|been up|started|recreated|created|restarted)\b/u]
 ];
 
@@ -249,7 +291,16 @@ export function workloadQueries(snapshot, text, { workloadWords = false, namesOn
   const idNames = new Set((snapshot?.infrastructure?.environments || []).flatMap((environment) => (environment.workloads || []))
     .filter((workload) => ids.includes(String(workload.vmid))).map((workload) => String(workload.name || "").toLowerCase()));
   const things = named.filter((item) => item.name && (item.exact || !sure) && !idNames.has(item.name.toLowerCase())).map((item) => item.name);
-  if (hosts.length && !namesOnly && !ids.length && !things.length) return hosts.slice(0, 2).map((filter) => ({ filter }));
+  // "Images on Jelly-Arr", "stacks in Main Docker": that one detail, for that host.
+  const hostDetail = CONTAINER_DETAILS.find(([, pattern]) => pattern.test(rest));
+  if (hosts.length && !namesOnly && !ids.length && !things.length) {
+    return hosts.slice(0, 2).map((host) => ({ filter: hostDetail ? `containers ${hostDetail[0]} ${host.toLowerCase()}` : host }));
+  }
+  // A compose stack by name: its containers, wherever they run.
+  const stacks = namesOnly ? [] : stacksIn(snapshot, question);
+  if (stacks.length && !ids.length && !things.some((thing) => !stacks.some((stack) => thing.toLowerCase().startsWith(stack.toLowerCase())))) {
+    return stacks.slice(0, 2).map((stack) => ({ filter: `stack ${stack.toLowerCase()}` }));
+  }
   // "Rank the VMs on norco by CPU", "backups on Main": the ranking for that
   // node only, sorted by code, not that node's lines in inventory order.
   // "How much RAM is installed in Main" is about the node itself.
@@ -260,6 +311,11 @@ export function workloadQueries(snapshot, text, { workloadWords = false, namesOn
   }
   const hostFilters = namesOnly ? [] : hosts.filter((host) => !things.some((thing) => thing.toLowerCase() === host.toLowerCase()));
   const filters = [...ids, ...things, ...hostFilters];
+  // "Same node as frigate": frigate's line, then everything on its node or host.
+  if (filters.length && !namesOnly && COLOCATED.test(question)) {
+    const homes = [...new Set(things.flatMap((thing) => homeOf(snapshot, thing)))].filter((home) => !filters.some((filter) => filter.toLowerCase() === home.toLowerCase()));
+    if (homes.length) return [...filters.slice(0, 2), ...homes.slice(0, 2)].map((filter) => ({ filter }));
+  }
   if (filters.length) {
     // "Where does ollama rank for memory": its line and the ranking.
     const ranking = /\b(?:rank(?:s|ed|ing)?|top|highest|lowest|most|least|busiest|order|sit|outrank)\b/u.test(question.replace(/\bmost recent(?:ly)?\b/gu, ""));
@@ -283,7 +339,7 @@ export function workloadQueries(snapshot, text, { workloadWords = false, namesOn
 /** Whether a lookup names one thing ("seerr", "109") rather than a kind or a ranking. */
 export function namesSomething(query) {
   const filter = String(query?.filter || "").toLowerCase();
-  return Boolean(filter) && !/^(?:containers?|vms|lxcs|nodes|memory|cpu|backups)\b/u.test(filter);
+  return Boolean(filter) && !/^(?:containers?|vms|lxcs|nodes|memory|cpu|backups|uptime|cores|allocated)\b/u.test(filter);
 }
 
 /**
