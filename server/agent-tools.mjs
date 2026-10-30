@@ -197,11 +197,13 @@ function gigabytes(bytes) {
 }
 
 /** "41% (3.3 of 8 GB)": the share and, when known, the sizes, so "how many GB" is copied, not guessed. */
-function memoryText(used, total) {
+function memoryText(used, total, { free = false } = {}) {
   const share = percent(used, total);
   const usedGb = gigabytes(used);
   const totalGb = gigabytes(total);
-  if (usedGb && totalGb) return `${share} (${usedGb} of ${totalGb} GB)`;
+  // "free" worked out by code: asked "how much is free", models subtracted wrong.
+  const freeGb = free && Number.isFinite(used) && Number.isFinite(total) && total > used ? gigabytes(total - used) : null;
+  if (usedGb && totalGb) return `${share} (${usedGb} of ${totalGb} GB${freeGb ? `, ${freeGb} GB free` : ""})`;
   return totalGb ? `${share} of ${totalGb} GB` : share;
 }
 
@@ -243,15 +245,65 @@ export function sharedNameNotes(snapshot) {
   return notes;
 }
 
-/** The guest a Portainer environment of the same name runs on ("Jelly-Arr" is also VM 100). */
+// The owner's manual for the snapshot a tool is answering from, so a Docker
+// host can be matched to its guest by what the manual says runs there.
+const MANUAL_FOR = new WeakMap();
+
+// Words in container and stack names too common to identify a host by.
+const HOST_WORD_STOP = new Set(("docker socket proxy portainer agent server worker postgres postgresql db database "
+  + "redis valkey broker webserver web site form handler tech main helmsman latest").split(" "));
+
+/**
+ * Which guest a Portainer environment named unlike any guest ("Main Docker",
+ * "PVE-2") runs on, from the manual: the guest's row that names the most of
+ * that environment's stacks and containers ("109 docker VM ... Paperless,
+ * Docspell, AliasVault, Donetick"). Null unless one guest clearly wins.
+ */
+function manualHostGuest(snapshot, environmentName) {
+  const manual = MANUAL_FOR.get(snapshot);
+  if (!manual) return null;
+  const containers = (snapshot.infrastructure?.portainer || []).flatMap((server) => server.inventory?.containers || [])
+    .filter((container) => String(container.environmentName || "") === environmentName);
+  const words = new Set(containers.flatMap((container) => [container.stack, container.name])
+    .flatMap((name) => String(name || "").toLowerCase().replace(/-\d+$/u, "").split(/[^a-z0-9]+/u))
+    .filter((word) => word.length >= 4 && !HOST_WORD_STOP.has(word) && !/^\d+$/u.test(word)));
+  if (words.size < 2) return null;
+  const guests = (snapshot.infrastructure?.environments || []).flatMap((environment) => guestsOf(environment));
+  const scores = new Map();
+  for (const line of manual.split(/\r?\n/u)) {
+    const lower = line.toLowerCase();
+    for (const guest of guests) {
+      const id = String(guest.vmid);
+      const name = String(guest.name || "").toLowerCase();
+      // The guest's own row: its number beside its name or its kind.
+      const own = new RegExp(`(?:^|[^0-9.])${id}(?![0-9])`, "u").test(lower)
+        && (lower.includes(name) || new RegExp(`\\b(?:vm|lxc|ct)\\s*${id}\\b`, "u").test(lower));
+      if (!own) continue;
+      const score = [...words].filter((word) => new RegExp(`\\b${word}\\b`, "u").test(lower)).length;
+      if (score > (scores.get(guest) || 0)) scores.set(guest, score);
+    }
+  }
+  const ranked = [...scores].sort((left, right) => right[1] - left[1]);
+  if (!ranked.length || ranked[0][1] < 2 || (ranked[1] && ranked[1][1] === ranked[0][1])) return null;
+  return ranked[0][0];
+}
+
+/**
+ * The guest a Portainer environment runs on: one of the same name ("Jelly-Arr"
+ * is also VM 100), or the one the manual says runs its containers ("Main
+ * Docker" is docker VM 109). Models otherwise said the VMs named docker
+ * weren't Docker hosts.
+ */
 function hostGuest(snapshot, environmentName) {
   const wanted = String(environmentName || "").toLowerCase();
   if (!wanted) return null;
+  const describe = (guest, note = "") => `${guest.type === "lxc" ? "LXC" : "VM"} ${guest.vmid}${note ? ` ${untrusted(guest.name, 40)}` : ""} on node ${untrusted(guest.node, 40)}${note}`;
   for (const environment of snapshot.infrastructure?.environments || []) {
     const guest = guestsOf(environment).find((workload) => String(workload.name || "").toLowerCase() === wanted);
-    if (guest) return `${guest.type === "lxc" ? "LXC" : "VM"} ${guest.vmid} on node ${untrusted(guest.node, 40)}`;
+    if (guest) return describe(guest);
   }
-  return null;
+  const guest = manualHostGuest(snapshot, String(environmentName));
+  return guest ? describe(guest, ", per your manual") : null;
 }
 
 function portsText(ports) {
@@ -271,7 +323,7 @@ function workloadLines(snapshot) {
     // (Main)" read as norco being on a node called Main.
     const where = environments.length > 1 ? `, ${withKind(envName, "Proxmox")}` : "";
     for (const node of environment.nodes || []) {
-      lines.push(`node ${untrusted(node.name, 40)} (${withKind(envName, "Proxmox")}): ${node.status}${upText(node.uptimeSeconds)}, cpu ${node.cpuPercent ?? "?"}%${coresText(node.cpuCores)}, memory ${memoryText(node.memoryUsedBytes, node.memoryTotalBytes)}, ${guestCountText(guestsOf(environment, String(node.name || "")))}`);
+      lines.push(`node ${untrusted(node.name, 40)} (${withKind(envName, "Proxmox")}): ${node.status}${upText(node.uptimeSeconds)}, cpu ${node.cpuPercent ?? "?"}%${coresText(node.cpuCores)}, memory ${memoryText(node.memoryUsedBytes, node.memoryTotalBytes, { free: true })}, ${guestCountText(guestsOf(environment, String(node.name || "")))}`);
     }
     for (const workload of guestsOf(environment)) {
       const kind = workload.type === "lxc" ? "lxc" : "vm";
@@ -514,7 +566,7 @@ function workloadMetric(snapshot, metric, kind = null, node = null) {
     ? (Number.isFinite(workload.cpuPercent) ? workload.cpuPercent : -1)
     : (Number.isFinite(workload.memoryUsedBytes) && workload.memoryTotalBytes > 0 ? workload.memoryUsedBytes / workload.memoryTotalBytes : -1));
   const ranked = running.sort((left, right) => value(right) - value(left))
-    .map((workload, index) => `${index + 1}. ${name(workload)}: ${metric === "cpu" ? `${workload.cpuPercent ?? "?"}%${coresText(workload.cpuCores)}` : memoryText(workload.memoryUsedBytes, workload.memoryTotalBytes)}`);
+    .map((workload, index) => `${index + 1}. ${name(workload)}: ${metric === "cpu" ? `${workload.cpuPercent ?? "?"}%${coresText(workload.cpuCores)}` : memoryText(workload.memoryUsedBytes, workload.memoryTotalBytes, { free: true })}`);
   if (!ranked.length) return `No ${noun}${onNode} is running.${stoppedNote}`;
   return [...notes, `${metric === "cpu" ? "CPU" : "Memory"} use of each running ${noun}${onNode}, highest first (percent of its own allowance): ${ranked.join(", ")}.${stoppedNote}`].join("\n");
 }
@@ -622,11 +674,23 @@ function containerDetails(snapshot, detail, hostFilter = null) {
     let items;
     if (detail === "ports") items = containers.map((container) => `${name(container)} ${Array.isArray(container.ports) ? portsText(container.ports).replace(/^ports /u, "") : "ports unknown"}`);
     else if (detail === "images") {
-      items = containers.map((container) => {
-        if (!container.image) return `${name(container)} image unknown`;
+      // Split into ":latest" and the rest, said in words: a note that a
+      // missing tag meant latest was read backwards ("none use latest").
+      const latest = [];
+      const pinned = [];
+      const unknown = [];
+      for (const container of containers) {
+        if (!container.image) { unknown.push(name(container)); continue; }
         const image = untrusted(container.image, 60).replace(/^(?:docker\.io\/)?(?:library\/)?/u, "");
-        return `${name(container)} ${shortTags ? image.replace(/:latest$/u, "") : image}`;
-      });
+        const tag = /:([^:/@]+)$/u.exec(image)?.[1];
+        if (!tag || tag === "latest") latest.push(`${name(container)} ${shortTags ? image.replace(/:latest$/u, "") : image}`);
+        else pinned.push(`${name(container)} ${image}`);
+      }
+      items = [
+        latest.length ? `${latest.length} on the latest tag: ${latest.join(", ")}` : "none on the latest tag",
+        pinned.length ? `${pinned.length} on other tags: ${pinned.join(", ")}` : "",
+        unknown.length ? `image unknown: ${unknown.join(", ")}` : ""
+      ].filter(Boolean);
     } else if (detail === "uptime") items = containers.map((container) => `${name(container)} ${untrusted(container.status, 40) || untrusted(container.state, 20)}`);
     else if (detail === "health") {
       // Grouped by health, so "which have no healthcheck" is a list to copy.
@@ -652,7 +716,7 @@ function containerDetails(snapshot, detail, hostFilter = null) {
   }
   const what = {
     ports: "Published ports (host->container) of each container",
-    images: `Image of each container${shortTags ? " (no tag shown means :latest)" : ""}`,
+    images: `Image of each container${shortTags ? ", the latest-tag ones listed without the \":latest\"" : ""}`,
     uptime: "State of each container as Docker reports it",
     health: "Healthcheck result of each container (running ones; many images define no healthcheck, which is not a fault)",
     stacks: "Compose stacks on each Docker host"
@@ -699,6 +763,18 @@ function listWorkloads(snapshot, _context, args) {
   if (measure) return workloadMetric(snapshot, measure.metric, measure.kind, measure.node);
   const byId = guestLinesById(snapshot, filter);
   if (byId) return byId.join("\n");
+  // "ids 151-999": guests by number range, sorted by code. Asked "IDs above
+  // 150" or "100 through 110", models skipped or invented numbers in a list.
+  const range = /^ids (\d{1,9})-(\d{1,9})$/u.exec(filter);
+  if (range) {
+    const [low, high] = [Number(range[1]), Number(range[2])].sort((left, right) => left - right);
+    const inRange = (snapshot.infrastructure?.environments || []).flatMap((environment) => guestsOf(environment))
+      .filter((workload) => Number(workload.vmid) >= low && Number(workload.vmid) <= high)
+      .sort((left, right) => Number(left.vmid) - Number(right.vmid));
+    const label = high >= 999_999_999 ? `above ${low - 1}` : `from ${low} to ${high}`;
+    if (!inRange.length) return `No VM or LXC has an ID ${label}.`;
+    return `${inRange.length} guest${inRange.length === 1 ? "" : "s"} with IDs ${label}, in order: ${inRange.map((workload) => `${workload.vmid} ${untrusted(workload.name, 40)} (${workload.type === "lxc" ? "LXC" : "VM"}, ${untrusted(workload.node, 30)}, ${workload.status})`).join(", ")}.`;
+  }
   const detail = containerDetailFilter(snapshot, filter);
   if (detail) return containerDetails(snapshot, detail.detail, detail.host);
   // "stack arrstack", or a stack's bare name that isn't also a container's.
@@ -1225,6 +1301,7 @@ export async function runTool(name, args, context) {
   const snapshot = context.snapshot();
   if (!snapshot) return "Helmsman has not finished its first health check yet.";
   try {
+    if (typeof snapshot === "object") MANUAL_FOR.set(snapshot, String(context.manual?.() || ""));
     return clip(await definition.run(snapshot, context, args && typeof args === "object" ? args : {}));
   } catch {
     return `The ${name} tool failed.`;

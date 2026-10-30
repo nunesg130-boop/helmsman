@@ -729,7 +729,7 @@ export async function createAgent(options) {
         const history = await runTool("history", period, toolContext);
         messages.push(
           { role: "assistant", content: "", tool_calls: [{ id: "seed-history", type: "function", function: { name: "history", arguments: JSON.stringify({ hours: Math.max(1, Math.round((period.to - period.from) / 3_600_000)) }) } }] },
-          { role: "tool", tool_call_id: "seed-history", content: `${history}\nAnswer the question from this history. It is complete for what Helmsman monitors; do not add problems or calm periods it does not show.` }
+          { role: "tool", tool_call_id: "seed-history", content: `${history}\nAnswer the question from this history. It is complete for what Helmsman monitors; do not add problems or calm periods it does not show. A VM, LXC or container missing from it had no problem recorded: Helmsman still sees it (its line, if looked up, is below), but keeps no start and stop history for it, only its current state and uptime.` }
         );
         toolsUsed.push("history");
       }
