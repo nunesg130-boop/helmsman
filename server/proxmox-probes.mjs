@@ -812,6 +812,10 @@ function mergeNodeInventory(parts, discovery, version) {
   return nodes.slice(0, MAX_ITEMS);
 }
 
+function nameKey(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
 function mergeProxmoxInventory(parts, discovery, version) {
   // Backup files on storage count toward a guest's latest backup, because a
   // scheduled job that covers many guests runs as one task without a guest ID.
@@ -820,16 +824,30 @@ function mergeProxmoxInventory(parts, discovery, version) {
     ...(part.inventory?.backups || []),
     ...(part.inventory?.backupFiles || [])
   ]);
-  const latestBackupByVmid = new Map();
+  const backupsByVmid = new Map();
   for (const backup of backups) {
     if (backup.vmid === null) continue;
-    const previous = latestBackupByVmid.get(backup.vmid);
-    if (!previous || String(backup.endedAt || "") > String(previous.endedAt || "")) {
-      latestBackupByVmid.set(backup.vmid, backup);
-    }
+    if (!backupsByVmid.has(backup.vmid)) backupsByVmid.set(backup.vmid, []);
+    backupsByVmid.get(backup.vmid).push(backup);
   }
-  const workloads = parts.flatMap((part) => part.inventory?.workloads || []).map((workload) => {
-    const backup = latestBackupByVmid.get(workload.vmid);
+  const rawWorkloads = parts.flatMap((part) => part.inventory?.workloads || []);
+  const workloadNames = new Set(rawWorkloads.map((workload) => nameKey(workload.name)));
+  // An archive belongs to the current guest only when it was written by the
+  // same kind of guest and its notes do not name a different current guest.
+  // A guest ID can be reused after a guest is removed or moved. Two guests
+  // may share a name, so notes matching this guest's own name always count.
+  const belongsTo = (backup, workload) => {
+    if (backup.guestType && backup.guestType !== workload.type) return false;
+    if (!backup.notes) return true;
+    const notes = nameKey(backup.notes);
+    return notes === nameKey(workload.name) || !workloadNames.has(notes);
+  };
+  const workloads = rawWorkloads.map((workload) => {
+    let backup = null;
+    for (const candidate of backupsByVmid.get(workload.vmid) || []) {
+      if (!belongsTo(candidate, workload)) continue;
+      if (!backup || String(candidate.endedAt || "") > String(backup.endedAt || "")) backup = candidate;
+    }
     return {
       ...workload,
       id: `${workload.node || "unassigned"}:${workload.type}:${workload.vmid}`,
@@ -1025,17 +1043,23 @@ function backupFileEntries(data, target, nowMilliseconds) {
     const created = strictInteger(own(entry, "ctime"), 1, 4_102_444_800);
     if (vmid === null || created === null) continue;
     const endedAt = new Date(created * 1_000).toISOString();
+    const subtype = statusToken(own(entry, "subtype"));
     files.push({
       id: `file:${target.storage}:${vmid}:${created}`,
       type: "vzdump",
       node: target.node,
       vmid,
+      // Which kind of guest wrote the archive, and its notes (by default the
+      // guest's name). Both are used to ignore archives left by an earlier
+      // guest that had the same ID.
+      guestType: subtype === "qemu" || subtype === "lxc" ? subtype : null,
+      notes: optionalName(own(entry, "notes"), 96),
       status: "success",
       endedAt,
       ageSeconds: Math.max(0, Math.floor((nowMilliseconds - created * 1_000) / 1_000))
     });
   }
-  return files;
+  return { files, listed: entries.length };
 }
 
 async function requestBackupFiles(transport, plan, target, options, nowMilliseconds) {
@@ -1054,7 +1078,7 @@ async function requestBackupFiles(transport, plan, target, options, nowMilliseco
     const status = boundedInteger(response?.status, 0, 0, 599);
     if (status < 200 || status >= 300) return { ok: false, code: "HTTP_ERROR", status: status || null, target };
     try {
-      return { ok: true, files: backupFileEntries(wrapperData(response?.body), target, nowMilliseconds) };
+      return { ok: true, ...backupFileEntries(wrapperData(response?.body), target, nowMilliseconds) };
     } catch {
       return { ok: false, code: "INVALID_RESPONSE", status: null, target };
     }
@@ -1068,7 +1092,7 @@ function backupFileFailureReport(failure) {
   const fallback = "Helmsman is using backup tasks for this storage instead.";
   let message;
   if (failure.status === 401 || failure.status === 403) {
-    message = `Proxmox denied reading this storage's backup list (HTTP ${failure.status}). Grant Datastore.Audit on the storage. ${fallback}`;
+    message = `Proxmox denied reading this storage's backup list (HTTP ${failure.status}). Give the API token and its user the PVEDatastoreUser role on this storage. ${fallback}`;
   } else if (failure.status) {
     message = `Proxmox could not list this storage's backups (HTTP ${failure.status}). ${fallback}`;
   } else if (failure.code === "INVALID_RESPONSE") {
@@ -1085,12 +1109,18 @@ async function collectBackupFiles(transport, plan, parts, options, nowMillisecon
   const files = [];
   const seen = new Set();
   const reports = [];
+  let listedStorages = 0;
+  let emptyStorages = 0;
   for (let offset = 0; offset < targets.length; offset += concurrency) {
     const batch = targets.slice(offset, offset + concurrency);
     const results = await Promise.all(batch.map((target) => (
       requestBackupFiles(transport, plan, target, options, nowMilliseconds)
     )));
     for (const result of results) {
+      if (result.ok) {
+        listedStorages += 1;
+        if (!result.listed) emptyStorages += 1;
+      }
       if (!result.ok) {
         if (reports.length < MAX_REPORTS) {
           const item = backupFileFailureReport(result);
@@ -1117,7 +1147,18 @@ async function collectBackupFiles(transport, plan, parts, options, nowMillisecon
     );
     if (item) reports.push(item);
   }
-  return { files, reports };
+  // Proxmox answers with an empty list, not an error, when the token may
+  // see a storage but not the backup files on it.
+  const allEmpty = listedStorages > 0 && emptyStorages === listedStorages;
+  return { files, reports, allEmpty };
+}
+
+function emptyBackupListReport() {
+  return report(
+    "notice",
+    "Proxmox backups",
+    "Proxmox listed no backup files on any backup storage, although backup tasks ran. Proxmox hides backup files unless the API token and its user both have the PVEDatastoreUser role on each backup storage. Helmsman is using backup tasks instead, which do not name the guests a scheduled job covered."
+  );
 }
 
 function fixedProbeFailureMessage(plan, failureCode, status) {
@@ -1326,9 +1367,13 @@ export async function probeProxmox(transport, options = {}) {
           };
         }
         if (backupFiles) {
+          const emptyNotice = backupFiles.allEmpty && result.metrics?.backupTasksObserved > 0
+            ? emptyBackupListReport()
+            : null;
           result = {
             ...result,
-            reports: [...(result.reports || []), ...backupFiles.reports].slice(0, MAX_REPORTS),
+            reports: [...(result.reports || []), ...backupFiles.reports, ...(emptyNotice ? [emptyNotice] : [])]
+              .slice(0, MAX_REPORTS),
             inventory: { ...result.inventory, backupFiles: backupFiles.files }
           };
         }

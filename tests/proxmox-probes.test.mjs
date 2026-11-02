@@ -722,7 +722,7 @@ test("a denied backup list adds a notice and falls back to backup tasks", async 
   const notice = check.reports.find(({ source }) => source === "Backup list \u00b7 Storage example-backups");
   assert.equal(notice.severity, "notice");
   assert.match(notice.message, /HTTP 403/u);
-  assert.match(notice.message, /Datastore\.Audit/u);
+  assert.match(notice.message, /PVEDatastoreUser/u);
   assert.match(notice.message, /backup tasks/u);
   assert.equal(JSON.stringify(result).includes(RAW_SECRET), false);
   assert.equal(result.inventory.workloads.find(({ vmid }) => vmid === 2101).backup.ageSeconds, 3_600);
@@ -784,4 +784,69 @@ test("backup files still describe guests when backup task history is unavailable
   const check = result.checks.find(({ id }) => id === "backups");
   assert.equal(check.code, "BACKUP_HISTORY_UNAVAILABLE");
   assert.equal(result.inventory.workloads.find(({ vmid }) => vmid === 2101).backup.ageSeconds, 900);
+});
+
+test("backup files left by an earlier guest with the same ID are not credited to the current guest", async () => {
+  const fixtures = backupStorageFixtures();
+  const leftover = (vmid, ageSeconds, subtype, notes) => ({
+    ...backupFile(vmid, ageSeconds),
+    subtype,
+    notes
+  });
+  const result = await probeProxmox(backupTransport(fixtures, {
+    "pve-a/example-backups": {
+      data: [
+        // 2101 is a VM now; an old container archive with that ID is ignored.
+        leftover(2101, 900, "lxc", "frigate"),
+        // Notes naming a different current guest: not this guest's archive.
+        leftover(2201, 1_200, "lxc", "example-lab-lxc"),
+        // Its own name, or notes naming no current guest, still count.
+        leftover(2202, 1_500, "lxc", "example-lab-lxc"),
+        leftover(2202, 600, "lxc", "nightly")
+      ]
+    }
+  }), probeOptions());
+  const backupOf = (vmid) => result.inventory.workloads.find((workload) => workload.vmid === vmid).backup;
+  assert.equal(backupOf(2101), null);
+  assert.equal(backupOf(2201), null);
+  assert.equal(backupOf(2202).ageSeconds, 600);
+});
+
+test("guests sharing a name each keep their own backup files", async () => {
+  const fixtures = backupStorageFixtures();
+  fixtures.guests.data = fixtures.guests.data.map((guest) => (
+    [2201, 2202].includes(guest.vmid) ? { ...guest, name: "docker" } : guest
+  ));
+  const result = await probeProxmox(backupTransport(fixtures, {
+    "pve-a/example-backups": {
+      data: [
+        { ...backupFile(2201, 700), subtype: "lxc", notes: "docker" },
+        { ...backupFile(2202, 800), subtype: "lxc", notes: "docker" }
+      ]
+    }
+  }), probeOptions());
+  const backupOf = (vmid) => result.inventory.workloads.find((workload) => workload.vmid === vmid).backup;
+  assert.equal(backupOf(2201).ageSeconds, 700);
+  assert.equal(backupOf(2202).ageSeconds, 800);
+});
+
+test("empty backup lists while backup tasks ran add a permission notice", async () => {
+  const result = await probeProxmox(backupTransport(backupStorageFixtures(), {
+    "pve-a/example-backups": { data: [] },
+    "pve-a/example-nfs": { data: [] }
+  }), probeOptions());
+  const reports = result.checks.find(({ id }) => id === "backups").reports || [];
+  const notice = reports.find(({ message }) => /listed no backup files/u.test(message));
+  assert.equal(notice.severity, "notice");
+  assert.match(notice.message, /PVEDatastoreUser/u);
+  assert.match(notice.message, /token and its user/u);
+});
+
+test("an empty backup storage next to one with files adds no permission notice", async () => {
+  const result = await probeProxmox(backupTransport(backupStorageFixtures(), {
+    "pve-a/example-backups": { data: [backupFile(2101, 900)] },
+    "pve-a/example-nfs": { data: [] }
+  }), probeOptions());
+  const reports = result.checks.find(({ id }) => id === "backups").reports || [];
+  assert.equal(reports.some(({ message }) => /listed no backup files/u.test(message)), false);
 });

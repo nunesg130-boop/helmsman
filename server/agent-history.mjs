@@ -58,7 +58,9 @@ export function questionWindow(text, now = Date.now(), timeZone = undefined) {
   if (isRestartQuestion(question)) return window(24, "the past 24 hours");
   // "When was the last problem", "has anything recovered", "how long has
   // everything been healthy": the past week of records answers them.
-  if (/\b(?:last (?:problem|issue|outage|incident|failure|alert)|recover(?:ed|y|ies)?|how long has .* been (?:healthy|up|ok|fine|stable)|since when|most recent (?:problem|issue|outage))\b/u.test(question)) {
+  // "When was Sonarr's most recent failure", "when did radarr last fail":
+  // answered from current status alone, models said "no failures".
+  if (/\b(?:(?:last|latest|most recent|previous) (?:problems?|issues?|outages?|incidents?|failures?|alerts?|errors?|faults?|warnings?|downtime)|recover(?:ed|y|ies)?|how long has .* been (?:healthy|up|ok|fine|stable)|since when|last (?:failed|broke|errored|had (?:a |an )?(?:problem|issue|outage|error))|(?:ever|has \w+) (?:failed|broken|had (?:a |an |any )?(?:problems?|issues?|outages?|failures?))|when did .{1,40}? (?:fail|break|error|have (?:a |an )?(?:problem|issue|outage)))\b/u.test(question)) {
     return window(24 * 7, "the past week");
   }
   return null;
