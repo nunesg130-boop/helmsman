@@ -325,8 +325,11 @@ This needs **Keep conversations for training** turned on.
 1. **Start batch.** Under Settings → Agent → **Self-test**, choose how many
    questions (1 to 500, default 50) and press **Start batch**. Helmsman writes
    the questions from your live lab inventory and asks the agent one at a
-   time. The agent only reads: it never proposes or runs actions. The
-   questions count against **Questions per hour** and wait behind your chat.
+   time. The agent only reads: it never proposes or runs actions or tests
+   indexers. The questions count against **Questions per hour** and wait
+   behind your chat, and a batch leaves room for your own questions: it
+   pauses while 5 questions an hour (or 10% of the limit, if more) are left
+   and carries on as slots free up.
    **Stop** finishes the question in flight; after a restart a run shows as
    paused and **Continue** resumes it.
 2. **Review.** Each answer is saved as a conversation. Filter by Unrated, All,

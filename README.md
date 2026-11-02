@@ -19,7 +19,7 @@ named [Helmsman](https://github.com/mkubaczyk/helmsman).
 
 **Self-test: Helmsman questions its own agent**, so building training data no longer means typing hundreds of questions by hand. It lives under Settings → Agent → **Self-test**:
 - **Start batch:** generates questions from your live lab inventory (nodes, guests, containers, services) and asks the agent one at a time. A batch is 1 to 500 questions, 50 by default.
-- **Read-only:** the agent never proposes or runs an action during a self-test. Questions count against **Questions per hour** and wait behind your own chat questions.
+- **Read-only:** the agent never proposes or runs an action, or tests an indexer, during a self-test. Questions count against **Questions per hour**, wait behind your own chat questions, and always leave room for your own questions: a batch pauses while 5 (or 10% of the limit, if more) questions an hour are left, and carries on as slots free up.
 - **Saved as conversations:** each answer is saved like a chat answer, so Self-test needs **Keep conversations for training** turned on.
 - **Review:** rate each answer **Good**, **Fix answer** or **Skip** (keys g, f, s; j and k move between answers). Filter by Unrated, All, Changed, Failed, or a question category. **Download good and fixed** exports them as before.
 - **Stop and Continue:** Stop finishes the question in flight. After a restart a run shows as paused and you press Continue.

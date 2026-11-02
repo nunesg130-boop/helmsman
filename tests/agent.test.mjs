@@ -1568,20 +1568,100 @@ test("askSelfTest never proposes actions", async (t) => {
   assert.equal(chat.payload.proposals.length, 1);
 });
 
-test("askSelfTest counts against the hourly limit", async (t) => {
+test("askSelfTest counts against the hourly limit and leaves room for chat", async (t) => {
   const { agent, context, publish } = await harness(t, { modelReplies: () => ({ content: "Fine." }) });
   await configure(agent, { autonomy: false });
   await publish(snapshotAt(context.now));
   await api(agent, "PUT", "/api/v2/agent/ai", { questionsPerHour: 10 });
-  for (let index = 0; index < 10; index += 1) {
+  // The reserve is max(5, 10% of the limit): with 10 an hour, 5 stay free for chat.
+  for (let index = 0; index < 5; index += 1) {
     await agent.askSelfTest({ question: "Is sonarr up?", history: [], selfTest: { id: `st-${index}`, category: "status" } });
   }
   await assert.rejects(agent.askSelfTest({ question: "Is sonarr up?", history: [], selfTest: SELF_TEST }),
+    (error) => error.code === "AGENT_BUSY" && /room for your own questions/u.test(error.message));
+  // The owner's chat still gets the slots the self-test left.
+  for (let index = 0; index < 5; index += 1) {
+    assert.ok((await api(agent, "POST", "/api/v2/agent/ask", { question: `Is radarr up? ${index}` })).payload.answer);
+  }
+  // Chat and the self-test share the same budget.
+  await assert.rejects(api(agent, "POST", "/api/v2/agent/ask", { question: "Is sonarr up?" }),
     (error) => error.code === "AGENT_BUSY" && /10 questions in the last hour/u.test(error.message));
-  // The owner's chat shares the same budget.
-  await assert.rejects(api(agent, "POST", "/api/v2/agent/ask", { question: "Is sonarr up?" }), { code: "AGENT_BUSY" });
+  await assert.rejects(agent.askSelfTest({ question: "Is sonarr up?", history: [], selfTest: SELF_TEST }), { code: "AGENT_BUSY" });
   context.now += 3_600_001;
   assert.ok((await agent.askSelfTest({ question: "Is sonarr up?", history: [], selfTest: SELF_TEST })).answer);
+});
+
+test("the reserve is 10% of a larger hourly limit", async (t) => {
+  const { agent, context, publish } = await harness(t, { modelReplies: () => ({ content: "Fine." }) });
+  await configure(agent, { autonomy: false });
+  await publish(snapshotAt(context.now));
+  await api(agent, "PUT", "/api/v2/agent/ai", { questionsPerHour: 95 });
+  let asked = 0;
+  for (;;) {
+    try {
+      await agent.askSelfTest({ question: "Is sonarr up?", history: [], selfTest: SELF_TEST });
+      asked += 1;
+    } catch (error) {
+      assert.equal(error.code, "AGENT_BUSY");
+      break;
+    }
+    assert.ok(asked <= 95);
+  }
+  assert.equal(asked, 95 - 10, "ceil(9.5) = 10 slots stay free");
+});
+
+test("a self-test question refused by a full queue does not use up the hourly limit", async (t) => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const { agent, context, publish } = await harness(t, {
+    modelReplies: async (body) => {
+      if (userQuestion(body) === "held") await gate;
+      return { content: "Fine." };
+    }
+  });
+  await configure(agent, { autonomy: false });
+  await publish(snapshotAt(context.now));
+  await api(agent, "PUT", "/api/v2/agent/ai", { questionsPerHour: 40 });
+  const pending = [agent.askSelfTest({ question: "held", history: [], selfTest: SELF_TEST })];
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  // One running and 25 waiting fill the queue.
+  for (let index = 0; index < 25; index += 1) pending.push(agent.askSelfTest({ question: "queued", history: [], selfTest: SELF_TEST }));
+  for (let index = 0; index < 10; index += 1) {
+    await assert.rejects(agent.askSelfTest({ question: "refused", history: [], selfTest: SELF_TEST }),
+      (error) => error.code === "AGENT_BUSY" && /busy/u.test(error.message));
+  }
+  release();
+  await Promise.all(pending);
+  // 26 of 40 used; the 10 refused took nothing, so 14 chat questions fit.
+  for (let index = 0; index < 14; index += 1) await api(agent, "POST", "/api/v2/agent/ask", { question: `Is radarr up? ${index}` });
+  await assert.rejects(api(agent, "POST", "/api/v2/agent/ask", { question: "one more" }), { code: "AGENT_BUSY" });
+});
+
+test("askSelfTest leaves no stop waiter behind once each question settles", async (t) => {
+  const { agent, context, publish } = await harness(t, { modelReplies: () => ({ content: "Fine." }) });
+  await configure(agent, { autonomy: false });
+  await publish(snapshotAt(context.now));
+  await api(agent, "PUT", "/api/v2/agent/ai", { questionsPerHour: 2000 });
+  assert.equal(agent.stopWaiters(), 0);
+  for (let index = 0; index < 50; index += 1) {
+    await agent.askSelfTest({ question: "Is sonarr up?", history: [], selfTest: SELF_TEST });
+  }
+  await assert.rejects(agent.askSelfTest({ question: " ", history: [], selfTest: SELF_TEST }), { code: "INVALID_QUESTION" });
+  assert.equal(agent.stopWaiters(), 0);
+});
+
+test("askSelfTest is never offered test_indexer", async (t) => {
+  const { agent, context } = await indexerHarness(t);
+  context.modelCalls.length = 0;
+  await agent.askSelfTest({ question: "How are the indexers?", history: [], selfTest: SELF_TEST });
+  const offered = context.modelCalls.flatMap((body) => (body.tools || []).map((tool) => tool.function?.name));
+  assert.equal(offered.includes("indexer_status"), true, "it can still read indexer status");
+  assert.equal(offered.includes("test_indexer"), false);
+  assert.doesNotMatch(context.modelCalls[0].messages[0].content, /test_indexer/u);
+  // The same question in chat is offered the test, so the check above is real.
+  context.modelCalls.length = 0;
+  await api(agent, "POST", "/api/v2/agent/ask", { question: "How are the indexers?" });
+  assert.equal(context.modelCalls[0].tools.some(({ function: { name } }) => name === "test_indexer"), true);
 });
 
 test("askSelfTest is not shown in the chat's recent questions", async (t) => {

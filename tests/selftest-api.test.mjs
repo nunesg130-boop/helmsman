@@ -246,3 +246,21 @@ test("stopping the agent stops a running self-test and writes nothing afterwards
   assert.deepEqual(await filesIn(dataDir), before, "nothing is written after stop resolves");
   assert.equal(context.modelCalls.length, 2, "no further question is asked");
 });
+
+test("a running batch leaves room in the hourly limit for the owner's chat", async (t) => {
+  const { agent, context } = await harness(t);
+  await prepare(agent);
+  await api(agent, "PUT", "/api/v2/agent/ai", { questionsPerHour: 10 });
+  assert.equal((await api(agent, "POST", "/api/v2/agent/selftest/start", { count: 20 })).status, 201);
+  await waitFor(() => context.modelCalls.length === 5);
+  // The runner is refused from here on and waits for a slot to free up.
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(context.modelCalls.length, 5, "the batch stops at 5 of 10");
+  const running = await status(agent);
+  assert.equal(running.running, true);
+  assert.equal(running.done, 5);
+  assert.equal(running.failed, 0, "waiting for room is not a failure");
+  const chat = await api(agent, "POST", "/api/v2/agent/ask", { question: "Is sonarr up?" });
+  assert.equal(chat.status, 200);
+  assert.match(chat.payload.answer, /^Answer \d+\.$/u);
+});

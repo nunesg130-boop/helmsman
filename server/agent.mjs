@@ -66,6 +66,9 @@ const PROPOSAL_TTL_MS = 30 * 60_000;
 // A stuck download isn't urgent, so its suggestion waits longer for the owner.
 const DOWNLOAD_PROPOSAL_TTL_MS = 12 * 3_600_000;
 const MAX_QUEUE = 25;
+// The self-test stops while this many of the hourly questions are left, so
+// the owner's chat always has room: max(5, 10% of Questions per hour).
+const SELF_TEST_RESERVE = Object.freeze({ minimum: 5, share: 0.1 });
 const MAX_TOOL_ROUNDS = 4;
 const MAX_REPLY_TOKENS = 450;
 const MAX_NOTE_CHARS = 1_500;
@@ -168,10 +171,15 @@ class RateWindow {
   }
 
   take(now, limit = this.#limit) {
-    this.#times = this.#times.filter((time) => now - time < this.#windowMs);
-    if (this.#times.length >= limit) return false;
+    if (this.remaining(now, limit) <= 0) return false;
     this.#times.push(now);
     return true;
+  }
+
+  /** Slots still free in the window, without taking one. */
+  remaining(now, limit = this.#limit) {
+    this.#times = this.#times.filter((time) => now - time < this.#windowMs);
+    return Math.max(0, limit - this.#times.length);
   }
 }
 
@@ -296,9 +304,22 @@ export async function createAgent(options) {
   };
   let activityWrite = Promise.resolve();
   let stopped = false;
-  // Settles (never rejects) when stop() begins, for waits that must end then.
-  let announceStop;
-  const agentStopped = new Promise((resolve) => { announceStop = resolve; });
+  // Called when stop() begins, for waits that must end then. Each waiter
+  // removes itself once its own wait settles, so nothing builds up.
+  const stopWaiters = new Set();
+  function announceStop() {
+    for (const waiter of [...stopWaiters]) waiter();
+    stopWaiters.clear();
+  }
+  /** `promise`'s outcome, or AGENT_STOPPED as soon as the agent stops. */
+  function untilStopped(promise) {
+    if (stopped) return Promise.resolve(AGENT_STOPPED);
+    return new Promise((resolve, reject) => {
+      const waiter = () => resolve(AGENT_STOPPED);
+      stopWaiters.add(waiter);
+      promise.then(resolve, reject).finally(() => stopWaiters.delete(waiter));
+    });
+  }
   function persistActivity() {
     if (stopped) return activityWrite;
     const document = { version: ACTIVITY_VERSION, ...activity };
@@ -685,7 +706,7 @@ export async function createAgent(options) {
     return total() <= budget;
   }
 
-  async function converse({ prompt, history = [], allowProposals, source, service = null, maxReplyTokens = MAX_REPLY_TOKENS, seedOverview = false, selfTest = undefined }) {
+  async function converse({ prompt, history = [], allowProposals, source, service = null, maxReplyTokens = MAX_REPLY_TOKENS, seedOverview = false, selfTest = undefined, indexerTests = true }) {
     const { ai, settings } = config();
     if (!ai) throw new AgentError(409, "AI_NOT_CONFIGURED", "Connect a model server first.");
     const sender = modelSender(ai);
@@ -698,7 +719,7 @@ export async function createAgent(options) {
       restart: publicRestart(),
       propose: allowProposals ? createProposal(source, service) : null,
       indexers: typeof readIndexers === "function" && prowlarrService()
-        ? { status: indexerStatusText, ...(indexersPolicy().enabled ? { test: testIndexerByName } : {}) }
+        ? { status: indexerStatusText, ...(indexerTests && indexersPolicy().enabled ? { test: testIndexerByName } : {}) }
         : null
     };
     const tools = toolDefinitions({ allowProposals, indexers: Boolean(toolContext.indexers), indexerTests: Boolean(toolContext.indexers?.test) });
@@ -2362,18 +2383,18 @@ export async function createAgent(options) {
     });
   }
 
-  // Checks a question and takes one slot of the hourly question limit.
-  // Shared by the owner's chat and the self-test, so both count the same.
-  function acceptQuestion(body) {
+  // Checks a question and, unless `take` is false, takes one slot of the
+  // hourly question limit. Shared by the owner's chat and the self-test, so
+  // both count the same.
+  function acceptQuestion(body, { take = true } = {}) {
     if (typeof body.question !== "string" || !body.question.trim() || body.question.length > MAX_QUESTION_CHARS) {
       fail(400, "INVALID_QUESTION", `Ask a question of up to ${MAX_QUESTION_CHARS} characters.`);
     }
     if (!config().ai) fail(409, "AI_NOT_CONFIGURED", "Connect a model server first.");
     const perHour = config().ai.questionsPerHour ?? AGENT_LIMITS.questionsPerHour.default;
-    if (!questionRate.take(clock(), perHour)) {
-      fail(429, "AGENT_BUSY", `That's ${perHour} questions in the last hour, the limit set under Settings → Agent → Model server. Try again later, or raise it there.`);
-    }
-    return { history: historyInput(body.history), question: plainText(body.question, MAX_QUESTION_CHARS) };
+    const limitReached = () => fail(429, "AGENT_BUSY", `That's ${perHour} questions in the last hour, the limit set under Settings → Agent → Model server. Try again later, or raise it there.`);
+    if (take ? !questionRate.take(clock(), perHour) : questionRate.remaining(clock(), perHour) <= 0) limitReached();
+    return { history: historyInput(body.history), question: plainText(body.question, MAX_QUESTION_CHARS), perHour };
   }
 
   async function ask(body) {
@@ -2420,22 +2441,31 @@ export async function createAgent(options) {
   }
 
   // The self-test's way in: the same model path as a chat question, but it
-  // can never propose an action (no command shortcut, no propose_action),
-  // waits behind anything already queued so the owner's chat goes first,
-  // and marks its saved conversation. Not reachable over HTTP.
+  // can never propose an action (no command shortcut, no propose_action)
+  // or test an indexer, waits behind anything already queued so the
+  // owner's chat goes first, and marks its saved conversation. It never
+  // takes the last few slots of the hourly limit, so the owner's chat is
+  // not locked out by a batch. Not reachable over HTTP.
   async function askSelfTest(body) {
     requireKeys(body, ["question", "history", "selfTest"]);
     if (stopped) fail(503, "AGENT_STOPPED", "The agent stopped.");
-    const { history, question } = acceptQuestion(body);
+    const { history, question, perHour } = acceptQuestion(body, { take: false });
+    const reserve = Math.max(SELF_TEST_RESERVE.minimum, Math.ceil(perHour * SELF_TEST_RESERVE.share));
+    if (questionRate.remaining(clock(), perHour) <= reserve) {
+      fail(429, "AGENT_BUSY", `The self-test leaves room for your own questions: it keeps ${reserve} of the ${perHour} questions an hour free and carries on once more are available.`);
+    }
     const selfTest = body.selfTest;
     const job = enqueue({
       key: `selftest:${randomUUID()}`,
-      run: () => converse({ prompt: question, history, allowProposals: false, source: "question", seedOverview: true, selfTest })
+      run: () => converse({ prompt: question, history, allowProposals: false, source: "question", seedOverview: true, selfTest, indexerTests: false })
     });
     if (!job) fail(429, "AGENT_BUSY", "The agent is busy. Try again in a moment.");
+    // Only a question that is actually queued uses a slot. Nothing ran
+    // between the check above and here, so the slot is still free.
+    questionRate.take(clock(), perHour);
     // A model call in flight when the agent stops finishes in memory only;
     // the runner is told at once, so stopping it never waits for the model.
-    const result = await Promise.race([job, agentStopped]);
+    const result = await untilStopped(job);
     if (result === AGENT_STOPPED) fail(503, "AGENT_STOPPED", "The agent stopped.");
     return {
       answer: result.text,
@@ -2713,7 +2743,7 @@ export async function createAgent(options) {
       // so nothing writes to /data after stop resolves. A model call still
       // running finishes in memory only, so shutdown is never held up by it.
       stopped = true;
-      announceStop(AGENT_STOPPED);
+      announceStop();
       // A running self-test halts without waiting for the model; any save
       // it had already begun completes before stop resolves.
       const runner = await selfTestReady.catch(() => null);
@@ -2722,6 +2752,7 @@ export async function createAgent(options) {
     },
     // For tests and the demo.
     tick,
+    stopWaiters: () => stopWaiters.size,
     idle: async () => {
       await ruleChain;
       while (running || queue.length) await new Promise((resolve) => setTimeout(resolve, 5));
