@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { access, mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -345,8 +345,14 @@ test("selftest.json is mode 0600 and holds no answers", async (t) => {
   await selfTest.start({ count: 6 });
   await selfTest.whenIdle();
   const file = path.join(dataDir, "selftest.json");
-  assert.equal((await stat(file)).mode & 0o777, 0o600);
-  const text = await readFile(file, "utf8");
+  const handle = await open(file, "r");
+  let text;
+  try {
+    assert.equal((await handle.stat()).mode & 0o777, 0o600);
+    text = await handle.readFile("utf8");
+  } finally {
+    await handle.close();
+  }
   assert.doesNotMatch(text, /SECRET-ANSWER/u);
   const disk = JSON.parse(text);
   assert.equal(disk.version, 1);

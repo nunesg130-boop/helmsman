@@ -123,19 +123,19 @@ test("every question carries a wording-free fact key, and a new seed re-asks a f
 
 // Wordings that ask different things must never share a fact key.
 const DIFFERENT_QUESTIONS = [
-  [/least free memory/u, /uses the most memory\?$|rank guests by memory usage/u],
+  [/least free memory/u, /(?:uses the most memory\?$)|(?:rank guests by memory usage)/u],
   [/most cores/u, /most memory assigned|rank guests by size/u],
-  [/^Which VM is using the most CPU/u, /^which guest has the highest cpu|rank the guests by cpu/u],
+  [/^Which VM is using the most CPU/u, /(?:^which guest has the highest cpu)|(?:rank the guests by cpu)/u],
   [/restarted most recently/u, /up the longest|rank guests by uptime/u],
   [/most recent failure/u, /last go down|had any outages/u],
   [/last go down/u, /had any outages/u],
-  [/stopped or unhealthy/u, /^which containers are stopped\?|any containers not running/u],
+  [/stopped or unhealthy/u, /(?:^which containers are stopped\?)|(?:any containers not running)/u],
   [/^is \S+ healthy\?$/u, /container running|running or stopped/u],
   [/most recent incident/u, /incidents recently|went wrong lately/u],
   [/services are unhealthy/u, /anything down|services down/u],
   [/^how many guests are on/u, /guests run on|List the guests on node/u],
   [/^which guest on .+ uses the most memory/u, /busiest guest on|on .+ has the highest CPU/u],
-  [/how much memory does .+ have\?|RAM is assigned/u, /ram is .+ using|memory usage\?$/u]
+  [/how much memory does .+ have\?|RAM is assigned/u, /(?:ram is .+ using)|(?:memory usage\?$)/u]
 ];
 
 test("no fact key covers two different questions", () => {
