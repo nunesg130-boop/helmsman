@@ -168,3 +168,45 @@ test("Stop shows Stopping… until the poll sees the run halt", () => {
   // The stop answer says "stopping"; the review reloads when the poll sees the end.
   assert.doesNotMatch(body("changeSelfTestRun"), /if \(kind === "stop"\) void loadSelfTestReview/u);
 });
+
+test("g and a saved fix move past the answer before the rating is sent", () => {
+  const keys = body("handleSelfTestKey");
+  assert.match(keys, /rateConversation\(item\.conversationId, \{ rating: "up" \}, \{ advanceSelfTest: true \}\)/u);
+  const rate = body("rateConversation");
+  assert.match(rate, /async function rateConversation\(id, body, \{ advanceSelfTest = false \} = \{\}\)/u);
+  // Moved synchronously, before the request, so a second press rates the next answer.
+  assert.ok(rate.indexOf("advancePastSelfTestItem(id)") !== -1 && rate.indexOf("advancePastSelfTestItem(id)") < rate.indexOf("await api("), "advances before the request");
+  const advance = body("advancePastSelfTestItem");
+  assert.match(advance, /selfTest\.filter === "unrated"/u);
+  assert.match(advance, /selfTest\.items\.splice\(position, 1\)/u);
+  assert.match(advance, /selfTest\.index \+= 1/u);
+  assert.match(app, /rateConversation\(event\.target\.dataset\.conversationId, \{ correction: correction \|\| null \}, \{ advanceSelfTest: state\.agent\.editingScope === "selftest" && Boolean\(correction\) \}\)/u);
+});
+
+test("the card refetches its status and answers each time it is shown", () => {
+  const sync = body("syncSelfTestPolling");
+  assert.match(sync, /selfTestCardMounted/u);
+  assert.match(sync, /if \(mounted && !selfTestCardMounted\)/u);
+  assert.match(sync, /void loadSelfTest\(\)/u);
+  assert.match(sync, /void loadSelfTestReview\(\{ reset: true \}\)/u);
+  assert.match(app, /let selfTestCardMounted = false;/u);
+  // Settings panels are built even when hidden, so the card itself does not fetch.
+  const card = body("renderAgentSelfTestCard");
+  assert.doesNotMatch(card, /loadSelfTest\(/u);
+  assert.doesNotMatch(card, /loadSelfTestReview\(/u);
+  // A fetched running status starts the poll.
+  assert.match(body("loadSelfTest"), /syncSelfTestPolling\(\)/u);
+});
+
+test("the short-batch toast compares the batch size, not what is still queued", () => {
+  const start = body("startSelfTest");
+  assert.match(start, /selfTestCount\(payload\?\.done\) \+ selfTestCount\(payload\?\.failed\) \+ selfTestCount\(payload\?\.queued\)/u);
+  assert.match(start, /payload\?\.requested/u);
+  assert.match(start, /batch < requested/u);
+});
+
+test("the notice is a polite status, not an alert announced on every redraw", () => {
+  const card = body("renderAgentSelfTestCard");
+  assert.match(card, /<div class="security-note" role="status">/u);
+  assert.doesNotMatch(card, /role="alert"/u);
+});

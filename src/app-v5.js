@@ -4795,10 +4795,17 @@ function renderAnswerRating(id, answer, { bad = true, scope = "", extra = "" } =
   </div>`;
 }
 
-async function rateConversation(id, body) {
+// `advanceSelfTest` moves the Self-test review past this answer: for Good
+// before the request goes out, so pressing g again rates the next answer,
+// not this one; for a fix once it is saved, so a failed save keeps the text.
+async function rateConversation(id, body, { advanceSelfTest = false } = {}) {
   if (!/^[a-f0-9-]{36}$/u.test(String(id || ""))) return;
+  const isFix = body.correction !== undefined;
+  let advanced = advanceSelfTest && !isFix && advancePastSelfTestItem(id);
+  if (advanced) rerenderAgent();
   try {
     const updated = await api(`/api/v2/agent/conversations/${id}/rating`, { method: "POST", body });
+    if (advanceSelfTest && isFix) advanced = advancePastSelfTestItem(id);
     rememberRating(updated);
     const item = state.agent.training.items.find((entry) => entry.id === id);
     if (item) Object.assign(item, { rating: updated.rating, correction: updated.correction });
@@ -4808,6 +4815,8 @@ async function rateConversation(id, body) {
       // The unrated list pages by offset, so a rated answer shifts every
       // later page; start again from the first.
       if (state.agent.selfTest.filter === "unrated") void loadSelfTestReview({ reset: true });
+    } else if (advanced && state.agent.selfTest.filter === "unrated") {
+      void loadSelfTestReview({ reset: true });
     }
     if (body.correction !== undefined) {
       state.agent.editingAnswer = "";
@@ -4815,6 +4824,8 @@ async function rateConversation(id, body) {
     }
     if (state.agent.training.loaded) void loadTraining({ render: false });
   } catch (error) {
+    // An answer taken off the unrated list comes back with the reload.
+    if (advanced && state.agent.selfTest.filter === "unrated") void loadSelfTestReview({ reset: true });
     showToast(error?.message || "That rating could not be saved.", "danger");
   }
   rerenderAgent();
@@ -4931,6 +4942,8 @@ const SELFTEST_EMPTY = Object.freeze({
 });
 let selfTestPollTimer = null;
 let selfTestPollInFlight = false;
+// Whether the card was on screen at the last render, to refetch when it appears.
+let selfTestCardMounted = false;
 
 // Built while the module's first state object is created, before the
 // constants above exist, so the batch size starts empty (the default).
@@ -5018,6 +5031,8 @@ async function loadSelfTest({ render = true } = {}) {
     selfTest.loading = false;
     selfTest.loaded = true;
     if (render && document.getElementById("agent-selftest-card")) rerenderAgent();
+    // A batch found running (started elsewhere, or before a reload) is polled.
+    syncSelfTestPolling();
   }
 }
 
@@ -5086,10 +5101,13 @@ async function startSelfTest() {
     selfTest.status = payload;
     selfTest.loaded = true;
     selfTest.error = "";
-    const queued = selfTestCount(payload?.queued);
-    showToast(queued < count
-      ? `Only ${queued} new question${queued === 1 ? " was" : "s were"} left to ask; ${queued === 1 ? "it is" : "all are"} queued.`
-      : `${queued} question${queued === 1 ? "" : "s"} queued.`, "success");
+    // The batch size is done + failed + queued: the run may already have
+    // asked a question by the time the answer arrives.
+    const batch = selfTestCount(payload?.done) + selfTestCount(payload?.failed) + selfTestCount(payload?.queued);
+    const requested = selfTestCount(payload?.requested) || count;
+    showToast(batch < requested
+      ? `Only ${batch} new question${batch === 1 ? " was" : "s were"} left to ask; ${batch === 1 ? "it is" : "all are"} queued.`
+      : `${batch} question${batch === 1 ? "" : "s"} queued.`, "success");
   } catch (error) {
     selfTest.notice = selfTestNotice(error);
   } finally {
@@ -5119,8 +5137,17 @@ async function changeSelfTestRun(kind) {
 
 // Poll only while the card is on screen and a batch is running. Every page
 // render calls this, so leaving the card or the run ending stops the timer.
+// Settings panels are built even when hidden, so the card fetches its
+// status and answers here, each time it appears, never from stale flags.
 function syncSelfTestPolling() {
-  const active = Boolean(document.getElementById("agent-selftest-card")) && Boolean(state.agent.selfTest.status?.running);
+  const mounted = Boolean(document.getElementById("agent-selftest-card"));
+  if (mounted && !selfTestCardMounted) {
+    selfTestCardMounted = true;
+    void loadSelfTest();
+    void loadSelfTestReview({ reset: true });
+  }
+  selfTestCardMounted = mounted;
+  const active = mounted && Boolean(state.agent.selfTest.status?.running);
   if (!active) {
     clearTimeout(selfTestPollTimer);
     selfTestPollTimer = null;
@@ -5185,6 +5212,26 @@ function moveSelfTest(delta) {
   requestAnimationFrame(() => document.querySelector(".agent-selftest-list > li.is-current")?.scrollIntoView?.({ block: "nearest" }));
 }
 
+// Takes a rated answer off the unrated list, or moves the current answer on
+// in the other lists. Returns whether the answer was in the review.
+function advancePastSelfTestItem(id) {
+  const selfTest = state.agent.selfTest;
+  const position = selfTest.items.findIndex((entry) => entry.conversationId === id);
+  if (position === -1) return false;
+  if (selfTest.filter === "unrated") {
+    selfTest.items.splice(position, 1);
+    if (position < selfTest.index) selfTest.index -= 1;
+  } else if (position === selfTest.index) {
+    selfTest.index += 1;
+  }
+  selfTest.index = Math.min(Math.max(selfTest.index, 0), Math.max(selfTest.items.length - 1, 0));
+  if (state.agent.editingScope === "selftest" && state.agent.editingAnswer !== id) {
+    state.agent.editingAnswer = "";
+    state.agent.editingScope = "";
+  }
+  return true;
+}
+
 function agentCorrectionFieldId(id, scope = "") {
   return `agent-correction-${scope ? `${scope}-` : ""}${id}`;
 }
@@ -5210,7 +5257,7 @@ function handleSelfTestKey(event) {
     case "g":
       if (!item?.conversationId) return;
       event.preventDefault();
-      void rateConversation(item.conversationId, { rating: "up" });
+      void rateConversation(item.conversationId, { rating: "up" }, { advanceSelfTest: true });
       return;
     case "f":
       if (!item?.conversationId) return;
@@ -5248,8 +5295,6 @@ function renderSelfTestItem(item, index, current) {
 
 function renderAgentSelfTestCard(data) {
   const selfTest = state.agent.selfTest;
-  if (!selfTest.loaded && !selfTest.loading) void loadSelfTest();
-  if (!selfTest.reviewLoaded && !selfTest.reviewLoading) void loadSelfTestReview({ reset: true });
   const status = selfTest.status;
   const running = Boolean(status?.running);
   const stopping = Boolean(status?.stopping);
@@ -5265,7 +5310,7 @@ function renderAgentSelfTestCard(data) {
     <header><div><span class="section-kicker">Check its answers</span><h3>Self-test</h3></div>${icon("check")}</header>
     <div class="settings-card-v5__body">
       <p>Asks the agent batches of questions made from your own inventory, one at a time and behind your own chat. It can't propose actions while testing. Rate the answers below; good and fixed ones become training data.</p>
-      ${notice ? `<div class="security-note" role="alert">${icon("lock")}<div><strong>${escapeHtml(notice.title)}</strong>${notice.detail ? `<span>${escapeHtml(notice.detail)}</span>` : ""}</div></div>` : ""}
+      ${notice ? `<div class="security-note" role="status">${icon("lock")}<div><strong>${escapeHtml(notice.title)}</strong>${notice.detail ? `<span>${escapeHtml(notice.detail)}</span>` : ""}</div></div>` : ""}
       ${status
         ? `<p class="agent-selftest-status${running ? " is-running" : ""}" id="agent-selftest-status" role="status" aria-live="polite">${escapeHtml(selfTestStatusText(status))}</p>`
         : selfTest.error ? `<p class="form-error">${escapeHtml(selfTest.error)}</p>` : `<p class="agent-empty">Loading…</p>`}
@@ -12217,7 +12262,7 @@ document.addEventListener("submit", (event) => {
   if (event.target.id === "agent-selftest-form") void startSelfTest();
   if (event.target.classList?.contains("agent-correction-form")) {
     const correction = String(new FormData(event.target).get("correction") || "").trim();
-    void rateConversation(event.target.dataset.conversationId, { correction: correction || null });
+    void rateConversation(event.target.dataset.conversationId, { correction: correction || null }, { advanceSelfTest: state.agent.editingScope === "selftest" && Boolean(correction) });
   }
   if (event.target.id === "logging-debug-form") {
     const hours = Number(new FormData(event.target).get("hours"));
