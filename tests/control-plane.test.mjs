@@ -718,6 +718,46 @@ test("v2 control plane keeps browser and service secrets out of public and persi
       assert.equal(JSON.stringify(savedService.json).includes(SERVICE_SECRET), false);
     });
 
+    await suite.test("self-test agent routes require a session, CSRF and the bound origin", async () => {
+      const noSession = await getRequest(context, "/api/v2/agent/selftest");
+      assert.equal(noSession.status, 401);
+      assert.equal(noSession.json.code, "SESSION_REQUIRED");
+      const noSessionReview = await getRequest(context, "/api/v2/agent/selftest/review?filter=all");
+      assert.equal(noSessionReview.status, 401);
+      assert.equal(noSessionReview.json.code, "SESSION_REQUIRED");
+
+      for (const pathname of ["/api/v2/agent/selftest/start", "/api/v2/agent/selftest/stop", "/api/v2/agent/selftest/continue"]) {
+        const missingCsrf = await jsonRequest(context, pathname, "POST", {}, { cookie: authentication.cookie });
+        assert.equal(missingCsrf.status, 403, pathname);
+        assert.equal(missingCsrf.json.code, "CSRF_TOKEN_REQUIRED", pathname);
+        const wrongOrigin = await jsonRequest(context, pathname, "POST", {}, {
+          cookie: authentication.cookie,
+          csrf: authentication.csrf,
+          origin: `http://localhost:${context.port}`
+        });
+        assert.equal(wrongOrigin.status, 403, pathname);
+        assert.equal(wrongOrigin.json.code, "ORIGIN_REJECTED", pathname);
+      }
+
+      const selfTestStatus = await getRequest(context, "/api/v2/agent/selftest", { cookie: authentication.cookie });
+      assert.equal(selfTestStatus.status, 200, JSON.stringify(selfTestStatus.json));
+      assert.equal(selfTestStatus.json.running, false);
+      // The review route reads its query string through the whole stack.
+      const review = await getRequest(context, "/api/v2/agent/selftest/review?filter=all&cursor=", { cookie: authentication.cookie });
+      assert.equal(review.status, 200, JSON.stringify(review.json));
+      assert.deepEqual(review.json, { items: [], next: null });
+      const badReview = await getRequest(context, "/api/v2/agent/selftest/review?filter=great", { cookie: authentication.cookie });
+      assert.equal(badReview.status, 400);
+      assert.equal(badReview.json.code, "SELFTEST_BAD_REVIEW");
+      // With CSRF the request reaches the runner, which maps its own refusal.
+      const keepOff = await jsonRequest(context, "/api/v2/agent/selftest/start", "POST", { count: 5 }, authentication);
+      assert.equal(keepOff.status, 409, JSON.stringify(keepOff.json));
+      assert.equal(keepOff.json.code, "SELFTEST_KEEP_OFF");
+      const badCount = await jsonRequest(context, "/api/v2/agent/selftest/start", "POST", { count: 501 }, authentication);
+      assert.equal(badCount.status, 400);
+      assert.equal(badCount.json.code, "SELFTEST_BAD_COUNT");
+    });
+
     await suite.test("service credentials are write-only metadata and absent from every persistence surface and log", async () => {
       const metadata = await getRequest(context, "/api/v2/services/radarr", {
         cookie: authentication.cookie
