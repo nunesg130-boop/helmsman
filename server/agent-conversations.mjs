@@ -29,6 +29,9 @@ export const CONVERSATION_LIMITS = Object.freeze({
   maximumRatings: 50_000,
   maximumCorrectionChars: 4_000,
   maximumList: 100,
+  // Only list({ selfTest: "only" }) may return this many, so a whole
+  // self-test batch can be reviewed.
+  maximumSelfTestList: 2_000,
   maximumExport: 20_000
 });
 
@@ -64,6 +67,18 @@ function cleanMessage(message) {
   }
   if (message.role === "tool") clean.tool_call_id = typeof message.tool_call_id === "string" ? message.tool_call_id.slice(0, 64) : "call";
   return clean;
+}
+
+// The self-test marker: {id, category}, both non-empty strings capped at 64
+// characters. Anything else is ignored.
+function cleanSelfTest(value) {
+  if (!isPlainObject(value) || typeof value.id !== "string" || typeof value.category !== "string") return null;
+  const id = value.id.slice(0, 64);
+  const category = value.category.slice(0, 64);
+  if (!id || !category) return null;
+  // The wording-free fact key, when the marker has one (markers saved before it existed do not).
+  const fact = typeof value.fact === "string" ? value.fact.slice(0, 64) : "";
+  return fact ? { id, category, fact } : { id, category };
 }
 
 function dayOf(milliseconds) {
@@ -196,17 +211,19 @@ export async function createConversationStore({ dataDir, clock = Date.now, guard
    * Saves one exchange. `messages` ends with the model's final answer.
    * Returns the new conversation id, or null when nothing was saved.
    */
-  function record({ source, model, messages, tools = [], durationMs = null, service = null }) {
+  function record({ source, model, messages, tools = [], durationMs = null, service = null, selfTest = undefined }) {
     return serialized(async () => {
       if (!SOURCES.has(source) || !Array.isArray(messages)) return null;
       const clean = messages.map(cleanMessage).filter(Boolean);
       if (clean.length < 2 || clean.at(-1).role !== "assistant" || !clean.at(-1).content) return null;
       const id = String(idFactory());
       const at = clock();
+      const marker = cleanSelfTest(selfTest);
       const entry = {
         id,
         at: new Date(at).toISOString(),
         source,
+        ...(marker ? { selfTest: marker } : {}),
         ...(typeof service === "string" && service ? { service: service.slice(0, 96) } : {}),
         model: typeof model === "string" ? model.slice(0, 128) : null,
         durationMs: Number.isFinite(durationMs) ? Math.round(durationMs) : null,
@@ -240,6 +257,7 @@ export async function createConversationStore({ dataDir, clock = Date.now, guard
       service: entry.service || null,
       model: entry.model,
       durationMs: entry.durationMs,
+      selfTest: cleanSelfTest(entry.selfTest),
       question: lastUser?.content || "",
       answer,
       toolsUsed: [...new Set(entry.messages.flatMap((message) => (message.tool_calls || []).map((call) => call.function.name)))],
@@ -249,13 +267,15 @@ export async function createConversationStore({ dataDir, clock = Date.now, guard
   }
 
   /** The newest conversations first, as summaries. */
-  async function list({ limit = 50, source = null } = {}) {
-    const wanted = Math.min(bounds.maximumList, Math.max(1, Number.isSafeInteger(limit) ? limit : 50));
+  async function list({ limit = 50, source = null, selfTest = undefined } = {}) {
+    const ceiling = selfTest === "only" ? bounds.maximumSelfTestList : bounds.maximumList;
+    const wanted = Math.min(ceiling, Math.max(1, Number.isSafeInteger(limit) ? limit : 50));
     const results = [];
     for (const segment of (await segments()).reverse()) {
       const records = (await readSegment(segment.name)).reverse();
       for (const entry of records) {
         if (source === "question" ? entry.source !== "question" : source === "reports" ? entry.source === "question" : false) continue;
+        if (selfTest === "exclude" ? entry.selfTest : selfTest === "only" ? !entry.selfTest : false) continue;
         results.push(summary(entry));
         if (results.length >= wanted) return results;
       }

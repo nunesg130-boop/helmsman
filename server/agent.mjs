@@ -39,6 +39,7 @@ import { chatCompletion, estimateTokens, listModels, LlmError, validModelId } fr
 import { questionWindow } from "./agent-history.mjs";
 import { guestIds, HELMSMAN_HELP, isFollowUp, mergeSeeds, namedServices, namesSomething, nicknameHints, questionSeeds, withoutWorkloadNames, workloadQueries } from "./agent-intent.mjs";
 import { createConversationStore } from "./agent-conversations.mjs";
+import { createSelfTest, SelfTestError } from "./selftest.mjs";
 import { parseServiceUrl, resolveAndAuthorizeExplicitTarget, resolveAndAuthorizeTarget } from "./network.mjs";
 import { OutboundJsonError, performOutboundJsonRequest } from "./outbound-json.mjs";
 
@@ -65,6 +66,9 @@ const PROPOSAL_TTL_MS = 30 * 60_000;
 // A stuck download isn't urgent, so its suggestion waits longer for the owner.
 const DOWNLOAD_PROPOSAL_TTL_MS = 12 * 3_600_000;
 const MAX_QUEUE = 25;
+// The self-test stops while this many of the hourly questions are left, so
+// the owner's chat always has room: max(5, 10% of Questions per hour).
+const SELF_TEST_RESERVE = Object.freeze({ minimum: 5, share: 0.1 });
 const MAX_TOOL_ROUNDS = 4;
 const MAX_REPLY_TOKENS = 450;
 const MAX_NOTE_CHARS = 1_500;
@@ -86,6 +90,7 @@ const RESTART_SETTLE_MS = 10 * 60_000;
 const RESTART_HOLD_MAX_MS = 30 * 60_000;
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u;
 const SAFE_SECRET = /^[^\u0000-\u001f\u007f-\u009f\s]{1,4096}$/u;
+const AGENT_STOPPED = Symbol("agent stopped");
 const STATE_PRIORITY = Object.freeze({ healthy: 0, stale: 1, limited: 2, auth_required: 3, degraded: 3, down: 4 });
 
 export class AgentError extends Error {
@@ -166,10 +171,15 @@ class RateWindow {
   }
 
   take(now, limit = this.#limit) {
-    this.#times = this.#times.filter((time) => now - time < this.#windowMs);
-    if (this.#times.length >= limit) return false;
+    if (this.remaining(now, limit) <= 0) return false;
     this.#times.push(now);
     return true;
+  }
+
+  /** Slots still free in the window, without taking one. */
+  remaining(now, limit = this.#limit) {
+    this.#times = this.#times.filter((time) => now - time < this.#windowMs);
+    return Math.max(0, limit - this.#times.length);
   }
 }
 
@@ -294,6 +304,22 @@ export async function createAgent(options) {
   };
   let activityWrite = Promise.resolve();
   let stopped = false;
+  // Called when stop() begins, for waits that must end then. Each waiter
+  // removes itself once its own wait settles, so nothing builds up.
+  const stopWaiters = new Set();
+  function announceStop() {
+    for (const waiter of [...stopWaiters]) waiter();
+    stopWaiters.clear();
+  }
+  /** `promise`'s outcome, or AGENT_STOPPED as soon as the agent stops. */
+  function untilStopped(promise) {
+    if (stopped) return Promise.resolve(AGENT_STOPPED);
+    return new Promise((resolve, reject) => {
+      const waiter = () => resolve(AGENT_STOPPED);
+      stopWaiters.add(waiter);
+      promise.then(resolve, reject).finally(() => stopWaiters.delete(waiter));
+    });
+  }
   function persistActivity() {
     if (stopped) return activityWrite;
     const document = { version: ACTIVITY_VERSION, ...activity };
@@ -680,7 +706,7 @@ export async function createAgent(options) {
     return total() <= budget;
   }
 
-  async function converse({ prompt, history = [], allowProposals, source, service = null, maxReplyTokens = MAX_REPLY_TOKENS, seedOverview = false }) {
+  async function converse({ prompt, history = [], allowProposals, source, service = null, maxReplyTokens = MAX_REPLY_TOKENS, seedOverview = false, selfTest = undefined, indexerTests = true }) {
     const { ai, settings } = config();
     if (!ai) throw new AgentError(409, "AI_NOT_CONFIGURED", "Connect a model server first.");
     const sender = modelSender(ai);
@@ -693,7 +719,7 @@ export async function createAgent(options) {
       restart: publicRestart(),
       propose: allowProposals ? createProposal(source, service) : null,
       indexers: typeof readIndexers === "function" && prowlarrService()
-        ? { status: indexerStatusText, ...(indexersPolicy().enabled ? { test: testIndexerByName } : {}) }
+        ? { status: indexerStatusText, ...(indexerTests && indexersPolicy().enabled ? { test: testIndexerByName } : {}) }
         : null
     };
     const tools = toolDefinitions({ allowProposals, indexers: Boolean(toolContext.indexers), indexerTests: Boolean(toolContext.indexers?.test) });
@@ -886,7 +912,7 @@ export async function createAgent(options) {
     }
     // Small models add markdown bold despite being asked for plain text.
     const text = plainText(String(answer || "").replace(/\*\*(.+?)\*\*/gu, "$1").replace(/__(.+?)__/gu, "$1"), MAX_NOTE_CHARS) || "The model did not give an answer.";
-    const conversationId = answer ? await saveConversation({ source, ai, messages, tools, answer: text, startedAt, service }) : null;
+    const conversationId = answer ? await saveConversation({ source, ai, messages, tools, answer: text, startedAt, service, selfTest }) : null;
     return {
       text,
       toolsUsed: [...new Set(toolsUsed)],
@@ -1514,8 +1540,11 @@ export async function createAgent(options) {
 
   // Saves one finished exchange when the owner keeps conversations. Never
   // fails the answer itself.
-  async function saveConversation({ source, ai, messages, tools, answer, startedAt, service }) {
+  async function saveConversation({ source, ai, messages, tools, answer, startedAt, service, selfTest = undefined }) {
     const policy = conversationsPolicy();
+    // Nothing writes to /data once stop() has begun, even for a model call
+    // that was already running.
+    if (stopped) return null;
     if (!policy.keep || (source !== "question" && !policy.reports)) return null;
     try {
       return await conversationStore.record({
@@ -1524,7 +1553,8 @@ export async function createAgent(options) {
         service,
         durationMs: clock() - startedAt,
         tools,
-        messages: [...messages.map(({ historic, ...message }) => message), { role: "assistant", content: answer }]
+        messages: [...messages.map(({ historic, ...message }) => message), { role: "assistant", content: answer }],
+        ...(selfTest ? { selfTest } : {})
       });
     } catch {
       log("Helmsman could not save an agent conversation.");
@@ -2353,18 +2383,23 @@ export async function createAgent(options) {
     });
   }
 
-  async function ask(body) {
-    requireKeys(body, ["question", "history"]);
+  // Checks a question and, unless `take` is false, takes one slot of the
+  // hourly question limit. Shared by the owner's chat and the self-test, so
+  // both count the same.
+  function acceptQuestion(body, { take = true } = {}) {
     if (typeof body.question !== "string" || !body.question.trim() || body.question.length > MAX_QUESTION_CHARS) {
       fail(400, "INVALID_QUESTION", `Ask a question of up to ${MAX_QUESTION_CHARS} characters.`);
     }
     if (!config().ai) fail(409, "AI_NOT_CONFIGURED", "Connect a model server first.");
     const perHour = config().ai.questionsPerHour ?? AGENT_LIMITS.questionsPerHour.default;
-    if (!questionRate.take(clock(), perHour)) {
-      fail(429, "AGENT_BUSY", `That's ${perHour} questions in the last hour, the limit set under Settings → Agent → Model server. Try again later, or raise it there.`);
-    }
-    const history = historyInput(body.history);
-    const question = plainText(body.question, MAX_QUESTION_CHARS);
+    const limitReached = () => fail(429, "AGENT_BUSY", `That's ${perHour} questions in the last hour, the limit set under Settings → Agent → Model server. Try again later, or raise it there.`);
+    if (take ? !questionRate.take(clock(), perHour) : questionRate.remaining(clock(), perHour) <= 0) limitReached();
+    return { history: historyInput(body.history), question: plainText(body.question, MAX_QUESTION_CHARS), perHour };
+  }
+
+  async function ask(body) {
+    requireKeys(body, ["question", "history"]);
+    const { history, question } = acceptQuestion(body);
     pruneProposals();
     const pending = [...proposals.values()].filter((proposal) => proposal.status === "pending");
     // Approval only ever happens through the button, so a typed "yes" can
@@ -2405,6 +2440,40 @@ export async function createAgent(options) {
     };
   }
 
+  // The self-test's way in: the same model path as a chat question, but it
+  // can never propose an action (no command shortcut, no propose_action)
+  // or test an indexer, waits behind anything already queued so the
+  // owner's chat goes first, and marks its saved conversation. It never
+  // takes the last few slots of the hourly limit, so the owner's chat is
+  // not locked out by a batch. Not reachable over HTTP.
+  async function askSelfTest(body) {
+    requireKeys(body, ["question", "history", "selfTest"]);
+    if (stopped) fail(503, "AGENT_STOPPED", "The agent stopped.");
+    const { history, question, perHour } = acceptQuestion(body, { take: false });
+    const reserve = Math.max(SELF_TEST_RESERVE.minimum, Math.ceil(perHour * SELF_TEST_RESERVE.share));
+    if (questionRate.remaining(clock(), perHour) <= reserve) {
+      fail(429, "AGENT_BUSY", `The self-test leaves room for your own questions: it keeps ${reserve} of the ${perHour} questions an hour free and carries on once more are available.`);
+    }
+    const selfTest = body.selfTest;
+    const job = enqueue({
+      key: `selftest:${randomUUID()}`,
+      run: () => converse({ prompt: question, history, allowProposals: false, source: "question", seedOverview: true, selfTest, indexerTests: false })
+    });
+    if (!job) fail(429, "AGENT_BUSY", "The agent is busy. Try again in a moment.");
+    // Only a question that is actually queued uses a slot. Nothing ran
+    // between the check above and here, so the slot is still free.
+    questionRate.take(clock(), perHour);
+    // A model call in flight when the agent stops finishes in memory only;
+    // the runner is told at once, so stopping it never waits for the model.
+    const result = await untilStopped(job);
+    if (result === AGENT_STOPPED) fail(503, "AGENT_STOPPED", "The agent stopped.");
+    return {
+      answer: result.text,
+      toolsUsed: result.toolsUsed,
+      conversationId: result.conversationId || null
+    };
+  }
+
   // "test indexers", "test all indexers", "retest 1337x": answered by testing,
   // without the model. Anything else is left for the model.
   async function indexerCommand(question) {
@@ -2436,6 +2505,7 @@ export async function createAgent(options) {
 
   function translateError(error) {
     if (error instanceof AgentError) return error;
+    if (error instanceof SelfTestError) return new AgentError(error.status, error.code, error.message);
     if (error instanceof AgentConfigError) return new AgentError(error.status || 400, error.code, error.message);
     if (error instanceof LlmError) return new AgentError(error.status || 502, error.code, error.message);
     if (error instanceof OutboundJsonError) return new AgentError(error.status || 502, error.code, error.message);
@@ -2452,7 +2522,7 @@ export async function createAgent(options) {
     try {
       const route = url.pathname.replace(/^\/api\/v2\/agent/u, "") || "/";
       const method = request.method;
-      if (url.search) fail(404, "NOT_FOUND", "Not found.");
+      if (url.search && !(route === "/selftest/review" && method === "GET")) fail(404, "NOT_FOUND", "Not found.");
       if (route === "/" && method === "GET") return sendJson(response, 200, publicState());
       if (route === "/ai" && method === "PUT") {
         await saveAi(await readJson(request));
@@ -2523,7 +2593,7 @@ export async function createAgent(options) {
         return sendJson(response, 200, { settings: conversationsPolicy(), status: await conversationStore.status(), items: await conversationStore.list({ limit: 100 }) });
       }
       if (route === "/conversations/chat" && method === "GET") {
-        return sendJson(response, 200, { items: conversationsPolicy().keep ? await conversationStore.list({ limit: 20, source: "question" }) : [] });
+        return sendJson(response, 200, { items: conversationsPolicy().keep ? await conversationStore.list({ limit: 20, source: "question", selfTest: "exclude" }) : [] });
       }
       if (route === "/conversations" && method === "DELETE") {
         await conversationStore.clear();
@@ -2559,6 +2629,26 @@ export async function createAgent(options) {
         response.end(body);
         return undefined;
       }
+      // Self-test: batches of generated questions, reviewed with the rating route above.
+      if (route === "/selftest" && method === "GET") return sendJson(response, 200, await (await selfTestRunner()).status());
+      if (route === "/selftest/start" && method === "POST") {
+        const body = await readJson(request);
+        requireKeys(body, ["count"]);
+        const runner = await selfTestRunner();
+        return sendJson(response, 201, await runner.start(body.count === undefined ? {} : { count: body.count }));
+      }
+      if (route === "/selftest/stop" && method === "POST") {
+        requireKeys(await readJson(request), []);
+        // Returns at once with `stopping`; the card's poll shows the halt.
+        return sendJson(response, 200, await (await selfTestRunner()).requestStop());
+      }
+      if (route === "/selftest/continue" && method === "POST") {
+        requireKeys(await readJson(request), []);
+        return sendJson(response, 200, await (await selfTestRunner()).continueRun());
+      }
+      if (route === "/selftest/review" && method === "GET") {
+        return sendJson(response, 200, await (await selfTestRunner()).review(selfTestReviewQuery(url)));
+      }
       if (route === "/ask" && method === "POST") return sendJson(response, 200, await ask(await readJson(request)));
       if (route === "/run" && method === "POST") {
         const body = await readJson(request);
@@ -2582,9 +2672,59 @@ export async function createAgent(options) {
     return undefined;
   }
 
+  // The self-test runner keeps its queue in /data/selftest.json. It is
+  // created in the background so a problem with its file never holds up or
+  // disables the agent; the routes wait for it. Its writes go through a guard
+  // that refuses once the agent stops.
+  const selfTestReady = createSelfTest({
+    dataDir,
+    askSelfTest,
+    snapshot,
+    conversationStore,
+    conversationsKept: () => conversationsPolicy().keep,
+    clock,
+    guard: async () => {
+      if (stopped) fail(503, "AGENT_STOPPED", "The agent stopped.");
+      await guard();
+    }
+  });
+  selfTestReady.catch((error) => {
+    const code = typeof error?.code === "string" ? error.code.replace(/[^A-Z0-9_]/gu, "").slice(0, 40) : "";
+    const detail = code || plainText(String(error?.message || "unknown error"), 160);
+    log(`Helmsman self-test storage is unavailable (${detail}); the self-test is disabled for this run.`);
+  });
+
+  async function selfTestRunner() {
+    try {
+      return await selfTestReady;
+    } catch {
+      return fail(503, "SELFTEST_UNAVAILABLE", "The self-test is unavailable. Check the Helmsman log.");
+    }
+  }
+
+  function selfTestReviewQuery(url) {
+    const query = {};
+    for (const [key, value] of url.searchParams) {
+      if (!["filter", "category", "cursor"].includes(key) || Object.hasOwn(query, key)) {
+        fail(400, "SELFTEST_BAD_REVIEW", `Unsupported review parameter: ${key.slice(0, 40)}.`);
+      }
+      query[key] = value;
+    }
+    if (query.category !== undefined && query.category !== "" && !/^[A-Za-z0-9_-]{1,64}$/u.test(query.category)) {
+      fail(400, "SELFTEST_BAD_REVIEW", "That category is not valid.");
+    }
+    return {
+      filter: query.filter || "unrated",
+      category: query.category || null,
+      cursor: query.cursor === undefined || query.cursor === "" ? null : query.cursor
+    };
+  }
+
   return {
     handleApi,
     onSnapshot,
+    askSelfTest,
+    conversationsKept: () => conversationsPolicy().keep,
     start() {
       if (started) return;
       started = true;
@@ -2608,10 +2748,16 @@ export async function createAgent(options) {
       // so nothing writes to /data after stop resolves. A model call still
       // running finishes in memory only, so shutdown is never held up by it.
       stopped = true;
+      announceStop();
+      // A running self-test halts without waiting for the model; any save
+      // it had already begun completes before stop resolves.
+      const runner = await selfTestReady.catch(() => null);
+      await runner?.stop().catch(() => {});
       await activityWrite.catch(() => {});
     },
     // For tests and the demo.
     tick,
+    stopWaiters: () => stopWaiters.size,
     idle: async () => {
       await ruleChain;
       while (running || queue.length) await new Promise((resolve) => setTimeout(resolve, 5));

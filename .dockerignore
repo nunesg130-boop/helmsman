@@ -45,6 +45,7 @@
 !src/ui/retro.css
 !src/ui/obsidian-glass.css
 !src/ui/network-map.css
+!src/ui/selftest.css
 !src/ui/logging.css
 !src/ui/agent-helper-3d.js
 !src/vendor
