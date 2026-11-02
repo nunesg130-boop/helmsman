@@ -156,3 +156,15 @@ test("the questions left are labelled as an estimate", () => {
   assert.match(text, /`about \$\{selfTestCount\(status\.unaskedLeft\)\} new question/u);
   assert.doesNotMatch(text, /left to ask/u);
 });
+
+test("Stop shows Stopping… until the poll sees the run halt", () => {
+  const text = body("selfTestStatusText");
+  assert.match(text, /status\.stopping/u);
+  assert.match(text, /Stopping…/u);
+  const card = body("renderAgentSelfTestCard");
+  assert.match(card, /const stopping = Boolean\(status\?\.stopping\)/u);
+  assert.match(card, /data-action="selftest-stop" \$\{running && !stopping && idle \? "" : "disabled"\}/u);
+  assert.match(body("updateSelfTestInPlace"), /\["selftest-stop", running && !stopping && idle\]/u);
+  // The stop answer says "stopping"; the review reloads when the poll sees the end.
+  assert.doesNotMatch(body("changeSelfTestRun"), /if \(kind === "stop"\) void loadSelfTestReview/u);
+});

@@ -651,3 +651,57 @@ test("markers without a fact key still compare by id", async (t) => {
   assert.equal(changed.items.length, 1);
   assert.equal(changed.items[0].answer, "A newer answer.");
 });
+
+test("requestStop returns at once while a question is held; status shows stopping, then stopped", async (t) => {
+  const hold = deferred();
+  const { selfTest, agent } = await setup(t, { behave: (call) => (call.index === 1 ? hold.promise : undefined) });
+  await selfTest.start({ count: 5 });
+  while (agent.calls.length < 2) await tick();
+  const requested = await selfTest.requestStop();
+  assert.equal(requested.running, true, "the question in flight is still running");
+  assert.equal(requested.stopping, true);
+  assert.equal((await selfTest.status()).stopping, true);
+  hold.resolve();
+  await selfTest.whenIdle();
+  const after = await selfTest.status();
+  assert.equal(after.running, false);
+  assert.equal(after.stopping, false);
+  assert.equal(after.reason, "stopped");
+  assert.equal(after.done, 2);
+  assert.equal(agent.calls.length, 2, "nothing is asked after the question in flight");
+  assert.equal((await selfTest.requestStop()).stopping, false, "nothing to stop when idle");
+});
+
+test("stop during start's first write waits for it, and nothing is written afterwards", async (t) => {
+  let holdWrites = false;
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
+  let heldReached;
+  const reached = new Promise((resolve) => { heldReached = resolve; });
+  const { selfTest, agent, dataDir } = await setup(t, {
+    guard: async () => {
+      if (!holdWrites) return;
+      heldReached();
+      await held;
+    }
+  });
+  holdWrites = true;
+  const starting = selfTest.start({ count: 5 });
+  await reached;
+  let stopped = false;
+  const stopping = selfTest.stop().then((value) => { stopped = true; return value; });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(stopped, false, "stop waits for the write in progress");
+  holdWrites = false;
+  release();
+  const status = await stopping;
+  await starting;
+  const disk = await readState(dataDir);
+  assert.equal(disk.queue.length, 5, "the start's write landed before stop resolved");
+  assert.equal(status.running, false);
+  assert.equal(status.reason, "stopped");
+  assert.equal(agent.calls.length, 0);
+  const before = JSON.stringify(disk);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(JSON.stringify(await readState(dataDir)), before, "nothing is written after stop resolves");
+});

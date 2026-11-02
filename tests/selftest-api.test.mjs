@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, symlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -16,7 +16,7 @@ import { labSnapshot } from "./helpers/lab-fixture.mjs";
 const INSTANCE_ID = "12345678-1234-4234-8234-123456789abc";
 const PRIVATE_POLICY = { allowedCidrs: [], allowPublicHttps: false, revision: 1 };
 const START = Date.parse("2026-10-30T12:00:00.000Z");
-const STATUS_KEYS = ["asked", "categories", "done", "failed", "paused", "queued", "reason", "running", "unaskedLeft", "unrated"];
+const STATUS_KEYS = ["asked", "categories", "done", "failed", "paused", "queued", "reason", "running", "stopping", "unaskedLeft", "unrated"];
 const ITEM_KEYS = ["answer", "category", "changedFromBefore", "code", "conversationId", "correction", "failed", "question", "rating", "toolsUsed"];
 
 function deferred() {
@@ -136,21 +136,28 @@ test("status, start, stop, continue and review answer for a signed-in owner", as
     assert.match(item.answer, /^Answer \d\.$/u);
   }
 
-  // Stop finishes the question in flight, then the batch waits for Continue.
+  // Stop answers at once; the question in flight finishes, then the batch
+  // waits for Continue.
   gate = deferred();
   const second = await api(agent, "POST", "/api/v2/agent/selftest/start", { count: 3 });
   assert.equal(second.status, 201);
   await waitFor(() => context.modelCalls.length === 4);
-  const stopping = api(agent, "POST", "/api/v2/agent/selftest/stop", {});
+  const stopping = await api(agent, "POST", "/api/v2/agent/selftest/stop", {});
+  assert.equal(stopping.status, 200);
+  assert.deepEqual(Object.keys(stopping.payload).sort(), STATUS_KEYS);
+  assert.equal(stopping.payload.running, true);
+  assert.equal(stopping.payload.stopping, true);
+  assert.equal((await status(agent)).stopping, true);
   gate.resolve();
   gate = null;
-  const stopped = await stopping;
-  assert.equal(stopped.status, 200);
-  assert.deepEqual(Object.keys(stopped.payload).sort(), STATUS_KEYS);
-  assert.equal(stopped.payload.running, false);
-  assert.equal(stopped.payload.paused, true);
-  assert.equal(stopped.payload.done, 1);
-  assert.equal(stopped.payload.queued, 2);
+  const stopped = await settle(agent);
+  assert.deepEqual(Object.keys(stopped).sort(), STATUS_KEYS);
+  assert.equal(stopped.running, false);
+  assert.equal(stopped.stopping, false);
+  assert.equal(stopped.paused, true);
+  assert.equal(stopped.reason, "stopped");
+  assert.equal(stopped.done, 1);
+  assert.equal(stopped.queued, 2);
 
   const continued = await api(agent, "POST", "/api/v2/agent/selftest/continue", {});
   assert.equal(continued.status, 200);
@@ -263,4 +270,53 @@ test("a running batch leaves room in the hourly limit for the owner's chat", asy
   const chat = await api(agent, "POST", "/api/v2/agent/ask", { question: "Is sonarr up?" });
   assert.equal(chat.status, 200);
   assert.match(chat.payload.answer, /^Answer \d+\.$/u);
+});
+
+test("the stop route answers promptly while a model call is held open", async (t) => {
+  const gate = deferred();
+  const { agent, context } = await harness(t, { hold: async (call) => { if (call === 1) await gate.promise; } });
+  await prepare(agent);
+  assert.equal((await api(agent, "POST", "/api/v2/agent/selftest/start", { count: 3 })).status, 201);
+  await waitFor(() => context.modelCalls.length === 1);
+  let timer;
+  const result = await Promise.race([
+    api(agent, "POST", "/api/v2/agent/selftest/stop", {}),
+    new Promise((resolve) => { timer = setTimeout(() => resolve("hung"), 1_000); })
+  ]);
+  clearTimeout(timer);
+  assert.notEqual(result, "hung", "stop does not wait for the model");
+  assert.equal(result.payload.stopping, true);
+  gate.resolve();
+  const stopped = await settle(agent);
+  assert.equal(stopped.reason, "stopped");
+  assert.equal(stopped.done, 1);
+  assert.equal(context.modelCalls.length, 1);
+});
+
+test("a self-test that cannot start logs why", async (t) => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "helmsman-selftest-api-"));
+  t.after(() => rm(dataDir, { recursive: true, force: true, maxRetries: 5 }));
+  // A symbolic link where the state file belongs is refused (O_NOFOLLOW).
+  await symlink(path.join(dataDir, "elsewhere.json"), path.join(dataDir, "selftest.json"));
+  const credentialStore = new CredentialStore(dataDir, { instanceId: INSTANCE_ID });
+  await credentialStore.initialize();
+  const logs = [];
+  const agent = await createAgent({
+    dataDir,
+    credentialStore,
+    lookup: async () => [{ address: "10.1.0.20", family: 4 }],
+    policy: () => PRIVATE_POLICY,
+    snapshot: () => labSnapshot(),
+    subscribe: () => () => {},
+    performAction: async () => { throw new Error("no action in this test"); },
+    send: async () => { throw new Error("no model in this test"); },
+    clock: () => START,
+    log: (message) => logs.push(message),
+    timers: { setInterval: () => null, clearInterval: () => {} }
+  });
+  t.after(() => agent.stop());
+  await assert.rejects(api(agent, "GET", "/api/v2/agent/selftest"), { status: 503, code: "SELFTEST_UNAVAILABLE" });
+  const line = logs.find((message) => /self-test/iu.test(message));
+  assert.ok(line, "the failure is logged");
+  assert.match(line, /ELOOP/u, line);
 });

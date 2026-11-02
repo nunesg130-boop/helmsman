@@ -2639,7 +2639,8 @@ export async function createAgent(options) {
       }
       if (route === "/selftest/stop" && method === "POST") {
         requireKeys(await readJson(request), []);
-        return sendJson(response, 200, await (await selfTestRunner()).stop());
+        // Returns at once with `stopping`; the card's poll shows the halt.
+        return sendJson(response, 200, await (await selfTestRunner()).requestStop());
       }
       if (route === "/selftest/continue" && method === "POST") {
         requireKeys(await readJson(request), []);
@@ -2687,7 +2688,11 @@ export async function createAgent(options) {
       await guard();
     }
   });
-  selfTestReady.catch(() => log("Helmsman self-test storage is unavailable; the self-test is disabled for this run."));
+  selfTestReady.catch((error) => {
+    const code = typeof error?.code === "string" ? error.code.replace(/[^A-Z0-9_]/gu, "").slice(0, 40) : "";
+    const detail = code || plainText(String(error?.message || "unknown error"), 160);
+    log(`Helmsman self-test storage is unavailable (${detail}); the self-test is disabled for this run.`);
+  });
 
   async function selfTestRunner() {
     try {

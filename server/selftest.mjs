@@ -240,6 +240,8 @@ export async function createSelfTest(options = {}) {
   let running = false;
   let stopping = false;
   let loop = null;
+  // start() between its claim and its loop (its first write), for stop().
+  let starting = null;
   let wake = null;
   let writeChain = Promise.resolve();
   // A run left with questions queued by an earlier process waits for Continue.
@@ -500,6 +502,7 @@ export async function createSelfTest(options = {}) {
     }
     return {
       running,
+      stopping: running && stopping,
       paused: !running && state.queue.length > 0,
       reason,
       queued: state.queue.length,
@@ -523,6 +526,8 @@ export async function createSelfTest(options = {}) {
         throw new SelfTestError(400, "SELFTEST_BAD_COUNT", `Choose between 1 and ${MAX_COUNT} questions.`);
       }
       claim();
+      let started;
+      starting = new Promise((resolve) => { started = resolve; });
       try {
         requireKept();
         const snapshot = readSnapshot();
@@ -548,7 +553,11 @@ export async function createSelfTest(options = {}) {
         });
       } catch (error) {
         running = false;
+        stopping = false;
         throw error;
+      } finally {
+        starting = null;
+        started();
       }
       checkInterrupted = false;
       lastExchange = null;
@@ -556,11 +565,26 @@ export async function createSelfTest(options = {}) {
       return { ...(await status()), requested: wanted };
     },
 
+    /**
+     * Asks the run to halt after the question in flight and returns at
+     * once; the status shows `stopping` until it has.
+     */
+    async requestStop() {
+      if (running) {
+        stopping = true;
+        wake?.();
+      }
+      return status();
+    },
+
     /** Finishes the question in flight, then halts. Resolves once halted. */
     async stop() {
       if (running) {
         stopping = true;
         wake?.();
+        // A start still writing its first state has no loop yet; wait for
+        // it, so nothing is written after stop resolves.
+        await starting;
         await loop;
       }
       return status();

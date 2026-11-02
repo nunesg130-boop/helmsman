@@ -4969,6 +4969,7 @@ function selfTestStatusText(status) {
   const line = parts.join(", ");
   // An estimate: a new batch rewords questions, so the count shifts a little.
   const left = `about ${selfTestCount(status.unaskedLeft)} new question${status.unaskedLeft === 1 ? "" : "s"} left`;
+  if (status.running && status.stopping) return `Stopping… finishing the question in flight: ${line}.`;
   if (status.running) return `Running: ${line}.`;
   if (status.paused) return `Paused: ${line}.`;
   return `${line}, ${left}.`;
@@ -5104,8 +5105,10 @@ async function changeSelfTestRun(kind) {
   selfTest.notice = null;
   rerenderAgent();
   try {
+    // Stop answers at once with `stopping`; the poll keeps running until
+    // the question in flight finishes, then reloads the review.
     selfTest.status = await api(`/api/v2/agent/selftest/${kind}`, { method: "POST", body: {} });
-    if (kind === "stop") void loadSelfTestReview({ reset: true });
+    if (!selfTest.status?.running) void loadSelfTestReview({ reset: true });
   } catch (error) {
     selfTest.notice = selfTestNotice(error);
   } finally {
@@ -5161,9 +5164,10 @@ function updateSelfTestInPlace() {
   const line = document.getElementById("agent-selftest-status");
   if (line) line.textContent = selfTestStatusText(status);
   const running = Boolean(status?.running);
+  const stopping = Boolean(status?.stopping);
   const paused = Boolean(status?.paused);
   const idle = !selfTest.busy;
-  for (const [action, enabled] of [["selftest-start", !running && idle], ["selftest-stop", running && idle], ["selftest-continue", paused && !running && idle]]) {
+  for (const [action, enabled] of [["selftest-start", !running && idle], ["selftest-stop", running && !stopping && idle], ["selftest-continue", paused && !running && idle]]) {
     const button = document.querySelector(`#agent-selftest-card [data-action="${action}"]`);
     if (button) button.disabled = !enabled;
   }
@@ -5248,6 +5252,7 @@ function renderAgentSelfTestCard(data) {
   if (!selfTest.reviewLoaded && !selfTest.reviewLoading) void loadSelfTestReview({ reset: true });
   const status = selfTest.status;
   const running = Boolean(status?.running);
+  const stopping = Boolean(status?.stopping);
   const paused = Boolean(status?.paused);
   const idle = !selfTest.busy;
   const keep = Boolean(data.config?.conversations?.keep);
@@ -5269,7 +5274,7 @@ function renderAgentSelfTestCard(data) {
         <label class="agent-selftest-form__count"><span>Questions in a batch</span><input id="agent-selftest-count" name="count" type="number" min="${SELFTEST_MIN_COUNT}" max="${SELFTEST_MAX_COUNT}" step="1" inputmode="numeric" value="${escapeHtml(String(count))}" required /></label>
         <div class="button-row">
           <button class="button button--primary" type="button" data-action="selftest-start" ${!running && idle ? "" : "disabled"}>Start batch</button>
-          <button class="button" type="button" data-action="selftest-stop" ${running && idle ? "" : "disabled"}>Stop</button>
+          <button class="button" type="button" data-action="selftest-stop" ${running && !stopping && idle ? "" : "disabled"}>Stop</button>
           <button class="button" type="button" data-action="selftest-continue" ${paused && !running && idle ? "" : "disabled"}>Continue</button>
         </div>
       </form>
