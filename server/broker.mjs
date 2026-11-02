@@ -58,7 +58,7 @@ import {
 import { generateSecretToken, hashToken, StateStore, tokenMatches } from "./state.mjs";
 import { anySignal } from "./abort-signals.mjs";
 
-const DEFAULT_VERSION = "1.17.0";
+const DEFAULT_VERSION = "1.17.1";
 const requestedVersion = String(process.env.HELMSMAN_VERSION || DEFAULT_VERSION);
 const VERSION = /^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/u.test(requestedVersion)
   ? requestedVersion
@@ -1053,13 +1053,14 @@ export async function performProxmoxUpstreamRequest({
         type: route?.type,
         vmid: route?.vmid
       })
-    : authorizeProxmoxRoute(route?.routeId, route?.method, { node: route?.node });
+    : authorizeProxmoxRoute(route?.routeId, route?.method, { node: route?.node, storage: route?.storage });
   if (!authorizedRoute.allowed
     || !route?.allowed
     || route.service !== authorizedRoute.service
     || route.actionId !== authorizedRoute.actionId
     || route.operation !== authorizedRoute.operation
     || route.node !== authorizedRoute.node
+    || route.storage !== authorizedRoute.storage
     || route.type !== authorizedRoute.type
     || route.vmid !== authorizedRoute.vmid
     || route.method !== authorizedRoute.method
@@ -2412,7 +2413,8 @@ export async function createBroker(options = {}) {
     const capacityKey = `proxmox:${String(target?.id || targetRevision || "draft").slice(0, 80)}`;
     const requestProxmox = async (routeId, requestOptions = {}) => {
       const route = authorizeProxmoxRoute(routeId, requestOptions.method || "GET", {
-        node: requestOptions.node
+        node: requestOptions.node,
+        storage: requestOptions.storage
       });
       if (!route.allowed) throw new BrokerError(route.status || 404, route.code, route.message);
       const release = reserveServiceCapacity(capacityKey);

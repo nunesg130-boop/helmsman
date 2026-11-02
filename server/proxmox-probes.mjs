@@ -1,4 +1,4 @@
-import { normalizeProxmoxNodeName } from "./routes.mjs";
+import { normalizeProxmoxNodeName, normalizeProxmoxStorageName } from "./routes.mjs";
 
 export const PROXMOX_PROBE_SCHEMA = 2;
 
@@ -15,6 +15,9 @@ const RECENT_TASK_WINDOW_SECONDS = 24 * 60 * 60;
 const MAX_HISTORY_NODES = 64;
 const MAX_HISTORY_CONCURRENCY = 4;
 const HISTORY_ROUTE_IDS = new Set(["tasks", "backups"]);
+const MAX_BACKUP_STORAGES = 32;
+const MAX_STORAGE_CONTENT_TOKENS = 16;
+const UNAVAILABLE_STORAGE_STATUSES = Object.freeze(["unknown", "offline", "inactive", "unavailable", "disabled"]);
 
 function deepFreeze(value) {
   if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
@@ -116,6 +119,12 @@ function optionalInteger(value, minimum = 0, maximum = Number.MAX_SAFE_INTEGER) 
   const number = Number(value);
   if (!Number.isFinite(number)) return null;
   return Math.min(maximum, Math.max(minimum, Math.trunc(number)));
+}
+
+function strictInteger(value, minimum, maximum) {
+  // Unlike optionalInteger, out-of-range values are rejected rather than clamped.
+  const number = typeof value === "string" && /^\d{1,12}$/u.test(value) ? Number(value) : value;
+  return Number.isSafeInteger(number) && number >= minimum && number <= maximum ? number : null;
 }
 
 function percentFromRatio(value) {
@@ -515,6 +524,17 @@ function guestsResult(data) {
   };
 }
 
+function storageContentTokens(value) {
+  if (typeof value !== "string") return [];
+  const tokens = [];
+  for (const part of value.slice(0, 512).split(",")) {
+    const token = part.trim().toLowerCase();
+    if (/^[a-z][a-z0-9_-]{0,31}$/u.test(token) && !tokens.includes(token)) tokens.push(token);
+    if (tokens.length >= MAX_STORAGE_CONTENT_TOKENS) break;
+  }
+  return tokens;
+}
+
 function storageResult(data) {
   const entries = array(data);
   if (!entries) throw new TypeError("invalid storage response");
@@ -524,9 +544,11 @@ function storageResult(data) {
   let totalBytes = 0;
   const reports = [];
   const storage = [];
+  const backupTargets = [];
   for (const raw of entries) {
     const entry = record(raw);
     if (!entry) throw new TypeError("invalid storage entry");
+    const content = storageContentTokens(own(entry, "content"));
     const name = safeName(own(entry, "storage"));
     const node = safeName(own(entry, "node"), "cluster");
     const status = statusToken(own(entry, "status"));
@@ -534,7 +556,7 @@ function storageResult(data) {
     const used = boundedInteger(own(entry, "disk"), 0, 0, Number.MAX_SAFE_INTEGER);
     usedBytes += used;
     totalBytes += total;
-    if (["unknown", "offline", "inactive", "unavailable", "disabled"].includes(status)) {
+    if (UNAVAILABLE_STORAGE_STATUSES.includes(status)) {
       unavailable += 1;
       if (reports.length < MAX_REPORTS) {
         const item = report("error", `Storage ${name}`, `${node} reports this storage as ${status}.`);
@@ -547,6 +569,19 @@ function storageResult(data) {
         const item = report("warning", `Storage ${name}`, `${node} storage usage is ${usagePercent}%.`);
         if (item) reports.push(item);
       }
+      if (content.includes("backup")) {
+        // Keep the exact upstream identifiers for the follow-up backup-list
+        // read; anything the route allowlist would reject is skipped here.
+        const targetStorage = normalizeProxmoxStorageName(own(entry, "storage"));
+        const targetNode = normalizeProxmoxNodeName(own(entry, "node"));
+        if (targetStorage && targetNode) {
+          backupTargets.push({
+            storage: targetStorage,
+            node: targetNode,
+            shared: own(entry, "shared") === 1 || own(entry, "shared") === true
+          });
+        }
+      }
     }
     storage.push({
       name,
@@ -554,6 +589,7 @@ function storageResult(data) {
       status: status || "unknown",
       type: optionalName(own(entry, "plugintype") ?? own(entry, "type"), 40),
       shared: own(entry, "shared") === 1 || own(entry, "shared") === true,
+      content,
       usedBytes: used,
       totalBytes: total,
       usagePercent: total > 0 ? Math.round((used / total) * 1_000) / 10 : null
@@ -572,6 +608,7 @@ function storageResult(data) {
     }),
     reports,
     inventory: { storage },
+    backupTargets: backupTargets.slice(0, MAX_ITEMS),
     ...(hasError
       ? { state: "degraded", code: "STORAGE_UNAVAILABLE" }
       : reports.length
@@ -776,7 +813,13 @@ function mergeNodeInventory(parts, discovery, version) {
 }
 
 function mergeProxmoxInventory(parts, discovery, version) {
-  const backups = parts.flatMap((part) => part.inventory?.backups || []);
+  // Backup files on storage count toward a guest's latest backup, because a
+  // scheduled job that covers many guests runs as one task without a guest ID.
+  // They are not tasks, so they stay out of the activity list.
+  const backups = parts.flatMap((part) => [
+    ...(part.inventory?.backups || []),
+    ...(part.inventory?.backupFiles || [])
+  ]);
   const latestBackupByVmid = new Map();
   for (const backup of backups) {
     if (backup.vmid === null) continue;
@@ -951,6 +994,132 @@ async function collectNodeHistory(transport, plan, parts, options) {
   };
 }
 
+function backupStorageTargets(parts) {
+  const targets = [];
+  const seen = new Set();
+  let capped = 0;
+  for (const part of parts) {
+    for (const target of part.backupTargets || []) {
+      // A shared storage is listed once per node but holds one set of files.
+      const key = target.shared ? `shared\u0000${target.storage}` : `${target.node}\u0000${target.storage}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (targets.length >= MAX_BACKUP_STORAGES) {
+        capped += 1;
+        continue;
+      }
+      targets.push(target);
+    }
+  }
+  return { targets, capped };
+}
+
+function backupFileEntries(data, target, nowMilliseconds) {
+  const entries = array(data);
+  if (!entries) throw new TypeError("invalid backup content response");
+  const files = [];
+  for (const raw of entries) {
+    const entry = record(raw);
+    if (!entry || statusToken(own(entry, "content")) !== "backup") continue;
+    const vmid = strictInteger(own(entry, "vmid"), 100, 999_999_999);
+    const created = strictInteger(own(entry, "ctime"), 1, 4_102_444_800);
+    if (vmid === null || created === null) continue;
+    const endedAt = new Date(created * 1_000).toISOString();
+    files.push({
+      id: `file:${target.storage}:${vmid}:${created}`,
+      type: "vzdump",
+      node: target.node,
+      vmid,
+      status: "success",
+      endedAt,
+      ageSeconds: Math.max(0, Math.floor((nowMilliseconds - created * 1_000) / 1_000))
+    });
+  }
+  return files;
+}
+
+async function requestBackupFiles(transport, plan, target, options, nowMilliseconds) {
+  if (options.signal?.aborted) return { ok: false, code: "CHECK_CANCELLED", status: null, target };
+  try {
+    const response = await transport("backupContent", {
+      method: "GET",
+      responseType: "json",
+      maxBytes: plan.maxBytes,
+      timeoutMs: plan.timeoutMs,
+      signal: options.signal,
+      checkId: plan.id,
+      node: target.node,
+      storage: target.storage
+    });
+    const status = boundedInteger(response?.status, 0, 0, 599);
+    if (status < 200 || status >= 300) return { ok: false, code: "HTTP_ERROR", status: status || null, target };
+    try {
+      return { ok: true, files: backupFileEntries(wrapperData(response?.body), target, nowMilliseconds) };
+    } catch {
+      return { ok: false, code: "INVALID_RESPONSE", status: null, target };
+    }
+  } catch (error) {
+    return { ok: false, code: safeFailureCode(error), status: null, target };
+  }
+}
+
+function backupFileFailureReport(failure) {
+  const name = failure.target.storage;
+  const fallback = "Helmsman is using backup tasks for this storage instead.";
+  let message;
+  if (failure.status === 401 || failure.status === 403) {
+    message = `Proxmox denied reading this storage's backup list (HTTP ${failure.status}). Grant Datastore.Audit on the storage. ${fallback}`;
+  } else if (failure.status) {
+    message = `Proxmox could not list this storage's backups (HTTP ${failure.status}). ${fallback}`;
+  } else if (failure.code === "INVALID_RESPONSE") {
+    message = `Proxmox returned an unexpected backup list for this storage. ${fallback}`;
+  } else {
+    message = `Helmsman could not read this storage's backup list. ${fallback}`;
+  }
+  return report("notice", `Backup list \u00b7 Storage ${name}`, message);
+}
+
+async function collectBackupFiles(transport, plan, parts, options, nowMilliseconds) {
+  const { targets, capped } = backupStorageTargets(parts);
+  const concurrency = boundedInteger(options.historyConcurrency, 1, 1, MAX_HISTORY_CONCURRENCY);
+  const files = [];
+  const seen = new Set();
+  const reports = [];
+  for (let offset = 0; offset < targets.length; offset += concurrency) {
+    const batch = targets.slice(offset, offset + concurrency);
+    const results = await Promise.all(batch.map((target) => (
+      requestBackupFiles(transport, plan, target, options, nowMilliseconds)
+    )));
+    for (const result of results) {
+      if (!result.ok) {
+        if (reports.length < MAX_REPORTS) {
+          const item = backupFileFailureReport(result);
+          if (item) reports.push(item);
+        }
+        continue;
+      }
+      for (const file of result.files) {
+        if (files.length >= MAX_ITEMS) break;
+        // The same archive can be visible through more than one storage
+        // definition (for example a local path and an NFS mount).
+        const key = `${file.vmid}:${file.endedAt}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        files.push(file);
+      }
+    }
+  }
+  if (capped && reports.length < MAX_REPORTS) {
+    const item = report(
+      "notice",
+      "Proxmox backups",
+      `Helmsman read backup lists from the first ${MAX_BACKUP_STORAGES} backup storages and skipped ${capped} more.`
+    );
+    if (item) reports.push(item);
+  }
+  return { files, reports };
+}
+
 function fixedProbeFailureMessage(plan, failureCode, status) {
   const history = HISTORY_ROUTE_IDS.has(plan.routeId);
   if (status === 401) {
@@ -1099,9 +1268,18 @@ export async function probeProxmox(transport, options = {}) {
         const requestCompletedAt = Number(clock());
         const latencyMs = boundedInteger(requestCompletedAt - requestStartedAt, 0, 0, 120_000);
         const missingNodes = collection.failedNodes + collection.omittedNodes;
+        const backupFiles = plan.id === "backups"
+          ? await collectBackupFiles(transport, plan, parsedParts, options, requestCompletedAt)
+          : null;
         if (!collection.successfulNodes) {
           const representative = representativeHistoryFailure(collection.failures);
-          const reports = historyFailureReports(plan, collection);
+          const reports = [
+            ...historyFailureReports(plan, collection),
+            ...(backupFiles?.reports || [])
+          ].slice(0, MAX_REPORTS);
+          if (backupFiles?.files.length) {
+            parsedParts.push({ id: plan.id, metrics: {}, reports: [], inventory: { backupFiles: backupFiles.files } });
+          }
           checks.push({
             id: plan.id,
             label: plan.label,
@@ -1120,6 +1298,9 @@ export async function probeProxmox(transport, options = {}) {
         try {
           result = PARSERS[plan.id](collection.rows, requestCompletedAt);
         } catch {
+          if (backupFiles?.files.length) {
+            parsedParts.push({ id: plan.id, metrics: {}, reports: [], inventory: { backupFiles: backupFiles.files } });
+          }
           const item = probeFailureReport(plan, "INVALID_RESPONSE", null);
           checks.push({
             id: plan.id,
@@ -1142,6 +1323,13 @@ export async function probeProxmox(transport, options = {}) {
             state: priority(result.state || "healthy") > priority("limited") ? result.state : "limited",
             code: plan.id === "backups" ? "BACKUP_HISTORY_PARTIAL" : "TASK_HISTORY_PARTIAL",
             reports: [...coverageReports, ...(result.reports || [])].slice(0, MAX_REPORTS)
+          };
+        }
+        if (backupFiles) {
+          result = {
+            ...result,
+            reports: [...(result.reports || []), ...backupFiles.reports].slice(0, MAX_REPORTS),
+            inventory: { ...result.inventory, backupFiles: backupFiles.files }
           };
         }
         parsedParts.push({ id: plan.id, ...result });

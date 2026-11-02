@@ -11,6 +11,8 @@ const ARR_ARTWORK_PATH = /^\/MediaCover\/[1-9][0-9]{0,9}\/poster(?:-(?:250|500))
 const SEERR_ARTWORK_PATH = /^\/imageproxy\/tmdb\/t\/p\/w342\/[A-Za-z0-9_-]{1,200}\.(?:jpe?g|png|webp)$/u;
 const JELLYFIN_IMAGE_TAG = /^[A-Za-z0-9_-]{1,96}$/u;
 const PROXMOX_NODE_NAME = /^(?=.{1,63}$)[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$/u;
+// Proxmox storage IDs start with a letter and use letters, digits, '-', '_' and '.'.
+const PROXMOX_STORAGE_NAME = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/u;
 const PORTAINER_ENDPOINT_ID = /^[1-9][0-9]{0,9}$/u;
 const PORTAINER_CONTAINER_ID = /^[a-f0-9]{64}$/u;
 const POSITIVE_RESOURCE_ID = /^[1-9][0-9]{0,9}$/u;
@@ -30,10 +32,13 @@ const PROXMOX_ROUTES = Object.freeze({
   storage: "/api2/json/cluster/resources?type=storage"
 });
 const PROXMOX_NODE_ROUTES = Object.freeze(["tasks", "backups"]);
+// Node- and storage-scoped: the backup files on one storage, as seen from one node.
+const PROXMOX_STORAGE_ROUTES = Object.freeze(["backupContent"]);
 
 export const PROXMOX_ROUTE_IDS = Object.freeze([
   ...Object.keys(PROXMOX_ROUTES),
-  ...PROXMOX_NODE_ROUTES
+  ...PROXMOX_NODE_ROUTES,
+  ...PROXMOX_STORAGE_ROUTES
 ]);
 
 // Portainer is an Infrastructure integration, not a browser bridge service.
@@ -60,6 +65,11 @@ export function normalizePortainerEndpointId(value) {
   if (!PORTAINER_ENDPOINT_ID.test(candidate)) return null;
   const numeric = Number(candidate);
   return Number.isSafeInteger(numeric) && numeric <= 2_147_483_647 ? numeric : null;
+}
+
+export function normalizeProxmoxStorageName(value) {
+  if (typeof value !== "string") return null;
+  return PROXMOX_STORAGE_NAME.test(value) && !value.includes("..") ? value : null;
 }
 
 export function normalizeProxmoxNodeName(value) {
@@ -624,7 +634,8 @@ export function authorizeProxmoxRoute(routeIdValue, methodValue = "GET", paramet
       status: 405
     };
   }
-  const nodeScoped = PROXMOX_NODE_ROUTES.includes(routeId);
+  const storageScoped = PROXMOX_STORAGE_ROUTES.includes(routeId);
+  const nodeScoped = PROXMOX_NODE_ROUTES.includes(routeId) || storageScoped;
   if (!Object.hasOwn(PROXMOX_ROUTES, routeId) && !nodeScoped) {
     return {
       allowed: false,
@@ -641,7 +652,15 @@ export function authorizeProxmoxRoute(routeIdValue, methodValue = "GET", paramet
   } catch {
     node = null;
   }
-  if (nodeScoped && !node) {
+  let storage = null;
+  try {
+    storage = storageScoped && parameters && typeof parameters === "object" && !Array.isArray(parameters)
+      ? normalizeProxmoxStorageName(parameters.storage)
+      : null;
+  } catch {
+    storage = null;
+  }
+  if ((nodeScoped && !node) || (storageScoped && !storage)) {
     return {
       allowed: false,
       code: "ROUTE_NOT_ALLOWED",
@@ -649,9 +668,11 @@ export function authorizeProxmoxRoute(routeIdValue, methodValue = "GET", paramet
       status: 404
     };
   }
-  const upstreamPathAndQuery = nodeScoped
-    ? `/api2/json/nodes/${encodeURIComponent(node)}/tasks?source=archive${routeId === "backups" ? "&typefilter=vzdump" : ""}&limit=100`
-    : PROXMOX_ROUTES[routeId];
+  const upstreamPathAndQuery = storageScoped
+    ? `/api2/json/nodes/${encodeURIComponent(node)}/storage/${encodeURIComponent(storage)}/content?content=backup`
+    : nodeScoped
+      ? `/api2/json/nodes/${encodeURIComponent(node)}/tasks?source=archive${routeId === "backups" ? "&typefilter=vzdump" : ""}&limit=100`
+      : PROXMOX_ROUTES[routeId];
   const separator = upstreamPathAndQuery.indexOf("?");
   const upstreamPath = separator < 0
     ? upstreamPathAndQuery
@@ -661,6 +682,7 @@ export function authorizeProxmoxRoute(routeIdValue, methodValue = "GET", paramet
     service: "proxmox",
     routeId,
     ...(node ? { node } : {}),
+    ...(storage ? { storage } : {}),
     method: "GET",
     upstreamPath,
     upstreamPathAndQuery,

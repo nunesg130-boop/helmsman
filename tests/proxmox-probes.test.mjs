@@ -62,6 +62,56 @@ function healthyFixtures() {
   };
 }
 
+function routeParameters(routeId) {
+  if (routeId === "backupContent") return { node: "pve-a", storage: "example-backups" };
+  return ["tasks", "backups"].includes(routeId) ? { node: "pve-a" } : {};
+}
+
+function backupStorageFixtures() {
+  const fixtures = healthyFixtures();
+  fixtures.storage = {
+    data: [
+      { node: "pve-a", storage: "example-local", status: "available", content: "images,rootdir", disk: 20_000, maxdisk: 100_000 },
+      { node: "pve-a", storage: "example-backups", status: "available", content: "backup,iso", disk: 50_000, maxdisk: 100_000 },
+      { node: "pve-a", storage: "example-nfs", status: "available", shared: 1, content: "backup", disk: 50_000, maxdisk: 100_000 },
+      { node: "pve-b", storage: "example-nfs", status: "available", shared: 1, content: "backup", disk: 50_000, maxdisk: 100_000 },
+      { node: "pve-b", storage: "example-offline", status: "unavailable", content: "backup", disk: 0, maxdisk: 0 }
+    ]
+  };
+  // The nightly job covers every guest in one task, so Proxmox records no guest ID.
+  fixtures.backups = {
+    data: [{ type: "vzdump", node: "pve-a", status: "OK", endtime: NOW_SECONDS - 600 }]
+  };
+  return fixtures;
+}
+
+function backupFile(vmid, ageSeconds, storage = "example-backups") {
+  return {
+    volid: `${storage}:backup/vzdump-lxc-${vmid}-archive.tar.zst`,
+    content: "backup",
+    format: "tar.zst",
+    vmid,
+    ctime: NOW_SECONDS - ageSeconds,
+    size: 1_000
+  };
+}
+
+function backupTransport(fixtures, contents, calls = []) {
+  return async (routeId, options) => {
+    calls.push({ routeId, node: options.node || null, storage: options.storage || null, method: options.method });
+    if (routeId === "backupContent") {
+      const entry = contents[`${options.node}/${options.storage}`];
+      if (typeof entry === "number") return { status: entry, body: { errors: { secret: RAW_SECRET } } };
+      return { status: 200, body: entry ?? { data: [] } };
+    }
+    return { status: 200, body: fixtures[routeId] };
+  };
+}
+
+function probeOptions() {
+  return { checkedAt: CHECKED_AT, clock: () => Date.parse(CHECKED_AT) };
+}
+
 test("Proxmox internal routes are a fixed GET-only allowlist", () => {
   assert.deepEqual(PROXMOX_ROUTE_IDS, [
     "permissions",
@@ -72,14 +122,11 @@ test("Proxmox internal routes are a fixed GET-only allowlist", () => {
     "guests",
     "storage",
     "tasks",
-    "backups"
+    "backups",
+    "backupContent"
   ]);
   for (const routeId of PROXMOX_ROUTE_IDS) {
-    const route = authorizeProxmoxRoute(
-      routeId,
-      "GET",
-      ["tasks", "backups"].includes(routeId) ? { node: "pve-a" } : {}
-    );
+    const route = authorizeProxmoxRoute(routeId, "GET", routeParameters(routeId));
     assert.equal(route.allowed, true);
     assert.equal(route.service, "proxmox");
     assert.equal(route.internalOnly, true);
@@ -101,7 +148,7 @@ test("Proxmox internal routes are a fixed GET-only allowlist", () => {
     PROXMOX_ROUTE_IDS.map((routeId) => authorizeProxmoxRoute(
       routeId,
       "GET",
-      ["tasks", "backups"].includes(routeId) ? { node: "pve-a" } : {}
+      routeParameters(routeId)
     ).upstreamPathAndQuery).join("\n"),
     /\/cluster\/tasks/u
   );
@@ -109,8 +156,23 @@ test("Proxmox internal routes are a fixed GET-only allowlist", () => {
     assert.equal(authorizeProxmoxRoute("tasks", "GET", { node }).code, "ROUTE_NOT_ALLOWED");
     assert.equal(authorizeProxmoxRoute("backups", "GET", { node }).code, "ROUTE_NOT_ALLOWED");
   }
+  const backupContent = authorizeProxmoxRoute("backupContent", "GET", { node: "pve-b", storage: "example-backups" });
+  assert.equal(backupContent.upstreamPathAndQuery, "/api2/json/nodes/pve-b/storage/example-backups/content?content=backup");
+  assert.equal(backupContent.node, "pve-b");
+  assert.equal(backupContent.storage, "example-backups");
+  assert.equal(authorizeProxmoxRoute("backupContent", "GET", { node: "pve-b" }).code, "ROUTE_NOT_ALLOWED");
+  assert.equal(authorizeProxmoxRoute("backupContent", "GET", { storage: "example-backups" }).code, "ROUTE_NOT_ALLOWED");
+  for (const storage of ["", "1local", "-local", "local/..", "..", "a..b", "local/content", "local%2f", "local?x=1", "local\u0000", " local", `a${"b".repeat(64)}`, 7]) {
+    assert.equal(
+      authorizeProxmoxRoute("backupContent", "GET", { node: "pve-a", storage }).code,
+      "ROUTE_NOT_ALLOWED",
+      String(storage)
+    );
+  }
+  assert.equal(authorizeProxmoxRoute("backupContent", "POST", { node: "pve-a", storage: "local" }).code, "METHOD_NOT_ALLOWED");
   const hostileParameters = new Proxy({}, { get() { throw new Error("do not inspect"); } });
   assert.equal(authorizeProxmoxRoute("tasks", "GET", hostileParameters).code, "ROUTE_NOT_ALLOWED");
+  assert.equal(authorizeProxmoxRoute("backupContent", "GET", hostileParameters).code, "ROUTE_NOT_ALLOWED");
   assert.deepEqual(authorizeProxmoxRoute("../../access/ticket", "GET"), {
     allowed: false,
     code: "ROUTE_NOT_ALLOWED",
@@ -601,4 +663,125 @@ test("never reflects malformed Proxmox response bodies", async () => {
   const serialized = JSON.stringify(result);
   assert.equal(serialized.includes(RAW_SECRET), false);
   assert.equal(serialized.includes("onerror"), false);
+});
+
+test("backup files on storage count as guest backups when the job task has no guest ID", async () => {
+  const calls = [];
+  const result = await probeProxmox(backupTransport(backupStorageFixtures(), {
+    "pve-a/example-backups": { data: [backupFile(2101, 900), backupFile(2201, 1_200)] },
+    "pve-a/example-nfs": { data: [backupFile(2202, 1_500, "example-nfs")] }
+  }, calls), probeOptions());
+
+  // One read per backup storage: the shared NFS storage once, the unavailable
+  // and non-backup storages not at all.
+  assert.deepEqual(
+    calls.filter(({ routeId }) => routeId === "backupContent").map(({ node, storage, method }) => ({ node, storage, method })),
+    [
+      { node: "pve-a", storage: "example-backups", method: "GET" },
+      { node: "pve-a", storage: "example-nfs", method: "GET" }
+    ]
+  );
+  const backupOf = (vmid) => result.inventory.workloads.find((workload) => workload.vmid === vmid).backup;
+  assert.deepEqual(backupOf(2101), {
+    status: "success",
+    endedAt: new Date((NOW_SECONDS - 900) * 1_000).toISOString(),
+    ageSeconds: 900
+  });
+  assert.equal(backupOf(2201).ageSeconds, 1_200);
+  assert.equal(backupOf(2202).ageSeconds, 1_500);
+  assert.equal(result.checks.find(({ id }) => id === "backups").state, "healthy");
+  assert.equal(result.metrics.backupTasksObserved, 1);
+  assert.equal(result.inventory.activity.some(({ id }) => String(id).startsWith("file:")), false);
+  assert.deepEqual(
+    result.inventory.storage.find(({ name }) => name === "example-backups").content,
+    ["backup", "iso"]
+  );
+});
+
+test("the same backup archive seen through two storages counts once", async () => {
+  const fixtures = backupStorageFixtures();
+  const result = await probeProxmox(backupTransport(fixtures, {
+    "pve-a/example-backups": { data: [backupFile(2101, 900)] },
+    "pve-a/example-nfs": { data: [backupFile(2101, 900, "example-nfs"), backupFile(2101, 90_000, "example-nfs")] }
+  }), probeOptions());
+  assert.equal(result.inventory.workloads.find(({ vmid }) => vmid === 2101).backup.ageSeconds, 900);
+  assert.equal(result.inventory.workloads.find(({ vmid }) => vmid === 2201).backup, null);
+});
+
+test("a denied backup list adds a notice and falls back to backup tasks", async () => {
+  const fixtures = backupStorageFixtures();
+  fixtures.backups = {
+    data: [{ type: "vzdump", id: 2101, node: "pve-a", status: "OK", endtime: NOW_SECONDS - 3_600 }]
+  };
+  const result = await probeProxmox(backupTransport(fixtures, {
+    "pve-a/example-backups": 403,
+    "pve-a/example-nfs": { data: [] }
+  }), probeOptions());
+  const check = result.checks.find(({ id }) => id === "backups");
+  assert.equal(check.state, "healthy");
+  const notice = check.reports.find(({ source }) => source === "Backup list \u00b7 Storage example-backups");
+  assert.equal(notice.severity, "notice");
+  assert.match(notice.message, /HTTP 403/u);
+  assert.match(notice.message, /Datastore\.Audit/u);
+  assert.match(notice.message, /backup tasks/u);
+  assert.equal(JSON.stringify(result).includes(RAW_SECRET), false);
+  assert.equal(result.inventory.workloads.find(({ vmid }) => vmid === 2101).backup.ageSeconds, 3_600);
+});
+
+test("malformed backup list entries are ignored", async () => {
+  const result = await probeProxmox(backupTransport(backupStorageFixtures(), {
+    "pve-a/example-backups": {
+      data: [
+        null,
+        "vzdump",
+        { content: "iso", vmid: 2101, ctime: NOW_SECONDS - 60 },
+        { content: "backup", vmid: "not-a-guest", ctime: NOW_SECONDS - 60 },
+        { content: "backup", vmid: 2101, ctime: 0 },
+        { content: "backup", vmid: 2101 },
+        { content: "backup", vmid: -1, ctime: NOW_SECONDS - 60 },
+        backupFile(2201, 1_800)
+      ]
+    },
+    "pve-a/example-nfs": { data: { not: "a list" } }
+  }), probeOptions());
+  assert.equal(result.inventory.workloads.find(({ vmid }) => vmid === 2101).backup, null);
+  assert.equal(result.inventory.workloads.find(({ vmid }) => vmid === 2201).backup.ageSeconds, 1_800);
+  const reports = result.checks.find(({ id }) => id === "backups").reports || [];
+  assert.ok(reports.some(({ source }) => source === "Backup list \u00b7 Storage example-nfs"));
+});
+
+test("the newest of backup files and single-guest backup tasks wins", async () => {
+  const fixtures = backupStorageFixtures();
+  fixtures.backups = {
+    data: [
+      // Older than the archive on storage: the archive wins.
+      { type: "vzdump", id: 2101, node: "pve-a", status: "OK", endtime: NOW_SECONDS - 7_200 },
+      // Newer than the archive on storage and failed: the failure wins.
+      { type: "vzdump", id: 2201, node: "pve-b", status: "job errors", endtime: NOW_SECONDS - 300 }
+    ]
+  };
+  const result = await probeProxmox(backupTransport(fixtures, {
+    "pve-a/example-backups": { data: [backupFile(2101, 900), backupFile(2201, 86_000)] }
+  }), probeOptions());
+  const backupOf = (vmid) => result.inventory.workloads.find((workload) => workload.vmid === vmid).backup;
+  assert.deepEqual(backupOf(2101), {
+    status: "success",
+    endedAt: new Date((NOW_SECONDS - 900) * 1_000).toISOString(),
+    ageSeconds: 900
+  });
+  assert.equal(backupOf(2201).status, "failed");
+  assert.equal(backupOf(2201).ageSeconds, 300);
+});
+
+test("backup files still describe guests when backup task history is unavailable", async () => {
+  const fixtures = backupStorageFixtures();
+  const transport = backupTransport(fixtures, {
+    "pve-a/example-backups": { data: [backupFile(2101, 900)] }
+  });
+  const result = await probeProxmox(async (routeId, options) => (
+    routeId === "backups" ? { status: 500, body: {} } : transport(routeId, options)
+  ), probeOptions());
+  const check = result.checks.find(({ id }) => id === "backups");
+  assert.equal(check.code, "BACKUP_HISTORY_UNAVAILABLE");
+  assert.equal(result.inventory.workloads.find(({ vmid }) => vmid === 2101).backup.ageSeconds, 900);
 });
