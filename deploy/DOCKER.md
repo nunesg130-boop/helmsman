@@ -1,4 +1,4 @@
-# Helmsman Docker deployment — v1.17.0
+# Helmsman Docker deployment — v1.17.1
 
 > [!WARNING]
 > Back up the `/data` volume before every update, run only the newest published
@@ -31,7 +31,7 @@ authoritative.
 
 ## 1. Prepare
 
-The GitHub Release for `v1.17.0` publishes three deployment assets:
+The GitHub Release for `v1.17.1` publishes three deployment assets:
 
 - `compose.yaml` — the pull-only production service definition pinned to the released multi-architecture image digest;
 - `container.env.example` — the same digest-pinned image reference plus non-secret bind-address and port settings;
@@ -50,9 +50,9 @@ Download and verify the public release assets on Linux:
 ```sh
 sudo install -d -o "$(id -u)" -g "$(id -g)" -m 0755 /opt/helmsman
 cd /opt/helmsman
-curl -fLO https://github.com/nunesg130-boop/helmsman/releases/download/v1.17.0/compose.yaml
-curl -fLO https://github.com/nunesg130-boop/helmsman/releases/download/v1.17.0/container.env.example
-curl -fLO https://github.com/nunesg130-boop/helmsman/releases/download/v1.17.0/SHA256SUMS
+curl -fLO https://github.com/nunesg130-boop/helmsman/releases/download/v1.17.1/compose.yaml
+curl -fLO https://github.com/nunesg130-boop/helmsman/releases/download/v1.17.1/container.env.example
+curl -fLO https://github.com/nunesg130-boop/helmsman/releases/download/v1.17.1/SHA256SUMS
 sha256sum --strict --check SHA256SUMS
 ```
 
@@ -193,7 +193,7 @@ Helmsman exposes a bounded read-only inventory to the authenticated UI: each nod
 
 ### Proxmox token preparation
 
-Create a dedicated Proxmox user and an API token with privilege separation enabled. Grant only the inventory privileges needed for resources Helmsman should see plus `VM.PowerMgmt` on the specific guests or pool it may control. For complete cluster-level visibility, an operator may assign Proxmox's built-in `PVEAuditor` role at `/` with propagation while assigning the power-management role at a narrower guest or pool path; narrower visibility is safer when complete inventory is unnecessary, but unavailable resources will remain absent or Limited in Helmsman. Do not grant administrator, node-control, storage-allocation, migration, backup, console, or configuration privileges. Copy the generated token secret when Proxmox displays it and store it directly through the Helmsman form.
+Create a dedicated Proxmox user and an API token with privilege separation enabled. Grant only the inventory privileges needed for resources Helmsman should see plus `VM.PowerMgmt` on the specific guests or pool it may control. For complete cluster-level visibility, an operator may assign Proxmox's built-in `PVEAuditor` role at `/` with propagation while assigning the power-management role at a narrower guest or pool path; narrower visibility is safer when complete inventory is unnecessary, but unavailable resources will remain absent or Limited in Helmsman. Per-guest backup status reads each backup storage's backup list, which needs `Datastore.Audit` on that storage (included in `PVEAuditor`); without it Helmsman falls back to backup tasks, which do not name the guests a multi-guest scheduled job covered. Do not grant administrator, node-control, storage-allocation, migration, backup, console, or configuration privileges. Copy the generated token secret when Proxmox displays it and store it directly through the Helmsman form.
 
 ### Portainer access-token preparation
 
@@ -510,9 +510,9 @@ not only the image line:
 ```sh
 set -euo pipefail
 cd /opt/helmsman
-cp -- compose.yaml.before-1.17.0 compose.yaml
-if [ -f .env.before-1.17.0 ]; then
-  cp -- .env.before-1.17.0 .env
+cp -- compose.yaml.before-1.17.1 compose.yaml
+if [ -f .env.before-1.17.1 ]; then
+  cp -- .env.before-1.17.1 .env
   helmsman_env_file=.env
 else
   rm -f -- .env
@@ -663,7 +663,7 @@ exactly `compose.yaml`, `container.env.example`, and `SHA256SUMS`. It downloads
 those assets into a new `helmsman-<version>-deployment-assets` directory beside
 the source folder, verifies both checksums, rejects placeholders, and requires
 the two configuration files to contain the same expected digest-pinned image.
-For v1.17.0, the workflow publishes Linux AMD64 and ARM64 images under the
+For v1.17.1, the workflow publishes Linux AMD64 and ARM64 images under the
 version, `latest`, and full-commit tags.
 
 The publisher deliberately does not execute candidate source while maintainer
@@ -684,7 +684,7 @@ The complete recovery and manual command sequence is in [GITHUB.md](../GITHUB.md
 After a successful release, verify that:
 
 - `ghcr.io/nunesg130-boop/helmsman:<version>` contains Linux AMD64 and ARM64 manifests;
-- the GitHub Release is stable for v1.17.0;
+- the GitHub Release is stable for v1.17.1;
 - `compose.yaml`, `container.env.example`, and `SHA256SUMS` are attached;
 - both downloaded deployment files contain the same
   `ghcr.io/nunesg130-boop/helmsman@sha256:...` manifest reference and no source
