@@ -4317,8 +4317,12 @@ function emptyAgentState() {
     ratings: new Map(),
     ratingVersion: 0,
     editingAnswer: "",
+    // Which list the answer being corrected sits in, since a self-test
+    // answer can also appear under Training data.
+    editingScope: "",
     chatRestored: false,
     training: { loaded: false, loading: false, error: "", status: null, items: [], busy: "" },
+    selfTest: emptySelfTestState(),
     draft: "",
     helperDraft: "",
     asking: false,
@@ -4767,20 +4771,25 @@ async function restoreAgentChat() {
 
 // Good, Bad and Fix answer under a saved answer. A fixed answer is what the
 // model should have said; it is the most useful training example there is.
-function renderAnswerRating(id, answer) {
+// `bad: false` leaves out Bad (the self-test review offers Good, Fix answer
+// and Skip); `scope` keeps the correction box ids apart when the same answer
+// is listed twice on a page; `extra` is more trusted button markup.
+function renderAnswerRating(id, answer, { bad = true, scope = "", extra = "" } = {}) {
   const rating = state.agent.ratings.get(id) || {};
-  const editing = state.agent.editingAnswer === id;
+  const editing = state.agent.editingAnswer === id && state.agent.editingScope === scope;
+  const fieldId = agentCorrectionFieldId(id, scope);
   const button = (value, label, iconName) => `<button class="agent-rating__button${rating.rating === value ? " is-active" : ""}" type="button" data-action="agent-rate" data-conversation-id="${escapeHtml(id)}" data-rating="${value}" aria-pressed="${rating.rating === value ? "true" : "false"}" title="${label}">${icon(iconName)}<span>${label}</span></button>`;
   return `<div class="agent-rating">
     <div class="agent-rating__buttons">
       ${button("up", "Good", "check")}
-      ${button("down", "Bad", "x")}
-      <button class="agent-rating__button${rating.correction ? " is-active" : ""}" type="button" data-action="agent-edit-answer" data-conversation-id="${escapeHtml(id)}" title="Write the answer it should have given">${icon("edit")}<span>${rating.correction ? "Edit fix" : "Fix answer"}</span></button>
+      ${bad ? button("down", "Bad", "x") : ""}
+      <button class="agent-rating__button${rating.correction ? " is-active" : ""}" type="button" data-action="agent-edit-answer" data-conversation-id="${escapeHtml(id)}" data-scope="${escapeHtml(scope)}" title="Write the answer it should have given">${icon("edit")}<span>${rating.correction ? "Edit fix" : "Fix answer"}</span></button>
+      ${extra}
     </div>
     ${rating.correction && !editing ? `<p class="agent-rating__correction"><strong>Your answer:</strong> ${escapeHtml(rating.correction)}</p>` : ""}
     ${editing ? `<form class="agent-correction-form" data-conversation-id="${escapeHtml(id)}">
-      <label class="sr-only" for="agent-correction-${escapeHtml(id)}">The answer it should have given</label>
-      <textarea id="agent-correction-${escapeHtml(id)}" name="correction" rows="3" maxlength="4000">${escapeHtml(rating.correction || answer || "")}</textarea>
+      <label class="sr-only" for="${escapeHtml(fieldId)}">The answer it should have given</label>
+      <textarea id="${escapeHtml(fieldId)}" name="correction" rows="3" maxlength="4000">${escapeHtml(rating.correction || answer || "")}</textarea>
       <div class="agent-correction-form__actions">${rating.correction ? `<button class="button button--compact" type="button" data-action="agent-clear-fix" data-conversation-id="${escapeHtml(id)}">Remove fix</button>` : ""}<button class="button button--compact" type="button" data-action="agent-edit-cancel">Cancel</button><button class="button button--compact button--primary" type="submit">Save answer</button></div>
     </form>` : ""}
   </div>`;
@@ -4793,7 +4802,17 @@ async function rateConversation(id, body) {
     rememberRating(updated);
     const item = state.agent.training.items.find((entry) => entry.id === id);
     if (item) Object.assign(item, { rating: updated.rating, correction: updated.correction });
-    if (body.correction !== undefined) state.agent.editingAnswer = "";
+    const selfTestItem = state.agent.selfTest.items.find((entry) => entry.conversationId === id);
+    if (selfTestItem) {
+      Object.assign(selfTestItem, { rating: updated.rating || null, correction: updated.correction || null });
+      // The unrated list pages by offset, so a rated answer shifts every
+      // later page; start again from the first.
+      if (state.agent.selfTest.filter === "unrated") void loadSelfTestReview({ reset: true });
+    }
+    if (body.correction !== undefined) {
+      state.agent.editingAnswer = "";
+      state.agent.editingScope = "";
+    }
     if (state.agent.training.loaded) void loadTraining({ render: false });
   } catch (error) {
     showToast(error?.message || "That rating could not be saved.", "danger");
@@ -4889,6 +4908,388 @@ function renderAgentTrainingCard(data) {
   </section>`;
 }
 
+// ------------------------------------------------------------ self-test --
+// Settings → Agent → Self-test asks the agent batches of questions made from
+// this homelab's inventory (server/selftest.mjs) and lists the answers to
+// rate with the same Good and Fix answer controls as Training data.
+
+const SELFTEST_DEFAULT_COUNT = 50;
+const SELFTEST_MIN_COUNT = 1;
+const SELFTEST_MAX_COUNT = 500;
+const SELFTEST_POLL_MS = 3_000;
+const SELFTEST_FILTERS = Object.freeze([
+  ["unrated", "Unrated"],
+  ["all", "All"],
+  ["changed", "Changed"],
+  ["failed", "Failed"]
+]);
+const SELFTEST_EMPTY = Object.freeze({
+  unrated: "Nothing left to rate. Start a batch to ask more questions.",
+  all: "No self-test answers yet. Start a batch to ask some questions.",
+  changed: "No question has been answered differently from an earlier time yet.",
+  failed: "No questions failed."
+});
+let selfTestPollTimer = null;
+let selfTestPollInFlight = false;
+
+// Built while the module's first state object is created, before the
+// constants above exist, so the batch size starts empty (the default).
+function emptySelfTestState() {
+  return {
+    loaded: false,
+    loading: false,
+    error: "",
+    status: null,
+    notice: null,
+    busy: "",
+    count: null,
+    filter: "unrated",
+    category: "",
+    items: [],
+    next: null,
+    index: 0,
+    reviewLoaded: false,
+    reviewLoading: false,
+    reviewError: "",
+    reviewGeneration: 0
+  };
+}
+
+function selfTestCount(value) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : 0;
+}
+
+function selfTestStatusText(status) {
+  if (!status) return "";
+  const done = selfTestCount(status.done);
+  const failed = selfTestCount(status.failed);
+  const total = done + failed + selfTestCount(status.queued);
+  const parts = total ? [`${done} of ${total} done`, `${failed} failed`] : ["No batch yet"];
+  parts.push(`${selfTestCount(status.unrated)} unrated`);
+  const line = parts.join(", ");
+  const left = `${selfTestCount(status.unaskedLeft)} new question${status.unaskedLeft === 1 ? "" : "s"} left to ask`;
+  if (status.running) return `Running: ${line}.`;
+  if (status.paused) return `Paused: ${line}.`;
+  return `${line}. ${left}.`;
+}
+
+function selfTestReasonText(reason) {
+  if (!reason) return "";
+  if (reason === "restart") return "Helmsman restarted during the last batch. Press Continue to finish it.";
+  if (reason === "stopped") return "Stopped. Press Continue to finish the batch.";
+  return safeSessionText(reason, "", 300);
+}
+
+// What to tell the owner for each self-test error code.
+function selfTestNotice(error) {
+  const code = String(error?.code || "");
+  switch (code) {
+    case "SELFTEST_KEEP_OFF":
+      return { code, title: "Turn on Keep conversations for training", detail: "Each self-test answer is saved as a conversation for you to rate. Turn on Keep conversations for training in the Training data card, save, then start the batch again." };
+    case "SELFTEST_NO_INVENTORY":
+      return { code, title: "Helmsman has no inventory yet.", detail: "Questions are made from your nodes, workloads and containers. Connect Proxmox or Portainer, wait for the first check, then try again." };
+    case "SELFTEST_EXHAUSTED":
+      return { code, title: "Every question has been asked", detail: "Every question Helmsman can make from the current inventory has already been asked. Rate the answers below, or start another batch after the inventory changes." };
+    case "SELFTEST_RUNNING":
+      return { code, title: "A batch is already running", detail: "Wait for it to finish, or press Stop first." };
+    case "SELFTEST_BAD_COUNT":
+      return { code, title: `Choose between ${SELFTEST_MIN_COUNT} and ${SELFTEST_MAX_COUNT} questions.`, detail: "" };
+    case "SELFTEST_UNAVAILABLE":
+      return { code, title: "The self-test is unavailable", detail: "Check the Helmsman log, then try again." };
+    default:
+      return { code, title: "The self-test could not do that", detail: safeSessionText(error?.message, "Try again in a moment.", 200) };
+  }
+}
+
+async function loadSelfTest({ render = true } = {}) {
+  const selfTest = state.agent.selfTest;
+  if (selfTest.loading || !state.status?.authenticated) return;
+  selfTest.loading = true;
+  try {
+    selfTest.status = await api("/api/v2/agent/selftest");
+    selfTest.error = "";
+  } catch (error) {
+    selfTest.error = error?.code === "SELFTEST_UNAVAILABLE"
+      ? "The self-test is unavailable. Check the Helmsman log."
+      : safeSessionText(error?.message, "The self-test status could not be read.", 200);
+  } finally {
+    selfTest.loading = false;
+    selfTest.loaded = true;
+    if (render && document.getElementById("agent-selftest-card")) rerenderAgent();
+  }
+}
+
+// One page of answers, or the first page again with `reset`. Results that
+// arrive after the filter changed are dropped.
+async function loadSelfTestReview({ reset = false, render = true } = {}) {
+  const selfTest = state.agent.selfTest;
+  if (!state.status?.authenticated) return;
+  const generation = ++selfTest.reviewGeneration;
+  const cursor = reset ? null : selfTest.next;
+  const params = new URLSearchParams({ filter: selfTest.filter });
+  if (selfTest.category) params.set("category", selfTest.category);
+  if (cursor) params.set("cursor", cursor);
+  selfTest.reviewLoading = true;
+  try {
+    const payload = await api(`/api/v2/agent/selftest/review?${params}`);
+    if (generation !== selfTest.reviewGeneration) return;
+    const items = (Array.isArray(payload?.items) ? payload.items : []).filter((item) => item && typeof item === "object");
+    for (const item of items) {
+      if (item.conversationId) rememberRating({ id: item.conversationId, rating: item.rating, correction: item.correction });
+    }
+    selfTest.items = cursor ? [...selfTest.items, ...items] : items;
+    selfTest.next = typeof payload?.next === "string" ? payload.next : null;
+    selfTest.index = Math.min(selfTest.index, Math.max(selfTest.items.length - 1, 0));
+    selfTest.reviewError = "";
+  } catch (error) {
+    if (generation !== selfTest.reviewGeneration) return;
+    selfTest.reviewError = safeSessionText(error?.message, "The self-test answers could not be read.", 200);
+  } finally {
+    if (generation === selfTest.reviewGeneration) {
+      selfTest.reviewLoading = false;
+      selfTest.reviewLoaded = true;
+      if (render && document.getElementById("agent-selftest-card")) rerenderAgent();
+    }
+  }
+}
+
+function setSelfTestFilter(filter, category) {
+  if (!SELFTEST_FILTERS.some(([id]) => id === filter)) return;
+  const selfTest = state.agent.selfTest;
+  selfTest.filter = filter;
+  selfTest.category = safeSessionText(category, "", 80);
+  selfTest.items = [];
+  selfTest.next = null;
+  selfTest.index = 0;
+  void loadSelfTestReview({ reset: true });
+  rerenderAgent();
+}
+
+async function startSelfTest() {
+  const selfTest = state.agent.selfTest;
+  if (selfTest.busy) return;
+  const input = document.getElementById("agent-selftest-count");
+  const count = Number(input ? input.value : selfTest.count ?? SELFTEST_DEFAULT_COUNT);
+  if (!Number.isSafeInteger(count) || count < SELFTEST_MIN_COUNT || count > SELFTEST_MAX_COUNT) {
+    selfTest.notice = selfTestNotice({ code: "SELFTEST_BAD_COUNT" });
+    rerenderAgent();
+    return;
+  }
+  selfTest.count = count;
+  selfTest.busy = "start";
+  selfTest.notice = null;
+  rerenderAgent();
+  try {
+    const payload = await api("/api/v2/agent/selftest/start", { method: "POST", body: { count } });
+    selfTest.status = payload;
+    selfTest.loaded = true;
+    selfTest.error = "";
+    const queued = selfTestCount(payload?.queued);
+    showToast(queued < count
+      ? `Only ${queued} new question${queued === 1 ? " was" : "s were"} left to ask; ${queued === 1 ? "it is" : "all are"} queued.`
+      : `${queued} question${queued === 1 ? "" : "s"} queued.`, "success");
+  } catch (error) {
+    selfTest.notice = selfTestNotice(error);
+  } finally {
+    selfTest.busy = "";
+    rerenderAgent();
+  }
+}
+
+async function changeSelfTestRun(kind) {
+  const selfTest = state.agent.selfTest;
+  if (!["stop", "continue"].includes(kind) || selfTest.busy) return;
+  selfTest.busy = kind;
+  selfTest.notice = null;
+  rerenderAgent();
+  try {
+    selfTest.status = await api(`/api/v2/agent/selftest/${kind}`, { method: "POST", body: {} });
+    if (kind === "stop") void loadSelfTestReview({ reset: true });
+  } catch (error) {
+    selfTest.notice = selfTestNotice(error);
+  } finally {
+    selfTest.busy = "";
+    rerenderAgent();
+  }
+}
+
+// Poll only while the card is on screen and a batch is running. Every page
+// render calls this, so leaving the card or the run ending stops the timer.
+function syncSelfTestPolling() {
+  const active = Boolean(document.getElementById("agent-selftest-card")) && Boolean(state.agent.selfTest.status?.running);
+  if (!active) {
+    clearTimeout(selfTestPollTimer);
+    selfTestPollTimer = null;
+    return;
+  }
+  if (selfTestPollTimer === null && !selfTestPollInFlight) selfTestPollTimer = setTimeout(pollSelfTest, SELFTEST_POLL_MS);
+}
+
+async function pollSelfTest() {
+  selfTestPollTimer = null;
+  const selfTest = state.agent.selfTest;
+  if (!document.getElementById("agent-selftest-card") || !selfTest.status?.running) return;
+  if (document.visibilityState !== "hidden") {
+    selfTestPollInFlight = true;
+    try {
+      const status = await api("/api/v2/agent/selftest");
+      const fillEmptyList = !selfTest.items.length && selfTestCount(status?.unrated) > 0;
+      selfTest.status = status;
+      selfTest.error = "";
+      // A full render would reset an answer being corrected, so the page
+      // only redraws when the run ends or the first answers arrive, and
+      // never while a correction box is open.
+      if ((!status?.running || fillEmptyList) && !state.agent.editingAnswer) {
+        void loadSelfTestReview({ reset: true });
+        rerenderAgent();
+      } else {
+        updateSelfTestInPlace();
+      }
+    } catch (error) {
+      if (error?.status === 401) return;
+    } finally {
+      selfTestPollInFlight = false;
+    }
+  }
+  syncSelfTestPolling();
+}
+
+function updateSelfTestInPlace() {
+  const selfTest = state.agent.selfTest;
+  const status = selfTest.status;
+  const line = document.getElementById("agent-selftest-status");
+  if (line) line.textContent = selfTestStatusText(status);
+  const running = Boolean(status?.running);
+  const paused = Boolean(status?.paused);
+  const idle = !selfTest.busy;
+  for (const [action, enabled] of [["selftest-start", !running && idle], ["selftest-stop", running && idle], ["selftest-continue", paused && !running && idle]]) {
+    const button = document.querySelector(`#agent-selftest-card [data-action="${action}"]`);
+    if (button) button.disabled = !enabled;
+  }
+}
+
+function moveSelfTest(delta) {
+  const selfTest = state.agent.selfTest;
+  if (!selfTest.items.length) return;
+  selfTest.index = Math.min(Math.max(selfTest.index + delta, 0), selfTest.items.length - 1);
+  if (state.agent.editingScope === "selftest") {
+    state.agent.editingAnswer = "";
+    state.agent.editingScope = "";
+  }
+  rerenderAgent();
+  requestAnimationFrame(() => document.querySelector(".agent-selftest-list > li.is-current")?.scrollIntoView?.({ block: "nearest" }));
+}
+
+function agentCorrectionFieldId(id, scope = "") {
+  return `agent-correction-${scope ? `${scope}-` : ""}${id}`;
+}
+
+function openAnswerFix(id, scope = "") {
+  state.agent.editingAnswer = String(id || "");
+  state.agent.editingScope = String(scope || "");
+  rerenderAgent();
+  requestAnimationFrame(() => document.getElementById(agentCorrectionFieldId(state.agent.editingAnswer, state.agent.editingScope))?.focus());
+}
+
+// Keyboard review: g Good, f Fix answer, s Skip, j next, k previous. Only
+// on the Self-test card, and never while typing or with a dialog open.
+function handleSelfTestKey(event) {
+  if (event.defaultPrevented || event.repeat || event.isComposing) return;
+  if (event.ctrlKey || event.metaKey || event.altKey) return;
+  if (isTypingTarget(event.target)) return;
+  if (document.body?.classList?.contains("has-overlay")) return;
+  if (!document.getElementById("agent-selftest-card")) return;
+  const selfTest = state.agent.selfTest;
+  const item = selfTest.items[selfTest.index];
+  switch (String(event.key || "")) {
+    case "g":
+      if (!item?.conversationId) return;
+      event.preventDefault();
+      void rateConversation(item.conversationId, { rating: "up" });
+      return;
+    case "f":
+      if (!item?.conversationId) return;
+      event.preventDefault();
+      openAnswerFix(item.conversationId, "selftest");
+      return;
+    case "s":
+    case "j":
+      event.preventDefault();
+      moveSelfTest(1);
+      return;
+    case "k":
+      event.preventDefault();
+      moveSelfTest(-1);
+      return;
+    default:
+  }
+}
+
+function renderSelfTestItem(item, index, current) {
+  const tools = (Array.isArray(item.toolsUsed) ? item.toolsUsed : []).filter((tool) => typeof tool === "string").slice(0, 12);
+  const skip = `<button class="agent-rating__button" type="button" data-action="selftest-skip" data-selftest-index="${index}" title="Skip to the next answer (s)">${icon("chevron")}<span>Skip</span></button>`;
+  return `<li class="${current ? "is-current" : ""}"${current ? " aria-current=\"true\"" : ""}>
+    <div class="agent-training-list__head"><span class="agent-training-list__source">${escapeHtml(item.category || "Question")}</span>${item.changedFromBefore ? `<span class="agent-selftest-flag">Changed</span>` : ""}${item.failed ? `<span class="agent-selftest-flag is-failed">Failed</span>` : ""}</div>
+    <p class="agent-training-list__question">${escapeHtml(item.question || "")}</p>
+    ${item.failed
+      ? `<p class="agent-selftest-failure">No answer (${escapeHtml(item.code || "unknown error")}).</p>`
+      : `<p class="agent-training-list__answer">${escapeHtml(item.answer || "")}</p>
+    <p class="agent-selftest-tools">${tools.length ? `<span>Lookups:</span> ${tools.map((tool) => `<code>${escapeHtml(tool)}</code>`).join(" ")}` : "<span>No lookups</span>"}</p>`}
+    ${item.conversationId
+      ? renderAnswerRating(item.conversationId, item.answer, { bad: false, scope: "selftest", extra: skip })
+      : `<div class="agent-rating"><div class="agent-rating__buttons">${skip}</div></div>`}
+  </li>`;
+}
+
+function renderAgentSelfTestCard(data) {
+  const selfTest = state.agent.selfTest;
+  if (!selfTest.loaded && !selfTest.loading) void loadSelfTest();
+  if (!selfTest.reviewLoaded && !selfTest.reviewLoading) void loadSelfTestReview({ reset: true });
+  const status = selfTest.status;
+  const running = Boolean(status?.running);
+  const paused = Boolean(status?.paused);
+  const idle = !selfTest.busy;
+  const keep = Boolean(data.config?.conversations?.keep);
+  const notice = selfTest.notice || (keep ? null : selfTestNotice({ code: "SELFTEST_KEEP_OFF" }));
+  const reason = running ? "" : selfTestReasonText(status?.reason);
+  const categories = [...new Set([...Object.keys(status?.categories || {}), selfTest.category].filter(Boolean))].sort();
+  const count = selfTest.count ?? SELFTEST_DEFAULT_COUNT;
+  const items = selfTest.items;
+  return `<section class="glass-panel settings-card-v5 agent-selftest-card" id="agent-selftest-card">
+    <header><div><span class="section-kicker">Check its answers</span><h3>Self-test</h3></div>${icon("check")}</header>
+    <div class="settings-card-v5__body">
+      <p>Asks the agent batches of questions made from your own inventory, one at a time and behind your own chat. It can't propose actions while testing. Rate the answers below; good and fixed ones become training data.</p>
+      ${notice ? `<div class="security-note" role="alert">${icon("lock")}<div><strong>${escapeHtml(notice.title)}</strong>${notice.detail ? `<span>${escapeHtml(notice.detail)}</span>` : ""}</div></div>` : ""}
+      ${status
+        ? `<p class="agent-selftest-status${running ? " is-running" : ""}" id="agent-selftest-status" role="status" aria-live="polite">${escapeHtml(selfTestStatusText(status))}</p>`
+        : selfTest.error ? `<p class="form-error">${escapeHtml(selfTest.error)}</p>` : `<p class="agent-empty">Loading…</p>`}
+      ${reason ? `<p class="agent-selftest-reason">${escapeHtml(reason)}</p>` : ""}
+      <form id="agent-selftest-form" class="agent-selftest-form">
+        <label class="agent-selftest-form__count"><span>Questions in a batch</span><input id="agent-selftest-count" name="count" type="number" min="${SELFTEST_MIN_COUNT}" max="${SELFTEST_MAX_COUNT}" step="1" inputmode="numeric" value="${escapeHtml(String(count))}" required /></label>
+        <div class="button-row">
+          <button class="button button--primary" type="button" data-action="selftest-start" ${!running && idle ? "" : "disabled"}>Start batch</button>
+          <button class="button" type="button" data-action="selftest-stop" ${running && idle ? "" : "disabled"}>Stop</button>
+          <button class="button" type="button" data-action="selftest-continue" ${paused && !running && idle ? "" : "disabled"}>Continue</button>
+        </div>
+      </form>
+      ${paused ? `<p class="agent-voice__hint">Starting a new batch drops the questions left over from this one; they can come up again later.</p>` : ""}
+      <div class="agent-selftest-review">
+        <h4>Answers</h4>
+        <div class="agent-selftest-filters">
+          <div class="filter-chips" role="group" aria-label="Which answers to show">${SELFTEST_FILTERS.map(([id, label]) => `<button class="filter-chip ${selfTest.filter === id ? "is-active" : ""}" type="button" data-action="selftest-filter" data-selftest-filter="${id}" aria-pressed="${selfTest.filter === id ? "true" : "false"}">${label}</button>`).join("")}</div>
+          <label class="agent-selftest-category"><span>Category</span><select id="agent-selftest-category" name="category"><option value="">All categories</option>${categories.map((name) => `<option value="${escapeHtml(name)}" ${selfTest.category === name ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}</select></label>
+        </div>
+        <p class="agent-voice__hint agent-selftest-keys">Keys: <kbd>g</kbd> Good · <kbd>f</kbd> Fix answer · <kbd>s</kbd> Skip · <kbd>j</kbd> next · <kbd>k</kbd> previous</p>
+        ${selfTest.reviewError ? `<p class="form-error">${escapeHtml(selfTest.reviewError)}</p>` : ""}
+        ${items.length
+          ? `<ul class="agent-training-list agent-selftest-list">${items.map((item, index) => renderSelfTestItem(item, index, index === selfTest.index)).join("")}</ul>`
+          : selfTest.reviewLoaded && !selfTest.reviewError ? `<p class="agent-empty">${escapeHtml(SELFTEST_EMPTY[selfTest.filter] || "")}</p>` : selfTest.reviewError ? "" : `<p class="agent-empty">Loading…</p>`}
+        ${selfTest.next ? `<div class="button-row"><button class="button button--compact" type="button" data-action="selftest-more" ${selfTest.reviewLoading ? "disabled" : ""}>Load more</button></div>` : ""}
+      </div>
+    </div>
+  </section>`;
+}
+
 function renderAgentSettings() {
   if (!state.agent.loaded) {
     return `<section class="agent-settings"><div class="empty-state"><span>Loading agent settings…</span></div></section>`;
@@ -4907,6 +5308,7 @@ function renderAgentSettings() {
       ${renderAgentVoiceCard(data)}
       ${renderAgentBehaviorCard(data)}
       ${renderAgentTrainingCard(data)}
+      ${renderAgentSelfTestCard(data)}
     </div>
   </section>`;
 }
@@ -7912,6 +8314,7 @@ function renderPage({ force = false, preserveFocus = false } = {}) {
   syncNetworkPage();
   updateChrome();
   syncAgentHelper();
+  syncSelfTestPolling();
 }
 
 function resetRouteScroll() {
@@ -11378,13 +11781,12 @@ document.addEventListener("click", async (event) => {
     return;
   }
   if (action === "agent-edit-answer") {
-    state.agent.editingAnswer = String(target.dataset.conversationId || "");
-    rerenderAgent();
-    requestAnimationFrame(() => document.getElementById(`agent-correction-${state.agent.editingAnswer}`)?.focus());
+    openAnswerFix(target.dataset.conversationId, target.dataset.scope);
     return;
   }
   if (action === "agent-edit-cancel") {
     state.agent.editingAnswer = "";
+    state.agent.editingScope = "";
     rerenderAgent();
     return;
   }
@@ -11394,6 +11796,32 @@ document.addEventListener("click", async (event) => {
   }
   if (action === "agent-training-delete") {
     await deleteTraining();
+    return;
+  }
+  if (action === "selftest-start") {
+    await startSelfTest();
+    return;
+  }
+  if (action === "selftest-stop") {
+    await changeSelfTestRun("stop");
+    return;
+  }
+  if (action === "selftest-continue") {
+    await changeSelfTestRun("continue");
+    return;
+  }
+  if (action === "selftest-filter") {
+    setSelfTestFilter(String(target.dataset.selftestFilter || ""), state.agent.selfTest.category);
+    return;
+  }
+  if (action === "selftest-more") {
+    await loadSelfTestReview();
+    return;
+  }
+  if (action === "selftest-skip") {
+    const index = Number(target.dataset.selftestIndex);
+    if (Number.isSafeInteger(index) && index >= 0 && index < state.agent.selfTest.items.length) state.agent.selfTest.index = index;
+    moveSelfTest(1);
     return;
   }
   if (action === "agent-proposal") {
@@ -11661,6 +12089,10 @@ document.addEventListener("input", (event) => {
     state.agent.draft = String(event.target.value || "").slice(0, AGENT_QUESTION_LIMIT);
     return;
   }
+  if (event.target?.id === "agent-selftest-count") {
+    state.agent.selfTest.count = String(event.target.value || "").slice(0, 6);
+    return;
+  }
   const lokiQueryForm = event.target.closest?.("#loki-query-form");
   if (lokiQueryForm && ["query", "search"].includes(fieldName)) {
     syncLokiQueryControls(lokiQueryForm);
@@ -11776,6 +12208,7 @@ document.addEventListener("submit", (event) => {
   if (event.target.id === "agent-downloads-form") submitAgentDownloads(event.target);
   if (event.target.id === "agent-indexers-form") submitAgentIndexers(event.target);
   if (event.target.id === "agent-conversations-form") void saveTrainingSettings(event.target);
+  if (event.target.id === "agent-selftest-form") void startSelfTest();
   if (event.target.classList?.contains("agent-correction-form")) {
     const correction = String(new FormData(event.target).get("correction") || "").trim();
     void rateConversation(event.target.dataset.conversationId, { correction: correction || null });
@@ -11839,6 +12272,12 @@ document.addEventListener("click", (event) => {
   }
   if (currentRoute() === "settings") setSettingsTab(id);
 }, true);
+
+document.addEventListener("keydown", handleSelfTestKey);
+
+document.addEventListener("change", (event) => {
+  if (event.target?.id === "agent-selftest-category") setSelfTestFilter(state.agent.selfTest.filter, String(event.target.value || ""));
+});
 
 document.addEventListener("keydown", (event) => {
   // Enter sends a question; Shift+Enter starts a new line.

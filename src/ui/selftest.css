@@ -1,0 +1,154 @@
+/* Settings → Agent → Self-test card (renderAgentSelfTestCard in src/app-v5.js).
+   Loads after obsidian-glass.css and builds on its tokens and the Training
+   data list (.agent-training-list, .agent-rating), so both themes apply. */
+
+.agent-selftest-card {
+  grid-column: 1 / -1;
+}
+
+.agent-selftest-status {
+  margin: 0;
+  color: var(--text);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.agent-selftest-status.is-running::before {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 7px;
+  border-radius: 50%;
+  background: var(--refresh-ink-ok, #5ce395);
+  vertical-align: 1px;
+  animation: agent-selftest-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes agent-selftest-pulse {
+  50% { opacity: 0.35; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-selftest-status.is-running::before { animation: none; }
+}
+
+.agent-selftest-reason {
+  margin: 0;
+  color: var(--refresh-ink-quiet, var(--muted));
+  font-size: 12px;
+}
+
+.agent-selftest-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px 14px;
+}
+
+.agent-selftest-form__count {
+  display: grid;
+  gap: 5px;
+}
+
+.agent-selftest-form__count input {
+  width: 110px;
+}
+
+.agent-selftest-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 14px;
+}
+
+.agent-selftest-category {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--refresh-ink-quiet, var(--muted));
+  font-size: 11px;
+}
+
+.agent-selftest-category select {
+  max-width: 220px;
+}
+
+.agent-selftest-keys kbd {
+  display: inline-grid;
+  min-width: 18px;
+  height: 18px;
+  place-items: center;
+  padding: 0 4px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.04);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.agent-selftest-list > li {
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+.agent-selftest-list > li.is-current {
+  border-color: rgba(92, 227, 149, 0.4);
+  background: rgba(92, 227, 149, 0.05);
+}
+
+.agent-selftest-flag {
+  margin-left: auto;
+  padding: 1px 7px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.agent-selftest-flag + .agent-selftest-flag {
+  margin-left: 0;
+}
+
+.agent-selftest-flag.is-failed {
+  border-color: rgba(255, 111, 125, 0.4);
+  color: var(--refresh-ink-bad, #ff6f7d);
+}
+
+.agent-selftest-failure {
+  margin: 4px 0 0;
+  color: var(--refresh-ink-bad, #ff6f7d);
+  font-size: 12.5px;
+}
+
+.agent-selftest-tools {
+  margin: 4px 0 0;
+  color: var(--refresh-ink-quiet, var(--muted));
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.agent-selftest-tools code {
+  padding: 0 4px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.05);
+  font-size: 10.5px;
+}
+
+.agent-selftest-list .agent-training-list__answer,
+.agent-selftest-list .agent-training-list__question {
+  white-space: pre-wrap;
+}
+
+@media (max-width: 560px) {
+  .agent-selftest-filters {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .agent-selftest-category select {
+    max-width: none;
+    flex: 1;
+  }
+}
