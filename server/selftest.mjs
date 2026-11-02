@@ -33,6 +33,7 @@ const ALL_QUESTIONS = 100_000;
 const FILTERS = new Set(["unrated", "all", "changed", "failed"]);
 const REVISION = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u;
 const ID = /^[A-Za-z0-9_-]{1,64}$/u;
+const FACT = /^f-[a-f0-9]{12}$/u;
 const CODE = /^[A-Z0-9_]{1,64}$/u;
 
 export const SELFTEST_LIMITS = Object.freeze({ count: { min: 1, max: MAX_COUNT, default: DEFAULT_COUNT }, asked: MAX_ASKED, pageSize: PAGE_SIZE });
@@ -66,7 +67,9 @@ function cleanQuestion(value) {
   const category = shortText(value.category, 64);
   const text = shortText(value.text, 1000);
   if (!category || !text || typeof value.followUp !== "boolean") return null;
-  return { id: value.id, category, text, followUp: value.followUp };
+  // `fact` (the wording-free key) is absent from queues written before it existed.
+  const fact = typeof value.fact === "string" && FACT.test(value.fact) ? { fact: value.fact } : {};
+  return { id: value.id, ...fact, category, text, followUp: value.followUp };
 }
 
 function cleanFailure(value) {
@@ -407,7 +410,8 @@ export async function createSelfTest(options = {}) {
     }
     let result;
     try {
-      result = await askSelfTest({ question: question.text, history, selfTest: { id: question.id, category: question.category } });
+      const marker = { id: question.id, category: question.category, ...(question.fact ? { fact: question.fact } : {}) };
+      result = await askSelfTest({ question: question.text, history, selfTest: marker });
     } catch (error) {
       const code = errorCode(error);
       if (code === "AGENT_BUSY") {
@@ -588,8 +592,8 @@ export async function createSelfTest(options = {}) {
 
     /**
      * Answers to rate, 25 per page. `filter`: "unrated" (default), "all"
-     * (unrated first, then rated, then failed), "changed" (the same question
-     * once answered differently) or "failed". `cursor` is the `next` value
+     * (unrated first, then rated, then failed), "changed" (the same fact,
+     * in any wording, once answered differently) or "failed". `cursor` is the `next` value
      * of the previous page.
      */
     async review({ filter = "unrated", category = null, cursor = null } = {}) {
@@ -600,18 +604,20 @@ export async function createSelfTest(options = {}) {
       const offset = cursor ? Number(cursor) : 0;
       const conversations = await selfTestConversations();
       // The listing is newest first; walk it oldest first, remembering the
-      // answers each question id has had so far.
+      // answers each fact has had so far. A new seed rewords most facts, so
+      // the same fact comes back under a new id; ids are matched too, for
+      // markers saved before facts existed.
       const earlier = new Map();
       const changed = new Array(conversations.length).fill(false);
       for (let index = conversations.length - 1; index >= 0; index -= 1) {
         const item = conversations[index];
         const answer = item.answer.trim();
-        const seen = earlier.get(item.selfTest.id);
-        if (seen) {
-          changed[index] = seen.size > 1 || !seen.has(answer);
-          seen.add(answer);
-        } else {
-          earlier.set(item.selfTest.id, new Set([answer]));
+        const keys = [`id:${item.selfTest.id}`, ...(item.selfTest.fact ? [`fact:${item.selfTest.fact}`] : [])];
+        const seen = new Set(keys.flatMap((key) => [...(earlier.get(key) || [])]));
+        if (seen.size) changed[index] = seen.size > 1 || !seen.has(answer);
+        for (const key of keys) {
+          if (!earlier.has(key)) earlier.set(key, new Set());
+          earlier.get(key).add(answer);
         }
       }
       const answers = conversations.map((item, index) => ({

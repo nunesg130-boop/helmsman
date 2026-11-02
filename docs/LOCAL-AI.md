@@ -330,7 +330,10 @@ This needs **Keep conversations for training** turned on.
    **Stop** finishes the question in flight; after a restart a run shows as
    paused and **Continue** resumes it.
 2. **Review.** Each answer is saved as a conversation. Filter by Unrated, All,
-   Changed, Failed, or a category.
+   Changed, Failed, or a category. **Changed** shows answers that differ from
+   an earlier answer to the same fact, even when the question was worded
+   differently. The count of new questions left is an estimate, since each
+   batch words its questions afresh.
 3. **Rate or fix.** Press **Good** (g), **Fix answer** (f) to write what the
    model should have said, or **Skip** (s). Use j and k to move between
    answers.

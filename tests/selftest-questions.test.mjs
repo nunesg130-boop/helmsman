@@ -108,3 +108,64 @@ test("a malformed portainer section never throws and yields no container questio
     assert.ok(questions.length < baseline.length);
   }
 });
+
+test("every question carries a wording-free fact key, and a new seed re-asks a fact under a new id", () => {
+  const a = generateQuestions(labSnapshot(), { seed: 1, count: 500 });
+  const b = generateQuestions(labSnapshot(), { seed: 2, count: 500 });
+  for (const question of [...a, ...b]) assert.match(question.fact, /^f-[0-9a-f]{12}$/u);
+  const byFact = new Map(a.map((question) => [question.fact, question]));
+  const reworded = b.filter((question) => byFact.has(question.fact) && byFact.get(question.fact).id !== question.id);
+  assert.ok(reworded.length > 0, "the same fact comes back with a different wording and id");
+  for (const question of reworded) assert.notEqual(question.text, byFact.get(question.fact).text);
+  // Within one batch a fact is asked once at most.
+  assert.equal(new Set(a.map((question) => question.fact)).size, a.length);
+});
+
+// Wordings that ask different things must never share a fact key.
+const DIFFERENT_QUESTIONS = [
+  [/least free memory/u, /uses the most memory\?$|rank guests by memory usage/u],
+  [/most cores/u, /most memory assigned|rank guests by size/u],
+  [/^Which VM is using the most CPU/u, /^which guest has the highest cpu|rank the guests by cpu/u],
+  [/restarted most recently/u, /up the longest|rank guests by uptime/u],
+  [/most recent failure/u, /last go down|had any outages/u],
+  [/last go down/u, /had any outages/u],
+  [/stopped or unhealthy/u, /^which containers are stopped\?|any containers not running/u],
+  [/^is \S+ healthy\?$/u, /container running|running or stopped/u],
+  [/most recent incident/u, /incidents recently|went wrong lately/u],
+  [/services are unhealthy/u, /anything down|services down/u],
+  [/^how many guests are on/u, /guests run on|List the guests on node/u],
+  [/^which guest on .+ uses the most memory/u, /busiest guest on|on .+ has the highest CPU/u],
+  [/how much memory does .+ have\?|RAM is assigned/u, /ram is .+ using|memory usage\?$/u]
+];
+
+test("no fact key covers two different questions", () => {
+  const texts = new Map();
+  for (let seed = 1; seed <= 40; seed += 1) {
+    for (const question of generateQuestions(labSnapshot(), { seed, count: 500 })) {
+      if (!texts.has(question.fact)) texts.set(question.fact, new Set());
+      texts.get(question.fact).add(question.text);
+      assert.notEqual(question.category, undefined);
+    }
+  }
+  for (const [left, right] of DIFFERENT_QUESTIONS) {
+    let leftSeen = false;
+    let rightSeen = false;
+    for (const [fact, set] of texts) {
+      const all = [...set];
+      const hasLeft = all.some((text) => left.test(text));
+      const hasRight = all.some((text) => right.test(text));
+      leftSeen ||= hasLeft;
+      rightSeen ||= hasRight;
+      assert.ok(!(hasLeft && hasRight), `${fact} covers ${left} and ${right}: ${all.join(" | ")}`);
+    }
+    assert.ok(leftSeen && rightSeen, `both ${left} and ${right} are asked`);
+  }
+  // A fact key belongs to one category.
+  const categories = new Map();
+  for (let seed = 1; seed <= 10; seed += 1) {
+    for (const question of generateQuestions(labSnapshot(), { seed, count: 500 })) {
+      if (categories.has(question.fact)) assert.equal(categories.get(question.fact), question.category);
+      categories.set(question.fact, question.category);
+    }
+  }
+});

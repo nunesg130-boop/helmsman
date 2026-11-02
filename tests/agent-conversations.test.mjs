@@ -119,6 +119,17 @@ test("a malformed self-test marker is ignored and long strings are capped", asyn
   assert.ok(items.slice(1).every(({ selfTest }) => selfTest === null));
 });
 
+test("a self-test marker keeps its fact key, capped like the id", async (t) => {
+  const { conversations } = await store(t);
+  await conversations.record({ source: "question", model: "m", messages: exchange("q", "a"), selfTest: { id: "q-1", category: "node", fact: 7 } });
+  await conversations.record({ source: "question", model: "m", messages: exchange("q", "a"), selfTest: { id: "q-2", category: "node", fact: "f".repeat(100) } });
+  await conversations.record({ source: "question", model: "m", messages: exchange("q", "a"), selfTest: { id: "q-3", category: "node", fact: "f-0123456789ab" } });
+  const [withFact, long, wrongType] = await conversations.list();
+  assert.deepEqual(withFact.selfTest, { id: "q-3", category: "node", fact: "f-0123456789ab" });
+  assert.equal(long.selfTest.fact.length, 64);
+  assert.deepEqual(wrongType.selfTest, { id: "q-1", category: "node" }, "a fact that is not text is left out");
+});
+
 test("list filters self-test conversations", async (t) => {
   const { conversations } = await store(t);
   const plain = await conversations.record({ source: "question", model: "m", messages: exchange("plain", "a1") });

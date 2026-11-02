@@ -86,32 +86,43 @@ function facts(snapshot) {
   };
 }
 
-/* Wordings: terse, lowercase, typo-light and full-sentence, as the owner asks. {0}/{1} are names. */
+/* Wordings: terse, lowercase, typo-light and full-sentence, as the owner asks. {0}/{1} are names.
+   Every wording of a template asks the same question, so one fact key
+   (template and names) always means one expected answer. */
 const W = {
   guestNode: ["which node is {0} on?", "what node hosts {0}", "where does {0} run in proxmox?", "Which node is {0} running on?"],
   guestId: ["what's the vmid of {0}?", "which guest id does {0} have", "What is the VM ID for {0}?"],
   guestRunning: ["is {0} running?", "is {0} up right now", "Is {0} currently running or stopped?"],
-  guestMemory: ["how much memory does {0} have?", "how much ram is {0} using", "What is {0}'s memory usage?"],
+  guestMemoryAssigned: ["how much memory does {0} have?", "How much RAM is assigned to {0}?"],
+  guestMemoryUsed: ["how much ram is {0} using", "What is {0}'s memory usage?"],
   guestKind: ["is {0} a vm or an lxc?", "is {0} a container or a vm", "What type of guest is {0}?"],
-  rankMemory: ["which guest uses the most memory?", "rank guests by memory usage", "Which guest has the least free memory?"],
-  rankCpu: ["which guest has the highest cpu?", "rank the guests by cpu usage", "Which VM is using the most CPU right now?"],
-  rankUptime: ["which guest has been up the longest?", "rank guests by uptime", "Which guest restarted most recently?"],
-  rankSize: ["which guest has the most memory assigned?", "rank guests by size", "Which guest has the most cores?"],
+  rankMemory: ["which guest uses the most memory?", "rank guests by memory usage"],
+  rankMemoryFree: ["Which guest has the least free memory?"],
+  rankCpu: ["which guest has the highest cpu?", "rank the guests by cpu usage"],
+  rankCpuVm: ["Which VM is using the most CPU right now?"],
+  rankUptime: ["which guest has been up the longest?", "rank guests by uptime"],
+  rankRestart: ["Which guest restarted most recently?"],
+  rankSize: ["which guest has the most memory assigned?", "rank guests by size"],
+  rankCores: ["Which guest has the most cores?"],
   rankBackup: ["which guest has the oldest backup?", "rank guests by backup age", "Which guest's latest backup is the oldest?"],
-  rankNode: ["which guest on {0} uses the most memory?", "what's the busiest guest on {0}", "Which guest on {0} has the highest CPU?"],
+  rankNodeMemory: ["which guest on {0} uses the most memory?"],
+  rankNodeCpu: ["what's the busiest guest on {0}", "Which guest on {0} has the highest CPU?"],
   nodeFree: ["how much memory is free on {0}?", "how much ram is left on node {0}", "How much free memory does {0} have?"],
-  nodeCount: ["how many guests are on {0}?", "what guests run on {0}", "List the guests on node {0}."],
+  nodeCount: ["how many guests are on {0}?"],
+  nodeGuests: ["what guests run on {0}", "List the guests on node {0}."],
   nodeOnline: ["is {0} online?", "is node {0} up", "Is the {0} node online right now?"],
   nodeUptime: ["how long has {0} been up?", "what's the uptime of {0}", "What is node {0}'s uptime?"],
   nodeCores: ["how many cores does {0} have?", "how many cpu cores on node {0}", "How many CPU cores does {0} have?"],
   containerPort: ["what port does {0} use?", "which ports is the {0} container publishing", "What port is {0} listening on?"],
   containerImage: ["which image is {0} running?", "what image does the {0} container use", "What Docker image is {0} using?"],
   containerStack: ["which stack is {0} in?", "what compose stack does {0} belong to", "Which stack does the {0} container belong to?"],
-  containerState: ["is {0} healthy?", "is the {0} container running", "Is {0} running or stopped?"],
+  containerRunning: ["is the {0} container running", "Is {0} running or stopped?"],
+  containerHealthy: ["is {0} healthy?"],
   containerHost: ["which docker host is {0} on?", "what host runs the {0} container", "Where is the {0} container running?"],
   hostList: ["what containers run on {0}?", "list the containers on {0}", "Which containers are running on {0}?"],
   stackList: ["which containers are in the {0} stack?", "what's in the {0} stack", "List the containers in the {0} stack."],
-  containersStopped: ["which containers are stopped?", "any containers not running", "Which containers are stopped or unhealthy?"],
+  containersStopped: ["which containers are stopped?", "any containers not running"],
+  containersUnhealthy: ["Which containers are stopped or unhealthy?"],
   neighbourGuest: ["what else is on the same node as {0}?", "which guests share a node with {0}", "What other guests run on the same node as {0}?"],
   neighbourContainer: ["what else runs on the same host as {0}?", "which containers share a docker host with {0}", "What other containers run on the same Docker host as {0}?"],
   backupLast: ["when was {0} last backed up?", "last backup for {0}?", "When did {0} last get backed up?"],
@@ -119,12 +130,16 @@ const W = {
   backupRecent: ["is {0}'s backup recent?", "was {0} backed up this week", "Does {0} have a backup from the last week?"],
   backupNone: ["which guests have no backup?", "what isnt backed up", "Which guests have no backup listed?"],
   historyWeek: ["did anything go down in the last week?", "any incidents this week", "Were there any outages in the past week?"],
-  historyService: ["when did {0} last go down?", "has {0} had any outages", "When was {0}'s most recent failure?"],
-  historyRecent: ["any incidents recently?", "what went wrong lately", "What was the most recent incident?"],
+  historyServiceLast: ["when did {0} last go down?"],
+  historyServiceAny: ["has {0} had any outages"],
+  historyServiceFailure: ["When was {0}'s most recent failure?"],
+  historyRecent: ["any incidents recently?", "what went wrong lately"],
+  historyLatest: ["What was the most recent incident?"],
   manualService: ["what is {0} for?", "what do my notes say about {0}", "What does the manual say about {0}?"],
   manualGuest: ["what do my notes say about {0}?", "what is {0} used for", "What do my notes associate with {0}?"],
   serviceUp: ["is {0} up?", "how's {0} doing", "Is {0} healthy right now?"],
-  serviceBad: ["which services are unhealthy?", "is anything down", "Are any services down right now?"],
+  serviceBad: ["which services are unhealthy?"],
+  serviceDown: ["is anything down", "Are any services down right now?"],
   followNode: ["which node is {0} on?", "what node hosts {0}"],
   followBackup: ["when was {0} last backed up?", "last backup for {0}?"],
   followPort: ["what port does {0} use?", "which port is {0} on"],
@@ -145,6 +160,12 @@ const UNKNOWABLE = [
   "what was the peak cpu usage this week?"
 ];
 
+const digest = (value) => createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, 12);
+/** Stable per template, names and wording: a reworded question gets a new id. */
+const questionId = (template, args, wording) => `q-${digest([template, args, wording])}`;
+/** Stable per template and names only: the same fact asked in any wording. */
+const factKey = (template, args) => `f-${digest([template, args])}`;
+
 /** Every possible question as a unit: one question, or a base plus its follow-up. */
 function units(snapshot, rng) {
   const { nodes, guests, containers, hosts, stacks, services } = facts(snapshot);
@@ -153,11 +174,7 @@ function units(snapshot, rng) {
   const make = (template, category, pattern, ...args) => {
     const wording = pick(W[pattern] || [pattern]);
     const text = finish(fill(wording, args));
-    return {
-      id: `q-${createHash("sha256").update(JSON.stringify([template, args, wording])).digest("hex").slice(0, 12)}`,
-      category,
-      text
-    };
+    return { id: questionId(template, args, wording), fact: factKey(template, args), category, text };
   };
   const single = (question) => out.push([{ ...question, followUp: false }]);
   const pair = (base, follow) => out.push([{ ...base, followUp: false }, { ...follow, followUp: true }]);
@@ -166,7 +183,8 @@ function units(snapshot, rng) {
     single(make("guestNode", "guest-lookup", "guestNode", guest.ref));
     single(make("guestId", "guest-lookup", "guestId", guest.ref));
     single(make("guestRunning", "guest-lookup", "guestRunning", guest.ref));
-    single(make("guestMemory", "guest-lookup", "guestMemory", guest.ref));
+    single(make("guestMemoryAssigned", "guest-lookup", "guestMemoryAssigned", guest.ref));
+    single(make("guestMemoryUsed", "guest-lookup", "guestMemoryUsed", guest.ref));
     single(make("guestKind", "guest-lookup", "guestKind", guest.ref));
     single(make("neighbourGuest", "neighbours", "neighbourGuest", guest.ref));
     single(make("backupLast", "backups", "backupLast", guest.ref));
@@ -175,38 +193,52 @@ function units(snapshot, rng) {
     single(make("manualGuest", "manual", "manualGuest", guest.ref));
   }
   if (guests.length) {
-    for (const key of ["rankMemory", "rankCpu", "rankUptime", "rankSize", "rankBackup"]) single(make(key, "ranking", key));
+    for (const key of ["rankMemory", "rankMemoryFree", "rankCpu", "rankCpuVm", "rankUptime", "rankRestart", "rankSize", "rankCores", "rankBackup"]) single(make(key, "ranking", key));
     single(make("backupNone", "backups", "backupNone"));
   }
   for (const node of nodes) {
     single(make("nodeFree", "node", "nodeFree", node));
     single(make("nodeCount", "node", "nodeCount", node));
+    single(make("nodeGuests", "node", "nodeGuests", node));
     single(make("nodeOnline", "node", "nodeOnline", node));
     single(make("nodeUptime", "node", "nodeUptime", node));
     single(make("nodeCores", "node", "nodeCores", node));
-    if (guests.length) single(make("rankNode", "ranking", "rankNode", node));
+    if (guests.length) {
+      single(make("rankNodeMemory", "ranking", "rankNodeMemory", node));
+      single(make("rankNodeCpu", "ranking", "rankNodeCpu", node));
+    }
   }
   for (const container of containers) {
     single(make("containerPort", "containers", "containerPort", container.name));
     single(make("containerImage", "containers", "containerImage", container.name));
-    single(make("containerState", "containers", "containerState", container.name));
+    single(make("containerRunning", "containers", "containerRunning", container.name));
+    single(make("containerHealthy", "containers", "containerHealthy", container.name));
     single(make("containerHost", "containers", "containerHost", container.name));
     single(make("neighbourContainer", "neighbours", "neighbourContainer", container.name));
     if (container.stack) single(make("containerStack", "containers", "containerStack", container.name));
   }
-  if (containers.length) single(make("containersStopped", "containers", "containersStopped"));
+  if (containers.length) {
+    single(make("containersStopped", "containers", "containersStopped"));
+    single(make("containersUnhealthy", "containers", "containersUnhealthy"));
+  }
   for (const host of hosts) single(make("hostList", "containers", "hostList", host));
   for (const stack of stacks) single(make("stackList", "containers", "stackList", stack));
   if (services.length || guests.length) {
     single(make("historyWeek", "history", "historyWeek"));
     single(make("historyRecent", "history", "historyRecent"));
+    single(make("historyLatest", "history", "historyLatest"));
   }
   for (const service of services) {
-    single(make("historyService", "history", "historyService", service));
+    single(make("historyServiceLast", "history", "historyServiceLast", service));
+    single(make("historyServiceAny", "history", "historyServiceAny", service));
+    single(make("historyServiceFailure", "history", "historyServiceFailure", service));
     single(make("manualService", "manual", "manualService", service));
     single(make("serviceUp", "services", "serviceUp", service));
   }
-  if (services.length) single(make("serviceBad", "services", "serviceBad"));
+  if (services.length) {
+    single(make("serviceBad", "services", "serviceBad"));
+    single(make("serviceDown", "services", "serviceDown"));
+  }
 
   // Follow-ups: the next entity of the same kind, asked with the previous answer as history.
   const followPairs = (list, key, followKey, label) => list.forEach((item, index) => {
@@ -227,8 +259,7 @@ function units(snapshot, rng) {
     for (const text of UNKNOWABLE) {
       const lower = text.toLowerCase();
       if (names.some((name) => lower.includes(name))) continue;
-      const wording = text;
-      out.push([{ id: `q-${createHash("sha256").update(JSON.stringify(["unknowable", [], wording])).digest("hex").slice(0, 12)}`, category: "unknowable", text: finish(text), followUp: false }]);
+      out.push([{ id: questionId("unknowable", [], text), fact: factKey("unknowable", [text]), category: "unknowable", text: finish(text), followUp: false }]);
     }
   }
   return out;
@@ -238,6 +269,8 @@ function units(snapshot, rng) {
  * Questions for the owner's lab, in a seed-determined order. A follow-up comes
  * straight after its base question and both count toward `count`. Ids are
  * stable per template, arguments and wording; ids in `exclude` are skipped.
+ * `fact` is stable per template and arguments only, so the same fact asked
+ * in another wording (another seed) can be compared with earlier answers.
  */
 export function generateQuestions(snapshot, { seed = 1, count = 50, exclude = new Set() } = {}) {
   const rng = mulberry32(seedNumber(seed));

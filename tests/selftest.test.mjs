@@ -63,7 +63,7 @@ function fakeAgent(conversations, behave = () => undefined) {
   return { askSelfTest, calls };
 }
 
-async function setup(t, { behave, keep = true, snapshot = labSnapshot(), dataDir = null, conversations = null, realSleep = false } = {}) {
+async function setup(t, { behave, keep = true, snapshot = labSnapshot(), dataDir = null, conversations = null, realSleep = false, seed = () => SEED, guard = undefined } = {}) {
   const dir = dataDir || await mkdtemp(path.join(os.tmpdir(), "helmsman-selftest-"));
   if (!dataDir) t.after(() => rm(dir, { recursive: true, force: true }));
   let now = Date.parse("2026-10-30T12:00:00Z");
@@ -83,7 +83,8 @@ async function setup(t, { behave, keep = true, snapshot = labSnapshot(), dataDir
     conversationStore: store,
     conversationsKept: () => keep,
     clock,
-    seed: () => SEED,
+    seed,
+    guard,
     sleep: realSleep ? undefined : async (ms) => { sleeps.push(ms); }
   });
   return { selfTest, agent, store, dataDir: dir, sleeps };
@@ -102,7 +103,7 @@ test("start asks count questions in order and records ids as asked", async (t) =
   await selfTest.whenIdle();
   const questions = expected(12);
   assert.deepEqual(agent.calls.map((call) => call.question), questions.map((q) => q.text));
-  assert.deepEqual(agent.calls.map((call) => call.selfTest), questions.map(({ id, category }) => ({ id, category })));
+  assert.deepEqual(agent.calls.map((call) => call.selfTest), questions.map(({ id, category, fact }) => ({ id, category, fact })));
   const after = await selfTest.status();
   assert.equal(after.running, false);
   assert.equal(after.paused, false);
@@ -593,4 +594,60 @@ test("a readable but unusable selftest.json is moved aside and the runner works"
   await selfTest.whenIdle();
   assert.equal(agent.calls.length, 3);
   assert.equal((await readState(dataDir)).asked.length, 3);
+});
+
+test("a fact asked again under a new wording is flagged changed only when its answer differs", async (t) => {
+  for (const sameAnswer of [false, true]) {
+    let seed = 1;
+    const { selfTest, agent } = await setup(t, {
+      seed: () => seed,
+      // Answer by fact (the same every time) or by id (new wording, new answer).
+      behave: (call) => (sameAnswer ? `ANSWER-${call.selfTest.fact}` : undefined)
+    });
+    await selfTest.start({ count: 60 });
+    await selfTest.whenIdle();
+    const first = new Map(agent.calls.map((call) => [call.selfTest.fact, call.selfTest.id]));
+    seed = 2;
+    await selfTest.start({ count: 60 });
+    await selfTest.whenIdle();
+    const again = agent.calls.slice(60).filter((call) => first.has(call.selfTest.fact) && first.get(call.selfTest.fact) !== call.selfTest.id);
+    assert.ok(again.length > 0, "the second batch re-asks a fact under a new id");
+    const items = [];
+    let cursor = null;
+    do {
+      const page = await selfTest.review({ filter: "all", cursor });
+      items.push(...page.items);
+      cursor = page.next;
+    } while (cursor);
+    const reasked = new Set(again.map((call) => call.question));
+    const flagged = items.filter((item) => item.changedFromBefore);
+    if (sameAnswer) {
+      assert.equal(flagged.length, 0, "the same answer is not a change");
+      assert.deepEqual((await selfTest.review({ filter: "changed" })).items, []);
+    } else {
+      assert.equal(flagged.length, again.length);
+      for (const item of flagged) assert.ok(reasked.has(item.question), item.question);
+      assert.ok((await selfTest.review({ filter: "changed" })).items.length > 0);
+    }
+  }
+});
+
+test("markers without a fact key still compare by id", async (t) => {
+  const { selfTest, store } = await setup(t);
+  const repeated = expected(5).find((q) => !q.followUp);
+  await store.record({
+    source: "question",
+    model: "qwen3:4b",
+    messages: [{ role: "user", content: repeated.text }, { role: "assistant", content: "An older answer." }],
+    selfTest: { id: repeated.id, category: repeated.category }
+  });
+  await store.record({
+    source: "question",
+    model: "qwen3:4b",
+    messages: [{ role: "user", content: repeated.text }, { role: "assistant", content: "A newer answer." }],
+    selfTest: { id: repeated.id, category: repeated.category }
+  });
+  const changed = await selfTest.review({ filter: "changed" });
+  assert.equal(changed.items.length, 1);
+  assert.equal(changed.items[0].answer, "A newer answer.");
 });

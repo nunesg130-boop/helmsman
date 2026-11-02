@@ -150,3 +150,9 @@ test("selftest.css ships with the app like the other UI stylesheets", () => {
   // The service worker deliberately caches nothing, so it has no asset list to extend.
   assert.doesNotMatch(sw, /caches\.open|addAll|\.css/u);
 });
+
+test("the questions left are labelled as an estimate", () => {
+  const text = body("selfTestStatusText");
+  assert.match(text, /`about \$\{selfTestCount\(status\.unaskedLeft\)\} new question/u);
+  assert.doesNotMatch(text, /left to ask/u);
+});

@@ -75,7 +75,10 @@ function cleanSelfTest(value) {
   if (!isPlainObject(value) || typeof value.id !== "string" || typeof value.category !== "string") return null;
   const id = value.id.slice(0, 64);
   const category = value.category.slice(0, 64);
-  return id && category ? { id, category } : null;
+  if (!id || !category) return null;
+  // The wording-free fact key, when the marker has one (markers saved before it existed do not).
+  const fact = typeof value.fact === "string" ? value.fact.slice(0, 64) : "";
+  return fact ? { id, category, fact } : { id, category };
 }
 
 function dayOf(milliseconds) {

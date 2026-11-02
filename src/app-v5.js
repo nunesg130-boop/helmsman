@@ -4967,10 +4967,11 @@ function selfTestStatusText(status) {
   const parts = total ? [`${done} of ${total} done`, `${failed} failed`] : ["No batch yet"];
   parts.push(`${selfTestCount(status.unrated)} unrated`);
   const line = parts.join(", ");
-  const left = `${selfTestCount(status.unaskedLeft)} new question${status.unaskedLeft === 1 ? "" : "s"} left to ask`;
+  // An estimate: a new batch rewords questions, so the count shifts a little.
+  const left = `about ${selfTestCount(status.unaskedLeft)} new question${status.unaskedLeft === 1 ? "" : "s"} left`;
   if (status.running) return `Running: ${line}.`;
   if (status.paused) return `Paused: ${line}.`;
-  return `${line}. ${left}.`;
+  return `${line}, ${left}.`;
 }
 
 function selfTestReasonText(reason) {
