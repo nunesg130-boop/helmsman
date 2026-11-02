@@ -317,6 +317,27 @@ conversation and rating.
 
 The chat also comes back after a reload while conversations are kept.
 
+## Collecting training data with Self-test
+
+Instead of typing test questions yourself, let Helmsman ask its own agent.
+This needs **Keep conversations for training** turned on.
+
+1. **Start batch.** Under Settings → Agent → **Self-test**, choose how many
+   questions (1 to 500, default 50) and press **Start batch**. Helmsman writes
+   the questions from your live lab inventory and asks the agent one at a
+   time. The agent only reads: it never proposes or runs actions. The
+   questions count against **Questions per hour** and wait behind your chat.
+   **Stop** finishes the question in flight; after a restart a run shows as
+   paused and **Continue** resumes it.
+2. **Review.** Each answer is saved as a conversation. Filter by Unrated, All,
+   Changed, Failed, or a category.
+3. **Rate or fix.** Press **Good** (g), **Fix answer** (f) to write what the
+   model should have said, or **Skip** (s). Use j and k to move between
+   answers.
+4. **Download good and fixed.** Saves the same JSON Lines file as the
+   training-data export above.
+5. **Train.** Fine-tune your model on that file.
+
 ## Using the API
 
 Everything on these screens is also available at `/api/v2/agent`, for
