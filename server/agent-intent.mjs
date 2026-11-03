@@ -380,6 +380,10 @@ export function workloadQueries(snapshot, text, { workloadWords = false, namesOn
   const containers = /\b(?:containers?|docker|portainer)\b/u.test(question);
   const detail = containers ? CONTAINER_DETAILS.find(([, pattern]) => pattern.test(question)) : null;
   if (detail) return [{ filter: `containers ${detail[0]}` }];
+  // "Are any VMs or LXCs stopped?", "which guests are stopped?": both kinds.
+  // The first kind named alone answered for the VMs and left out the LXCs.
+  const bothKinds = (/\b(?:vms?|virtual machines?)\b/u.test(question) && /\blxcs?\b/u.test(question)) || /\bguests?\b(?! agents?)/u.test(question);
+  if (bothKinds && !/\b(?:containers?|docker|portainer|nodes?)\b/u.test(question)) return [{ filter: "guests" }];
   for (const [pattern, kind] of KIND_WORDS) if (pattern.test(question)) return [{ filter: kind }];
   return [{ filter: "" }];
 }
