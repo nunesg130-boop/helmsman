@@ -31,6 +31,10 @@ test("nicknames, prefixes and near-miss spellings find the right name", () => {
 
 test("questions about a period are recognised, others are not", () => {
   const window = (text) => questionWindow(text, NOW, "America/New_York");
+  // "Last went down" and outages with no time given look back a week; "lately" keeps a day.
+  for (const text of ["when did qBittorrent last go down?", "has Seerr had any outages", "has sonarr ever had problems?"]) assert.equal(window(text)?.label, "the past week", text);
+  assert.equal(window("has Seerr had any outages lately?")?.label, "the past 24 hours");
+  assert.equal(window("any outages?")?.label, "the past 24 hours");
   assert.deepEqual(window("How's the health been in the past 24 hours."), { from: NOW - 24 * HOUR, to: NOW, label: "the past 24 hours" });
   assert.equal(window("anything in the last 3 days?").from, NOW - 72 * HOUR);
   assert.equal(window("past week").label, "the past week");

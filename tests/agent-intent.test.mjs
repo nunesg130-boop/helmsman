@@ -76,6 +76,11 @@ test("the workload list is narrowed to what a question names", () => {
   assert.equal(query("Is sonarr up?"), null, "a monitored service gets its own status instead");
   assert.deepEqual(query("Is the sonarr container running?"), { filter: "sonarr" });
   assert.equal(query("How is everything looking?"), null);
+  // Stack, image and neighbour questions about a service are about its container.
+  const queries = (text) => workloadQueries(snapshot, text, { workloadWords: questionSeeds(text).workloads }).map((item) => item.filter);
+  assert.deepEqual(queries("which stack is sonarr in?"), ["sonarr"]);
+  assert.deepEqual(queries("what image does sonarr use"), ["sonarr"]);
+  assert.deepEqual(queries("what else runs on the same host as sonarr?"), ["sonarr", "beside sonarr"]);
 });
 
 test("short follow-ups continue the previous question; thanks do not", () => {
@@ -279,7 +284,7 @@ test("a container's line has its image, stack, ports and the guest its Docker ho
   const snapshot = cluster();
   assert.match(await runTool("list_workloads", { filter: "radarr" }, context(snapshot)),
     /^container radarr on Docker host Jelly-Arr \(Portainer\): running, Up 7 days; no Docker health check, so only that it is running is known; image lscr\.io\/linuxserver\/radarr:latest; stack arr; ports 7878->7878\/tcp; Docker host Jelly-Arr is VM 100 on node Main$/u);
-  assert.match(await runTool("list_workloads", { filter: "aliasvault" }, context(snapshot)), /; ports 80\/tcp unpublished$/u, "no guest named Main Docker, so no claim about where it runs");
+  assert.match(await runTool("list_workloads", { filter: "aliasvault" }, context(snapshot)), /; ports 80\/tcp inside the container only, not published on the host$/u, "no guest named Main Docker, so no claim about where it runs");
   assert.match(await runTool("list_workloads", { filter: "suggestarr" }, context(snapshot)), /Exited \(0\) 7 weeks ago; no ports; Docker host Jelly-Arr is VM 100/u);
   const portainer = await runTool("service_status", { name: "portainer" }, context(snapshot));
   assert.match(portainer, /^Docker hosts it manages \(Portainer environments, not Proxmox nodes\): Jelly-Arr \(Portainer, VM 100 on node Main\) 2 containers, 1 running; Main Docker \(Portainer\) 1 containers, 1 running\.$/mu);

@@ -50,19 +50,22 @@ export function questionWindow(text, now = Date.now(), timeZone = undefined) {
   }
   if (/\byesterday\b/u.test(question)) return { from: midnight - 24 * HOUR, to: midnight, label: "yesterday" };
   if (/\b(?:today|this morning|this afternoon|so far)\b/u.test(question)) return { from: midnight, to: now, label: "today" };
+  // "When was the last problem", "has anything recovered", "how long has
+  // everything been healthy": the past week of records answers them.
+  // "When was Sonarr's most recent failure", "when did radarr last fail":
+  // answered from current status alone, models said "no failures".
+  // "When did qBittorrent last go down", "has Seerr had any outages" with no
+  // time given: a day of records left out anything older, so the answer was
+  // "none". Checked before the 24-hour questions; "lately" keeps a day.
+  if (!/\b(?:lately|recently)\b/u.test(question) && /\b(?:last (?:go|went|gone) (?:down|offline)|(?:has|have) \w+(?: \w+)? (?:ever )?(?:had|seen) (?:any |an? )?(?:outages?|downtime|problems?|issues?|failures?)|(?:last|latest|most recent|previous) (?:problems?|issues?|outages?|incidents?|failures?|alerts?|errors?|faults?|warnings?|downtime)|recover(?:ed|y|ies)?|how long has .* been (?:healthy|up|ok|fine|stable)|since when|last (?:failed|broke|errored|had (?:a |an )?(?:problem|issue|outage|error))|(?:ever|has \w+) (?:failed|broken|had (?:a |an |any )?(?:problems?|issues?|outages?|failures?))|when did .{1,40}? (?:fail|break|error|have (?:a |an )?(?:problem|issue|outage)))\b/u.test(question)) {
+    return window(24 * 7, "the past week");
+  }
   if (/\b(?:lately|recently|history|historically|been doing|been going|been like|been running|how has|how have|how's .* been|any (?:issues|problems|outages|downtime)|outages?|downtime|uptime)\b/u.test(question)) {
     return window(24, "the past 24 hours");
   }
   // Restarts and lost connections are events, so they are answered from the
   // record too, never from manual notes or the current state alone.
   if (isRestartQuestion(question)) return window(24, "the past 24 hours");
-  // "When was the last problem", "has anything recovered", "how long has
-  // everything been healthy": the past week of records answers them.
-  // "When was Sonarr's most recent failure", "when did radarr last fail":
-  // answered from current status alone, models said "no failures".
-  if (/\b(?:(?:last|latest|most recent|previous) (?:problems?|issues?|outages?|incidents?|failures?|alerts?|errors?|faults?|warnings?|downtime)|recover(?:ed|y|ies)?|how long has .* been (?:healthy|up|ok|fine|stable)|since when|last (?:failed|broke|errored|had (?:a |an )?(?:problem|issue|outage|error))|(?:ever|has \w+) (?:failed|broken|had (?:a |an |any )?(?:problems?|issues?|outages?|failures?))|when did .{1,40}? (?:fail|break|error|have (?:a |an )?(?:problem|issue|outage)))\b/u.test(question)) {
-    return window(24 * 7, "the past week");
-  }
   return null;
 }
 
