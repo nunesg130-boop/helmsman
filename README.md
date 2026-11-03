@@ -1,4 +1,4 @@
-# Helmsman v1.17.6
+# Helmsman v1.17.7
 
 Helmsman is a self-hosted operations center for a homelab's media services and infrastructure. It runs as one portable Linux container on Docker Desktop, Linux, macOS, compatible NAS platforms, AMD64, and ARM64.
 
@@ -14,6 +14,14 @@ Helmsman is a self-hosted operations center for a homelab's media services and i
 This Helmsman is the media and infrastructure dashboard in this repository. It
 is not affiliated with or derived from the existing Kubernetes project also
 named [Helmsman](https://github.com/mkubaczyk/helmsman).
+
+## v1.17.7
+
+**Whole lookups, and four lookups the 1.17.6 check batch showed missing.**
+- **No more lookups cut mid-line:** every lookup was capped at 1,400 characters and cut wherever that fell, so a week of history lost its longest problem, its "No problems" list and its actions ("Longest single p…"). The cap is 2,600 characters, and anything cut is cut at the end of a line or list item with a note saying how much is left out. When the whole prompt doesn't fit the model's context, the background overview is shortened first, then the longest lookup by only as much as needed, instead of every lookup to 300 characters.
+- **A service installed natively:** "same host as jellyfin" finds the guest whose manual line says it runs Jellyfin (Jelly-Arr) and lists what else is on that guest's node and its containers.
+- **Most recent start:** worked out from exact uptimes. In whole days, 13 guests all read "up 7d" and the model named the first of them; now it names the one that started last, with hours, or says they started within the same hour.
+- **Manual words:** "ISP" also searches for "internet", so "what's my ISP" finds the internet plan; "changed" and "update" find the change log.
 
 ## v1.17.6
 
@@ -529,7 +537,7 @@ Helmsman's project-owned logging mark. Original generic VM/container workload
 drawings are also bundled. See
 [the asset notices](assets/services/THIRD_PARTY_NOTICES.md).
 
-Helmsman v1.17.6 combines built-in logging, optional Loki search, Portainer monitoring, a private persistent state/artwork cache, and a small, fixed set of confirmed recovery actions under Infrastructure with targeted media recovery actions and Helmsman's cluster-aware Proxmox model:
+Helmsman v1.17.7 combines built-in logging, optional Loki search, Portainer monitoring, a private persistent state/artwork cache, and a small, fixed set of confirmed recovery actions under Infrastructure with targeted media recovery actions and Helmsman's cluster-aware Proxmox model:
 
 - Media and Infrastructure are separate workspaces inside the same authenticated application, and only the selected workspace's navigation is shown;
 - the desktop sidebar collapses to an icon rail, remembers that preference, keeps its navigation scrollable at high browser zoom, and keeps its collapse control in the sidebar's brand row (under the brand mark when collapsed);
@@ -575,7 +583,7 @@ Helmsman v1.17.6 combines built-in logging, optional Loki search, Portainer moni
 
 ## Deploy the published container
 
-Helmsman is distributed as the public Linux AMD64/ARM64 image `ghcr.io/nunesg130-boop/helmsman`. The `v1.17.6` Git tag runs the contracts and architecture smoke tests, publishes the version, `latest`, and full-commit image tags, and creates a GitHub Release containing ready-to-use `compose.yaml`, `container.env.example`, and `SHA256SUMS` assets. The release deployment files pin `ghcr.io/nunesg130-boop/helmsman` to the exact multi-architecture manifest digest (`@sha256:...`).
+Helmsman is distributed as the public Linux AMD64/ARM64 image `ghcr.io/nunesg130-boop/helmsman`. The `v1.17.7` Git tag runs the contracts and architecture smoke tests, publishes the version, `latest`, and full-commit image tags, and creates a GitHub Release containing ready-to-use `compose.yaml`, `container.env.example`, and `SHA256SUMS` assets. The release deployment files pin `ghcr.io/nunesg130-boop/helmsman` to the exact multi-architecture manifest digest (`@sha256:...`).
 
 Download those three files from the matching [GitHub Release](https://github.com/nunesg130-boop/helmsman/releases) into one directory, verify the two deployment files against `SHA256SUMS`, open a terminal there, and make sure Docker Desktop or Docker Engine is running. No source checkout, Dockerfile, Node.js installation, or server-side image build is required.
 

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { isFollowUp, mergeSeeds, namedServices, questionSeeds, workloadQueries, workloadQuery, withoutWorkloadNames } from "../server/agent-intent.mjs";
-import { parseActionCommand, runTool } from "../server/agent-tools.mjs";
+import { manualKeywords, manualMatches, parseActionCommand, runTool, shortenText } from "../server/agent-tools.mjs";
 import { questionWindow } from "../server/agent-history.mjs";
 
 const NOW = Date.parse("2026-10-28T23:00:00Z");
@@ -491,7 +491,7 @@ test("v1.17.5: the lookups the 1.17.4 Self-test showed were missing", async () =
   assert.doesNotMatch(lxcs, /tie for highest/u);
   // The most recent start, named at the end of the uptime ranking.
   snapshot.infrastructure.environments[0].workloads.find((workload) => workload.name === "ollama").uptimeSeconds = 3600;
-  assert.match(await tool("uptime"), /Started most recently: ollama \(LXC 114, norco\) \(up 1h\)\./u);
+  assert.match(await tool("uptime"), /Started most recently: ollama \(LXC 114, norco\), up 1h 0m; the next most recent has been up 8d 0h\./u);
 });
 
 test("v1.17.5: manual questions the Self-test showed were never searched", () => {
@@ -515,4 +515,37 @@ test("v1.17.6: follow-ups that point back are read with the question before them
   const queries = (text) => workloadQueries(snapshot, text, { workloadWords: true });
   assert.deepEqual(queries("what host is radarr on?\nand which other guests share that node?"), [{ filter: "radarr" }, { filter: "node of radarr" }]);
   assert.deepEqual(queries("how much memory is free on norco?\nand across the whole cluster?"), [{ filter: "nodes" }]);
+});
+
+test("v1.17.7: long results cut at lines, a native service's host from the manual, exact most-recent start", async () => {
+  const lines = Array.from({ length: 40 }, (_, index) => `- line ${index} ${"x".repeat(60)}`).join("\n");
+  const cut = shortenText(lines, 700);
+  assert.ok(cut.length <= 700);
+  assert.match(cut, /\n… \(\d+ more lines not shown, to fit\)$/u, "whole lines, and says how many are left out");
+  assert.doesNotMatch(cut.split("\n").at(-2), /x{1,59}$(?<!x{60})/u, "no line cut in the middle");
+  const list = `Ranking: ${Array.from({ length: 60 }, (_, index) => `guest-${index} (LXC ${100 + index}) 1 core`).join(", ")}.`;
+  assert.match(shortenText(list, 400), /1 core, … \(the rest not shown, to fit\)$|1 core … \(the rest not shown, to fit\)$/u, "a one-line list is cut after a whole item");
+
+  const snapshot = cluster();
+  const manual = "## Guests on Main\n- Jelly-Arr: VM 100 on Main, 10.0.0.7. Runs Jellyfin (native), the arr stack and Helmsman.\n- seerr: LXC 104 on Main. Login uses the Jellyfin username.";
+  const withManual = { ...context(snapshot), manual: () => manual };
+  const host = await runTool("list_workloads", { filter: "service host jellyfin" }, withManual);
+  assert.match(host, /^jellyfin runs on Jelly-Arr \(VM 100 on node Main\), per your manual\.\nJelly-Arr \(VM 100\) shares node Main with 2 other guests\./u, "seerr's line names Jellyfin but doesn't run it");
+  assert.match(host, /\nContainers on Jelly-Arr \(Portainer, VM 100 on node Main\): 2, 1 running/u);
+  assert.equal(await runTool("list_workloads", { filter: "service host jellyfin" }, context(snapshot)), "Where jellyfin runs is not in the manual or the inventory.");
+
+  const guests = snapshot.infrastructure.environments[0].workloads;
+  for (const guest of guests) guest.uptimeSeconds = 7 * 86_400 + 5 * 3_600;
+  guests.find((guest) => guest.name === "pihole").uptimeSeconds = 7 * 86_400 + 2 * 3_600;
+  assert.match(await runTool("list_workloads", { filter: "uptime" }, context(snapshot)), /Started most recently: pihole \(LXC 106, norco\), up 7d 2h; the next most recent has been up 7d 5h\./u, "all read 7d, but one started three hours later");
+  guests.find((guest) => guest.name === "pihole").uptimeSeconds = 7 * 86_400 + 5 * 3_600 - 600;
+  guests.find((guest) => guest.name === "Jelly-Arr").uptimeSeconds = 12 * 86_400;
+  assert.match(await runTool("list_workloads", { filter: "uptime" }, context(snapshot)), /Started most recently, within the same hour of each other \(about 7d 4h ago\): /u);
+});
+
+test("v1.17.7: manual search finds the ISP and the change log", () => {
+  assert.deepEqual(manualKeywords("what's my ISP?"), ["isp", "internet"]);
+  const manual = "## Network\n- Internet: Spectrum 1 Gbps plan.\n## Change log\n- v2.8, 30 Oct 2026: ollama added.";
+  assert.equal(manualMatches(manual, manualKeywords("what's my ISP?"))[0], "[Network] - Internet: Spectrum 1 Gbps plan.");
+  assert.ok(manualMatches(manual, manualKeywords("what changed in the last manual update?")).includes("[Change log] - v2.8, 30 Oct 2026: ollama added."));
 });
