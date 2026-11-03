@@ -22,6 +22,7 @@ import {
 import {
   AgentTargetError,
   actionRequestFor,
+  backupVerdicts,
   formatTime,
   incidentLine,
   resolveTarget,
@@ -71,6 +72,10 @@ const MAX_QUEUE = 25;
 const SELF_TEST_RESERVE = Object.freeze({ minimum: 5, share: 0.1 });
 const MAX_TOOL_ROUNDS = 4;
 const MAX_REPLY_TOKENS = 450;
+const LIST_REPLY_TOKENS = 900;
+const LIST_QUESTION = /\b(?:rank(?:ed|ing)?|list|every|all (?:the )?(?:guests?|vms?|lxcs?|containers?)|order (?:them|by)|sort(?:ed)? by)\b/u;
+// Yes/no backup questions, and the window they give, for backupVerdicts.
+const YES_NO = /^\s*(?:is|was|were|are|does|did|has|have|do)\b/u;
 const MAX_NOTE_CHARS = 1_500;
 const MAX_PUSH_CHARS = 480;
 const MAX_QUESTION_CHARS = 1_000;
@@ -233,7 +238,7 @@ const HEALTH_MEMORY_MS = 7 * 86_400_000;
  * What a port question names (containers, guests, services) that no
  * matching manual line gives a port for, at most three.
  */
-function portlessSubjects(snapshot, prompt, services, hits) {
+function portlessSubjects(snapshot, prompt, services, hits, lookups = []) {
   const workloadNames = workloadQueries(snapshot, prompt, { namesOnly: true })
     .map((query) => query.filter)
     .filter((filter) => typeof filter === "string" && filter && !/^\d+$/u.test(filter) && !/^(?:ids|beside) /u.test(filter));
@@ -244,7 +249,11 @@ function portlessSubjects(snapshot, prompt, services, hits) {
   for (const name of [...workloadNames, ...serviceNames]) {
     const lower = String(name).toLowerCase();
     if (subjects.some((subject) => subject.toLowerCase() === lower)) continue;
-    const covered = hits.some((line) => line.toLowerCase().includes(lower) && /\bports?\b|:\d{2,5}\b/iu.test(line));
+    const covered = hits.some((line) => line.toLowerCase().includes(lower) && /\bports?\b|:\d{2,5}\b/iu.test(line))
+      // A lookup line that gives its ports, published or not: telling the
+      // model "say the port isn't recorded" then made it say just that
+      // about a database listening on 5432 inside its container.
+      || lookups.some((output) => output.split("\n").some((line) => line.toLowerCase().includes(lower) && /\d{1,5}(?:->\d{1,5})?\/(?:tcp|udp|sctp)/iu.test(line)));
     if (!covered) subjects.push(plainText(name, 40));
     if (subjects.length >= 3) break;
   }
@@ -728,10 +737,15 @@ export async function createAgent(options) {
     return total() <= budget;
   }
 
-  async function converse({ prompt, history = [], allowProposals, source, service = null, maxReplyTokens = MAX_REPLY_TOKENS, seedOverview = false, selfTest = undefined, indexerTests = true }) {
+  async function converse({ prompt, history = [], allowProposals, source, service = null, maxReplyTokens: requestedReplyTokens = null, seedOverview = false, selfTest = undefined, indexerTests = true }) {
     const { ai, settings } = config();
     if (!ai) throw new AgentError(409, "AI_NOT_CONFIGURED", "Connect a model server first.");
     const sender = modelSender(ai);
+    // A list or ranking of every guest runs past the usual reply length: an
+    // 18-guest memory ranking stopped at the 13th line. Never more than an
+    // eighth of the model's context, so small models keep room for lookups.
+    const maxReplyTokens = requestedReplyTokens
+      ?? (LIST_QUESTION.test(String(prompt).toLowerCase()) ? Math.max(MAX_REPLY_TOKENS, Math.min(LIST_REPLY_TOKENS, Math.floor(ai.contextTokens / 8))) : MAX_REPLY_TOKENS);
     const toolContext = {
       snapshot,
       events,
@@ -790,14 +804,18 @@ export async function createAgent(options) {
       const earlierQuestion = [...history].reverse().find((turn) => turn.role === "user")?.content || "";
       const followUp = Boolean(earlierQuestion) && isFollowUp(prompt);
       const seeds = mergeSeeds(questionSeeds(prompt), followUp ? questionSeeds(earlierQuestion) : null);
+      const lookups = [];
       const seed = async (name, args, prefix = "") => {
         const output = await runTool(name, args, toolContext);
         const id = `seed-${name}-${toolsUsed.length}`;
+        const message = { role: "tool", tool_call_id: id, content: `${prefix}${output}` };
         messages.push(
           { role: "assistant", content: "", tool_calls: [{ id, type: "function", function: { name, arguments: JSON.stringify(args) } }] },
-          { role: "tool", tool_call_id: id, content: `${prefix}${output}` }
+          message
         );
         toolsUsed.push(name);
+        if (name === "list_workloads") lookups.push(output);
+        return message;
       };
       // The service the question names, by name or nickname.
       // Guest and host names taken out first: "Jelly-Arr" is a VM, not "jelly".
@@ -832,11 +850,29 @@ export async function createAgent(options) {
         ? workloadQueries(snapshot(), earlierQuestion, { workloadWords: seeds.workloads }) : [];
       const workloads = followUp && !ownQueries.length ? earlierNamed
         : [...earlierNamed.filter(namesSomething), ...ownQueries.filter((query) => query.filter || !earlierNamed.some(namesSomething))].slice(0, 4);
+      // "What's the VMID of wizarr": "lxc 108 wizarr" was answered "an
+      // LXC, not a VM" with no number.
+      const idNote = /\b(?:vm ?ids?|vmids?|guest ids?|ct ?ids?|container ids?|ids?)\b/iu.test(prompt)
+        ? "The number after vm or lxc in these lines is the guest ID (the VMID), for VMs and LXCs alike.\n" : "";
+      let lastWorkloads = null;
       for (const [index, query] of workloads.entries()) {
         // "vpn" usually means a gluetun container: say so, or the model
         // looks for a container called vpn and finds none.
         const hints = index === 0 ? nicknameHints(plainPrompt) : [];
-        await seed("list_workloads", query.filter ? { filter: query.filter } : {}, hints.length ? `Nicknames in the question: ${hints.map(({ word, target }) => `"${word}" usually means ${target}`).join("; ")}.\n` : "");
+        const hintText = hints.length ? `Nicknames in the question: ${hints.map(({ word, target }) => `"${word}" usually means ${target}`).join("; ")}.\n` : "";
+        lastWorkloads = await seed("list_workloads", query.filter ? { filter: query.filter } : {}, `${index === 0 ? idNote : ""}${hintText}`);
+      }
+      // "Is caddy's backup recent?": the yes or no, worked out by code.
+      if (lastWorkloads && aboutBackups) {
+        const question = String(prompt).toLowerCase();
+        const numbered = /\b(?:last|past|within)\s+(\d{1,3})\s*days?\b/u.exec(question);
+        const days = numbered ? Number(numbered[1])
+          : /\b(?:today|(?:last|past) (?:day|24 hours))\b/u.test(question) ? 1
+            : /\b(?:recent(?:ly)?|this week|(?:the )?(?:last|past) (?:week|7 days|seven days)|within (?:a|the last) week)\b/u.test(question) ? 7 : null;
+        if (days || YES_NO.test(question)) {
+          const verdicts = backupVerdicts(snapshot(), workloads.map((query) => query.filter), days);
+          if (verdicts.length) lastWorkloads.content += `\nThe answer, worked out by Helmsman from these lines: ${verdicts.join(" ")}`;
+        }
       }
       if (seeds.media) await seed("media_queue", {});
       // Manual lines only for questions about addresses, procedures and
@@ -862,7 +898,7 @@ export async function createAgent(options) {
         const hits = manualMatches(markdown, words);
         // A port question about something the manual gives no port for says
         // so, or models filled in another service's port or a "default".
-        const portless = asksPort ? portlessSubjects(snapshot(), prompt, services, hits) : [];
+        const portless = asksPort ? portlessSubjects(snapshot(), prompt, services, hits, lookups) : [];
         const portNote = portless.length
           ? `\nNone of these manual lines gives a port for ${portless.join(" or ")}. Give only a port shown in a lookup; otherwise say the port isn't recorded.`
           : "";

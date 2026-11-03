@@ -14,7 +14,10 @@ export { HELMSMAN_HELP } from "./agent-help.mjs";
 const MANUAL = /\b(?:ip|ips|address(?:es)?|subnet|gateway|dns|vlan|mac|hostname|ports?|where (?:is|are|does|do|did|can)|how (?:do|to|should|can|did) i|how do you|procedure|runbook|notes?|manual|documented|docs|steps|which hosts?|serial|model number|password policy|backup(?:s)? (?:stored|go|location)|hardware|specs?|layout|topology|wiring|cabling|vlans?|motherboard|what (?:cpu|gpu)|which (?:cpu|gpu)|drives?|disks?|what (?:runs|is running|is) on (?:vm|lxc|ct)|used for|purpose of|role of|what does \S+(?: \S+)? do|what (?:is|'s) \S+(?: \S+)? for|qdevice|quorum|corosync)\b/u;
 const HELP = /\b(?:helmsman|helmy|training|conversations?|rate|rating|fix answer|debug|logs?|logging|export|refresh|approve|approval|connections?|settings|holding alerts|alerts held)\b/u;
 const INDEXERS = /\b(?:indexers?|trackers?)\b/u;
-const WORKLOADS = /\b(?:containers?|vms?|virtual machines?|lxcs?|guests?|nodes?|stopped|running|vpn|gluetun|memory|ram|cpu|busiest|busy|uptime|been up|online|what'?s on|running on|docker|backed up|backups?|last backup)\b/u;
+// Stack, image and port words ask about a container's own line: "which stack
+// is sonarr in" got only Sonarr's status, which has no stack, and models
+// made one up.
+const WORKLOADS = /\b(?:stacks?|compose|images?|published|publishing|containers?|vms?|virtual machines?|lxcs?|guests?|nodes?|stopped|running|vpn|gluetun|memory|ram|cpu|busiest|busy|uptime|been up|online|what'?s on|running on|docker|backed up|backups?|last backup)\b/u;
 const MEDIA = /\b(?:download(?:ing|s|ed)?|queue|stuck|stalled|imports?|imported|requests?|requested|upcoming|coming out|comes? out|releases?|episodes?|premieres?|air(?:s|ing)?|subtitles?|eta|finish(?:ed)?|added recently)\b/u;
 
 /**
@@ -36,7 +39,8 @@ export function questionSeeds(text) {
     manual: MANUAL.test(question),
     help: HELP.test(question) && /\b(?:how|where|what|can|turn|download|which)\b/u.test(question),
     indexers: INDEXERS.test(question),
-    workloads: WORKLOADS.test(question),
+    // "Same host as radarr": neighbours of a service are its container's.
+    workloads: WORKLOADS.test(question) || COLOCATED.test(question),
     media: MEDIA.test(question)
   };
 }

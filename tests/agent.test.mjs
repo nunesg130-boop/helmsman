@@ -1738,6 +1738,75 @@ test("port questions get the container's line and say when the manual gives no p
   assert.doesNotMatch(covered.content, /None of these manual lines/u);
 });
 
+test("a lookup that shows the port, published or not, gets no port-not-recorded note", async (t) => {
+  const { agent, context, publish } = await harness(t, { modelReplies: () => ({ content: "5432 inside the container." }) });
+  await configure(agent, { autonomy: false });
+  const snapshot = snapshotAt(context.now);
+  snapshot.infrastructure.portainer[0].inventory.containers[0].ports = [{ privatePort: 8989, publicPort: null, protocol: "tcp" }];
+  await publish(snapshot);
+  context.manualText = "# Lab\n## Media host\n- Arr stack in /opt/arrstack: Sonarr, Radarr.";
+  await api(agent, "POST", "/api/v2/agent/ask", { question: "what port does the sonarr container use?" });
+  const messages = context.modelCalls[0].messages;
+  const line = messages.find((message) => message.role === "tool" && /^container sonarr/mu.test(message.content));
+  assert.match(line.content, /8989\/tcp inside the container only, not published on the host/u);
+  const manualSeed = messages.find((message) => message.tool_call_id === "seed-manual");
+  assert.doesNotMatch(manualSeed?.content || "", /None of these manual lines/u, "the lookup already gives its port");
+});
+
+test("stack and image questions about a service get its container line", async (t) => {
+  const { agent, context, publish } = await harness(t, { modelReplies: () => ({ content: "ok" }) });
+  await configure(agent, { autonomy: false });
+  await publish(snapshotAt(context.now));
+  for (const question of ["which stack is sonarr in?", "what compose stack does radarr belong to", "what image does sonarr use"]) {
+    context.modelCalls.length = 0;
+    const asked = await api(agent, "POST", "/api/v2/agent/ask", { question });
+    assert.ok(asked.payload.toolsUsed.includes("list_workloads"), question);
+  }
+});
+
+test("yes/no backup questions get the answer worked out by code", async (t) => {
+  const { agent, context, publish } = await harness(t, { modelReplies: () => ({ content: "ok" }) });
+  await configure(agent, { autonomy: false });
+  const snapshot = snapshotAt(context.now);
+  snapshot.infrastructure.environments[0].workloads.push(
+    { vmid: 106, type: "lxc", name: "resolver", node: "pve-1", status: "running", template: false, backup: { status: "success", ageSeconds: 14 * 3600 } },
+    { vmid: 107, type: "lxc", name: "tunnel", node: "pve-1", status: "running", template: false, backup: { status: "success", ageSeconds: 20 * 86_400 } },
+    { vmid: 108, type: "lxc", name: "proxy", node: "pve-1", status: "running", template: false }
+  );
+  await publish(snapshot);
+  const verdict = async (question) => {
+    context.modelCalls.length = 0;
+    await api(agent, "POST", "/api/v2/agent/ask", { question });
+    const lookup = context.modelCalls[0].messages.filter((message) => message.role === "tool" && message.tool_call_id?.startsWith("seed-list_workloads")).at(-1);
+    return /The answer, worked out by Helmsman from these lines: (.*)$/mu.exec(lookup?.content || "")?.[1] || null;
+  };
+  assert.equal(await verdict("is resolver's backup recent?"), "Yes. resolver (LXC 106)'s last backup succeeded 14h ago, within the last week.");
+  assert.equal(await verdict("Does tunnel have a backup from the last week?"), "No. tunnel (LXC 107)'s last successful backup was 20d ago, longer ago than the last week.");
+  assert.equal(await verdict("is proxy backed up"), "No. No backup is recorded for proxy (LXC 108).");
+  assert.equal(await verdict("was LXC 106 backed up this week?"), "Yes. resolver (LXC 106)'s last backup succeeded 14h ago, within the last week.");
+  assert.equal(await verdict("when was resolver last backed up?"), null, "not a yes/no question");
+});
+
+test("guest ID questions say which number is the ID", async (t) => {
+  const { agent, context, publish } = await harness(t, { modelReplies: () => ({ content: "ok" }) });
+  await configure(agent, { autonomy: false });
+  await publish(snapshotAt(context.now));
+  await api(agent, "POST", "/api/v2/agent/ask", { question: "what's the vmid of media?" });
+  const lookup = context.modelCalls[0].messages.find((message) => message.tool_call_id?.startsWith("seed-list_workloads"));
+  assert.match(lookup.content, /^The number after vm or lxc in these lines is the guest ID/u);
+});
+
+test("lists and rankings get room for every line", async (t) => {
+  const { agent, context, publish } = await harness(t, { modelReplies: () => ({ content: "ok" }) });
+  await configure(agent, { autonomy: false });
+  await api(agent, "PUT", "/api/v2/agent/ai", { contextTokens: 16384 });
+  await publish(snapshotAt(context.now));
+  await api(agent, "POST", "/api/v2/agent/ask", { question: "rank guests by memory usage" });
+  await api(agent, "POST", "/api/v2/agent/ask", { question: "is sonarr up?" });
+  const [ranking, plain] = context.modelCalls.map((call) => call.max_tokens ?? call.maxTokens);
+  assert.ok(ranking > plain, `a ranking gets a longer reply (${ranking} vs ${plain})`);
+});
+
 test("questions about a service's last failure are answered from history", async (t) => {
   const { agent, context, publish } = await harness(t, { modelReplies: () => ({ content: "Its last failure was Monday." }) });
   await configure(agent, { autonomy: false });

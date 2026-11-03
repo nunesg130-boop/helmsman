@@ -310,7 +310,8 @@ function portsText(ports) {
   if (!Array.isArray(ports) || !ports.length) return "no ports";
   const shown = ports.slice(0, 6).map((port) => (port.publicPort
     ? `${port.publicPort}->${port.privatePort}/${untrusted(port.protocol, 6)}`
-    : `${port.privatePort}/${untrusted(port.protocol, 6)} unpublished`));
+    // "5432/tcp unpublished" read as no port at all ("doesn't use a port").
+    : `${port.privatePort}/${untrusted(port.protocol, 6)} inside the container only, not published on the host`));
   return `ports ${shown.join(", ")}${ports.length > 6 ? ` and ${ports.length - 6} more` : ""}`;
 }
 
@@ -330,6 +331,36 @@ function backupAgeWords(ageSeconds) {
 function backupText(workload, none = ", no backup recorded") {
   if (!workload.backup?.status) return none;
   return `, backup ${untrusted(workload.backup.status, 20)} ${ago(workload.backup.ageSeconds)}${backupAgeWords(workload.backup.ageSeconds)}`;
+}
+
+/**
+ * The answer to a yes/no backup question ("is caddy's backup recent?",
+ * "does frigate have a backup from the last week?"), worked out by code for
+ * the guests the lookups named. Even with "(recent: under a day old)" on the
+ * line, models answered "No, it was 14 hours ago" about one time in four.
+ * `days` is the window the question gives; null asks only whether a backup
+ * exists. A name two guests share is skipped, as is anything not a guest.
+ */
+export function backupVerdicts(snapshot, filters, days = null) {
+  const guests = (snapshot?.infrastructure?.environments || []).flatMap((environment) => guestsOf(environment));
+  const found = [];
+  for (const filter of filters) {
+    const wanted = String(filter || "").toLowerCase();
+    if (!wanted) continue;
+    const matches = guests.filter((guest) => String(guest.vmid) === wanted || String(guest.name || "").toLowerCase() === wanted);
+    if (matches.length === 1 && !found.includes(matches[0])) found.push(matches[0]);
+    if (found.length >= 2) break;
+  }
+  const span = days === 7 ? "the last week" : days === 1 ? "the last day" : `the last ${days} days`;
+  return found.map((guest) => {
+    const label = `${untrusted(guest.name, 40)} (${guest.type === "lxc" ? "LXC" : "VM"} ${guest.vmid})`;
+    const backup = guest.backup;
+    if (!backup?.status) return `No. No backup is recorded for ${label}.`;
+    const when = ago(backup.ageSeconds);
+    if (backup.status !== "success") return `${label}'s latest backup ${untrusted(backup.status, 20)} ${when}, so its latest backup is not a successful one.`;
+    if (days && Number.isFinite(backup.ageSeconds) && backup.ageSeconds > days * 86_400) return `No. ${label}'s last successful backup was ${when}, longer ago than ${span}.`;
+    return `Yes. ${label}'s last backup succeeded ${when}${days ? `, within ${span}` : ""}.`;
+  });
 }
 
 /**
