@@ -177,3 +177,18 @@ test("a superseded or retired incident ends where it was replaced, and an unreco
   assert.match(text, /- Proxmox Main: 2 problems, 35 min in total, longest single problem 30 min\./u, "superseded after 30 minutes, not stretched to the restart two days later");
   assert.match(text, /Proxmox Main reported a node offline at 10-19 09:00 for 5 min; whether it restarted or only lost its connection was not recorded for that time\./u);
 });
+
+test("a service's longest problem says when it was, when it isn't among the latest shown", () => {
+  const events = [];
+  const add = (id, startHour, minutesLong) => {
+    events.push({ at: new Date(NOW - startHour * HOUR).toISOString(), event: "health_incident", outcome: "changed", level: "warn", service: "radarr", capability: "health", targetId: id });
+    events.push({ at: new Date(NOW - startHour * HOUR + minutesLong * 60_000).toISOString(), event: "health_incident", outcome: "recovered", service: "radarr", targetId: id });
+  };
+  add("old-long", 20, 31);
+  for (const [index, hour] of [10, 8, 6, 4].entries()) add(`short-${index}`, hour, 5);
+  const text = buildHistory({ from: NOW - 24 * HOUR, to: NOW, label: "the past 24 hours", format: (iso) => iso.slice(5, 16).replace("T", " "), nameOf: () => "Radarr", healthEvents: events });
+  const when = new Date(NOW - 20 * HOUR).toISOString().slice(5, 16).replace("T", " ");
+  assert.match(text, new RegExp(`- Radarr: 5 problems, 51 min in total, longest single problem 31 min \\(${when}–`, "u"));
+  assert.equal(questionWindow("what should I do after an NFS outage?", NOW), null);
+  assert.ok(questionWindow("were there any outages today?", NOW), "outage history is still history");
+});

@@ -270,7 +270,8 @@ test("a cluster named like one of its nodes says which is which, and nodes count
   const snapshot = cluster();
   const all = await runTool("list_workloads", {}, context(snapshot));
   assert.match(all, /^Note: "Main" is the Proxmox cluster \(nodes Main, norco\) and also one of its nodes; a guest "on Main" means on node Main only\.$/mu);
-  assert.match(all, /Main \(Proxmox Main\) online, up 8d, cpu 2%, memory 63% of 32 GB, 3 guests \(1 VM, 2 LXCs\), 3 running/u);
+  assert.match(all, /Main \(Proxmox Main\) online, up 8d, cpu 2% of 8 cores, memory 63% \(20 of 32 GB, 12 GB free\), 3 guests \(1 VM, 2 LXCs\), 3 running/u);
+  assert.match(all, /^Both nodes together: memory 62% \(59 of 95 GB, 36 GB free\), 20 CPU cores\.$/mu, "cluster totals worked out by code");
   const main = await runTool("list_workloads", { filter: "main" }, context(snapshot));
   assert.match(main, /^Note: "Main" is the Proxmox cluster/u);
   assert.match(main, /^node Main \(Proxmox Main\): online, up 8d, cpu 2% of 8 cores, memory 63% \(20 of 32 GB, 12 GB free\), 3 guests \(1 VM, 2 LXCs\), 3 running$/mu);
@@ -436,14 +437,71 @@ test("neighbours leave out what was asked about and always list what is stopped"
   assert.deepEqual(queries("What other guests run on the same node as docker VM 109?"), [{ filter: "109" }, { filter: "beside 109" }], "a guest by number gets its neighbours too");
   const tool = (filter) => runTool("list_workloads", { filter }, context(snapshot));
   const ollama = await tool("beside ollama");
-  assert.match(ollama, /^Besides ollama \(LXC 114\), node norco has \d+ other guests?\. Running \(\d+\): /u);
-  assert.doesNotMatch(ollama.replace(/^Besides ollama \(LXC 114\)/u, ""), /ollama/u, "not the guest itself");
+  assert.match(ollama, /^ollama \(LXC 114\) shares node norco with \d+ other guests?\. Running \(\d+\): /u);
+  assert.doesNotMatch(ollama.replace(/^ollama \(LXC 114\)/u, ""), /ollama/u, "not the guest itself");
   assert.match(ollama, /Not running \(1\): RHEL-10\.0-1 \(VM 112\) stopped\./u, "stopped guests are listed");
-  const counts = /has (\d+) other guests?\. Running \((\d+)\): .*?(?: Not running \((\d+)\)|$)/u.exec(ollama);
+  const counts = /with (\d+) other guests?\. Running \((\d+)\): .*?(?: Not running \((\d+)\)|$)/u.exec(ollama);
   assert.equal(Number(counts[1]), Number(counts[2]) + Number(counts[3] || 0), "the count matches the names");
   const radarr = await tool("beside radarr");
-  assert.match(radarr, /^Besides radarr, Docker host Jelly-Arr \(VM 100 on node Main\) has \d+ other containers?\./u);
+  assert.match(radarr, /^radarr shares Docker host Jelly-Arr \(VM 100 on node Main\) with \d+ other containers?\./u);
   assert.match(radarr, /Not running \(1\): suggestarr \(exited\)\./u);
-  assert.doesNotMatch(radarr.replace(/^Besides radarr/u, ""), /radarr/u);
+  assert.doesNotMatch(radarr.replace(/^radarr/u, ""), /radarr/u);
   assert.equal(await tool("beside nothing-here"), "Nothing is named nothing-here.");
+});
+
+test("v1.17.5: the lookups the 1.17.4 Self-test showed were missing", async () => {
+  const snapshot = cluster();
+  snapshot.infrastructure.portainer[0].inventory.containers.push(
+    { name: "qbittorrent", state: "running", status: "Up 7 days", environmentName: "Jelly-Arr", stack: "arr", ports: [] },
+    { name: "portainer", state: "running", status: "Up 7 days", environmentName: "Jelly-Arr", stack: null, ports: [{ privatePort: 9443, publicPort: 9443, protocol: "tcp" }] },
+    { name: "paperless-db-1", state: "running", status: "Up 7 days", environmentName: "Main Docker", stack: "paperless", ports: [{ privatePort: 5432, protocol: "tcp" }] }
+  );
+  const queries = (text) => workloadQueries(snapshot, text, { workloadWords: questionSeeds(text).workloads });
+  const tool = (filter) => runTool("list_workloads", { filter }, context(snapshot));
+
+  // A container named like a monitored service still gets its own line for "what host".
+  assert.equal(questionSeeds("what host is qbittorrent on?").workloads, true);
+  assert.deepEqual(queries("what host is qbittorrent on?"), [{ filter: "qbittorrent" }]);
+  // A container's node is its Docker host's: the guests there.
+  assert.deepEqual(queries("what other guests are on the same node as the radarr host?"), [{ filter: "radarr" }, { filter: "node of radarr" }]);
+  assert.deepEqual(queries("what else runs on the same host as radarr?"), [{ filter: "radarr" }, { filter: "beside radarr" }], "the same host is the Docker host");
+  const nodeOf = await tool("node of radarr");
+  assert.match(nodeOf, /^radarr runs on Docker host Jelly-Arr, which is VM 100 Jelly-Arr on node Main\.\nJelly-Arr \(VM 100\) shares node Main with 2 other guests\. Running \(2\): seerr \(LXC 104\), wizarr \(LXC 108\)\./u);
+  // Ports by number, published or only inside the container.
+  assert.deepEqual(queries("what's using port 5432?"), [{ filter: "port 5432" }]);
+  assert.deepEqual(workloadQueries(snapshot, "which containers publish port 9443?", { namesOnly: true }), [{ filter: "port 9443" }]);
+  assert.match(await tool("port 5432"), /^No container publishes port 5432 on its Docker host\.\nListening on 5432 inside the container, not published: paperless-db-1 on Docker host Main Docker: 5432\/tcp inside the container only\./u);
+  assert.match(await tool("port 9443"), /^Published on host port 9443: portainer on Docker host Jelly-Arr: 9443->9443\/tcp\./u);
+  // Ranking by assigned cores, the most recent start, and the cluster's totals.
+  assert.deepEqual(queries("rank the guests by cores, most first"), [{ filter: "cores" }]);
+  assert.deepEqual(queries("which guest was restarted most recently?"), [{ filter: "uptime" }]);
+  assert.deepEqual(queries("how much memory is free across the cluster?"), [{ filter: "nodes" }]);
+  assert.deepEqual(queries("what's the total RAM in the cluster?"), [{ filter: "nodes" }]);
+  assert.deepEqual(queries("how much RAM is assigned to the LXCs in total?"), [{ filter: "allocated lxcs" }], "assigned to guests stays the guests'");
+  // A Docker host that is also a guest, asked about without container words, is the guest.
+  assert.deepEqual(queries("how long has Jelly-Arr been up?"), [{ filter: "Jelly-Arr" }]);
+  assert.deepEqual(queries("how long have the containers on Jelly-Arr been up?"), [{ filter: "containers uptime jelly-arr" }]);
+  // No stack is said, so one isn't made up.
+  assert.match(await tool("portainer"), /; not in a compose stack;/u);
+  assert.doesNotMatch(await tool("suggestarr"), /compose stack/u, "unknown is not said as none");
+  // Ties at either end are said in words.
+  snapshot.infrastructure.environments[0].workloads.find((workload) => workload.name === "pihole").cpuPercent = 0;
+  const lxcs = await tool("cpu lxcs");
+  assert.match(lxcs, /\. 2 tie for lowest at 0%: wizarr \(LXC 108\), pihole \(LXC 106\)\.$/u);
+  assert.doesNotMatch(lxcs, /tie for highest/u);
+  // The most recent start, named at the end of the uptime ranking.
+  snapshot.infrastructure.environments[0].workloads.find((workload) => workload.name === "ollama").uptimeSeconds = 3600;
+  assert.match(await tool("uptime"), /Started most recently: ollama \(LXC 114, norco\) \(up 1h\)\./u);
+});
+
+test("v1.17.5: manual questions the Self-test showed were never searched", () => {
+  for (const question of [
+    "how many votes does the cluster have?", "what's the remote access path?", "what router do I use?",
+    "what known issues are open?", "what's the public name for Seerr?", "what's the startup order for pihole and cloudflared?",
+    "what's on the roadmap?", "how is Home Assistant reached?", "what runs on docker VM 201?", "what does docker VM 201 do?",
+    "what is the Caddy config path?", "why was the switch removed?", "which VLANs are configured?", "what should I do after an NFS outage?"
+  ]) assert.equal(questionSeeds(question).manual, true, question);
+  assert.equal(questionSeeds("can the agent test indexers?").help, true);
+  for (const question of ["is sonarr down?", "why is radarr down?", "how many containers are running?"]) assert.equal(questionSeeds(question).manual, false, question);
+  assert.equal(questionWindow("what should I do after an NFS outage?", NOW, "UTC"), null, "a procedure, not the history of outages");
 });

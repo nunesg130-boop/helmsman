@@ -93,3 +93,9 @@ test("a rare word outranks a common one, and hyphens don't split names", () => {
   assert.match(hits[0], /pihole \| LXC \| 192\.168\.0\.106/u, "Pi-hole's row first, not a table header");
   assert.ok(hits.slice(0, 2).some((hit) => /Pi-hole/u.test(hit)), "Pi-hole spelled with a hyphen still matches");
 });
+
+test("a plural finds the singular", () => {
+  const manual = "## Network\n- The network is flat; VLAN segmentation on the router is planned.";
+  assert.equal(manualMatches(manual, ["vlans", "configured"])[0], "[Network] - The network is flat; VLAN segmentation on the router is planned.");
+  assert.deepEqual(manualMatches(manual, ["status"]), [], "a word ending in s that isn't a plural finds nothing extra");
+});

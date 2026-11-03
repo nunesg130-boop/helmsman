@@ -38,7 +38,7 @@ import {
 } from "./agent-tools.mjs";
 import { chatCompletion, estimateTokens, listModels, LlmError, validModelId } from "./llm-client.mjs";
 import { questionWindow } from "./agent-history.mjs";
-import { guestIds, HELMSMAN_HELP, isFollowUp, mergeSeeds, namedServices, namesSomething, nicknameHints, questionSeeds, withoutWorkloadNames, workloadQueries } from "./agent-intent.mjs";
+import { COLOCATED, guestIds, HELMSMAN_HELP, isFollowUp, mergeSeeds, namedServices, namesSomething, nicknameHints, questionSeeds, withoutWorkloadNames, workloadQueries } from "./agent-intent.mjs";
 import { createConversationStore } from "./agent-conversations.mjs";
 import { createSelfTest, SelfTestError } from "./selftest.mjs";
 import { checkQuestionFile, UPLOAD_MAX_BYTES } from "./selftest-upload.mjs";
@@ -788,11 +788,13 @@ export async function createAgent(options) {
       // ages, which the workload lookup gives; the incident history only adds noise.
       const aboutBackups = /\b(?:backed up|backups?|last backup)\b/iu.test(prompt);
       const period = aboutBackups ? null : questionWindow(prompt, clock(), settings.timeZone);
+      let historyMessage = null;
       if (period) {
         const history = await runTool("history", period, toolContext);
+        historyMessage = { role: "tool", tool_call_id: "seed-history", content: "" };
         messages.push(
           { role: "assistant", content: "", tool_calls: [{ id: "seed-history", type: "function", function: { name: "history", arguments: JSON.stringify({ hours: Math.max(1, Math.round((period.to - period.from) / 3_600_000)) }) } }] },
-          { role: "tool", tool_call_id: "seed-history", content: `${history}\nAnswer the question from this history. It is complete for what Helmsman monitors; do not add problems or calm periods it does not show. A VM, LXC or container missing from it had no problem recorded: Helmsman still sees it (its line, if looked up, is below), but keeps no start and stop history for it, only its current state and uptime.` }
+          Object.assign(historyMessage, { content: `${history}\nAnswer the question from this history. It is complete for what Helmsman monitors; do not add problems or calm periods it does not show. A VM, LXC or container missing from it had no problem recorded: Helmsman still sees it (its line, if looked up, is below), but keeps no start and stop history for it, only its current state and uptime.` })
         );
         toolsUsed.push("history");
       }
@@ -829,6 +831,19 @@ export async function createAgent(options) {
       const serviceHints = nicknameHints(followUp && !named.length ? plainEarlier : plainPrompt).filter(({ target }) => services.includes(target));
       const hintText = serviceHints.length ? `Nicknames in the question: ${serviceHints.map(({ word, target }) => `"${word}" means ${(snapshot()?.services || []).find((service) => service.id === target)?.label || target}`).join("; ")}.\n` : "";
       for (const name of services) await seed("service_status", { name }, hintText);
+      // "Did Sonarr go down today?": the yes or no for each named service,
+      // worked out from the history above. Models answered "No, Sonarr did
+      // not go down" and then described its three problems.
+      if (historyMessage && services.length) {
+        const verdicts = services.map((id) => {
+          const label = plainText((snapshot()?.services || []).find((service) => service.id === id)?.label
+            || [...(snapshot()?.infrastructure?.environments || []), ...(snapshot()?.infrastructure?.services || [])].find((item) => item.id === id)?.displayName || id, 60);
+          const line = historyMessage.content.split("\n").find((text) => text.startsWith(`- ${label}: `));
+          const count = /^- [^:]+: (\d+) problems?/u.exec(line || "")?.[1];
+          return count ? `${label} had ${count} problem${count === "1" ? "" : "s"} in this period, so yes, it had problems (each is a time it was unhealthy or unreachable).` : `${label} had no problems recorded in this period.`;
+        });
+        historyMessage.content += `\nFor the service${services.length === 1 ? "" : "s"} asked about, worked out by Helmsman: ${verdicts.join(" ")}`;
+      }
       if (seeds.indexers && toolContext.indexers) await seed("indexer_status", {});
       // The VM, LXC and container list, narrowed to what the question names.
       // Not for address and procedure questions ("the IP of the media
@@ -843,7 +858,8 @@ export async function createAgent(options) {
       // Every thing the question names gets its own lookup, up to four, so
       // "is seerr or wizarr busier" sees both rather than only the first.
       const ownQueries = seeds.manual && !seeds.workloads
-        ? (asksWhere || asksPort || guestIds(snapshot(), prompt).length ? workloadQueries(snapshot(), prompt, { namesOnly: true }) : [])
+        // "What does Palmetto Tech run on": the manual, and the containers' own lines.
+        ? (asksWhere || asksPort || /\b(?:run|runs|running|hosted)\b/iu.test(prompt) || guestIds(snapshot(), prompt).length ? workloadQueries(snapshot(), prompt, { namesOnly: true }) : [])
         : workloadQueries(snapshot(), prompt, { workloadWords: seeds.workloads });
       // A follow-up that names nothing ("which one is busier?") is about what
       // the question before it named, so those come first.
@@ -853,8 +869,8 @@ export async function createAgent(options) {
         : [...earlierNamed.filter(namesSomething), ...ownQueries.filter((query) => query.filter || !earlierNamed.some(namesSomething))].slice(0, 4);
       // "What's the VMID of wizarr": "lxc 108 wizarr" was answered "an
       // LXC, not a VM" with no number.
-      const idNote = /\b(?:vm ?ids?|vmids?|guest ids?|ct ?ids?|container ids?|ids?)\b/iu.test(prompt)
-        ? "The number after vm or lxc in these lines is the guest ID (the VMID), for VMs and LXCs alike.\n" : "";
+      const idNote = /\b(?:vm ?ids?|vmids?|guest ids?|ct ?ids?|container ids?|ids?|vm or (?:an )?lxc|lxc or (?:a )?vm)\b/iu.test(prompt)
+        ? "The number after vm or lxc in these lines is the guest ID (the VMID), for VMs and LXCs alike. A line starting lxc is an LXC, never a VM: say \"LXC 108\", not \"VM 108\".\n" : "";
       let lastWorkloads = null;
       for (const [index, query] of workloads.entries()) {
         // "vpn" usually means a gluetun container: say so, or the model
@@ -880,7 +896,11 @@ export async function createAgent(options) {
       // Helmsman itself. Given for anything else, small models report the
       // owner's old notes ("switch failure", "speed fixed") as current
       // status. A short reply such as "where?" borrows the earlier words.
-      if ((seeds.manual || seeds.help) && !period) {
+      // "Same host as jellyfin": a service with no container or guest of its
+      // own (Jellyfin runs natively) is placed only by the manual.
+      const placedByManual = COLOCATED.test(String(prompt).toLowerCase()) && services.length > 0
+        && !workloads.some(namesSomething);
+      if ((seeds.manual || seeds.help || placedByManual) && !period) {
         let words = manualKeywords(prompt);
         if (words.length < 2) {
           // Borrow what the earlier question asked about ("ip"), but not
