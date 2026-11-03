@@ -631,8 +631,12 @@ function workloadMetric(snapshot, metric, kind = null, node = null) {
   const value = (workload) => (metric === "cpu"
     ? (Number.isFinite(workload.cpuPercent) ? workload.cpuPercent : -1)
     : (Number.isFinite(workload.memoryUsedBytes) && workload.memoryTotalBytes > 0 ? workload.memoryUsedBytes / workload.memoryTotalBytes : -1));
+  // Short lines, with no node and no free memory: models copy a ranking
+  // line by line, and with a 4K context an 18-guest ranking ran out of
+  // reply room at the 15th. Each guest's own line still has its node.
+  const short = (workload) => `${untrusted(workload.name, 40)} (${workload.type === "lxc" ? "LXC" : "VM"} ${workload.vmid})`;
   const ranked = running.sort((left, right) => value(right) - value(left))
-    .map((workload, index) => `${index + 1}. ${name(workload)}: ${metric === "cpu" ? `${workload.cpuPercent ?? "?"}%${coresText(workload.cpuCores)}` : memoryText(workload.memoryUsedBytes, workload.memoryTotalBytes, { free: true })}`);
+    .map((workload, index) => `${index + 1}. ${short(workload)}: ${metric === "cpu" ? `${workload.cpuPercent ?? "?"}%${coresText(workload.cpuCores)}` : memoryText(workload.memoryUsedBytes, workload.memoryTotalBytes)}`);
   if (!ranked.length) return `No ${noun}${onNode} is running.${stoppedNote}`;
   return [...notes, `${metric === "cpu" ? "CPU" : "Memory"} use of each running ${noun}${onNode}, highest first (percent of its own allowance): ${ranked.join(", ")}.${stoppedNote}`].join("\n");
 }
