@@ -4570,6 +4570,97 @@ function renderAgentSetupSteps(data) {
   </section>`;
 }
 
+const AGENT_MODEL_OTHER = "__other__";
+
+/** "2.5 GB · Q4_K_M" for a model the server described, or "". */
+function agentModelDetail(model) {
+  const size = Number.isFinite(model?.sizeBytes) && model.sizeBytes > 0 ? `${(model.sizeBytes / 1e9).toFixed(1)} GB` : "";
+  return [size, model?.quantization || ""].filter(Boolean).join(" · ");
+}
+
+/**
+ * The Model field: a dropdown of the models the server has, filled when
+ * Settings opens, with "Other…" for a name typed by hand (a server that
+ * lists nothing, or can't be reached right now).
+ */
+function renderAgentModelPicker(ai) {
+  const current = ai?.model || "";
+  const list = state.agent.models || {};
+  const models = Array.isArray(list.items) ? list.items : [];
+  const known = models.some((model) => model.name === current);
+  const typing = list.other === true || (!models.length && list.loaded && !list.loading);
+  const options = [
+    !current && !models.length ? `<option value="" selected disabled>${list.loading ? "Loading models…" : "Test the server to list its models"}</option>` : "",
+    !current && models.length ? `<option value="" selected disabled>Choose a model</option>` : "",
+    ...models.map((model) => {
+      const detail = agentModelDetail(model);
+      return `<option value="${escapeHtml(model.name)}" ${model.name === current && !typing ? "selected" : ""}>${escapeHtml(model.name)}${detail ? ` · ${escapeHtml(detail)}` : ""}</option>`;
+    }),
+    current && !known ? `<option value="${escapeHtml(current)}" ${typing ? "" : "selected"}>${escapeHtml(current)}${list.loaded && models.length ? " · not on this server" : ""}</option>` : "",
+    `<option value="${AGENT_MODEL_OTHER}" ${typing ? "selected" : ""}>Other…</option>`
+  ].join("");
+  const note = list.loading ? "Getting the server's models…"
+    : list.error ? `Couldn't list the server's models: ${list.error} Type the name under Other… or test the connection.`
+      : list.loaded && !models.length ? "The server lists no models. Download one on the server, or type its name."
+        : current && list.loaded && !known ? `The server doesn't have “${current}”. Pick one it has.`
+          : models.length ? `${models.length} model${models.length === 1 ? "" : "s"} on this server.` : "";
+  return `<label class="agent-model-field"><span>Model</span>
+    <span class="agent-model-pick">
+      <select name="model" required>${options}</select>
+      <button class="icon-button" type="button" data-action="agent-refresh-models" aria-label="Refresh the model list" title="Refresh the model list" ${list.loading ? "disabled aria-busy=\"true\"" : ""}>${icon("refresh")}</button>
+    </span>
+    <input name="modelOther" type="text" autocomplete="off" spellcheck="false" placeholder="Model name, exactly as the server lists it" value="${escapeHtml(typing ? (list.typed ?? current) : "")}" ${typing ? "required" : "hidden"} aria-label="Model name" />
+    <small id="agent-model-note">${escapeHtml(note)}</small>
+  </label>`;
+}
+
+/** The model the form names: the dropdown's choice, or the typed name under Other…. */
+function agentFormModel(form) {
+  const picked = agentFormText(form, "model");
+  return picked === AGENT_MODEL_OTHER ? agentFormText(form, "modelOther") : picked;
+}
+
+/**
+ * Lists the server's models for the dropdown. `url` and `apiKey` come from
+ * the form when testing a new address; empty uses the saved server.
+ */
+async function loadAgentModels({ url = "", apiKey = "", quiet = false } = {}) {
+  const previous = state.agent.models || {};
+  state.agent.models = { ...previous, loading: true, error: "", url: url || agentData()?.config?.ai?.url || "" };
+  if (!quiet) rerenderAgent();
+  const body = {};
+  if (url) body.url = url;
+  if (apiKey) {
+    body.apiKey = apiKey;
+    body.authMode = "bearer";
+  }
+  try {
+    const result = await api("/api/v2/agent/ai/test", { method: "POST", body });
+    const items = Array.isArray(result?.modelDetails) ? result.modelDetails
+      : (Array.isArray(result?.models) ? result.models : []).map((name) => ({ name, sizeBytes: null, quantization: null }));
+    state.agent.models = { ...state.agent.models, loading: false, loaded: true, items, error: "" };
+    rerenderAgent();
+    return result;
+  } catch (error) {
+    if (error?.status === 401) {
+      await initialize();
+      return null;
+    }
+    state.agent.models = { ...state.agent.models, loading: false, loaded: true, items: previous.items || [], error: error?.message || "the server could not be reached." };
+    rerenderAgent();
+    throw error;
+  }
+}
+
+/** Fills the dropdown once for the saved server when Settings → Agent opens. */
+function ensureAgentModels() {
+  const saved = agentData()?.config?.ai?.url;
+  const list = state.agent.models || {};
+  if (!saved || list.loading || (list.loaded && list.url === saved)) return;
+  state.agent.models = { ...list, loading: true, url: saved };
+  setTimeout(() => { loadAgentModels({ quiet: true }).catch(() => {}); }, 0);
+}
+
 function renderAgentModelCard(data) {
   const ai = data?.config?.ai;
   const limits = data?.limits || {};
@@ -4581,7 +4672,7 @@ function renderAgentModelCard(data) {
     <div class="settings-card-v5__body">
       <div class="form-grid">
         <label><span>Server address</span><input name="url" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="http://model-server:11434" value="${escapeHtml(ai?.url || "")}" required /><small>Ollama uses port 11434, LM Studio 1234. Leave off /v1.</small></label>
-        <label><span>Model</span><input name="model" type="text" autocomplete="off" spellcheck="false" list="agent-model-options" placeholder="Test the server to list its models" value="${escapeHtml(ai?.model || "")}" required /><datalist id="agent-model-options"></datalist></label>
+        ${renderAgentModelPicker(ai)}
         <label><span>API key <em>optional</em></span><input name="apiKey" type="password" autocomplete="new-password" placeholder="${ai?.apiKeyConfigured ? "Saved. Leave empty to keep it" : "Only if your server requires one"}" /></label>
         ${ai?.apiKeyConfigured ? `<label class="check-row"><input name="clearApiKey" type="checkbox" /><span><strong>Remove the saved API key</strong><small>Use this when the server no longer needs a key.</small></span></label>` : ""}
       </div>
@@ -5466,7 +5557,7 @@ function renderAgentSettings() {
     ${data.status?.configurationProblem ? `<div class="security-note">${icon("lock")}<div><strong>The saved agent settings could not be read</strong><span>${escapeHtml(String(data.status.configurationProblem))}. Saving any card below replaces them.</span></div></div>` : ""}
     <nav class="settings-tabs settings-subtabs filter-chips" role="tablist" aria-label="Agent settings sections">${AGENT_TABS.map(({ id, label }) => `<button class="filter-chip ${agentTab() === id ? "is-active" : ""}" type="button" role="tab" id="agent-tab-${id}" aria-selected="${agentTab() === id ? "true" : "false"}" aria-controls="agent-panel" tabindex="${agentTab() === id ? "0" : "-1"}" data-action="agent-tab" data-agent-tab="${id}">${escapeHtml(label)}</button>`).join("")}</nav>
     <div id="agent-panel" role="tabpanel" aria-labelledby="agent-tab-${agentTab()}">
-    ${agentTab() === "behavior" ? `${renderAgentSetupSteps(data)}
+    ${agentTab() === "behavior" ? `${(ensureAgentModels(), "")}${renderAgentSetupSteps(data)}
     <div class="settings-grid-v5">
       ${renderAgentModelCard(data)}
       ${renderAgentVoiceCard(data)}
@@ -5691,43 +5782,34 @@ async function testAgentModel(button) {
     setAgentTestResult("agent-ai-test-result", "degraded", "Enter the server address first.");
     return;
   }
-  const body = { url };
-  const model = agentFormText(form, "model");
+  const model = agentFormModel(form);
   const apiKey = String(new FormData(form).get("apiKey") || "");
-  if (model) body.model = model;
-  if (apiKey) {
-    body.apiKey = apiKey;
-    body.authMode = "bearer";
-  }
   button.disabled = true;
   button.setAttribute("aria-busy", "true");
   setAgentTestResult("agent-ai-test-result", "stale", "Testing…");
   try {
-    const result = await api("/api/v2/agent/ai/test", { method: "POST", body });
-    const models = Array.isArray(result?.models) ? result.models : [];
-    const list = document.getElementById("agent-model-options");
-    if (list) list.replaceChildren(...models.map((name) => Object.assign(document.createElement("option"), { value: name })));
+    const result = await loadAgentModels({ url, apiKey, quiet: true });
+    if (!result) return;
+    const models = Array.isArray(result.models) ? result.models : [];
     if (!models.length) setAgentTestResult("agent-ai-test-result", "limited", "Connected, but the server lists no models. Download one on the server first.");
-    else if (result.model && !result.modelAvailable) setAgentTestResult("agent-ai-test-result", "limited", `Connected. The server does not have “${result.model}”. It has: ${models.slice(0, 8).join(", ")}${models.length > 8 ? "…" : ""}`);
-    else if (result.model) setAgentTestResult("agent-ai-test-result", "healthy", `Connected in ${Number(result.latencyMs) || 0} ms. “${result.model}” is available.`);
-    else {
-      const input = form.querySelector("input[name='model']");
-      if (input && models.length === 1) input.value = models[0];
-      setAgentTestResult("agent-ai-test-result", "healthy", `Connected. Pick a model: ${models.slice(0, 8).join(", ")}${models.length > 8 ? "…" : ""}`);
-    }
+    else if (model && !models.includes(model)) setAgentTestResult("agent-ai-test-result", "limited", `Connected. The server does not have “${model}”. Pick one from the list.`);
+    else if (model) setAgentTestResult("agent-ai-test-result", "healthy", `Connected in ${Number(result.latencyMs) || 0} ms. “${model}” is available.`);
+    else setAgentTestResult("agent-ai-test-result", "healthy", `Connected. Pick one of its ${models.length} model${models.length === 1 ? "" : "s"}.`);
   } catch (error) {
-    if (error?.status === 401) await initialize();
-    else setAgentTestResult("agent-ai-test-result", "degraded", error?.message || "The model server could not be reached.");
+    setAgentTestResult("agent-ai-test-result", "degraded", error?.message || "The model server could not be reached.");
   } finally {
-    button.disabled = false;
-    button.removeAttribute("aria-busy");
+    const live = document.querySelector("#agent-ai-form [data-action='agent-test-ai']");
+    if (live) {
+      live.disabled = false;
+      live.removeAttribute("aria-busy");
+    }
   }
 }
 
 async function submitAgentModel(form) {
   const body = {
     url: agentFormText(form, "url"),
-    model: agentFormText(form, "model")
+    model: agentFormModel(form)
   };
   const contextTokens = agentFormNumber(form, "contextTokens");
   const timeoutSeconds = agentFormNumber(form, "timeoutSeconds");
@@ -12050,6 +12132,13 @@ document.addEventListener("click", async (event) => {
     await testAgentModel(target);
     return;
   }
+  if (action === "agent-refresh-models") {
+    const form = target.closest("form");
+    const url = form ? agentFormText(form, "url") : "";
+    const apiKey = form ? String(new FormData(form).get("apiKey") || "") : "";
+    await loadAgentModels({ url, apiKey }).catch(() => {});
+    return;
+  }
   if (action === "agent-test-notify") {
     await testAgentNotify(target);
     return;
@@ -12763,6 +12852,22 @@ document.addEventListener("change", (event) => {
   const file = event.target.files?.[0];
   event.target.value = "";
   importManualFile(file);
+});
+
+// The Model dropdown: "Other…" shows a box for a name typed by hand, and
+// what is typed there survives a re-render.
+document.addEventListener("change", (event) => {
+  if (!event.target?.matches?.("#agent-ai-form select[name='model']")) return;
+  const other = event.target.value === AGENT_MODEL_OTHER;
+  const list = state.agent.models || {};
+  if (Boolean(list.other) === other) return;
+  state.agent.models = { ...list, other };
+  rerenderAgent();
+  if (other) document.querySelector("#agent-ai-form input[name='modelOther']")?.focus();
+});
+document.addEventListener("input", (event) => {
+  if (!event.target?.matches?.("#agent-ai-form input[name='modelOther']")) return;
+  state.agent.models = { ...(state.agent.models || {}), typed: event.target.value };
 });
 
 initializeGlobalSearch();

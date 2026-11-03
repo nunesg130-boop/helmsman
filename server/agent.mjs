@@ -37,7 +37,7 @@ import {
   parseActionCommand,
   sharedNameNotes
 } from "./agent-tools.mjs";
-import { chatCompletion, estimateTokens, listModels, LlmError, validModelId } from "./llm-client.mjs";
+import { chatCompletion, estimateTokens, listModelDetails, listModels, LlmError, validModelId } from "./llm-client.mjs";
 import { questionWindow } from "./agent-history.mjs";
 import { COLOCATED, guestIds, HELMSMAN_HELP, isFollowUp, mergeSeeds, namedServices, namesSomething, nicknameHints, questionSeeds, withoutWorkloadNames, workloadQueries } from "./agent-intent.mjs";
 import { createConversationStore } from "./agent-conversations.mjs";
@@ -2452,10 +2452,13 @@ export async function createAgent(options) {
         })
       : modelSender({ ...destination, timeoutSeconds: Math.min(destination.timeoutSeconds, 30) });
     const models = await listModels(sender);
+    // Size and quantization for the Model dropdown, when the server is Ollama.
+    const details = await listModelDetails(sender);
     return {
       ok: true,
       latencyMs: clock() - started,
       models: models.slice(0, 100),
+      modelDetails: models.slice(0, 100).map((name) => ({ name, sizeBytes: details[name]?.sizeBytes ?? null, quantization: details[name]?.quantization ?? null })),
       model,
       modelAvailable: model ? models.includes(model) : null
     };

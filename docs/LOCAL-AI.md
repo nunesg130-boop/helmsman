@@ -209,9 +209,14 @@ numbered steps at the top show what's done.
 1. **Model server.** Enter the server's address, such as
    `http://model-server:11434` for Ollama or `http://model-server:1234` for
    LM Studio, without `/v1`. Select **Test connection**: the test lists the
-   models the server has, and the Model field offers them. Pick one and
-   select **Connect model**. Connecting the first time also turns the agent
-   on, using this browser's time zone.
+   models the server has in the **Model** dropdown, with each one's size and
+   quantization when the server is Ollama (read from its `/api/tags`). Pick
+   one and select **Connect model**. Connecting the first time also turns the
+   agent on, using this browser's time zone.
+   - Once connected, the dropdown fills itself whenever Settings → Agent opens;
+     the button beside it re-reads the list, for example after you load a new
+     model into Ollama. **Other…** takes a name typed by hand, for a server
+     that doesn't list its models.
    - Add an API key only if your server needs one. It's stored encrypted,
      never in `agent.json`.
    - Under **Advanced**, set the context size to what your server loads the

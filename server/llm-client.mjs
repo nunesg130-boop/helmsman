@@ -1,6 +1,8 @@
 // Client for an OpenAI-compatible chat API: Ollama, LM Studio, llama.cpp's
-// server, vLLM and hosted APIs that use the same format. Only two routes are
-// ever called: GET /v1/models and POST /v1/chat/completions.
+// server, vLLM and hosted APIs that use the same format. Only these routes
+// are ever called: GET /v1/models and POST /v1/chat/completions, plus
+// Ollama's read-only GET /api/tags for each model's size and quantization
+// when Settings lists the models (ignored if the server doesn't have it).
 //
 // `send(method, path, body)` is supplied by the caller and performs the
 // network request (see agent.mjs), so this module stays pure and testable.
@@ -13,7 +15,8 @@ const MAX_ARGUMENT_CHARS = 2_000;
 
 export const LLM_ROUTES = Object.freeze({
   models: "/v1/models",
-  chat: "/v1/chat/completions"
+  chat: "/v1/chat/completions",
+  ollamaTags: "/api/tags"
 });
 
 export class LlmError extends Error {
@@ -42,6 +45,33 @@ export async function listModels(send) {
     if (entry && validModelId(entry.id) && !ids.includes(entry.id)) ids.push(entry.id);
   }
   return ids.sort((left, right) => left.localeCompare(right));
+}
+
+/**
+ * Size and quantization of each model, from Ollama's /api/tags, by model
+ * name. Empty when the server isn't Ollama or doesn't answer: the names from
+ * /v1/models are still listed, just without details.
+ */
+export async function listModelDetails(send) {
+  let response;
+  try {
+    response = await send("GET", LLM_ROUTES.ollamaTags);
+  } catch {
+    return {};
+  }
+  if (response?.status !== 200 || !Array.isArray(response.json?.models)) return {};
+  const details = {};
+  for (const entry of response.json.models.slice(0, MAX_MODELS)) {
+    const name = typeof entry?.name === "string" ? entry.name : entry?.model;
+    if (!validModelId(name)) continue;
+    const sizeBytes = Number.isSafeInteger(entry.size) && entry.size > 0 ? entry.size : null;
+    const quantization = typeof entry.details?.quantization_level === "string" && /^[A-Za-z0-9_.-]{1,24}$/u.test(entry.details.quantization_level)
+      ? entry.details.quantization_level : null;
+    details[name] = { sizeBytes, quantization };
+    // Ollama lists "name:latest"; /v1/models may say the same model either way.
+    if (name.endsWith(":latest") && !details[name.slice(0, -7)]) details[name.slice(0, -7)] = details[name];
+  }
+  return details;
 }
 
 /** Removes reasoning blocks some local models print before their answer. */
