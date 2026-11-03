@@ -5679,6 +5679,28 @@ ul.manual-list > li.manual-task::before {
   margin-bottom: 10px;
 }
 
+.agent-model-field small { color: var(--muted, inherit); }
+.agent-model-pick {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+/* The same size and padding as the text fields around it. */
+.agent-model-pick select {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 52px;
+  padding: 13px 15px;
+  border-radius: 15px;
+  font: inherit;
+}
+.agent-model-pick .icon-button { flex: 0 0 auto; width: 52px; height: 52px; }
+.agent-model-pick .icon-button[aria-busy="true"] svg { animation: agent-model-spin 1s linear infinite; }
+@keyframes agent-model-spin { to { transform: rotate(360deg); } }
+.agent-model-field input[name="modelOther"] { margin-top: 8px; }
+.agent-model-field input[hidden] { display: none; }
+
 .agent-test-result {
   min-height: 16px;
   margin: 12px 0 0;

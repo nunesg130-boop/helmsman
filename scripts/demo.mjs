@@ -716,6 +716,13 @@ async function dispatchAgent({ targetResolution, method, path: requestPath, body
   const host = targetResolution?.target?.hostname;
   if (host === "ai.helmsman-demo.test") {
     if (method === "GET" && requestPath === "/v1/models") return json(200, { object: "list", data: [{ id: DEMO_MODEL }, { id: "qwen2.5:3b" }] });
+    // Ollama's own list, for the size and quantization the Model dropdown shows.
+    if (method === "GET" && requestPath === "/api/tags") {
+      return json(200, { models: [
+        { name: `${DEMO_MODEL}:latest`, size: 2_497_293_918, details: { quantization_level: "Q4_K_M" } },
+        { name: "qwen2.5:3b", size: 1_929_912_432, details: { quantization_level: "Q4_K_M" } }
+      ] });
+    }
     if (method === "POST" && requestPath === "/v1/chat/completions") {
       if (body?.model !== DEMO_MODEL && body?.model !== "qwen2.5:3b") return json(404, {});
       return json(200, fakeModel(body));
