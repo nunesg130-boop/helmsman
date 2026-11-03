@@ -549,3 +549,16 @@ test("v1.17.7: manual search finds the ISP and the change log", () => {
   assert.equal(manualMatches(manual, manualKeywords("what's my ISP?"))[0], "[Network] - Internet: Spectrum 1 Gbps plan.");
   assert.ok(manualMatches(manual, manualKeywords("what changed in the last manual update?")).includes("[Change log] - v2.8, 30 Oct 2026: ollama added."));
 });
+
+test("v1.17.8: VMs and LXCs asked about together get both", async () => {
+  const snapshot = cluster();
+  const queries = (text) => workloadQueries(snapshot, text, { workloadWords: questionSeeds(text).workloads });
+  assert.deepEqual(queries("are any VMs or LXCs stopped?"), [{ filter: "guests" }]);
+  assert.deepEqual(queries("which guests are stopped?"), [{ filter: "guests" }]);
+  assert.deepEqual(queries("which VMs are stopped?"), [{ filter: "vms" }]);
+  assert.deepEqual(queries("Which VMs have a working guest agent?"), [{ filter: "vms" }], "guest agent is not guests");
+  const both = await runTool("list_workloads", { filter: "guests" }, context(snapshot));
+  assert.match(both, /^VMs: 4 in total, 3 running; not running or locked: RHEL-10\.0-1 \(112, norco\) \(stopped\)\./mu);
+  assert.match(both, /^LXCs: 4 in total, 4 running\./mu);
+  assert.doesNotMatch(both, /Containers|Nodes:/u, "only the guests");
+});

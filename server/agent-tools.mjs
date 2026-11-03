@@ -532,7 +532,7 @@ function workloadLines(snapshot) {
 }
 
 const WORKLOAD_KINDS = Object.freeze({
-  node: "node", nodes: "node", vm: "vm", vms: "vm", lxc: "lxc", lxcs: "lxc",
+  node: "node", nodes: "node", vm: "vm", vms: "vm", lxc: "lxc", lxcs: "lxc", guest: "guest", guests: "guest",
   container: "container", containers: "container", docker: "container", portainer: "container"
 });
 
@@ -592,7 +592,8 @@ function containerGroups(snapshot) {
  */
 function workloadSummary(snapshot, only = null) {
   const lines = [];
-  const want = (kind) => !only || only === kind;
+  // "guest": VMs and LXCs together, for "are any VMs or LXCs stopped?".
+  const want = (kind) => !only || only === kind || (only === "guest" && (kind === "vm" || kind === "lxc"));
   const environments = snapshot.infrastructure?.environments || [];
   if (want("node")) {
     const nodes = environments.flatMap((environment) => (environment.nodes || []).map((node) => (
