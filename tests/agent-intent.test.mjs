@@ -505,3 +505,14 @@ test("v1.17.5: manual questions the Self-test showed were never searched", () =>
   for (const question of ["is sonarr down?", "why is radarr down?", "how many containers are running?"]) assert.equal(questionSeeds(question).manual, false, question);
   assert.equal(questionWindow("what should I do after an NFS outage?", NOW, "UTC"), null, "a procedure, not the history of outages");
 });
+
+test("v1.17.6: follow-ups that point back are read with the question before them", () => {
+  assert.equal(isFollowUp("what was its longest problem?"), true);
+  assert.equal(isFollowUp("are any others tied with it?"), true);
+  assert.equal(isFollowUp("which containers on Jelly-Arr have published ports and images?"), true, "starts with which");
+  assert.equal(isFollowUp("how much memory does the docker VM on norco use right now"), false, "a full new question");
+  const snapshot = cluster();
+  const queries = (text) => workloadQueries(snapshot, text, { workloadWords: true });
+  assert.deepEqual(queries("what host is radarr on?\nand which other guests share that node?"), [{ filter: "radarr" }, { filter: "node of radarr" }]);
+  assert.deepEqual(queries("how much memory is free on norco?\nand across the whole cluster?"), [{ filter: "nodes" }]);
+});

@@ -1347,6 +1347,9 @@ test("questions about a period get Helmsman's own history, and gaps are named", 
   assert.match(verdict, /For the service asked about, worked out by Helmsman: Sonarr had 1 problem in this period, so yes, it had problems/u);
   await api(agent, "POST", "/api/v2/agent/ask", { question: "Did Radarr have any problems in the past 24 hours?" });
   assert.match(context.modelCalls[3].messages.find((message) => message.tool_call_id === "seed-history").content, /Radarr had no problems recorded in this period\./u);
+  // A follow-up about the same period gets the same history.
+  await api(agent, "POST", "/api/v2/agent/ask", { question: "What was its longest problem?", history: [{ role: "user", content: "Did Sonarr have any problems in the past 24 hours?" }, { role: "assistant", content: "Yes, one." }] });
+  assert.match(context.modelCalls[4].messages.find((message) => message.tool_call_id === "seed-history")?.content || "", /History for the past 24 hours/u);
 });
 
 test("conversations are saved only when turned on, and can be rated, corrected, exported and deleted", async (t) => {

@@ -214,7 +214,7 @@ function measuresIn(question) {
 
 // "What else is on the same node as frigate", "what runs alongside radarr":
 // the named thing's node or Docker host, with everything on it.
-export const COLOCATED = /\b(?:co-?located|same (?:[a-z-]+ )?(?:node|host|machine|server|vm|environment) as|alongside|next to|neighbou?rs?|shar(?:e|es|ed|ing) (?:[a-z0-9._-]+ ){0,3}with|shares? (?:a |the |its )?(?:node|host|machine|environment)|what else (?:is|runs|lives) on)\b/u;
+export const COLOCATED = /\b(?:co-?located|same (?:[a-z-]+ )?(?:node|host|machine|server|vm|environment) as|alongside|next to|neighbou?rs?|shar(?:e|es|ed|ing) (?:[a-z0-9._-]+ ){0,3}with|shar(?:e|es|ed|ing) (?:a |the |its |that |this |the same )?(?:node|host|machine|environment)|what else (?:is|runs|lives) on)\b/u;
 
 /** "IDs above 150", "the 100 through 110 ID range": that range as "ids 151-999999999". */
 function idRange(question) {
@@ -339,6 +339,13 @@ export function workloadQueries(snapshot, text, { workloadWords = false, namesOn
   // "Rank the VMs on norco by CPU", "backups on Main": the ranking for that
   // node only, sorted by code, not that node's lines in inventory order.
   // "How much RAM is installed in Main" is about the node itself.
+  // "Total RAM in the cluster", "memory free across the cluster": the nodes'
+  // own figures and their sum, not a ranking of the guests.
+  if (workloadWords && !namesOnly && !ids.length && !things.length && !hosts.length
+    && /\b(?:cluster|across|all (?:the )?nodes|both nodes|in total|total|altogether|combined)\b/u.test(question)
+    && /\b(?:memory|ram|cpu|cores?|gb|free)\b/u.test(question) && !/\b(?:guests?|vms?|lxcs?|containers?|assigned|allocat\w*)\b/u.test(question)) {
+    return [{ filter: "nodes" }];
+  }
   const measures = workloadWords && !namesOnly ? measuresIn(question) : [];
   const aboutNode = /\b(?:installed|physical|hardware|capacity|chassis|motherboard|node'?s? (?:cpu|memory|ram|load))\b/u.test(question);
   if (measures.length && nodes.length === 1 && !things.length && !ids.length && !hosts.length && !aboutNode) {
@@ -364,12 +371,6 @@ export function workloadQueries(snapshot, text, { workloadWords = false, namesOn
   }
   if (nodes.length) return nodes.slice(0, 2).map((filter) => ({ filter }));
   if (!workloadWords || namesOnly) return [];
-  // "Total RAM in the cluster", "memory free across the cluster": the nodes'
-  // own figures and their sum, not a ranking of the guests.
-  if (/\b(?:cluster|across|all (?:the )?nodes|both nodes|in total|total|altogether|combined)\b/u.test(question)
-    && /\b(?:memory|ram|cpu|cores?|gb|free)\b/u.test(question) && !/\b(?:guests?|vms?|lxcs?|containers?|assigned|allocat\w*)\b/u.test(question)) {
-    return [{ filter: "nodes" }];
-  }
   // "Which VM uses the most memory", "what hasn't been backed up": every
   // guest ranked by that number, only VMs or only LXCs when the question
   // says so; two measures when it names two ("most RAM among those with no
@@ -417,7 +418,10 @@ export function isFollowUp(text) {
   const question = String(text || "").trim().toLowerCase();
   if (!question || /^(?:ok(?:ay)?|thanks?|thank you|ty|cool|great|nice|never ?mind|nvm|got it|lol)\b/u.test(question)) return false;
   const words = question.split(/\s+/u).length;
-  return /^(?:and|also|what about|how about|same for|is it|are they|which|why|when|how long|is that)\b/u.test(question) || words <= 4;
+  // Or a short question pointing back: "what was its longest problem?",
+  // "are any others tied with it?".
+  return /^(?:and|also|what about|how about|same for|is it|are they|which|why|when|how long|is that)\b/u.test(question) || words <= 4
+    || (words <= 8 && /\b(?:it|its|it's|they|them|their|those|these|that one|this one|the same|others?)\b/u.test(question));
 }
 
 /** Two sets of lookups combined. */

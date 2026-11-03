@@ -787,7 +787,14 @@ export async function createAgent(options) {
       // Backup questions ("not backed up recently") are about guests' backup
       // ages, which the workload lookup gives; the incident history only adds noise.
       const aboutBackups = /\b(?:backed up|backups?|last backup)\b/iu.test(prompt);
-      const period = aboutBackups ? null : questionWindow(prompt, clock(), settings.timeZone);
+      // A short follow-up ("and main?", "what was its longest problem?") is
+      // about the same thing as the question before it.
+      const earlierQuestion = [...history].reverse().find((turn) => turn.role === "user")?.content || "";
+      const followUp = Boolean(earlierQuestion) && isFollowUp(prompt);
+      // "Did Sonarr go down today?" then "what was its longest problem?": the
+      // same period, or the follow-up got no history and the model guessed.
+      const period = aboutBackups ? null
+        : questionWindow(prompt, clock(), settings.timeZone) || (followUp ? questionWindow(earlierQuestion, clock(), settings.timeZone) : null);
       let historyMessage = null;
       if (period) {
         const history = await runTool("history", period, toolContext);
@@ -804,8 +811,6 @@ export async function createAgent(options) {
       // called the tools.
       // A short follow-up ("and main?", "is it healthy?") is about the same
       // thing as the question before it, so it gets the same lookups.
-      const earlierQuestion = [...history].reverse().find((turn) => turn.role === "user")?.content || "";
-      const followUp = Boolean(earlierQuestion) && isFollowUp(prompt);
       const seeds = mergeSeeds(questionSeeds(prompt), followUp ? questionSeeds(earlierQuestion) : null);
       const lookups = [];
       const seed = async (name, args, prefix = "") => {
@@ -863,10 +868,14 @@ export async function createAgent(options) {
         : workloadQueries(snapshot(), prompt, { workloadWords: seeds.workloads });
       // A follow-up that names nothing ("which one is busier?") is about what
       // the question before it named, so those come first.
+      // Read together with the question before it: "what host is radarr on?"
+      // then "which other guests share that node?" is radarr's node, and
+      // "free memory on norco?" then "and across the cluster?" is the cluster.
       const earlierNamed = followUp && !ownQueries.some(namesSomething)
-        ? workloadQueries(snapshot(), earlierQuestion, { workloadWords: seeds.workloads }) : [];
-      const workloads = followUp && !ownQueries.length ? earlierNamed
-        : [...earlierNamed.filter(namesSomething), ...ownQueries.filter((query) => query.filter || !earlierNamed.some(namesSomething))].slice(0, 4);
+        ? workloadQueries(snapshot(), `${earlierQuestion}\n${prompt}`, { workloadWords: seeds.workloads }) : [];
+      const workloads = followUp && earlierNamed.length
+        ? [...earlierNamed, ...ownQueries.filter((query) => namesSomething(query) && !earlierNamed.some((earlier) => earlier.filter === query.filter))].slice(0, 4)
+        : ownQueries.slice(0, 4);
       // "What's the VMID of wizarr": "lxc 108 wizarr" was answered "an
       // LXC, not a VM" with no number.
       const idNote = /\b(?:vm ?ids?|vmids?|guest ids?|ct ?ids?|container ids?|ids?|vm or (?:an )?lxc|lxc or (?:a )?vm)\b/iu.test(prompt)
