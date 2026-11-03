@@ -6685,8 +6685,9 @@ function settingsCardState() {
   return cards;
 }
 
+// Only letters, digits and dashes survive, so the id is safe in markup and URLs.
 function settingsCardSlug(text) {
-  return String(text).toLowerCase().replace(/<[^>]*>/gu, "").replace(/&[a-z#0-9]+;/gu, " ").replace(/[^a-z0-9]+/gu, "-").replace(/^-+|-+$/gu, "").slice(0, 60) || "card";
+  return String(text).toLowerCase().replace(/[^a-z0-9]+/gu, "-").replace(/^-+|-+$/gu, "").slice(0, 60) || "card";
 }
 
 /**
