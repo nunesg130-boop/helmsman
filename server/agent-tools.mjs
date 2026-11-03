@@ -9,7 +9,11 @@
 import { buildHistory, readWindow } from "./agent-history.mjs";
 import { HELMSMAN_HELP } from "./agent-help.mjs";
 
-const MAX_TOOL_OUTPUT_CHARS = 1_400;
+// A week of history or an 18-guest ranking runs past 1,400 characters, and
+// cut there mid-line the model lost a week's longest problem and its "No
+// problems" list. The whole prompt still fits a 4K context; fitToBudget
+// shortens further, by whole lines, when it doesn't.
+const MAX_TOOL_OUTPUT_CHARS = 2_600;
 const MAX_LINES = 30;
 const SERVICE_NAME = /^[A-Za-z0-9][A-Za-z0-9 ._:@-]{0,95}$/u;
 
@@ -38,8 +42,27 @@ function clip(text) {
   const kept = lines.slice(0, MAX_LINES);
   let output = kept.join("\n");
   if (lines.length > MAX_LINES) output += `\n… ${lines.length - MAX_LINES} more lines not shown.`;
-  if (output.length > MAX_TOOL_OUTPUT_CHARS) output = `${output.slice(0, MAX_TOOL_OUTPUT_CHARS - 20)}\n… (shortened)`;
-  return output;
+  return output.length > MAX_TOOL_OUTPUT_CHARS ? shortenText(output, MAX_TOOL_OUTPUT_CHARS) : output;
+}
+
+/**
+ * Text cut to at most `limit` characters at a line, or failing that a list
+ * item, never mid-word, saying how much was left out. Cut mid-line, the model
+ * read "Longest single p" and guessed the rest.
+ */
+export function shortenText(text, limit) {
+  const value = String(text);
+  if (value.length <= limit) return value;
+  const room = Math.max(40, limit - 60);
+  const head = value.slice(0, room);
+  const lineEnd = head.lastIndexOf("\n");
+  if (lineEnd >= room * 0.5) {
+    const left = value.slice(lineEnd + 1).split("\n").filter((line) => line.trim()).length;
+    return `${value.slice(0, lineEnd)}\n… (${left} more line${left === 1 ? "" : "s"} not shown, to fit)`;
+  }
+  const itemEnd = Math.max(head.lastIndexOf(", "), head.lastIndexOf("; "), head.lastIndexOf(". "));
+  const cut = itemEnd >= room * 0.3 ? itemEnd + 1 : head.lastIndexOf(" ") > 0 ? head.lastIndexOf(" ") : room;
+  return `${value.slice(0, cut).trimEnd()} … (the rest not shown, to fit)`;
 }
 
 export function formatTime(iso, timeZone) {
@@ -311,6 +334,37 @@ function hostGuest(snapshot, environmentName) {
   const { guest, fromManual } = found;
   const note = fromManual ? ", per your manual" : "";
   return `${guest.type === "lxc" ? "LXC" : "VM"} ${guest.vmid}${note ? ` ${untrusted(guest.name, 40)}` : ""} on node ${untrusted(guest.node, 40)}${note}`;
+}
+
+/**
+ * "Same host as jellyfin", for a service with no container or guest of its
+ * own: the guest whose manual line says it runs the service ("Jelly-Arr: VM
+ * 100 ... Runs Jellyfin (native)"), and what else is on that guest's node.
+ */
+function serviceHostLines(snapshot, label) {
+  const manual = MANUAL_FOR.get(snapshot);
+  const wanted = String(label || "").toLowerCase().trim();
+  if (!manual || wanted.length < 3) return [`Where ${untrusted(label, 40)} runs is not in the manual or the inventory.`];
+  const guests = (snapshot.infrastructure?.environments || []).flatMap((environment) => guestsOf(environment));
+  const service = new RegExp(`\\b${wanted.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}\\b`, "u");
+  const found = new Set();
+  for (const line of manual.split(/\r?\n/u)) {
+    const lower = line.toLowerCase();
+    if (!/\bruns?\b/u.test(lower) || !service.test(lower.replace(/^[^:]*:/u, ""))) continue;
+    for (const guest of guests) {
+      const id = String(guest.vmid);
+      const name = String(guest.name || "").toLowerCase();
+      // The guest's own row: its name first, with its number beside its kind.
+      if (lower.replace(/^[-*\s|]+/u, "").startsWith(name) && new RegExp(`\\b(?:vm|lxc|ct)\\s*${id}\\b`, "u").test(lower)) found.add(guest);
+    }
+  }
+  if (found.size !== 1) return [`Where ${untrusted(label, 40)} runs is not clear from the manual.`];
+  const [guest] = found;
+  return [
+    `${untrusted(label, 40)} runs on ${untrusted(guest.name, 40)} (${guest.type === "lxc" ? "LXC" : "VM"} ${guest.vmid} on node ${untrusted(guest.node, 40)}), per your manual.`,
+    ...besideLines(snapshot, String(guest.vmid)),
+    ...workloadSummary(snapshot, "container").filter((line) => line.toLowerCase().startsWith(`containers on ${String(guest.name).toLowerCase()} (`))
+  ];
 }
 
 /**
@@ -692,10 +746,27 @@ function workloadMetric(snapshot, metric, kind = null, node = null) {
     const upFor = (workload) => (up(workload) > 0 ? `up ${ago(workload.uptimeSeconds).replace(/ ago$/u, "")}` : "uptime unknown");
     const ranked = order.map((workload) => `${name(workload)} ${upFor(workload)}`);
     if (!ranked.length) return `No ${noun}${onNode} is running.${stoppedNote}`;
-    // "Which was restarted most recently" is the end of the list, said so.
+    // "Which was restarted most recently", worked out from the exact
+    // uptimes: in whole days, 13 guests all read "up 7d" and the model
+    // picked the first of them.
     const known = order.filter((workload) => up(workload) > 0);
-    const latest = known.length > 1 ? known.filter((workload) => upFor(workload) === upFor(known.at(-1))) : [];
-    const recent = latest.length && latest.length < known.length ? ` Started most recently: ${latest.map(name).join(", ")} (${upFor(latest[0])}).` : "";
+    let recent = "";
+    if (known.length > 1) {
+      const newest = known.at(-1);
+      const close = known.filter((workload) => up(workload) - up(newest) < 3_600);
+      const exact = (workload) => {
+        const seconds = up(workload);
+        const days = Math.floor(seconds / 86_400);
+        const hours = Math.floor((seconds % 86_400) / 3_600);
+        const minutes = Math.floor((seconds % 3_600) / 60);
+        return days ? `${days}d ${hours}h` : hours ? `${hours}h ${minutes}m` : `${minutes}m`;
+      };
+      recent = close.length === 1
+        ? ` Started most recently: ${name(newest)}, up ${exact(newest)}; the next most recent has been up ${exact(known.at(-2))}.`
+        : close.length < known.length
+          ? ` Started most recently, within the same hour of each other (about ${exact(newest)} ago): ${close.map(name).join(", ")}.`
+          : "";
+    }
     return [...notes, `How long each running ${noun}${onNode} has been up, longest first (since its last start): ${ranked.join(", ")}.${recent}${stoppedNote}`].join("\n");
   }
   const value = (workload) => (metric === "cpu"
@@ -961,6 +1032,8 @@ function listWorkloads(snapshot, _context, args) {
   const filter = typeof args.filter === "string" ? args.filter.trim().toLowerCase().slice(0, 60) : "";
   const measure = metricFilter(snapshot, filter);
   if (measure) return workloadMetric(snapshot, measure.metric, measure.kind, measure.node);
+  const serviceHost = /^service host (.+)$/u.exec(filter)?.[1];
+  if (serviceHost) return serviceHostLines(snapshot, serviceHost.trim()).join("\n");
   const hostNode = /^node of (.+)$/u.exec(filter)?.[1];
   if (hostNode) return (hostNodeLines(snapshot, hostNode.trim()) || besideLines(snapshot, hostNode.trim())).join("\n");
   const beside = /^beside (.+)$/u.exec(filter)?.[1];
@@ -1187,8 +1260,13 @@ export function manualKeywords(text, limit = 8) {
     if (trimmed.length < 2 || MANUAL_STOP_WORDS.has(trimmed) || words.includes(trimmed)) continue;
     words.push(trimmed);
   }
+  // Words a manual is likely to use for the same thing: "what's my ISP"
+  // found only the modem line, not "Internet: Spectrum 1 Gbps plan".
+  for (const [word, also] of MANUAL_SYNONYMS) if (words.includes(word) && !words.includes(also)) words.push(also);
   return words.slice(0, limit);
 }
+
+const MANUAL_SYNONYMS = [["isp", "internet"], ["provider", "internet"], ["update", "change"], ["updated", "change"], ["updates", "change"], ["wifi", "wi-fi"]];
 
 /**
  * Lines of the manual that mention the words, best first. A word matches a
@@ -1201,9 +1279,12 @@ export function manualMatches(markdown, words, limit = 6) {
   const loose = (value) => value.replace(/[._-]/gu, "");
   // A plural finds the singular too: "vlans" finds "VLAN segmentation".
   const singular = (word) => (word.length >= 5 && /[^s]s$/u.test(word) ? word.slice(0, -1) : null);
-  const wanted = words.map((word) => ({ word, loose: loose(word), single: singular(loose(word)) }));
-  const matches = (pool, { word, loose: looseWord, single }) => pool.some((token) => token === word || loose(token) === looseWord
+  // "changed" finds "Change log", "removed" finds "remove".
+  const stem = (word) => (word.length >= 6 && /ed$/u.test(word) ? word.slice(0, -1) : word.length >= 7 && /ing$/u.test(word) ? word.slice(0, -3) : null);
+  const wanted = words.map((word) => ({ word, loose: loose(word), single: singular(loose(word)), stem: stem(loose(word)) }));
+  const matches = (pool, { word, loose: looseWord, single, stem: root }) => pool.some((token) => token === word || loose(token) === looseWord
     || (single && loose(token) === single)
+    || (root && loose(token).startsWith(root))
     || (word.length >= 4 && (token.startsWith(word) || loose(token).startsWith(looseWord))));
   let heading = "";
   const lines = [];

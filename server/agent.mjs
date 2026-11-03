@@ -31,6 +31,7 @@ import {
   untrusted,
   manualKeywords,
   manualMatches,
+  shortenText,
   isApprovalMessage,
   withKind,
   parseActionCommand,
@@ -728,12 +729,30 @@ export async function createAgent(options) {
     while (total() > budget && messages.length > 2 && messages[1].role !== "tool" && messages[1].historic) {
       messages.splice(1, 1);
     }
-    // Then shorten tool results, oldest first, harder on a second pass.
-    for (const limit of [300, 120]) {
-      for (const message of messages) {
-        if (total() <= budget) break;
-        if (message.role === "tool" && message.content.length > limit) message.content = `${message.content.slice(0, limit)}\n… (shortened to fit)`;
+    // Then shorten tool results by whole lines: the background overview
+    // first, then the longest result, by only as much as is needed. Cut to
+    // 300 characters oldest first, a week's history lost everything after
+    // its first service.
+    const tools = () => messages.filter((message) => message.role === "tool");
+    for (let pass = 0; pass < 12 && total() > budget; pass += 1) {
+      const candidates = tools().filter((message) => message.content.length > 200)
+        .sort((left, right) => Number(right.tool_call_id === "seed-overview") - Number(left.tool_call_id === "seed-overview") || right.content.length - left.content.length);
+      let changed = false;
+      for (const target of candidates) {
+        const overflow = Math.ceil((total() - budget) * 3.2) + 80;
+        const wanted = target.content.length - overflow;
+        const limit = Math.max(200, target.tool_call_id === "seed-overview" ? Math.min(wanted, 400) : wanted);
+        const shortened = shortenText(target.content, limit);
+        if (shortened.length >= target.content.length) continue;
+        target.content = shortened;
+        changed = true;
+        break;
       }
+      if (!changed) break;
+    }
+    for (const message of tools()) {
+      if (total() <= budget) break;
+      if (message.content.length > 120) message.content = shortenText(message.content, 120);
     }
     return total() <= budget;
   }
@@ -909,6 +928,14 @@ export async function createAgent(options) {
       // own (Jellyfin runs natively) is placed only by the manual.
       const placedByManual = COLOCATED.test(String(prompt).toLowerCase()) && services.length > 0
         && !workloads.some(namesSomething);
+      // Its host from the manual's line for the guest that runs it, and what
+      // else is on that guest's node.
+      if (placedByManual) {
+        for (const id of services.slice(0, 1)) {
+          const label = (snapshot()?.services || []).find((service) => service.id === id)?.label;
+          if (label) await seed("list_workloads", { filter: `service host ${plainText(label, 40).toLowerCase()}` });
+        }
+      }
       if ((seeds.manual || seeds.help || placedByManual) && !period) {
         let words = manualKeywords(prompt);
         if (words.length < 2) {

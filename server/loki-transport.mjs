@@ -371,7 +371,7 @@ export async function performLokiUpstreamRequest({
     verifiedSocket?.destroy();
     throw error;
   }
-  const safeVersion = typeof version === "string" && VERSION.test(version) ? version : "1.17.6";
+  const safeVersion = typeof version === "string" && VERSION.test(version) ? version : "1.17.7";
   const headers = {
     Host: target.authority,
     Accept: "application/json,text/plain",
