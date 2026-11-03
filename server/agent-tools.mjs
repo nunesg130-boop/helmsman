@@ -294,16 +294,45 @@ function manualHostGuest(snapshot, environmentName) {
  * Docker" is docker VM 109). Models otherwise said the VMs named docker
  * weren't Docker hosts.
  */
-function hostGuest(snapshot, environmentName) {
+function hostGuestWorkload(snapshot, environmentName) {
   const wanted = String(environmentName || "").toLowerCase();
   if (!wanted) return null;
-  const describe = (guest, note = "") => `${guest.type === "lxc" ? "LXC" : "VM"} ${guest.vmid}${note ? ` ${untrusted(guest.name, 40)}` : ""} on node ${untrusted(guest.node, 40)}${note}`;
   for (const environment of snapshot.infrastructure?.environments || []) {
     const guest = guestsOf(environment).find((workload) => String(workload.name || "").toLowerCase() === wanted);
-    if (guest) return describe(guest);
+    if (guest) return { guest, fromManual: false };
   }
   const guest = manualHostGuest(snapshot, String(environmentName));
-  return guest ? describe(guest, ", per your manual") : null;
+  return guest ? { guest, fromManual: true } : null;
+}
+
+function hostGuest(snapshot, environmentName) {
+  const found = hostGuestWorkload(snapshot, environmentName);
+  if (!found) return null;
+  const { guest, fromManual } = found;
+  const note = fromManual ? ", per your manual" : "";
+  return `${guest.type === "lxc" ? "LXC" : "VM"} ${guest.vmid}${note ? ` ${untrusted(guest.name, 40)}` : ""} on node ${untrusted(guest.node, 40)}${note}`;
+}
+
+/**
+ * "Same node as the prowlarr host": the guest a container's Docker host runs
+ * on, and everything else on that guest's node. Given only the container's
+ * neighbours, models listed containers as the node's guests.
+ */
+function hostNodeLines(snapshot, subject) {
+  const wanted = subject.toLowerCase();
+  const lines = [];
+  for (const [host, containers] of containersByHost(snapshot)) {
+    if (!containers.some((container) => String(container.name || "").toLowerCase() === wanted)) continue;
+    const found = hostGuestWorkload(snapshot, host);
+    if (!found) {
+      lines.push(`${untrusted(subject, 40)} runs on Docker host ${host}; which VM or LXC that host is, and so its node, is not known.`);
+      continue;
+    }
+    const { guest, fromManual } = found;
+    lines.push(`${untrusted(subject, 40)} runs on Docker host ${host}, which is ${guest.type === "lxc" ? "LXC" : "VM"} ${guest.vmid} ${untrusted(guest.name, 40)} on node ${untrusted(guest.node, 40)}${fromManual ? ", per your manual" : ""}.`);
+    lines.push(...besideLines(snapshot, String(guest.vmid)));
+  }
+  return lines.length ? lines : null;
 }
 
 function portsText(ports) {
@@ -313,6 +342,31 @@ function portsText(ports) {
     // "5432/tcp unpublished" read as no port at all ("doesn't use a port").
     : `${port.privatePort}/${untrusted(port.protocol, 6)} inside the container only, not published on the host`));
   return `ports ${shown.join(", ")}${ports.length > 6 ? ` and ${ports.length - 6} more` : ""}`;
+}
+
+/**
+ * Containers with a port, published on the host ("5432->5432") or only
+ * inside the container, for "what's using port 5432". Without it, models
+ * said nothing used a port that three databases listen on.
+ */
+function portLines(snapshot, port) {
+  const published = [];
+  const inside = [];
+  for (const [host, containers] of containersByHost(snapshot)) {
+    for (const container of containers) {
+      for (const entry of Array.isArray(container.ports) ? container.ports : []) {
+        const name = `${untrusted(container.name, 60)} on Docker host ${host}${container.state === "running" ? "" : ` (${untrusted(container.state, 20)})`}`;
+        if (entry.publicPort === port) published.push(`${name}: ${port}->${entry.privatePort}/${untrusted(entry.protocol, 6)}`);
+        else if (entry.privatePort === port && !entry.publicPort) inside.push(`${name}: ${port}/${untrusted(entry.protocol, 6)} inside the container only`);
+      }
+    }
+  }
+  const unique = (list) => [...new Set(list)];
+  const lines = [];
+  lines.push(published.length ? `Published on host port ${port}: ${unique(published).join("; ")}.` : `No container publishes port ${port} on its Docker host.`);
+  if (inside.length) lines.push(`Listening on ${port} inside the container, not published: ${unique(inside).join("; ")}.`);
+  lines.push("Only container ports are known here; a VM, LXC or native service using the port appears only in the manual, if at all.");
+  return lines;
 }
 
 /**
@@ -412,7 +466,8 @@ function workloadLines(snapshot) {
       const env = untrusted(container.environmentName, 40);
       const details = [
         container.image ? `image ${untrusted(container.image, 80)}` : "",
-        container.stack ? `stack ${untrusted(container.stack, 40)}` : "",
+        // Said when there is none, or "which stack is portainer in" got a made-up one.
+        container.stack ? `stack ${untrusted(container.stack, 40)}` : container.stack === null ? "not in a compose stack" : "",
         Array.isArray(container.ports) ? portsText(container.ports) : ""
       ].filter(Boolean);
       const host = hostGuest(snapshot, container.environmentName);
@@ -487,9 +542,19 @@ function workloadSummary(snapshot, only = null) {
   const environments = snapshot.infrastructure?.environments || [];
   if (want("node")) {
     const nodes = environments.flatMap((environment) => (environment.nodes || []).map((node) => (
-      `${untrusted(node.name, 40)} (${withKind(untrusted(environment.displayName, 40), "Proxmox")}) ${node.status}${upText(node.uptimeSeconds)}, cpu ${node.cpuPercent ?? "?"}%, memory ${percent(node.memoryUsedBytes, node.memoryTotalBytes)}${gigabytes(node.memoryTotalBytes) ? ` of ${gigabytes(node.memoryTotalBytes)} GB` : ""}, ${guestCountText(guestsOf(environment, String(node.name || "")))}`
+      `${untrusted(node.name, 40)} (${withKind(untrusted(environment.displayName, 40), "Proxmox")}) ${node.status}${upText(node.uptimeSeconds)}, cpu ${node.cpuPercent ?? "?"}%${coresText(node.cpuCores)}, memory ${memoryText(node.memoryUsedBytes, node.memoryTotalBytes, { free: true })}, ${guestCountText(guestsOf(environment, String(node.name || "")))}`
     )));
     if (nodes.length) lines.push(...sharedNameNotes(snapshot), `Nodes: ${nodes.join("; ")}.`);
+    // "How much RAM is free across the cluster": the sums worked out by code,
+    // or models added the nodes up themselves, or ranked the guests instead.
+    const all = environments.flatMap((environment) => environment.nodes || []);
+    if (all.length > 1) {
+      const sum = (key) => all.reduce((total, node) => total + (Number.isFinite(node[key]) ? node[key] : 0), 0);
+      const used = sum("memoryUsedBytes");
+      const total = sum("memoryTotalBytes");
+      const cores = all.every((node) => Number.isSafeInteger(node.cpuCores)) ? sum("cpuCores") : null;
+      if (total > 0) lines.push(`${all.length === 2 ? "Both nodes" : `All ${all.length} nodes`} together: memory ${memoryText(used, total, { free: true })}${cores ? `, ${cores} CPU cores` : ""}.`);
+    }
   }
   // One line for VMs and LXCs together, so "how many guests are running"
   // is copied, not added up (models added 6 + 12 and wrote 10).
@@ -623,10 +688,15 @@ function workloadMetric(snapshot, metric, kind = null, node = null) {
   const running = guests.filter((workload) => workload.status === "running");
   if (metric === "uptime") {
     const up = (workload) => (Number.isFinite(workload.uptimeSeconds) ? workload.uptimeSeconds : -1);
-    const ranked = [...running].sort((left, right) => up(right) - up(left))
-      .map((workload) => `${name(workload)} ${up(workload) > 0 ? `up ${ago(workload.uptimeSeconds).replace(/ ago$/u, "")}` : "uptime unknown"}`);
+    const order = [...running].sort((left, right) => up(right) - up(left));
+    const upFor = (workload) => (up(workload) > 0 ? `up ${ago(workload.uptimeSeconds).replace(/ ago$/u, "")}` : "uptime unknown");
+    const ranked = order.map((workload) => `${name(workload)} ${upFor(workload)}`);
     if (!ranked.length) return `No ${noun}${onNode} is running.${stoppedNote}`;
-    return [...notes, `How long each running ${noun}${onNode} has been up, longest first (since its last start): ${ranked.join(", ")}.${stoppedNote}`].join("\n");
+    // "Which was restarted most recently" is the end of the list, said so.
+    const known = order.filter((workload) => up(workload) > 0);
+    const latest = known.length > 1 ? known.filter((workload) => upFor(workload) === upFor(known.at(-1))) : [];
+    const recent = latest.length && latest.length < known.length ? ` Started most recently: ${latest.map(name).join(", ")} (${upFor(latest[0])}).` : "";
+    return [...notes, `How long each running ${noun}${onNode} has been up, longest first (since its last start): ${ranked.join(", ")}.${recent}${stoppedNote}`].join("\n");
   }
   const value = (workload) => (metric === "cpu"
     ? (Number.isFinite(workload.cpuPercent) ? workload.cpuPercent : -1)
@@ -635,10 +705,19 @@ function workloadMetric(snapshot, metric, kind = null, node = null) {
   // line by line, and with a 4K context an 18-guest ranking ran out of
   // reply room at the 15th. Each guest's own line still has its node.
   const short = (workload) => `${untrusted(workload.name, 40)} (${workload.type === "lxc" ? "LXC" : "VM"} ${workload.vmid})`;
-  const ranked = running.sort((left, right) => value(right) - value(left))
+  const sorted = running.sort((left, right) => value(right) - value(left));
+  const ranked = sorted
     .map((workload, index) => `${index + 1}. ${short(workload)}: ${metric === "cpu" ? `${workload.cpuPercent ?? "?"}%${coresText(workload.cpuCores)}` : memoryText(workload.memoryUsedBytes, workload.memoryTotalBytes)}`);
   if (!ranked.length) return `No ${noun}${onNode} is running.${stoppedNote}`;
-  return [...notes, `${metric === "cpu" ? "CPU" : "Memory"} use of each running ${noun}${onNode}, highest first (percent of its own allowance): ${ranked.join(", ")}.${stoppedNote}`].join("\n");
+  // Ties said in words: asked for "the guest using the least CPU" with five
+  // at 0%, models named the first of them as the only one.
+  const shownValue = (workload) => (metric === "cpu" ? `${workload.cpuPercent ?? "?"}%` : percent(workload.memoryUsedBytes, workload.memoryTotalBytes));
+  const ties = [];
+  for (const [label, edge] of [["highest", sorted[0]], ["lowest", sorted.at(-1)]]) {
+    const tied = sorted.filter((workload) => shownValue(workload) === shownValue(edge));
+    if (tied.length > 1 && tied.length < sorted.length) ties.push(`${tied.length} tie for ${label} at ${shownValue(edge)}: ${tied.map(short).join(", ")}.`);
+  }
+  return [...notes, `${metric === "cpu" ? "CPU" : "Memory"} use of each running ${noun}${onNode}, highest first (percent of its own allowance): ${ranked.join(", ")}.${ties.length ? ` ${ties.join(" ")}` : ""}${stoppedNote}`].join("\n");
 }
 
 /** The node's own line and the guests on it, for "what's running on <node>". */
@@ -851,7 +930,9 @@ function besideLines(snapshot, subject) {
         lines.push(`${label} is the only guest on node ${untrusted(guest.node, 40)}.`);
         continue;
       }
-      lines.push(`Besides ${label}, node ${untrusted(guest.node, 40)} has ${others.length} other guest${others.length === 1 ? "" : "s"}. `
+      // Said as what shares the node, so "what runs alongside it" is copied:
+      // after "Besides X, node norco has 14 others", models still answered "nothing".
+      lines.push(`${label} shares node ${untrusted(guest.node, 40)} with ${others.length} other guest${others.length === 1 ? "" : "s"}. `
         + `Running (${running.length}): ${running.length ? running.join(", ") : "none"}.`
         + `${stopped.length ? ` Not running (${stopped.length}): ${stopped.join(", ")}.` : " None are stopped."}`);
     }
@@ -868,7 +949,7 @@ function besideLines(snapshot, subject) {
       }
       const running = others.filter((container) => container.state === "running").map((container) => untrusted(container.name, 40));
       const stopped = others.filter((container) => container.state !== "running").map((container) => `${untrusted(container.name, 40)} (${untrusted(container.state, 20)})`);
-      lines.push(`Besides ${untrusted(subject, 40)}, ${where} has ${others.length} other container${others.length === 1 ? "" : "s"}. `
+      lines.push(`${untrusted(subject, 40)} shares ${where} with ${others.length} other container${others.length === 1 ? "" : "s"}. `
         + `Running (${running.length}): ${running.length ? running.join(", ") : "none"}.`
         + `${stopped.length ? ` Not running (${stopped.length}): ${stopped.join(", ")}.` : " None are stopped."}`);
     }
@@ -880,8 +961,13 @@ function listWorkloads(snapshot, _context, args) {
   const filter = typeof args.filter === "string" ? args.filter.trim().toLowerCase().slice(0, 60) : "";
   const measure = metricFilter(snapshot, filter);
   if (measure) return workloadMetric(snapshot, measure.metric, measure.kind, measure.node);
+  const hostNode = /^node of (.+)$/u.exec(filter)?.[1];
+  if (hostNode) return (hostNodeLines(snapshot, hostNode.trim()) || besideLines(snapshot, hostNode.trim())).join("\n");
   const beside = /^beside (.+)$/u.exec(filter)?.[1];
   if (beside) return besideLines(snapshot, beside.trim()).join("\n");
+  // "What's using port 5432": every container with that port, published or not.
+  const port = /^port (\d{1,5})$/u.exec(filter)?.[1];
+  if (port) return portLines(snapshot, Number(port)).join("\n");
   const byId = guestLinesById(snapshot, filter);
   if (byId) return byId.join("\n");
   // "ids 151-999": guests by number range, sorted by code. Asked "IDs above
@@ -1113,8 +1199,11 @@ export function manualMatches(markdown, words, limit = 6) {
   if (!words.length) return [];
   // Hyphens and dots don't separate names: "pihole" finds "Pi-hole".
   const loose = (value) => value.replace(/[._-]/gu, "");
-  const wanted = words.map((word) => ({ word, loose: loose(word) }));
-  const matches = (pool, { word, loose: looseWord }) => pool.some((token) => token === word || loose(token) === looseWord
+  // A plural finds the singular too: "vlans" finds "VLAN segmentation".
+  const singular = (word) => (word.length >= 5 && /[^s]s$/u.test(word) ? word.slice(0, -1) : null);
+  const wanted = words.map((word) => ({ word, loose: loose(word), single: singular(loose(word)) }));
+  const matches = (pool, { word, loose: looseWord, single }) => pool.some((token) => token === word || loose(token) === looseWord
+    || (single && loose(token) === single)
     || (word.length >= 4 && (token.startsWith(word) || loose(token).startsWith(looseWord))));
   let heading = "";
   const lines = [];

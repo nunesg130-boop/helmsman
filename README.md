@@ -1,4 +1,4 @@
-# Helmsman v1.17.4
+# Helmsman v1.17.5
 
 Helmsman is a self-hosted operations center for a homelab's media services and infrastructure. It runs as one portable Linux container on Docker Desktop, Linux, macOS, compatible NAS platforms, AMD64, and ARM64.
 
@@ -14,6 +14,19 @@ Helmsman is a self-hosted operations center for a homelab's media services and i
 This Helmsman is the media and infrastructure dashboard in this repository. It
 is not affiliated with or derived from the existing Kubernetes project also
 named [Helmsman](https://github.com/mkubaczyk/helmsman).
+
+## v1.17.5
+
+**Agent lookups for the questions the 1,000-question Self-test showed going unanswered.** Every change gives the model a fact it was missing; none of it changes what the agent can do.
+- **Manual questions that were never searched:** the cluster's votes, the remote access path, the router, open known issues, a public name, startup order, the roadmap, how something is reached, a config path, VLANs, "what runs on docker VM 109", "what does docker VM 201 do", "why was the switch removed" and "what should I do after an NFS outage" now search the manual. A plural finds the singular ("VLANs" finds "VLAN segmentation"). A procedure question is no longer answered from the outage history.
+- **"What host is qbittorrent on":** a container named like a monitored service gets its container line for host questions, not only the service's status.
+- **The node of a container's host:** "other guests on the same node as the prowlarr host" names the Docker host's VM and the other guests on its node, not the neighbour containers. A service with no container or guest of its own, such as Jellyfin installed natively, is placed from the manual.
+- **Ports by number:** "what's using port 5432" and "which containers publish port 9443" list every container with that port, published on the host or only inside the container.
+- **Rankings:** "rank the guests by cores" ranks assigned cores, not CPU use. Ties at either end are said ("5 tie for lowest at 0%"), and the uptime ranking names the guest started most recently.
+- **Cluster totals:** node lines give GB free and cores, and "how much memory is free across the cluster" gets both nodes added up by Helmsman.
+- **A Docker host that is also a guest:** "how long has Jelly-Arr been up" gets the VM's line, not its containers' uptime.
+- **History:** a service's longest problem says when it happened, and "did Sonarr go down today" gets the yes or no for that service worked out by Helmsman.
+- **Clearer lines:** a container with no Compose stack says so, a neighbour list reads "ollama (LXC 114) shares node norco with 14 other guests", ID and VM-or-LXC questions say an lxc line is never a VM, and the help says plainly that the agent may test Prowlarr indexers.
 
 ## v1.17.4
 
@@ -509,7 +522,7 @@ Helmsman's project-owned logging mark. Original generic VM/container workload
 drawings are also bundled. See
 [the asset notices](assets/services/THIRD_PARTY_NOTICES.md).
 
-Helmsman v1.17.4 combines built-in logging, optional Loki search, Portainer monitoring, a private persistent state/artwork cache, and a small, fixed set of confirmed recovery actions under Infrastructure with targeted media recovery actions and Helmsman's cluster-aware Proxmox model:
+Helmsman v1.17.5 combines built-in logging, optional Loki search, Portainer monitoring, a private persistent state/artwork cache, and a small, fixed set of confirmed recovery actions under Infrastructure with targeted media recovery actions and Helmsman's cluster-aware Proxmox model:
 
 - Media and Infrastructure are separate workspaces inside the same authenticated application, and only the selected workspace's navigation is shown;
 - the desktop sidebar collapses to an icon rail, remembers that preference, keeps its navigation scrollable at high browser zoom, and keeps its collapse control in the sidebar's brand row (under the brand mark when collapsed);
@@ -555,7 +568,7 @@ Helmsman v1.17.4 combines built-in logging, optional Loki search, Portainer moni
 
 ## Deploy the published container
 
-Helmsman is distributed as the public Linux AMD64/ARM64 image `ghcr.io/nunesg130-boop/helmsman`. The `v1.17.4` Git tag runs the contracts and architecture smoke tests, publishes the version, `latest`, and full-commit image tags, and creates a GitHub Release containing ready-to-use `compose.yaml`, `container.env.example`, and `SHA256SUMS` assets. The release deployment files pin `ghcr.io/nunesg130-boop/helmsman` to the exact multi-architecture manifest digest (`@sha256:...`).
+Helmsman is distributed as the public Linux AMD64/ARM64 image `ghcr.io/nunesg130-boop/helmsman`. The `v1.17.5` Git tag runs the contracts and architecture smoke tests, publishes the version, `latest`, and full-commit image tags, and creates a GitHub Release containing ready-to-use `compose.yaml`, `container.env.example`, and `SHA256SUMS` assets. The release deployment files pin `ghcr.io/nunesg130-boop/helmsman` to the exact multi-architecture manifest digest (`@sha256:...`).
 
 Download those three files from the matching [GitHub Release](https://github.com/nunesg130-boop/helmsman/releases) into one directory, verify the two deployment files against `SHA256SUMS`, open a terminal there, and make sure Docker Desktop or Docker Engine is running. No source checkout, Dockerfile, Node.js installation, or server-side image build is required.
 

@@ -10,7 +10,7 @@ export const HELMSMAN_HELP = `# About Helmsman
 - Approving: requests from the agent run only when the owner presses Approve; typing yes in chat never runs anything.
 - Logs: the Logs page shows Helmsman's event log and server output; turn on debug logging for a few hours under Settings → Logging, and download logs with the Download button.
 - Refresh: the refresh button at the top checks every service again right away.
-- Indexer tests: Prowlarr, Radarr and Sonarr indexers can be tested from each service's dialog; the agent may test Prowlarr indexers itself.
+- Indexer tests: yes, the agent may test Prowlarr indexers itself, and testing changes nothing in Prowlarr; Prowlarr, Radarr and Sonarr indexers can also be tested from each service's dialog.
 - Stuck downloads: Settings → Automation → Stuck downloads clears stalled, failed and unsafe downloads and searches again.
 - Holding alerts: while a Proxmox node restarts or is out of contact, Helmsman holds other alerts for up to 30 minutes and then sends one summary.
 - Connections: add or change services under Media → Connections and Infrastructure.

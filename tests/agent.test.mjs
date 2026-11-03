@@ -1341,6 +1341,12 @@ test("questions about a period get Helmsman's own history, and gaps are named", 
   // A question that is not about a period gets no history.
   await api(agent, "POST", "/api/v2/agent/ask", { question: "Is Sonarr up?" });
   assert.equal(context.modelCalls[1].messages.some((message) => message.tool_call_id === "seed-history"), false);
+  // "Did Sonarr go down?": the yes or no for the named service, worked out by code.
+  await api(agent, "POST", "/api/v2/agent/ask", { question: "Did Sonarr have any problems in the past 24 hours?" });
+  const verdict = context.modelCalls[2].messages.find((message) => message.tool_call_id === "seed-history").content;
+  assert.match(verdict, /For the service asked about, worked out by Helmsman: Sonarr had 1 problem in this period, so yes, it had problems/u);
+  await api(agent, "POST", "/api/v2/agent/ask", { question: "Did Radarr have any problems in the past 24 hours?" });
+  assert.match(context.modelCalls[3].messages.find((message) => message.tool_call_id === "seed-history").content, /Radarr had no problems recorded in this period\./u);
 });
 
 test("conversations are saved only when turned on, and can be rated, corrected, exported and deleted", async (t) => {

@@ -11,13 +11,13 @@ import { containerHostNames, containerStackNames, matchByName, NAME_ALIASES, wor
 
 export { HELMSMAN_HELP } from "./agent-help.mjs";
 
-const MANUAL = /\b(?:ip|ips|address(?:es)?|subnet|gateway|dns|vlan|mac|hostname|ports?|where (?:is|are|does|do|did|can)|how (?:do|to|should|can|did) i|how do you|procedure|runbook|notes?|manual|documented|docs|steps|which hosts?|serial|model number|password policy|backup(?:s)? (?:stored|go|location)|hardware|specs?|layout|topology|wiring|cabling|vlans?|motherboard|what (?:cpu|gpu)|which (?:cpu|gpu)|drives?|disks?|what (?:runs|is running|is) on (?:vm|lxc|ct)|used for|purpose of|role of|what does \S+(?: \S+)? do|what (?:is|'s) \S+(?: \S+)? for|qdevice|quorum|corosync)\b/u;
-const HELP = /\b(?:helmsman|helmy|training|conversations?|rate|rating|fix answer|debug|logs?|logging|export|refresh|approve|approval|connections?|settings|holding alerts|alerts held)\b/u;
+const MANUAL = /\b(?:ip|ips|address(?:es)?|subnet|gateway|dns|vlan|mac|hostname|ports?|where (?:is|are|does|do|did|can)|how (?:do|to|should|can|did) i|how do you|procedure|runbook|notes?|manual|documented|docs|steps|which hosts?|serial|model number|password policy|backup(?:s)? (?:stored|go|location)|hardware|specs?|layout|topology|wiring|cabling|vlans?|motherboard|what (?:cpu|gpu)|which (?:cpu|gpu)|drives?|disks?|what (?:runs|is running|is) on (?:vm|lxc|ct)|used for|purpose of|role of|what does \S+(?: \S+)? do|what (?:is|'s) \S+(?: \S+)? for|qdevice|quorum|corosync|votes?|remote access|router|switch(?:es)?|access points?|wi-?fi|isp|internet (?:plan|provider|service)|known issues?|open (?:issues?|work|items?|problems)|issues (?:are|still) open|notes? say|public (?:names?|urls?|hostnames?|addresses|domains?)|domains?|urls?|start(?:up)? order|boot order|roadmap|plans?|planned|risks?|what should i do|what to do|(?:is|are) \S+(?: \S+)? reached|config(?:uration)? (?:path|file|location|folder)|paths?|folders?|director(?:y|ies)|volumes?|change ?log|what changed|segment(?:ed|ation)?|why (?:was|were|did|is) .{1,40}\b(?:removed|retired|replaced|renamed|moved|changed|swapped|turned off|disabled|added|off)|what does .{1,30}\b(?:do|run|host)|what (?:runs|is running|is) on (?:the )?(?:docker )?(?:vm|lxc|ct))\b/u;
+const HELP = /\b(?:helmsman|helmy|the agent|test(?:ing)? (?:the |an? )?indexers?|training|conversations?|rate|rating|fix answer|debug|logs?|logging|export|refresh|approve|approval|connections?|settings|holding alerts|alerts held)\b/u;
 const INDEXERS = /\b(?:indexers?|trackers?)\b/u;
 // Stack, image and port words ask about a container's own line: "which stack
 // is sonarr in" got only Sonarr's status, which has no stack, and models
 // made one up.
-const WORKLOADS = /\b(?:stacks?|compose|images?|published|publishing|containers?|vms?|virtual machines?|lxcs?|guests?|nodes?|stopped|running|vpn|gluetun|memory|ram|cpu|busiest|busy|uptime|been up|online|what'?s on|running on|docker|backed up|backups?|last backup)\b/u;
+const WORKLOADS = /\b(?:stacks?|compose|images?|published|publishing|containers?|vms?|virtual machines?|lxcs?|guests?|nodes?|stopped|running|vpn|gluetun|memory|ram|cpu|busiest|busy|uptime|been up|online|what'?s on|running on|docker|backed up|backups?|last backup|(?:what|which) (?:docker )?(?:host|node|server|machine) (?:is|does|runs)|hosted on|where (?:is|does) \S+ (?:run|live|hosted))\b/u;
 const MEDIA = /\b(?:download(?:ing|s|ed)?|queue|stuck|stalled|imports?|imported|requests?|requested|upcoming|coming out|comes? out|releases?|episodes?|premieres?|air(?:s|ing)?|subtitles?|eta|finish(?:ed)?|added recently)\b/u;
 
 /**
@@ -186,12 +186,12 @@ const MEASURES = [
   ["backups", /\b(?:backed up|last backup|backups?)\b/u],
   ["memory", /\b(?:memory|ram|gb)\b/u],
   ["cpu", /\b(?:cpu|vcpus?|cores?|busiest|busy|busier|load|active|activity|idle|quiet(?:est)?|least work|doing the least)\b/u],
-  ["uptime", /\b(?:uptime|been up|up (?:the )?longest|longest[- ]running|running (?:the )?longest|(?:most|least) recently (?:started|restarted|rebooted)|(?:last|recently) (?:started|restarted|rebooted))\b/u]
+  ["uptime", /\b(?:uptime|been up|up (?:the )?longest|longest[- ]running|running (?:the )?longest|(?:most|least) recently (?:started|restarted|rebooted)|(?:started|restarted|rebooted) (?:most|least) recently|(?:last|recently) (?:started|restarted|rebooted))\b/u]
 ];
 
 // Sizes given rather than use: "which VM has the most cores", "RAM assigned
 // to each LXC". cpu then means assigned cores and memory the allowance.
-const ALLOCATION = /\b(?:allocat\w*|assigned|provisioned|configured(?: with)?|limits?|sized?|biggest|largest|smallest|how many (?:cores|vcpus?)|(?:most|fewest|least|more|fewer) (?:cores|vcpus?)|(?:cores|vcpus?) (?:each|per|does|do)|given)\b/u;
+const ALLOCATION = /\b(?:allocat\w*|assigned|provisioned|configured(?: with)?|limits?|sized?|biggest|largest|smallest|how many (?:cores|vcpus?)|(?:most|fewest|least|more|fewer) (?:cores|vcpus?)|(?:cores|vcpus?) (?:each|per|does|do)|(?:by|of) (?:cores|vcpus?)|given)\b/u;
 
 /** The measures a question asks to rank by, in the order it names them, with "vms"/"lxcs" when it says only one kind. */
 function measuresIn(question) {
@@ -214,7 +214,7 @@ function measuresIn(question) {
 
 // "What else is on the same node as frigate", "what runs alongside radarr":
 // the named thing's node or Docker host, with everything on it.
-const COLOCATED = /\b(?:co-?located|same (?:[a-z-]+ )?(?:node|host|machine|server|vm|environment) as|alongside|next to|neighbou?rs?|shar(?:e|es|ed|ing) (?:[a-z0-9._-]+ ){0,3}with|shares? (?:a |the |its )?(?:node|host|machine|environment)|what else (?:is|runs|lives) on)\b/u;
+export const COLOCATED = /\b(?:co-?located|same (?:[a-z-]+ )?(?:node|host|machine|server|vm|environment) as|alongside|next to|neighbou?rs?|shar(?:e|es|ed|ing) (?:[a-z0-9._-]+ ){0,3}with|shares? (?:a |the |its )?(?:node|host|machine|environment)|what else (?:is|runs|lives) on)\b/u;
 
 /** "IDs above 150", "the 100 through 110 ID range": that range as "ids 151-999999999". */
 function idRange(question) {
@@ -297,6 +297,11 @@ export function workloadQueries(snapshot, text, { workloadWords = false, namesOn
       rest = rest.replace(pattern, "$1 ");
     }
   }
+  // "What's using port 5432", "which containers publish port 9443": every
+  // container with that port. The manual alone gave a service's documented
+  // port as if a container published it, or "nothing".
+  const portNumber = /\bports? (?:number )?#?(\d{1,5})\b/u.exec(question)?.[1];
+  if (portNumber && Number(portNumber) > 0 && Number(portNumber) < 65536) return [{ filter: `port ${Number(portNumber)}` }];
   // "IDs above 150": the guests in that range, sorted by code.
   const range = namesOnly ? null : idRange(question);
   if (range) return [{ filter: range }];
@@ -312,7 +317,11 @@ export function workloadQueries(snapshot, text, { workloadWords = false, namesOn
     .filter((workload) => ids.includes(String(workload.vmid))).map((workload) => String(workload.name || "").toLowerCase()));
   const things = named.filter((item) => item.name && (item.exact || !sure) && !idNames.has(item.name.toLowerCase())).map((item) => item.name);
   // "Images on Jelly-Arr", "stacks in Main Docker": that one detail, for that host.
-  const hostDetail = CONTAINER_DETAILS.find(([, pattern]) => pattern.test(rest));
+  // A host that is also a guest asked about without container words ("how
+  // long has Jelly-Arr been up") is the guest: its line, not its containers' uptime.
+  const guestHost = hosts.length === 1 && homeOf(snapshot, hosts[0]).some((home) => home.toLowerCase() !== hosts[0].toLowerCase())
+    && !/\b(?:containers?|docker|stacks?|images?|compose|ports?|published|publish\w*)\b/u.test(rest);
+  const hostDetail = guestHost ? null : CONTAINER_DETAILS.find(([, pattern]) => pattern.test(rest));
   // "Which LXCs are colocated with Jelly-Arr": a host that is also a guest
   // adds that guest's node, with everything on it.
   if (hosts.length && !namesOnly && !ids.length && !things.length && COLOCATED.test(question)) {
@@ -341,7 +350,12 @@ export function workloadQueries(snapshot, text, { workloadWords = false, namesOn
   // everything else on its node or Docker host, without it.
   if (filters.length && !namesOnly && COLOCATED.test(question)) {
     const subjects = [...ids, ...things.filter((thing) => homeOf(snapshot, thing).length)].slice(0, 2);
-    if (subjects.length) return [...filters.slice(0, 2), ...subjects.map((subject) => `beside ${subject.toLowerCase()}`)].map((filter) => ({ filter }));
+    // "Other guests on the same node as the prowlarr host": a container's
+    // node is its Docker host's, so the guests there, not its neighbour containers.
+    const askNode = /\b(?:nodes?|guests?|vms?|lxcs?|proxmox)\b/u.test(question);
+    const guestNames = new Set((snapshot?.infrastructure?.environments || []).flatMap((environment) => (environment.workloads || []).map((workload) => String(workload.name || "").toLowerCase())));
+    const besideFilter = (subject) => (askNode && !/^\d+$/u.test(subject) && !guestNames.has(subject.toLowerCase()) ? `node of ${subject.toLowerCase()}` : `beside ${subject.toLowerCase()}`);
+    if (subjects.length) return [...filters.slice(0, 2), ...subjects.map(besideFilter)].map((filter) => ({ filter }));
   }
   if (filters.length) {
     // "Where does ollama rank for memory": its line and the ranking.
@@ -350,6 +364,12 @@ export function workloadQueries(snapshot, text, { workloadWords = false, namesOn
   }
   if (nodes.length) return nodes.slice(0, 2).map((filter) => ({ filter }));
   if (!workloadWords || namesOnly) return [];
+  // "Total RAM in the cluster", "memory free across the cluster": the nodes'
+  // own figures and their sum, not a ranking of the guests.
+  if (/\b(?:cluster|across|all (?:the )?nodes|both nodes|in total|total|altogether|combined)\b/u.test(question)
+    && /\b(?:memory|ram|cpu|cores?|gb|free)\b/u.test(question) && !/\b(?:guests?|vms?|lxcs?|containers?|assigned|allocat\w*)\b/u.test(question)) {
+    return [{ filter: "nodes" }];
+  }
   // "Which VM uses the most memory", "what hasn't been backed up": every
   // guest ranked by that number, only VMs or only LXCs when the question
   // says so; two measures when it names two ("most RAM among those with no

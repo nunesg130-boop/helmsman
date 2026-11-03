@@ -20,6 +20,9 @@ export function questionWindow(text, now = Date.now(), timeZone = undefined) {
   const question = String(text || "").toLowerCase();
   const clamp = (hours) => Math.min(MAX_WINDOW_HOURS, Math.max(1, hours));
   const window = (hours, label) => ({ from: now - clamp(hours) * HOUR, to: now, label });
+  // "What should I do after an NFS outage" asks for a procedure, which the
+  // manual has, not for the history of outages.
+  if (/\b(?:what should i do|what (?:do|should) (?:i|we) do|what to do|how (?:do|should|can|would) i (?:fix|recover|handle|deal|restore|bring)|steps (?:to|for|after)|procedure|runbook)\b/u.test(question)) return null;
   const numbered = /\b(?:past|last|previous|over the|in the)\s+(\d{1,3})\s*(minutes?|mins?|hours?|hrs?|h|days?|d|weeks?|wks?|w)\b/u.exec(question)
     || /\b(\d{1,3})\s*(hours?|hrs?|h|days?|d)\b(?!\s*(?:from now|ago))/u.exec(question);
   if (numbered) {
@@ -197,8 +200,14 @@ export function buildHistory({ from, to, label: windowLabel, healthEvents = [], 
       const what = [episode.capability, [...episode.codes][0]].filter(Boolean).join(" ");
       return `${format(new Date(episode.start).toISOString())}${episode.ongoing ? " until now (still open)" : `–${format(new Date(episode.end).toISOString()).replace(/^.*?, /u, "")}`}${what ? ` (${what})` : ""}${episode.noEnd ? " (no recovery recorded; last seen then)" : ""}`;
     });
-    const longest = Math.max(...entry.episodes.map(({ start, end }) => end - start));
-    lines.push(`- ${nameOf(entry.service)}: ${count} problem${count === 1 ? "" : "s"}, ${minutes(entry.total)} in total${count > 1 ? `, longest single problem ${minutes(longest)}` : ""}${ongoing ? ", one still open" : ""}. ${count > 3 ? "Latest: " : ""}${latest.join("; ")}.`);
+    const longestEpisode = entry.episodes.reduce((best, episode) => (episode.end - episode.start > best.end - best.start ? episode : best));
+    const longest = longestEpisode.end - longestEpisode.start;
+    // When it happened too, unless it is among the latest shown: asked for
+    // "Radarr's longest outage", models gave its length with a made-up date.
+    const longestWhen = count > 3 && !entry.episodes.slice(0, 3).includes(longestEpisode)
+      ? ` (${format(new Date(longestEpisode.start).toISOString())}${longestEpisode.ongoing ? " until now" : `–${format(new Date(longestEpisode.end).toISOString()).replace(/^.*?, /u, "")}`})`
+      : "";
+    lines.push(`- ${nameOf(entry.service)}: ${count} problem${count === 1 ? "" : "s"}, ${minutes(entry.total)} in total${count > 1 ? `, longest single problem ${minutes(longest)}${longestWhen}` : ""}${ongoing ? ", one still open" : ""}. ${count > 3 ? "Latest: " : ""}${latest.join("; ")}.`);
   }
   if (services.length > 8) lines.push(`- ${services.length - 8} more services also had problems.`);
   // "Which lasted longest" means one problem, not a service's total.
