@@ -82,7 +82,7 @@ test("the card talks to the self-test routes through the shared api helper", () 
   assert.match(start, /count < SELFTEST_MIN_COUNT \|\| count > SELFTEST_MAX_COUNT/u);
   assert.match(app, /const SELFTEST_DEFAULT_COUNT = 50;/u);
   assert.match(app, /const SELFTEST_MIN_COUNT = 1;/u);
-  assert.match(app, /const SELFTEST_MAX_COUNT = 500;/u);
+  assert.match(app, /const SELFTEST_MAX_COUNT = 1000;/u);
   const card = body("renderAgentSelfTestCard");
   assert.match(card, /type="number" min="\$\{SELFTEST_MIN_COUNT\}" max="\$\{SELFTEST_MAX_COUNT\}"/u);
   assert.match(body("changeSelfTestRun"), /api\(`\/api\/v2\/agent\/selftest\/\$\{kind\}`, \{ method: "POST", body: \{\} \}\)/u);

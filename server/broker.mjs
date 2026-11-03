@@ -31,6 +31,7 @@ import { createOperationsMonitor } from "./monitor.mjs";
 import { createPersistentCache } from "./persistent-cache.mjs";
 import { createAcknowledgementStore } from "./acknowledgements.mjs";
 import { createLaunchpadStore } from "./launchpad.mjs";
+import { createUiPreferenceStore } from "./ui-preferences.mjs";
 import { createManualStore } from "./manual.mjs";
 import { createAgent } from "./agent.mjs";
 import { createNetworkMapStore } from "./network-map.mjs";
@@ -58,7 +59,7 @@ import {
 import { generateSecretToken, hashToken, StateStore, tokenMatches } from "./state.mjs";
 import { anySignal } from "./abort-signals.mjs";
 
-const DEFAULT_VERSION = "1.17.3";
+const DEFAULT_VERSION = "1.17.4";
 const requestedVersion = String(process.env.HELMSMAN_VERSION || DEFAULT_VERSION);
 const VERSION = /^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/u.test(requestedVersion)
   ? requestedVersion
@@ -1632,6 +1633,14 @@ export async function createBroker(options = {}) {
       log("Helmsman Launchpad address storage is unavailable; the Launchpad will use connection addresses.");
     }
   }
+  let uiPreferences = options.uiPreferences || null;
+  if (!uiPreferences) {
+    try {
+      uiPreferences = await createUiPreferenceStore({ dataDir, guard: options.stateGuard });
+    } catch {
+      log("Helmsman dashboard preference storage is unavailable; folded Settings cards will open again after a reload.");
+    }
+  }
   let manual = options.manual || null;
   if (!manual) {
     try {
@@ -3114,6 +3123,7 @@ export async function createBroker(options = {}) {
     dataDir,
     acknowledgements,
     launchpad,
+    uiPreferences,
     manual,
     networkMap,
     version: VERSION,

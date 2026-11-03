@@ -18,6 +18,7 @@ import {
 } from "./session-auth.mjs";
 import { tokenMatches } from "./state.mjs";
 import { isReportId } from "./acknowledgements.mjs";
+import { isCardId } from "./ui-preferences.mjs";
 import { canonicalLaunchUrl, launchpadKey } from "./launchpad.mjs";
 import { MANUAL_LIMITS } from "./manual.mjs";
 import { NETWORK_MAP_LIMITS } from "./network-map.mjs";
@@ -25,6 +26,8 @@ import { resolveLimits } from "./limits.mjs";
 import { DIAGNOSTICS_LIMITS, recentOutput } from "./diagnostics.mjs";
 
 const MAX_JSON_BODY_BYTES = 64 * 1024;
+// The largest body any route may ask for: a Self-test question file (1 MB) in JSON.
+const MAX_UPLOAD_BODY_BYTES = 2 * 1024 * 1024;
 // The owner manual is the one larger body: its Markdown limit plus JSON escaping headroom.
 const MAX_MANUAL_BODY_BYTES = MANUAL_LIMITS.markdownBytes * 2 + 1024;
 // The network map is the other: its canonical size limit plus JSON escaping headroom.
@@ -1161,6 +1164,11 @@ export async function createControlPlane(options) {
     && typeof options.launchpad.set === "function"
     && typeof options.launchpad.remove === "function"
       ? options.launchpad
+      : null;
+  const uiPreferenceStore = options.uiPreferences
+    && typeof options.uiPreferences.collapsedCards === "function"
+    && typeof options.uiPreferences.setCard === "function"
+      ? options.uiPreferences
       : null;
   const manualStore = options.manual
     && typeof options.manual.get === "function"
@@ -5116,6 +5124,32 @@ export async function createControlPlane(options) {
 
   // Optional browser-facing addresses for the Launchpad. Helmsman never
   // requests these addresses; they are returned only to signed-in sessions.
+  // Which Settings cards are folded, kept by Helmsman so every browser
+  // sees the same. GET lists them; PUT /api/v2/ui/cards/<id> folds or opens one.
+  async function uiCardsApi(request, response, cardId) {
+    if (cardId === null && request.method === "GET") {
+      await authenticate(request, false);
+      sendJson(response, 200, { collapsed: uiPreferenceStore ? uiPreferenceStore.collapsedCards() : [] });
+      return;
+    }
+    if (cardId === null || request.method !== "PUT") fail(405, "METHOD_NOT_ALLOWED", "That method is not allowed.");
+    const authenticated = await authenticate(request, true);
+    if (!uiPreferenceStore) fail(503, "UI_PREFERENCES_UNAVAILABLE", "Saving folded cards is temporarily unavailable.");
+    if (!isCardId(cardId)) fail(404, "NOT_FOUND", "Not found.");
+    const body = await readBoundedJson(request);
+    requireExactKeys(body, ["collapsed"]);
+    if (typeof body.collapsed !== "boolean") fail(400, "INVALID_CARD_STATE", "Say whether the card is folded.");
+    await recheckMutationSession(request, authenticated);
+    let collapsed;
+    try {
+      collapsed = await uiPreferenceStore.setCard(cardId, body.collapsed);
+    } catch (error) {
+      if (error?.code === "UI_PREFERENCE_LIMIT") fail(409, "UI_PREFERENCE_LIMIT", error.message);
+      throw error;
+    }
+    sendJson(response, 200, { collapsed });
+  }
+
   async function launchpadApi(request, response, kind, id) {
     if (kind === null && request.method === "GET") {
       await authenticate(request, false);
@@ -5163,7 +5197,8 @@ export async function createControlPlane(options) {
     if (!agent) fail(503, "AGENT_UNAVAILABLE", "The agent is still starting.");
     try {
       await agent.handleApi(request, response, url, {
-        readJson: (incoming) => readBoundedJson(incoming),
+        // A question file for Self-test may be larger than an ordinary body.
+        readJson: (incoming, maxBytes) => readBoundedJson(incoming, Math.min(Number.isSafeInteger(maxBytes) && maxBytes > 0 ? maxBytes : MAX_JSON_BODY_BYTES, MAX_UPLOAD_BODY_BYTES)),
         sendJson
       });
     } catch (error) {
@@ -5505,6 +5540,12 @@ export async function createControlPlane(options) {
       if (url.pathname === "/api/v2/acknowledgements" || acknowledgementMatch) {
         if (url.search) fail(404, "NOT_FOUND", "Not found.");
         await acknowledgementsApi(request, response, acknowledgementMatch?.[1] || null);
+        return true;
+      }
+      const uiCardMatch = url.pathname.match(/^\/api\/v2\/ui\/cards\/([a-z0-9-]{1,96})$/u);
+      if (url.pathname === "/api/v2/ui/cards" || uiCardMatch) {
+        if (url.search) fail(404, "NOT_FOUND", "Not found.");
+        await uiCardsApi(request, response, uiCardMatch?.[1] ?? null);
         return true;
       }
       const launchpadMatch = url.pathname.match(
