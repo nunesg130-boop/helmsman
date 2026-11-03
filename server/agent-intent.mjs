@@ -312,8 +312,8 @@ export function workloadQueries(snapshot, text, { workloadWords = false, namesOn
   // "Which LXCs are colocated with Jelly-Arr": a host that is also a guest
   // adds that guest's node, with everything on it.
   if (hosts.length && !namesOnly && !ids.length && !things.length && COLOCATED.test(question)) {
-    const homes = [...new Set(hosts.flatMap((host) => homeOf(snapshot, host)))].filter((home) => !hosts.some((host) => host.toLowerCase() === home.toLowerCase()));
-    if (homes.length) return [...hosts.slice(0, 2), ...homes.slice(0, 2)].map((filter) => ({ filter }));
+    const guestHosts = hosts.filter((host) => homeOf(snapshot, host).some((home) => home.toLowerCase() !== host.toLowerCase()));
+    if (guestHosts.length) return [...hosts.slice(0, 2), ...guestHosts.slice(0, 2).map((host) => `beside ${host.toLowerCase()}`)].map((filter) => ({ filter }));
   }
   if (hosts.length && !namesOnly && !ids.length && !things.length) {
     return hosts.slice(0, 2).map((host) => ({ filter: hostDetail ? `containers ${hostDetail[0]} ${host.toLowerCase()}` : host }));
@@ -333,10 +333,11 @@ export function workloadQueries(snapshot, text, { workloadWords = false, namesOn
   }
   const hostFilters = namesOnly ? [] : hosts.filter((host) => !things.some((thing) => thing.toLowerCase() === host.toLowerCase()));
   const filters = [...ids, ...things, ...hostFilters];
-  // "Same node as frigate": frigate's line, then everything on its node or host.
+  // "Same node as frigate", "same node as docker VM 109": its line, then
+  // everything else on its node or Docker host, without it.
   if (filters.length && !namesOnly && COLOCATED.test(question)) {
-    const homes = [...new Set(things.flatMap((thing) => homeOf(snapshot, thing)))].filter((home) => !filters.some((filter) => filter.toLowerCase() === home.toLowerCase()));
-    if (homes.length) return [...filters.slice(0, 2), ...homes.slice(0, 2)].map((filter) => ({ filter }));
+    const subjects = [...ids, ...things.filter((thing) => homeOf(snapshot, thing).length)].slice(0, 2);
+    if (subjects.length) return [...filters.slice(0, 2), ...subjects.map((subject) => `beside ${subject.toLowerCase()}`)].map((filter) => ({ filter }));
   }
   if (filters.length) {
     // "Where does ollama rank for memory": its line and the ranking.

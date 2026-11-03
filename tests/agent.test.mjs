@@ -1712,3 +1712,36 @@ test("askSelfTest runs behind a waiting chat question", async (t) => {
   await Promise.all([first, second, chat, third]);
   assert.deepEqual(finished, ["first self-test", "chat", "second self-test", "third self-test"]);
 });
+
+test("port questions get the container's line and say when the manual gives no port", async (t) => {
+  const { agent, context, publish } = await harness(t, { modelReplies: () => ({ content: "Its port isn't recorded." }) });
+  await configure(agent, { autonomy: false });
+  await publish(snapshotAt(context.now));
+  context.manualText = "# Lab\n## Media host\n- Arr stack in /opt/arrstack: Sonarr, Radarr.\n- Navidrome: /opt/navidrome, port 4533.";
+  const asked = await api(agent, "POST", "/api/v2/agent/ask", { question: "what port does the sonarr container use?" });
+  assert.ok(asked.payload.toolsUsed.includes("list_workloads"), "the container's own line, which has its ports");
+  const seeded = context.modelCalls[0].messages.find((message) => message.tool_call_id === "seed-manual");
+  assert.match(seeded.content, /None of these manual lines gives a port for sonarr\./iu);
+  assert.match(seeded.content, /otherwise say the port isn't recorded/u);
+
+  // Asked by the service's name alone.
+  context.modelCalls.length = 0;
+  const plain = await api(agent, "POST", "/api/v2/agent/ask", { question: "what port does sonarr use?" });
+  assert.ok(plain.payload.toolsUsed.includes("list_workloads"), "a service's container line too");
+  assert.match(context.modelCalls[0].messages.find((message) => message.tool_call_id === "seed-manual").content, /gives a port for sonarr/iu);
+
+  // A manual line that gives the port adds no such note.
+  context.modelCalls.length = 0;
+  context.manualText = "# Lab\n- Sonarr: port 8989.";
+  await api(agent, "POST", "/api/v2/agent/ask", { question: "what port does the sonarr container use?" });
+  const covered = context.modelCalls[0].messages.find((message) => message.tool_call_id === "seed-manual");
+  assert.doesNotMatch(covered.content, /None of these manual lines/u);
+});
+
+test("questions about a service's last failure are answered from history", async (t) => {
+  const { agent, context, publish } = await harness(t, { modelReplies: () => ({ content: "Its last failure was Monday." }) });
+  await configure(agent, { autonomy: false });
+  await publish(snapshotAt(context.now));
+  const asked = await api(agent, "POST", "/api/v2/agent/ask", { question: "When was Sonarr's most recent failure?" });
+  assert.ok(asked.payload.toolsUsed.includes("history"));
+});

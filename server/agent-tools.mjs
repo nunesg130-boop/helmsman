@@ -314,6 +314,43 @@ function portsText(ports) {
   return `ports ${shown.join(", ")}${ports.length > 6 ? ` and ${ports.length - 6} more` : ""}`;
 }
 
+/**
+ * How old a backup is, in words, after its age: asked "is caddy's backup
+ * recent?" with only "11h ago", models answered "No, it was 11 hours ago".
+ */
+function backupAgeWords(ageSeconds) {
+  if (!Number.isFinite(ageSeconds) || ageSeconds < 0) return "";
+  if (ageSeconds < 86_400) return " (recent: under a day old)";
+  if (ageSeconds < 7 * 86_400) return " (recent: within the last week)";
+  if (ageSeconds < 30 * 86_400) return " (over a week old)";
+  return " (over a month old)";
+}
+
+/** ", backup success 11h ago (recent: under a day old)", or ", no backup recorded". */
+function backupText(workload, none = ", no backup recorded") {
+  if (!workload.backup?.status) return none;
+  return `, backup ${untrusted(workload.backup.status, 20)} ${ago(workload.backup.ageSeconds)}${backupAgeWords(workload.backup.ageSeconds)}`;
+}
+
+/**
+ * A guest named after a kind of thing ("docker"): said to be a VM or an LXC,
+ * because models kept reading "docker VM 109" as a Docker container.
+ */
+function kindNote(workload) {
+  const name = String(workload.name || "").toLowerCase();
+  if (!/\b(?:docker|containers?|portainer)\b/u.test(name)) return "";
+  return workload.type === "lxc"
+    ? ` (an LXC named ${untrusted(workload.name, 40)})`
+    : ` (a VM named ${untrusted(workload.name, 40)}, not a container)`;
+}
+
+/** "; no Docker health check": running without one is all that is known. */
+function healthNote(container) {
+  return container.state === "running" && healthOf(container) === "no healthcheck"
+    ? "; no Docker health check, so only that it is running is known"
+    : "";
+}
+
 function workloadLines(snapshot) {
   const lines = [];
   const environments = snapshot.infrastructure?.environments || [];
@@ -329,15 +366,13 @@ function workloadLines(snapshot) {
       const kind = workload.type === "lxc" ? "lxc" : "vm";
       // Said either way, so "when was X backed up" never meets silence and
       // gets answered with "Helmsman doesn't track backups".
-      const backup = workload.backup?.status
-        ? `, backup ${workload.backup.status} ${ago(workload.backup.ageSeconds)}`
-        : ", no backup recorded";
+      const backup = backupText(workload);
       const size = Number.isSafeInteger(workload.cpuCores) && workload.cpuCores > 0 ? `${workload.cpuCores} core${workload.cpuCores === 1 ? "" : "s"}` : "";
       const assigned = [size, gigabytes(workload.memoryTotalBytes) ? `${gigabytes(workload.memoryTotalBytes)} GB memory` : ""].filter(Boolean).join(", ");
       const usage = workload.status === "running"
         ? `, cpu ${workload.cpuPercent ?? "?"}%${coresText(workload.cpuCores)}, memory ${memoryText(workload.memoryUsedBytes, workload.memoryTotalBytes)}${upText(workload.uptimeSeconds)}`
         : assigned ? `, ${assigned} assigned` : "";
-      lines.push(`${kind} ${workload.vmid} ${untrusted(workload.name, 40)} on node ${untrusted(workload.node, 40)}${where}: ${workload.status}${usage}${backup}${workload.lock ? `, locked ${untrusted(workload.lock, 20)}` : ""}`);
+      lines.push(`${kind} ${workload.vmid} ${untrusted(workload.name, 40)}${kindNote(workload)} on node ${untrusted(workload.node, 40)}${where}: ${workload.status}${usage}${backup}${workload.lock ? `, locked ${untrusted(workload.lock, 20)}` : ""}`);
     }
   }
   for (const server of snapshot.infrastructure?.portainer || []) {
@@ -350,7 +385,7 @@ function workloadLines(snapshot) {
         Array.isArray(container.ports) ? portsText(container.ports) : ""
       ].filter(Boolean);
       const host = hostGuest(snapshot, container.environmentName);
-      lines.push(`container ${untrusted(container.name, 60)} on Docker host ${env} (${serverName}): ${container.state}, ${untrusted(container.status, 60)}${details.length ? `; ${details.join("; ")}` : ""}${host ? `; Docker host ${env} is ${host}` : ""}`);
+      lines.push(`container ${untrusted(container.name, 60)} on Docker host ${env} (${serverName}): ${container.state}, ${untrusted(container.status, 60)}${healthNote(container)}${details.length ? `; ${details.join("; ")}` : ""}${host ? `; Docker host ${env} is ${host}` : ""}`);
     }
   }
   return lines;
@@ -523,7 +558,7 @@ function workloadMetric(snapshot, metric, kind = null, node = null) {
       const ranges = [["under 1 day old", 0, day], ["1 to 7 days old", day, 7 * day], ["7 to 30 days old", 7 * day, 30 * day], ["over 30 days old", 30 * day, Infinity]]
         .map(([label, from, to]) => [label, backed.filter((workload) => (workload.backup.ageSeconds ?? 0) >= from && (workload.backup.ageSeconds ?? 0) < to).length]);
       parts.push(`Latest backup ages: ${ranges.map(([label, count]) => `${count} ${label}`).join(", ")}.`);
-      parts.push(`These have a backup (oldest first): ${backed.map((workload) => `${name(workload)}: ${untrusted(workload.backup.status, 20)} ${ago(workload.backup.ageSeconds)}`).join(", ")}.`);
+      parts.push(`These have a backup (oldest first): ${backed.map((workload) => `${name(workload)}: ${untrusted(workload.backup.status, 20)} ${ago(workload.backup.ageSeconds)}${backupAgeWords(workload.backup.ageSeconds)}`).join(", ")}.`);
     }
     if (none.length) parts.push(`These have no backup recorded at all: ${none.map(name).join(", ")}.`);
     const nodes = node ? [] : [...new Set(guests.map((workload) => String(workload.node || "")))].filter(Boolean);
@@ -582,8 +617,8 @@ function nodeLines(snapshot, nodeName) {
     const usage = workload.status === "running"
       ? `, cpu ${workload.cpuPercent ?? "?"}%, memory ${memoryText(workload.memoryUsedBytes, workload.memoryTotalBytes)}`
       : "";
-    const backup = workload.backup?.status ? `, backup ${workload.backup.status} ${ago(workload.backup.ageSeconds)}` : ", no backup";
-    return `${workload.type === "lxc" ? "lxc" : "vm"} ${workload.vmid} ${untrusted(workload.name, 40)}: ${workload.status}${usage}${backup}${workload.lock ? `, locked ${untrusted(workload.lock, 20)}` : ""}`;
+    const backup = backupText(workload, ", no backup");
+    return `${workload.type === "lxc" ? "lxc" : "vm"} ${workload.vmid} ${untrusted(workload.name, 40)}${kindNote(workload)}: ${workload.status}${usage}${backup}${workload.lock ? `, locked ${untrusted(workload.lock, 20)}` : ""}`;
   });
   const notes = sharedNameNotes(snapshot).filter((text) => text.toLowerCase().includes(`"${wanted}"`));
   return [...notes, ...nodeLine, ...(guests.length ? [`Guests on node ${untrusted(nodeName, 40)}:`, ...guests] : [])];
@@ -748,7 +783,9 @@ function stackLines(snapshot, stackName) {
     if (!members.length) continue;
     const guest = hostGuest(snapshot, host);
     const items = members.map((container) => {
-      const state = container.state === "running" ? `running, ${untrusted(container.status, 40) || "up"}` : untrusted(container.status, 40) || untrusted(container.state, 20);
+      const state = container.state === "running"
+        ? `running, ${untrusted(container.status, 40) || "up"}${healthOf(container) === "no healthcheck" ? ", no health check" : ""}`
+        : untrusted(container.status, 40) || untrusted(container.state, 20);
       const image = container.image ? `; image ${untrusted(container.image, 60).replace(/^(?:docker\.io\/)?(?:library\/)?/u, "")}` : "";
       return `${untrusted(container.name, 40)} (${state}${image}; ${portsText(container.ports)})`;
     });
@@ -757,10 +794,59 @@ function stackLines(snapshot, stackName) {
   return lines;
 }
 
+/**
+ * "beside frigate", "beside 109": everything else on the same node or Docker
+ * host, without the thing asked about and with what is stopped. Given the
+ * node's whole list, models left out stopped guests, listed the guest
+ * itself, or said "three others" and named four.
+ */
+function besideLines(snapshot, subject) {
+  const wanted = subject.toLowerCase();
+  const byId = /^\d{1,9}$/u.test(wanted);
+  const lines = [];
+  for (const environment of snapshot.infrastructure?.environments || []) {
+    const guests = guestsOf(environment);
+    for (const guest of guests.filter((workload) => (byId ? String(workload.vmid) === wanted : String(workload.name || "").toLowerCase() === wanted))) {
+      const label = `${untrusted(guest.name, 40)} (${guest.type === "lxc" ? "LXC" : "VM"} ${guest.vmid})`;
+      const others = guests.filter((workload) => workload.node === guest.node && workload.vmid !== guest.vmid);
+      const describe = (workload) => `${untrusted(workload.name, 40)} (${workload.type === "lxc" ? "LXC" : "VM"} ${workload.vmid})`;
+      const running = others.filter((workload) => workload.status === "running").map(describe);
+      const stopped = others.filter((workload) => workload.status !== "running").map((workload) => `${describe(workload)} ${untrusted(workload.status, 20)}`);
+      if (!others.length) {
+        lines.push(`${label} is the only guest on node ${untrusted(guest.node, 40)}.`);
+        continue;
+      }
+      lines.push(`Besides ${label}, node ${untrusted(guest.node, 40)} has ${others.length} other guest${others.length === 1 ? "" : "s"}. `
+        + `Running (${running.length}): ${running.length ? running.join(", ") : "none"}.`
+        + `${stopped.length ? ` Not running (${stopped.length}): ${stopped.join(", ")}.` : " None are stopped."}`);
+    }
+  }
+  if (!byId) {
+    for (const [host, containers] of containersByHost(snapshot)) {
+      if (!containers.some((container) => String(container.name || "").toLowerCase() === wanted)) continue;
+      const others = containers.filter((container) => String(container.name || "").toLowerCase() !== wanted);
+      const guest = hostGuest(snapshot, host);
+      const where = `Docker host ${host}${guest ? ` (${guest})` : ""}`;
+      if (!others.length) {
+        lines.push(`${untrusted(subject, 40)} is the only container on ${where}.`);
+        continue;
+      }
+      const running = others.filter((container) => container.state === "running").map((container) => untrusted(container.name, 40));
+      const stopped = others.filter((container) => container.state !== "running").map((container) => `${untrusted(container.name, 40)} (${untrusted(container.state, 20)})`);
+      lines.push(`Besides ${untrusted(subject, 40)}, ${where} has ${others.length} other container${others.length === 1 ? "" : "s"}. `
+        + `Running (${running.length}): ${running.length ? running.join(", ") : "none"}.`
+        + `${stopped.length ? ` Not running (${stopped.length}): ${stopped.join(", ")}.` : " None are stopped."}`);
+    }
+  }
+  return lines.length ? lines : [`Nothing is named ${untrusted(subject, 40)}.`];
+}
+
 function listWorkloads(snapshot, _context, args) {
   const filter = typeof args.filter === "string" ? args.filter.trim().toLowerCase().slice(0, 60) : "";
   const measure = metricFilter(snapshot, filter);
   if (measure) return workloadMetric(snapshot, measure.metric, measure.kind, measure.node);
+  const beside = /^beside (.+)$/u.exec(filter)?.[1];
+  if (beside) return besideLines(snapshot, beside.trim()).join("\n");
   const byId = guestLinesById(snapshot, filter);
   if (byId) return byId.join("\n");
   // "ids 151-999": guests by number range, sorted by code. Asked "IDs above
@@ -807,7 +893,7 @@ function listWorkloads(snapshot, _context, args) {
   // A Portainer host ("Main Docker", or "Jelly-Arr" as both VM and host)
   // also gets its containers, named.
   const exact = all.filter((line) => {
-    const match = /^(?:vm|lxc) \d+ (.+?) on node /u.exec(line) || /^container (.+?) on Docker host /u.exec(line);
+    const match = /^(?:vm|lxc) \d+ (.+?)(?: \((?:a VM|an LXC) named [^)]*\))? on node /u.exec(line) || /^container (.+?) on Docker host /u.exec(line);
     return match && match[1].toLowerCase() === filter;
   });
   const lines = exact.length || host ? exact : all.filter((line) => line.toLowerCase().includes(filter));
