@@ -4926,7 +4926,11 @@ function renderAgentTrainingCard(data) {
 
 const SELFTEST_DEFAULT_COUNT = 50;
 const SELFTEST_MIN_COUNT = 1;
-const SELFTEST_MAX_COUNT = 500;
+const SELFTEST_MAX_COUNT = 1000;
+// A question file to run instead of generated questions (server/selftest-upload.mjs).
+const SELFTEST_UPLOAD_MAX_BYTES = 1024 * 1024;
+const SELFTEST_CATEGORIES = Object.freeze(["guest-lookup", "ranking", "node", "containers", "neighbours", "backups", "history", "manual", "services", "follow-up", "unknowable"]);
+const SELFTEST_FORMAT_DOC = "https://github.com/nunesg130-boop/helmsman/blob/main/docs/SELF-TEST-QUESTIONS.md";
 const SELFTEST_POLL_MS = 3_000;
 const SELFTEST_FILTERS = Object.freeze([
   ["unrated", "Unrated"],
@@ -4949,6 +4953,8 @@ let selfTestCardMounted = false;
 // constants above exist, so the batch size starts empty (the default).
 function emptySelfTestState() {
   return {
+    // The question file chosen for upload, and what the server's check said.
+    upload: { name: "", text: "", report: null, checking: false, error: "" },
     loaded: false,
     loading: false,
     error: "",
@@ -5293,6 +5299,110 @@ function renderSelfTestItem(item, index, current) {
   </li>`;
 }
 
+function selfTestUploadCounts(report) {
+  const counts = report?.counts || {};
+  const parts = [`${selfTestCount(report?.total)} question${selfTestCount(report?.total) === 1 ? "" : "s"} ready`, `${selfTestCount(counts.read)} read`];
+  if (selfTestCount(counts.blank)) parts.push(`${selfTestCount(counts.blank)} blank skipped`);
+  if (selfTestCount(counts.repeated)) parts.push(`${selfTestCount(counts.repeated)} repeated skipped`);
+  if (selfTestCount(counts.similar)) parts.push(`${selfTestCount(counts.similar)} possible repeat${selfTestCount(counts.similar) === 1 ? "" : "s"} kept`);
+  return parts.join(" · ");
+}
+
+function renderSelfTestUpload(running, idle) {
+  const upload = state.agent.selfTest.upload;
+  const report = upload.report;
+  const errors = Array.isArray(report?.errors) ? report.errors : [];
+  const warnings = Array.isArray(report?.warnings) ? report.warnings : [];
+  const ready = Boolean(report) && !errors.length && selfTestCount(report.total) > 0;
+  const list = (items) => `<ul>${items.map((item) => `<li>${escapeHtml(String(item))}</li>`).join("")}</ul>`;
+  return `<div class="agent-selftest-upload">
+      <h4>Upload questions</h4>
+      <p class="agent-voice__hint">Run your own questions instead of generated ones. Helmsman checks the file and shows what it found before anything runs.</p>
+      <ul class="agent-selftest-upload__format">
+        <li><strong>.csv</strong>: a first line naming a <code>question</code> and a <code>category</code> column, then one question per line.</li>
+        <li><strong>.json</strong>: each category as a key with its questions in a list, such as <code>{"backups": ["is caddy's backup recent?"]}</code>.</li>
+        <li>Every question needs one of these categories: ${SELFTEST_CATEGORIES.map((name) => `<code>${name}</code>`).join(", ")}.</li>
+        <li>In <code>follow-up</code>, questions go in pairs: the second is asked after the first, with its answer as the conversation before it.</li>
+        <li>Up to ${SELFTEST_MAX_COUNT.toLocaleString("en-US")} questions, in a file of up to 1 MB. Blank questions and exact repeats are skipped.</li>
+      </ul>
+      <p class="agent-voice__hint"><a href="${SELFTEST_FORMAT_DOC}" target="_blank" rel="noopener noreferrer">File format, examples and every check explained</a></p>
+      <div class="agent-selftest-upload__pick">
+        <label class="button${running || !idle || upload.checking ? " is-disabled" : ""}" for="agent-selftest-file">Choose file</label>
+        <input class="sr-only" id="agent-selftest-file" type="file" accept=".csv,.json,text/csv,application/json" ${running || !idle || upload.checking ? "disabled" : ""} />
+        <span class="agent-selftest-upload__name">${upload.name ? escapeHtml(upload.name) : "No file chosen"}</span>
+      </div>
+      ${upload.checking ? `<p class="agent-selftest-status is-running" role="status">Checking the file…</p>` : ""}
+      ${upload.error ? `<p class="form-error" role="alert">${escapeHtml(upload.error)}</p>` : ""}
+      ${report ? `<div class="agent-selftest-upload__report" role="status">
+        ${errors.length ? "" : `<p class="agent-selftest-upload__summary">${escapeHtml(selfTestUploadCounts(report))}</p>`}
+        ${errors.length ? `<div class="agent-selftest-upload__errors"><strong>${errors.length === 1 ? "1 error" : `${errors.length} errors`}: nothing will run. Fix the file and choose it again.</strong>${list(errors)}</div>` : ""}
+        ${warnings.length ? `<div class="agent-selftest-upload__warnings"><strong>${warnings.length === 1 ? "1 warning" : `${warnings.length} warnings`}</strong>${list(warnings)}</div>` : ""}
+      </div>` : ""}
+      ${upload.name ? `<div class="button-row">
+        <button class="button button--primary" type="button" data-action="selftest-upload-start" ${ready && !running && idle && !upload.checking ? "" : "disabled"}>Start uploaded batch</button>
+        <button class="button" type="button" data-action="selftest-upload-clear" ${idle ? "" : "disabled"}>Clear</button>
+      </div>` : ""}
+    </div>`;
+}
+
+async function chooseSelfTestFile(input) {
+  const upload = state.agent.selfTest.upload;
+  const file = input?.files?.[0];
+  input.value = "";
+  if (!file) return;
+  Object.assign(upload, { name: file.name.slice(0, 120), text: "", report: null, error: "", checking: false });
+  if (!/\.(?:csv|json)$/iu.test(file.name)) {
+    upload.error = "Choose a .csv or .json file.";
+  } else if (file.size > SELFTEST_UPLOAD_MAX_BYTES) {
+    upload.error = "The file is larger than 1 MB.";
+  } else {
+    upload.checking = true;
+  }
+  rerenderAgent();
+  if (!upload.checking) return;
+  try {
+    upload.text = await file.text();
+    upload.report = await api("/api/v2/agent/selftest/upload/check", { method: "POST", body: { name: upload.name, text: upload.text } });
+  } catch (error) {
+    upload.error = error?.message || "The file could not be checked.";
+  } finally {
+    upload.checking = false;
+    rerenderAgent();
+  }
+}
+
+async function startSelfTestUpload() {
+  const selfTest = state.agent.selfTest;
+  const upload = selfTest.upload;
+  if (selfTest.busy || !upload.text || !upload.report || upload.report.errors?.length) return;
+  selfTest.busy = "start";
+  selfTest.notice = null;
+  rerenderAgent();
+  try {
+    const payload = await api("/api/v2/agent/selftest/upload", { method: "POST", body: { name: upload.name, text: upload.text } });
+    selfTest.status = payload;
+    selfTest.loaded = true;
+    selfTest.error = "";
+    selfTest.upload = { name: "", text: "", report: null, checking: false, error: "" };
+    const total = selfTestCount(payload?.upload?.total);
+    showToast(`${total} uploaded question${total === 1 ? "" : "s"} queued.`, "success");
+  } catch (error) {
+    if (error?.code === "QUESTION_FILE_ERRORS") {
+      // The file changed since it was checked; check it again to show why.
+      try {
+        upload.report = await api("/api/v2/agent/selftest/upload/check", { method: "POST", body: { name: upload.name, text: upload.text } });
+      } catch {
+        upload.error = error.message;
+      }
+    } else {
+      selfTest.notice = selfTestNotice(error);
+    }
+  } finally {
+    selfTest.busy = "";
+    rerenderAgent();
+  }
+}
+
 function renderAgentSelfTestCard(data) {
   const selfTest = state.agent.selfTest;
   const status = selfTest.status;
@@ -5324,6 +5434,7 @@ function renderAgentSelfTestCard(data) {
         </div>
       </form>
       ${paused ? `<p class="agent-voice__hint">Starting a new batch drops the questions left over from this one; they can come up again later.</p>` : ""}
+      ${renderSelfTestUpload(running, idle)}
       <div class="agent-selftest-review">
         <h4>Answers</h4>
         <div class="agent-selftest-filters">
@@ -5353,15 +5464,50 @@ function renderAgentSettings() {
   return `<section class="agent-settings" aria-labelledby="agent-settings-title">
     <header class="detail-hero"><div><span class="section-kicker">Local AI</span><h2 id="agent-settings-title">Agent</h2><p>An assistant that runs on your own hardware. It watches Helmsman's health checks, explains problems, and only changes things through rules you write or actions you approve.</p></div><span class="system-service-state is-${status.tone}"><i class="health-dot is-${status.tone}"></i>${escapeHtml(status.label)}</span></header>
     ${data.status?.configurationProblem ? `<div class="security-note">${icon("lock")}<div><strong>The saved agent settings could not be read</strong><span>${escapeHtml(String(data.status.configurationProblem))}. Saving any card below replaces them.</span></div></div>` : ""}
-    ${renderAgentSetupSteps(data)}
+    <nav class="settings-tabs settings-subtabs filter-chips" role="tablist" aria-label="Agent settings sections">${AGENT_TABS.map(({ id, label }) => `<button class="filter-chip ${agentTab() === id ? "is-active" : ""}" type="button" role="tab" id="agent-tab-${id}" aria-selected="${agentTab() === id ? "true" : "false"}" aria-controls="agent-panel" tabindex="${agentTab() === id ? "0" : "-1"}" data-action="agent-tab" data-agent-tab="${id}">${escapeHtml(label)}</button>`).join("")}</nav>
+    <div id="agent-panel" role="tabpanel" aria-labelledby="agent-tab-${agentTab()}">
+    ${agentTab() === "behavior" ? `${renderAgentSetupSteps(data)}
     <div class="settings-grid-v5">
       ${renderAgentModelCard(data)}
       ${renderAgentVoiceCard(data)}
       ${renderAgentBehaviorCard(data)}
+    </div>` : `<div class="settings-grid-v5">
       ${renderAgentTrainingCard(data)}
       ${renderAgentSelfTestCard(data)}
+    </div>`}
     </div>
   </section>`;
+}
+
+// Agent settings in two parts: how it behaves, and training your own model.
+const AGENT_TABS = Object.freeze([
+  Object.freeze({ id: "behavior", label: "Behavior" }),
+  Object.freeze({ id: "training", label: "Training" })
+]);
+const AGENT_TAB_KEY = "helmsman.agentTab";
+
+function agentTab() {
+  let candidate = state.agentTab;
+  if (!candidate) {
+    try {
+      candidate = globalThis.localStorage?.getItem(AGENT_TAB_KEY) || "";
+    } catch {
+      candidate = "";
+    }
+  }
+  return AGENT_TABS.some(({ id }) => id === candidate) ? candidate : "behavior";
+}
+
+function setAgentTab(id, { focus = false } = {}) {
+  if (!AGENT_TABS.some((tab) => tab.id === id)) return;
+  state.agentTab = id;
+  try {
+    globalThis.localStorage?.setItem(AGENT_TAB_KEY, id);
+  } catch {
+    // A private window may block storage; the tab still changes.
+  }
+  rerenderAgent();
+  if (focus) document.getElementById(`agent-tab-${id}`)?.focus({ preventScroll: true });
 }
 
 function renderAgentUnavailable(kind) {
@@ -6516,6 +6662,97 @@ function setSettingsTab(id, { focus = false } = {}) {
   if (focus) document.getElementById(`settings-tab-${id}`)?.focus({ preventScroll: true });
 }
 
+// Every Settings card folds shut from its title. Which ones are folded is
+// kept by Helmsman (/api/v2/ui/cards), so every browser sees the same.
+function settingsCardState() {
+  state.uiCards ||= { loaded: false, loading: false, collapsed: new Set() };
+  const cards = state.uiCards;
+  if (!cards.loaded && !cards.loading) {
+    cards.loading = true;
+    api("/api/v2/ui/cards").then((payload) => {
+      cards.collapsed = new Set(Array.isArray(payload?.collapsed) ? payload.collapsed : []);
+    }).catch(() => {
+      // Unavailable: every card shows open, as before.
+    }).finally(() => {
+      cards.loaded = true;
+      cards.loading = false;
+      if (currentRoute() === "settings") {
+        state.lastMarkup = "";
+        renderPage({ force: true, preserveFocus: true });
+      }
+    });
+  }
+  return cards;
+}
+
+// Only letters, digits and dashes survive, so the id is safe in markup and URLs.
+function settingsCardSlug(text) {
+  return String(text).toLowerCase().replace(/[^a-z0-9]+/gu, "-").replace(/^-+|-+$/gu, "").slice(0, 60) || "card";
+}
+
+/**
+ * Adds a fold button to each card's title. The card's id comes from the
+ * Settings tab and its title, so it stays the same between visits.
+ */
+function foldableSettingsCards(markup, scope) {
+  const cards = settingsCardState();
+  const seen = new Map();
+  const start = /<(form|section)([^>]*?)class="glass-panel settings-card-v5([^"]*)"([^>]*)>/gu;
+  const parts = [];
+  let last = 0;
+  let match;
+  const openings = [];
+  while ((match = start.exec(markup))) openings.push({ index: match.index, length: match[0].length, match });
+  openings.forEach((opening, position) => {
+    const end = position + 1 < openings.length ? openings[position + 1].index : markup.length;
+    const body = markup.slice(opening.index + opening.length, end);
+    const title = /<h3([^>]*)>([\s\S]*?)<\/h3>/u.exec(body);
+    parts.push(markup.slice(last, opening.index));
+    last = end;
+    if (!title) {
+      parts.push(markup.slice(opening.index, end));
+      return;
+    }
+    const base = `${scope}-${settingsCardSlug(title[2])}`;
+    const count = (seen.get(base) || 0) + 1;
+    seen.set(base, count);
+    const id = (count > 1 ? `${base}-${count}` : base).slice(0, 96);
+    const folded = cards.collapsed.has(id);
+    const [, tag, before, classes, after] = opening.match;
+    const head = `<${tag}${before}class="glass-panel settings-card-v5 is-foldable${folded ? " is-folded" : ""}${classes}"${after} data-card="${id}">`;
+    const button = `<h3${title[1]}><button class="settings-card-fold" type="button" data-action="settings-card-toggle" data-card="${id}" aria-expanded="${folded ? "false" : "true"}" aria-controls="card-body-${id}"><span>${title[2]}</span>${icon("chevron")}</button></h3>`;
+    let rest = body.replace(title[0], button);
+    rest = rest.replace(/<div class="settings-card-v5__body([^"]*)"/u, `<div class="settings-card-v5__body$1" id="card-body-${id}"${folded ? " hidden" : ""}`);
+    parts.push(head + rest);
+  });
+  parts.push(markup.slice(last));
+  return parts.join("");
+}
+
+async function toggleSettingsCard(id) {
+  if (!/^[a-z0-9][a-z0-9-]{0,95}$/u.test(id)) return;
+  const cards = settingsCardState();
+  const folding = !cards.collapsed.has(id);
+  const apply = (fold) => {
+    if (fold) cards.collapsed.add(id);
+    else cards.collapsed.delete(id);
+    const card = document.querySelector(`.settings-card-v5[data-card="${id}"]`);
+    card?.classList.toggle("is-folded", fold);
+    card?.querySelector(".settings-card-fold")?.setAttribute("aria-expanded", fold ? "false" : "true");
+    const body = document.getElementById(`card-body-${id}`);
+    if (body) body.hidden = fold;
+    state.lastMarkup = "";
+  };
+  apply(folding);
+  try {
+    const payload = await api(`/api/v2/ui/cards/${id}`, { method: "PUT", body: { collapsed: folding } });
+    if (Array.isArray(payload?.collapsed)) cards.collapsed = new Set(payload.collapsed);
+  } catch (error) {
+    apply(!folding);
+    showToast(error?.message || "The card could not be saved as folded.", "error");
+  }
+}
+
 function renderSettingsPage() {
   const policy = state.config?.policy || { allowedCidrs: [], allowPublicHttps: false };
   const networkMode = Array.isArray(policy.allowedCidrs) && policy.allowedCidrs.length ? "manual" : "exact";
@@ -6558,7 +6795,7 @@ function renderSettingsPage() {
   return `
     <section class="detail-page settings-page-v5">
       <nav class="settings-tabs filter-chips" role="tablist" aria-label="Settings sections">${SETTINGS_TABS.map(({ id, label }) => `<button class="filter-chip ${tab === id ? "is-active" : ""}" type="button" role="tab" id="settings-tab-${id}" aria-selected="${tab === id ? "true" : "false"}" aria-controls="settings-panel" tabindex="${tab === id ? "0" : "-1"}" data-action="settings-tab" data-settings-tab="${id}">${escapeHtml(label)}</button>`).join("")}</nav>
-      <div class="settings-panel" id="settings-panel" role="tabpanel" aria-labelledby="settings-tab-${tab}">${panels[tab]}</div>
+      <div class="settings-panel" id="settings-panel" role="tabpanel" aria-labelledby="settings-tab-${tab}">${foldableSettingsCards(panels[tab], tab === "agent" ? `agent-${agentTab()}` : tab)}</div>
     </section>`;
 }
 
@@ -11853,6 +12090,23 @@ document.addEventListener("click", async (event) => {
     await startSelfTest();
     return;
   }
+  if (action === "selftest-upload-start") {
+    await startSelfTestUpload();
+    return;
+  }
+  if (action === "selftest-upload-clear") {
+    state.agent.selfTest.upload = { name: "", text: "", report: null, checking: false, error: "" };
+    rerenderAgent();
+    return;
+  }
+  if (action === "agent-tab") {
+    setAgentTab(String(target.dataset.agentTab || ""), { focus: true });
+    return;
+  }
+  if (action === "settings-card-toggle") {
+    await toggleSettingsCard(String(target.dataset.card || ""));
+    return;
+  }
   if (action === "selftest-stop") {
     await changeSelfTestRun("stop");
     return;
@@ -12062,6 +12316,10 @@ document.addEventListener("click", async (event) => {
 });
 
 document.addEventListener("change", (event) => {
+  if (event.target?.id === "agent-selftest-file") {
+    void chooseSelfTestFile(event.target);
+    return;
+  }
   if (event.target?.dataset?.seasonSelect !== undefined) {
     syncSeasonSelection(event.target.closest?.("[data-season-panel]"), event.target);
   }

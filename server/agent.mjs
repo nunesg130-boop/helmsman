@@ -41,6 +41,7 @@ import { questionWindow } from "./agent-history.mjs";
 import { guestIds, HELMSMAN_HELP, isFollowUp, mergeSeeds, namedServices, namesSomething, nicknameHints, questionSeeds, withoutWorkloadNames, workloadQueries } from "./agent-intent.mjs";
 import { createConversationStore } from "./agent-conversations.mjs";
 import { createSelfTest, SelfTestError } from "./selftest.mjs";
+import { checkQuestionFile, UPLOAD_MAX_BYTES } from "./selftest-upload.mjs";
 import { parseServiceUrl, resolveAndAuthorizeExplicitTarget, resolveAndAuthorizeTarget } from "./network.mjs";
 import { OutboundJsonError, performOutboundJsonRequest } from "./outbound-json.mjs";
 
@@ -2706,6 +2707,20 @@ export async function createAgent(options) {
         requireKeys(body, ["count"]);
         const runner = await selfTestRunner();
         return sendJson(response, 201, await runner.start(body.count === undefined ? {} : { count: body.count }));
+      }
+      // A question file: /check reports what is wrong without running
+      // anything; /upload checks it again and starts it when nothing is.
+      if ((route === "/selftest/upload/check" || route === "/selftest/upload") && method === "POST") {
+        // JSON escaping can make the body larger than the file it carries.
+        const body = await readJson(request, UPLOAD_MAX_BYTES * 2);
+        requireKeys(body, ["name", "text"]);
+        if (typeof body.name !== "string" || typeof body.text !== "string") fail(400, "INVALID_QUESTION_FILE", "Send the file's name and text.");
+        const report = checkQuestionFile({ name: body.name, text: body.text });
+        const summary = { format: report.format, total: report.total, errors: report.errors, warnings: report.warnings, counts: report.counts };
+        if (route === "/selftest/upload/check") return sendJson(response, 200, summary);
+        if (report.errors.length) return sendJson(response, 400, { code: "QUESTION_FILE_ERRORS", message: "The question file has errors; nothing was started.", ...summary });
+        const runner = await selfTestRunner();
+        return sendJson(response, 201, { ...(await runner.start({ questions: report.questions })), upload: summary });
       }
       if (route === "/selftest/stop" && method === "POST") {
         requireKeys(await readJson(request), []);

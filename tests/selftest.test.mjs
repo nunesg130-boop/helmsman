@@ -7,6 +7,7 @@ import test from "node:test";
 import { createConversationStore } from "../server/agent-conversations.mjs";
 import { createSelfTest, SelfTestError } from "../server/selftest.mjs";
 import { generateQuestions } from "../server/selftest-questions.mjs";
+import { checkQuestionFile } from "../server/selftest-upload.mjs";
 import { labSnapshot } from "./helpers/lab-fixture.mjs";
 
 const SEED = 11;
@@ -286,10 +287,30 @@ test("start is refused with SELFTEST_NO_INVENTORY when the snapshot is empty", a
   }
 });
 
-test("start is refused with SELFTEST_BAD_COUNT for 0 and 501", async (t) => {
+test("start is refused with SELFTEST_BAD_COUNT for 0 and 1001", async (t) => {
   const { selfTest, agent } = await setup(t);
-  for (const count of [0, 501, 2.5, "10", -1]) {
+  for (const count of [0, 1001, 2.5, "10", -1]) {
     await assert.rejects(selfTest.start({ count }), (error) => error.status === 400 && error.code === "SELFTEST_BAD_COUNT");
+  }
+  assert.equal(agent.calls.length, 0);
+});
+
+test("an uploaded file runs in its own order, follow-ups after their first question", async (t) => {
+  const { selfTest, agent } = await setup(t);
+  const { questions } = checkQuestionFile({ name: "q.json", text: JSON.stringify({ node: ["is norco busy?"], "follow-up": ["which node is caddy on?", "what about pihole?"] }) });
+  const status = await selfTest.start({ questions });
+  assert.equal(status.requested, 3);
+  await selfTest.whenIdle();
+  assert.deepEqual(agent.calls.map((call) => call.question), ["is norco busy?", "which node is caddy on?", "what about pihole?"]);
+  assert.deepEqual(agent.calls[1].history, []);
+  assert.deepEqual(agent.calls[2].history, [{ role: "user", content: "which node is caddy on?" }, { role: "assistant", content: `ANSWER-${questions[1].id}` }]);
+  assert.deepEqual(agent.calls.map((call) => call.selfTest.category), ["node", "follow-up", "follow-up"]);
+});
+
+test("uploaded questions must be checked ones", async (t) => {
+  const { selfTest, agent } = await setup(t);
+  for (const questions of [[], [{ id: "bad id!", category: "node", text: "x", followUp: false }], [{ id: "u-1", category: "follow-up", text: "x", followUp: true }], Array.from({ length: 1001 }, (_, index) => ({ id: `u-${index}`, category: "node", text: `q${index}`, followUp: false }))]) {
+    await assert.rejects(selfTest.start({ questions }), (error) => error.status === 400 && error.code === "SELFTEST_BAD_QUESTIONS");
   }
   assert.equal(agent.calls.length, 0);
 });

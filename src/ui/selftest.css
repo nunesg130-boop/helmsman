@@ -152,3 +152,169 @@
     flex: 1;
   }
 }
+
+/* Foldable Settings cards ------------------------------------------------ */
+
+.settings-card-fold {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* The whole header opens and closes the card, not only the title. */
+.settings-card-v5.is-foldable > header {
+  position: relative;
+}
+
+.settings-card-fold::after {
+  position: absolute;
+  inset: 0;
+  content: "";
+}
+
+.settings-card-fold svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  color: var(--muted, #8b8c94);
+  transform: rotate(90deg);
+  transition: transform 0.15s ease;
+}
+
+.settings-card-v5.is-folded .settings-card-fold svg {
+  transform: rotate(0deg);
+}
+
+.settings-card-fold:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+.settings-card-v5.is-folded > header {
+  border-bottom-color: transparent;
+}
+
+.settings-card-v5.is-folded {
+  align-self: start;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-card-fold svg { transition: none; }
+}
+
+/* Agent settings: Behavior and Training */
+
+.settings-subtabs.filter-chips {
+  margin-top: 4px;
+}
+
+/* Self-test question files */
+
+.agent-selftest-upload {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.agent-selftest-upload code {
+  font-size: 0.95em;
+}
+
+.agent-selftest-upload__pick {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.agent-selftest-upload__pick .button {
+  cursor: pointer;
+}
+
+.agent-selftest-upload__pick .button.is-disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.agent-selftest-upload__pick input:focus-visible + .agent-selftest-upload__name,
+.agent-selftest-upload__pick:focus-within .button {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.agent-selftest-upload__name {
+  color: var(--muted, #8b8c94);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.agent-selftest-upload__report {
+  display: grid;
+  gap: 10px;
+}
+
+.agent-selftest-upload__summary {
+  font-size: 12px;
+}
+
+.agent-selftest-upload__errors,
+.agent-selftest-upload__warnings {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font-size: 12px;
+}
+
+.agent-selftest-upload__errors {
+  border-color: rgba(248, 113, 113, 0.45);
+  background: rgba(248, 113, 113, 0.06);
+}
+
+.agent-selftest-upload__warnings {
+  border-color: rgba(251, 191, 36, 0.4);
+  background: rgba(251, 191, 36, 0.05);
+}
+
+.agent-selftest-upload__errors ul,
+.agent-selftest-upload__warnings ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.agent-selftest-upload__format {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted, #8b8c94);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.agent-selftest-upload a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.agent-selftest-upload .button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  box-shadow: none;
+}

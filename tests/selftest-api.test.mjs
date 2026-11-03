@@ -173,12 +173,12 @@ test("status, start, stop, continue and review answer for a signed-in owner", as
   await assert.rejects(api(agent, "POST", "/api/v2/agent/selftest/continue", { count: 3 }), { status: 400, code: "INVALID_REQUEST" });
 });
 
-test("start rejects an unknown body key, a non-integer count and a count over 500", async (t) => {
+test("start rejects an unknown body key, a non-integer count and a count over 1000", async (t) => {
   const { agent, context } = await harness(t);
   await prepare(agent);
   await assert.rejects(api(agent, "POST", "/api/v2/agent/selftest/start", { count: 3, seed: 1 }), { status: 400, code: "INVALID_REQUEST" });
   await assert.rejects(api(agent, "POST", "/api/v2/agent/selftest/start", []), { status: 400, code: "INVALID_REQUEST" });
-  for (const count of [1.5, "5", null, 0, 501]) {
+  for (const count of [1.5, "5", null, 0, 1001]) {
     await assert.rejects(api(agent, "POST", "/api/v2/agent/selftest/start", { count }), { status: 400, code: "SELFTEST_BAD_COUNT" }, String(count));
   }
   assert.equal((await status(agent)).running, false);

@@ -152,8 +152,8 @@ test("guests ranked by memory, CPU or backup age, and a node's own guests", asyn
     { vmid: 112, name: "old", type: "qemu", node: "beta", status: "stopped" }
   ];
   assert.match(await runTool("list_workloads", { filter: "memory" }, context(snapshot)),
-    /highest first .*: 1\. haos \(VM 102, beta\): 90%, 2\. Media-Box \(VM 100, alpha\): 75%, 3\. dns \(LXC 101, beta\): 10%\. Not running, so no usage: old \(VM 112, beta\)/u);
-  assert.match(await runTool("list_workloads", { filter: "cpu" }, context(snapshot)), /: 1\. haos \(VM 102, beta\): 30%, 2\. Media-Box/u);
+    /highest first .*: 1\. haos \(VM 102\): 90%, 2\. Media-Box \(VM 100\): 75%, 3\. dns \(LXC 101\): 10%\. Not running, so no usage: old \(VM 112, beta\)/u);
+  assert.match(await runTool("list_workloads", { filter: "cpu" }, context(snapshot)), /: 1\. haos \(VM 102\): 30%, 2\. Media-Box/u);
   const backups = await runTool("list_workloads", { filter: "backups" }, context(snapshot));
   assert.match(backups, /^These have a backup \(oldest first\): dns \(LXC 101, beta\): success 50d ago \(over a month old\), Media-Box \(VM 100, alpha\): success 5d ago \(recent: within the last week\)\.$/mu);
   assert.match(backups, /^These have no backup recorded at all: haos \(VM 102, beta\), old \(VM 112, beta\)\.$/mu);
@@ -304,7 +304,7 @@ test("guests by number, several names at once, and rankings for one node", async
   assert.deepEqual(queries("Show the newest backup for every guest on Main."), [{ filter: "backups main" }]);
   assert.deepEqual(queries("compare the current CPU load on Main and norco."), [{ filter: "main" }, { filter: "norco" }]);
   const ranked = await runTool("list_workloads", { filter: "cpu vms norco" }, context(snapshot));
-  assert.match(ranked, /^The node itself: node norco \(Proxmox Main\): online, up 3d, cpu 17% of 12 cores, [^\n]+\nCPU use of each running VM on node norco, highest first \(percent of its own allowance\): 1\. haos-17\.2 \(VM 102, norco\): 1\.4% of 2 cores, 2\. docker \(VM 109, norco\): 1% of 4 cores\. Not running, so no usage: RHEL-10\.0-1 \(VM 112, norco\)\.$/u);
+  assert.match(ranked, /^The node itself: node norco \(Proxmox Main\): online, up 3d, cpu 17% of 12 cores, [^\n]+\nCPU use of each running VM on node norco, highest first \(percent of its own allowance\): 1\. haos-17\.2 \(VM 102\): 1\.4% of 2 cores, 2\. docker \(VM 109\): 1% of 4 cores\. Not running, so no usage: RHEL-10\.0-1 \(VM 112, norco\)\.$/u);
   assert.doesNotMatch(ranked, /Jelly-Arr|ollama/u);
   const mainBackups = await runTool("list_workloads", { filter: "backups main" }, context(snapshot));
   assert.match(mainBackups, /^Backups of 3 guests on node Main: 0 have one, 3 have none\.$/mu);
@@ -317,7 +317,7 @@ test("backup answers count the ages and the nodes, and say what Helmsman can't s
   assert.match(backups, /^By node: Main 0 of 3 have one, norco 2 of 5 have one\.$/mu);
   assert.match(backups, /^Helmsman sees only each guest's latest backup result and its age: not backup jobs, schedules/mu);
   const memory = await runTool("list_workloads", { filter: "memory" }, context(cluster()));
-  assert.match(memory, /: 1\. haos-17\.2 \(VM 102, norco\): 93% \(3\.7 of 4 GB, 0\.3 GB free\), 2\. Jelly-Arr/u, "sizes in GB beside the share");
+  assert.match(memory, /: 1\. haos-17\.2 \(VM 102\): 93% \(3\.7 of 4 GB\), 2\. Jelly-Arr/u, "sizes in GB beside the share");
 });
 
 test("two-word names and Home Assistant find their guests", () => {

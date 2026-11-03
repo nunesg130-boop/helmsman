@@ -18,7 +18,7 @@ const FILE_VERSION = 1;
 const MAX_FILE_BYTES = 4 * 1024 * 1024;
 const MAX_ASKED = 20_000;
 const MAX_FAILURES = 1_000;
-const MAX_COUNT = 500;
+const MAX_COUNT = 1000;
 const DEFAULT_COUNT = 50;
 const PAGE_SIZE = 25;
 const FAILURES_IN_A_ROW = 3;
@@ -517,12 +517,17 @@ export async function createSelfTest(options = {}) {
 
   return {
     /**
-     * Starts a new batch of `count` questions (1 to 500, default 50). The
+     * Starts a new batch of `count` questions (1 to 1,000, default 50). The
      * batch is shorter when fewer unasked questions exist; the result's
-     * `queued` against `requested` shows it.
+     * `queued` against `requested` shows it. With `questions` (checked by
+     * selftest-upload.mjs), those are the batch instead, in their order.
      */
-    async start({ count: wanted = DEFAULT_COUNT } = {}) {
-      if (!Number.isSafeInteger(wanted) || wanted < 1 || wanted > MAX_COUNT) {
+    async start({ count: wanted = DEFAULT_COUNT, questions: uploaded = null } = {}) {
+      const own = Array.isArray(uploaded) ? uploaded.map(cleanQuestion) : null;
+      if (own && (own.length < 1 || own.length > MAX_COUNT || own.some((question) => !question) || own[0].followUp)) {
+        throw new SelfTestError(400, "SELFTEST_BAD_QUESTIONS", `A question file must hold 1 to ${MAX_COUNT} checked questions.`);
+      }
+      if (!own && (!Number.isSafeInteger(wanted) || wanted < 1 || wanted > MAX_COUNT)) {
         throw new SelfTestError(400, "SELFTEST_BAD_COUNT", `Choose between 1 and ${MAX_COUNT} questions.`);
       }
       claim();
@@ -530,12 +535,15 @@ export async function createSelfTest(options = {}) {
       starting = new Promise((resolve) => { started = resolve; });
       try {
         requireKept();
-        const snapshot = readSnapshot();
-        if (!snapshot || generateQuestions(snapshot, { seed: 1, count: 1 }).length === 0) {
-          throw new SelfTestError(409, "SELFTEST_NO_INVENTORY", "Helmsman has no inventory yet.");
-        }
         const batchSeed = cleanSeed(seed()) ?? 1;
-        const questions = generateQuestions(snapshot, { seed: batchSeed, count: wanted, exclude: new Set(state.asked) });
+        let questions = own;
+        if (!questions) {
+          const snapshot = readSnapshot();
+          if (!snapshot || generateQuestions(snapshot, { seed: 1, count: 1 }).length === 0) {
+            throw new SelfTestError(409, "SELFTEST_NO_INVENTORY", "Helmsman has no inventory yet.");
+          }
+          questions = generateQuestions(snapshot, { seed: batchSeed, count: wanted, exclude: new Set(state.asked) });
+        }
         if (!questions.length) {
           throw new SelfTestError(409, "SELFTEST_EXHAUSTED", "Every question Helmsman can make from the inventory has been asked.");
         }
@@ -562,7 +570,7 @@ export async function createSelfTest(options = {}) {
       checkInterrupted = false;
       lastExchange = null;
       begin();
-      return { ...(await status()), requested: wanted };
+      return { ...(await status()), requested: own ? own.length : wanted };
     },
 
     /**

@@ -726,7 +726,7 @@ test("v2 control plane keeps browser and service secrets out of public and persi
       assert.equal(noSessionReview.status, 401);
       assert.equal(noSessionReview.json.code, "SESSION_REQUIRED");
 
-      for (const pathname of ["/api/v2/agent/selftest/start", "/api/v2/agent/selftest/stop", "/api/v2/agent/selftest/continue"]) {
+      for (const pathname of ["/api/v2/agent/selftest/start", "/api/v2/agent/selftest/stop", "/api/v2/agent/selftest/continue", "/api/v2/agent/selftest/upload", "/api/v2/agent/selftest/upload/check"]) {
         const missingCsrf = await jsonRequest(context, pathname, "POST", {}, { cookie: authentication.cookie });
         assert.equal(missingCsrf.status, 403, pathname);
         assert.equal(missingCsrf.json.code, "CSRF_TOKEN_REQUIRED", pathname);
@@ -738,6 +738,31 @@ test("v2 control plane keeps browser and service secrets out of public and persi
         assert.equal(wrongOrigin.status, 403, pathname);
         assert.equal(wrongOrigin.json.code, "ORIGIN_REJECTED", pathname);
       }
+
+      // Folded Settings cards are kept by Helmsman, behind the same session and CSRF checks.
+      assert.equal((await getRequest(context, "/api/v2/ui/cards")).status, 401);
+      const noCsrfCard = await jsonRequest(context, "/api/v2/ui/cards/agent-behavior-model-server", "PUT", { collapsed: true }, { cookie: authentication.cookie });
+      assert.equal(noCsrfCard.status, 403);
+      const folded = await jsonRequest(context, "/api/v2/ui/cards/agent-behavior-model-server", "PUT", { collapsed: true }, authentication);
+      assert.equal(folded.status, 200, JSON.stringify(folded.json));
+      assert.deepEqual(folded.json.collapsed, ["agent-behavior-model-server"]);
+      assert.deepEqual((await getRequest(context, "/api/v2/ui/cards", { cookie: authentication.cookie })).json.collapsed, ["agent-behavior-model-server"]);
+      assert.equal((await jsonRequest(context, "/api/v2/ui/cards/agent-behavior-model-server", "PUT", { collapsed: "yes" }, authentication)).status, 400);
+      assert.equal((await jsonRequest(context, "/api/v2/ui/cards/agent-behavior-model-server", "PUT", { collapsed: false, extra: 1 }, authentication)).status, 400);
+      assert.equal((await jsonRequest(context, "/api/v2/ui/cards/Bad_Card", "PUT", { collapsed: true }, authentication)).status, 404);
+      const opened = await jsonRequest(context, "/api/v2/ui/cards/agent-behavior-model-server", "PUT", { collapsed: false }, authentication);
+      assert.deepEqual(opened.json.collapsed, []);
+
+      // A question file is checked without running anything.
+      const checked = await jsonRequest(context, "/api/v2/agent/selftest/upload/check", "POST", { name: "q.csv", text: "question,category\nis caddy up?,guest-lookup\nis caddy up?,guest-lookup\n" }, authentication);
+      assert.equal(checked.status, 200, JSON.stringify(checked.json));
+      assert.equal(checked.json.total, 1);
+      assert.equal(checked.json.counts.repeated, 1);
+      assert.equal(checked.json.questions, undefined, "the questions themselves are not sent back");
+      const badFile = await jsonRequest(context, "/api/v2/agent/selftest/upload", "POST", { name: "q.csv", text: "question,category\nis caddy up?,nonsense\n" }, authentication);
+      assert.equal(badFile.status, 400);
+      assert.equal(badFile.json.code, "QUESTION_FILE_ERRORS");
+      assert.match(badFile.json.errors[0], /Line 2: "nonsense" is not a Self-test category/u);
 
       const selfTestStatus = await getRequest(context, "/api/v2/agent/selftest", { cookie: authentication.cookie });
       assert.equal(selfTestStatus.status, 200, JSON.stringify(selfTestStatus.json));
@@ -753,7 +778,7 @@ test("v2 control plane keeps browser and service secrets out of public and persi
       const keepOff = await jsonRequest(context, "/api/v2/agent/selftest/start", "POST", { count: 5 }, authentication);
       assert.equal(keepOff.status, 409, JSON.stringify(keepOff.json));
       assert.equal(keepOff.json.code, "SELFTEST_KEEP_OFF");
-      const badCount = await jsonRequest(context, "/api/v2/agent/selftest/start", "POST", { count: 501 }, authentication);
+      const badCount = await jsonRequest(context, "/api/v2/agent/selftest/start", "POST", { count: 1001 }, authentication);
       assert.equal(badCount.status, 400);
       assert.equal(badCount.json.code, "SELFTEST_BAD_COUNT");
     });
