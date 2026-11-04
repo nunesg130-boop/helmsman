@@ -341,7 +341,11 @@ function hostGuest(snapshot, environmentName) {
  * own: the guest whose manual line says it runs the service ("Jelly-Arr: VM
  * 100 ... Runs Jellyfin (native)"), and what else is on that guest's node.
  */
-function serviceHostLines(snapshot, label) {
+// "Same host as jellyfin": the guest and what else runs on it, its
+// containers. "Same node as the jellyfin host": the guest's node too. Given
+// the node's other guests for a host question, models listed separate LXCs
+// as running on Jellyfin's host.
+function serviceHostLines(snapshot, label, scope = "node") {
   const manual = MANUAL_FOR.get(snapshot);
   const wanted = String(label || "").toLowerCase().trim();
   if (!manual || wanted.length < 3) return [`Where ${untrusted(label, 40)} runs is not in the manual or the inventory.`];
@@ -360,10 +364,18 @@ function serviceHostLines(snapshot, label) {
   }
   if (found.size !== 1) return [`Where ${untrusted(label, 40)} runs is not clear from the manual.`];
   const [guest] = found;
+  const where = `${untrusted(guest.name, 40)} (${guest.type === "lxc" ? "LXC" : "VM"} ${guest.vmid} on node ${untrusted(guest.node, 40)})`;
+  const containers = workloadSummary(snapshot, "container").filter((line) => line.toLowerCase().startsWith(`containers on ${String(guest.name).toLowerCase()} (`));
+  if (scope === "host") {
+    return [
+      `${untrusted(label, 40)} runs on ${where}, per your manual. What else runs on ${untrusted(guest.name, 40)} itself is its Docker containers below and what your manual's line for it lists; other guests on node ${untrusted(guest.node, 40)} are separate machines, not this host.`,
+      ...(containers.length ? containers : [`No Docker containers are recorded on ${untrusted(guest.name, 40)}.`])
+    ];
+  }
   return [
-    `${untrusted(label, 40)} runs on ${untrusted(guest.name, 40)} (${guest.type === "lxc" ? "LXC" : "VM"} ${guest.vmid} on node ${untrusted(guest.node, 40)}), per your manual.`,
+    `${untrusted(label, 40)} runs on ${where}, per your manual.`,
     ...besideLines(snapshot, String(guest.vmid)),
-    ...workloadSummary(snapshot, "container").filter((line) => line.toLowerCase().startsWith(`containers on ${String(guest.name).toLowerCase()} (`))
+    ...containers
   ];
 }
 
@@ -762,10 +774,14 @@ function workloadMetric(snapshot, metric, kind = null, node = null) {
         const minutes = Math.floor((seconds % 3_600) / 60);
         return days ? `${days}d ${hours}h` : hours ? `${hours}h ${minutes}m` : `${minutes}m`;
       };
+      // Said as "started or restarted", with the longest-running named
+      // apart: asked "which was restarted most recently", models answered
+      // "no guest was restarted" and called the newest the longest-running.
+      const oldest = ` Longest running: ${name(known[0])}, up ${exact(known[0])}.`;
       recent = close.length === 1
-        ? ` Started most recently: ${name(newest)}, up ${exact(newest)}; the next most recent has been up ${exact(known.at(-2))}.`
+        ? ` Started or restarted most recently (the shortest uptime): ${name(newest)}, up ${exact(newest)}; the next most recent has been up ${exact(known.at(-2))}.${oldest}`
         : close.length < known.length
-          ? ` Started most recently, within the same hour of each other (about ${exact(newest)} ago): ${close.map(name).join(", ")}.`
+          ? ` Started or restarted most recently, within the same hour of each other (about ${exact(newest)} ago): ${close.map(name).join(", ")}.${oldest}`
           : "";
     }
     return [...notes, `How long each running ${noun}${onNode} has been up, longest first (since its last start): ${ranked.join(", ")}.${recent}${stoppedNote}`].join("\n");
@@ -1050,8 +1066,8 @@ function listWorkloads(snapshot, _context, args) {
   const filter = typeof args.filter === "string" ? args.filter.trim().toLowerCase().slice(0, 60) : "";
   const measure = metricFilter(snapshot, filter);
   if (measure) return workloadMetric(snapshot, measure.metric, measure.kind, measure.node);
-  const serviceHost = /^service host (.+)$/u.exec(filter)?.[1];
-  if (serviceHost) return serviceHostLines(snapshot, serviceHost.trim()).join("\n");
+  const serviceHost = /^service (host|node) (.+)$/u.exec(filter);
+  if (serviceHost) return serviceHostLines(snapshot, serviceHost[2].trim(), serviceHost[1]).join("\n");
   const hostNode = /^node of (.+)$/u.exec(filter)?.[1];
   if (hostNode) return (hostNodeLines(snapshot, hostNode.trim()) || besideLines(snapshot, hostNode.trim())).join("\n");
   const beside = /^beside (?:(vms|lxcs) )?(.+)$/u.exec(filter);
