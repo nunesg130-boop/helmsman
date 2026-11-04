@@ -971,7 +971,12 @@ export async function createAgent(options) {
           // what it named: "and main?" after "the ip of norco?" is about
           // main, not norco.
           // "its gateway?" refers back to the same thing, so borrow it all.
-          const refersBack = /\b(?:it|its|that|this|their|them|they)\b/iu.test(prompt);
+          // So does "and port?" after "the IP for Sure?": only a detail is
+          // new, so the thing it is about is the earlier one. Without Sure
+          // borrowed, the search found no line for Sure and the agent said
+          // the manual gives no port.
+          const refersBack = /\b(?:it|its|that|this|their|them|they)\b/iu.test(prompt)
+            || (words.length > 0 && words.every((word) => MANUAL_TOPIC_WORDS.test(word)));
           const borrowed = manualKeywords(earlierQuestion).filter((word) => !words.length || refersBack || MANUAL_TOPIC_WORDS.test(word));
           words = [...new Set([...words, ...borrowed])].slice(0, 8);
         }

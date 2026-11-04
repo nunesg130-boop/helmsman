@@ -1497,6 +1497,10 @@ test("follow-ups get the earlier question's lookups, and nicknames for services 
   const manual = result.messages.find((message) => message.tool_call_id === "seed-manual");
   assert.match(manual.content, /main \| 10\.0\.0\.4/u);
   assert.match(JSON.parse(result.messages.find((message) => message.tool_calls?.[0]?.id === "seed-manual").tool_calls[0].function.arguments).query, /^main ip$/u, "the earlier topic, not the earlier host");
+  context.manualText += "\n## Guests\n- sure: LXC 111 on norco, 10.0.0.107, port 3000.";
+  result = await ask("and port?", [{ role: "user", content: "What's the IP for Sure?" }, { role: "assistant", content: "10.0.0.107." }]);
+  assert.match(JSON.parse(result.messages.find((message) => message.tool_calls?.[0]?.id === "seed-manual").tool_calls[0].function.arguments).query, /\bsure\b/u, "only a detail is new, so the earlier subject is borrowed (v1.18.2)");
+  assert.match(result.messages.find((message) => message.tool_call_id === "seed-manual").content, /sure: LXC 111 on norco, 10\.0\.0\.107, port 3000/u);
   result = await ask("why?", [{ role: "user", content: "is sonarr ok?" }, { role: "assistant", content: "Yes." }]);
   assert.ok(result.tools.includes("service_status"), "\"why?\" is about the service asked about");
   result = await ask("sonnar status");
