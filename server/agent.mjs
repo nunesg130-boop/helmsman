@@ -936,6 +936,14 @@ export async function createAgent(options) {
           if (verdicts.length) lastWorkloads.content += `\nThe answer, worked out by Helmsman from these lines: ${verdicts.join(" ")}`;
         }
       }
+      // "Which guest was restarted most recently?": the newest start, said
+      // as the answer. With the history's note that guests have no start
+      // history beside it, models answered "no guest was restarted".
+      if (lastWorkloads && /\b(?:most recent(?:ly)?|latest|last|newest)\b/u.test(String(prompt).toLowerCase())
+        && /\b(?:re)?(?:start|boot)(?:ed|s)?\b|\breboot(?:ed)?\b|\bcame (?:back )?up\b/u.test(String(prompt).toLowerCase())) {
+        const newest = lookups.join("\n").match(/Started or restarted most recently[^.]*\.(?:[^.]*the next most recent has been up [^.]*\.)?/u)?.[0];
+        if (newest) lastWorkloads.content += `\nThe answer, worked out by Helmsman from these lines: ${newest} Helmsman sees only uptime, so it can't tell a restart from a first start.`;
+      }
       if (seeds.media) await seed("media_queue", {});
       // Manual lines only for questions about addresses, procedures and
       // Helmsman itself. Given for anything else, small models report the
@@ -950,7 +958,10 @@ export async function createAgent(options) {
       if (placedByManual) {
         for (const id of services.slice(0, 1)) {
           const label = (snapshot()?.services || []).find((service) => service.id === id)?.label;
-          if (label) await seed("list_workloads", { filter: `service host ${plainText(label, 40).toLowerCase()}` });
+          // "Other guests on the same node as the jellyfin host" asks about
+          // the node; "same host as jellyfin" about the machine itself.
+          const scope = /\b(?:nodes?|guests?|vms?|lxcs?|proxmox)\b/u.test(String(prompt).toLowerCase()) ? "node" : "host";
+          if (label) await seed("list_workloads", { filter: `service ${scope} ${plainText(label, 40).toLowerCase()}` });
         }
       }
       if ((seeds.manual || seeds.help || placedByManual) && !period) {

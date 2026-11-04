@@ -491,7 +491,7 @@ test("v1.17.5: the lookups the 1.17.4 Self-test showed were missing", async () =
   assert.doesNotMatch(lxcs, /tie for highest/u);
   // The most recent start, named at the end of the uptime ranking.
   snapshot.infrastructure.environments[0].workloads.find((workload) => workload.name === "ollama").uptimeSeconds = 3600;
-  assert.match(await tool("uptime"), /Started most recently: ollama \(LXC 114, norco\), up 1h 0m; the next most recent has been up 8d 0h\./u);
+  assert.match(await tool("uptime"), /Started or restarted most recently \(the shortest uptime\): ollama \(LXC 114, norco\), up 1h 0m; the next most recent has been up 8d 0h\./u);
 });
 
 test("v1.17.5: manual questions the Self-test showed were never searched", () => {
@@ -529,18 +529,22 @@ test("v1.17.7: long results cut at lines, a native service's host from the manua
   const snapshot = cluster();
   const manual = "## Guests on Main\n- Jelly-Arr: VM 100 on Main, 10.0.0.7. Runs Jellyfin (native), the arr stack and Helmsman.\n- seerr: LXC 104 on Main. Login uses the Jellyfin username.";
   const withManual = { ...context(snapshot), manual: () => manual };
+  const node = await runTool("list_workloads", { filter: "service node jellyfin" }, withManual);
+  assert.match(node, /^jellyfin runs on Jelly-Arr \(VM 100 on node Main\), per your manual\.\nJelly-Arr \(VM 100\) shares node Main with 2 other guests\./u, "seerr's line names Jellyfin but doesn't run it");
+  assert.match(node, /\nContainers on Jelly-Arr \(Portainer, VM 100 on node Main\): 2, 1 running/u);
   const host = await runTool("list_workloads", { filter: "service host jellyfin" }, withManual);
-  assert.match(host, /^jellyfin runs on Jelly-Arr \(VM 100 on node Main\), per your manual\.\nJelly-Arr \(VM 100\) shares node Main with 2 other guests\./u, "seerr's line names Jellyfin but doesn't run it");
+  assert.match(host, /^jellyfin runs on Jelly-Arr \(VM 100 on node Main\), per your manual\. What else runs on Jelly-Arr itself is its Docker containers/u);
   assert.match(host, /\nContainers on Jelly-Arr \(Portainer, VM 100 on node Main\): 2, 1 running/u);
+  assert.doesNotMatch(host, /shares node/u, "the same host is the machine, not the node's other guests");
   assert.equal(await runTool("list_workloads", { filter: "service host jellyfin" }, context(snapshot)), "Where jellyfin runs is not in the manual or the inventory.");
 
   const guests = snapshot.infrastructure.environments[0].workloads;
   for (const guest of guests) guest.uptimeSeconds = 7 * 86_400 + 5 * 3_600;
   guests.find((guest) => guest.name === "pihole").uptimeSeconds = 7 * 86_400 + 2 * 3_600;
-  assert.match(await runTool("list_workloads", { filter: "uptime" }, context(snapshot)), /Started most recently: pihole \(LXC 106, norco\), up 7d 2h; the next most recent has been up 7d 5h\./u, "all read 7d, but one started three hours later");
+  assert.match(await runTool("list_workloads", { filter: "uptime" }, context(snapshot)), /Started or restarted most recently \(the shortest uptime\): pihole \(LXC 106, norco\), up 7d 2h; the next most recent has been up 7d 5h\. Longest running: /u, "all read 7d, but one started three hours later");
   guests.find((guest) => guest.name === "pihole").uptimeSeconds = 7 * 86_400 + 5 * 3_600 - 600;
   guests.find((guest) => guest.name === "Jelly-Arr").uptimeSeconds = 12 * 86_400;
-  assert.match(await runTool("list_workloads", { filter: "uptime" }, context(snapshot)), /Started most recently, within the same hour of each other \(about 7d 4h ago\): /u);
+  assert.match(await runTool("list_workloads", { filter: "uptime" }, context(snapshot)), /Started or restarted most recently, within the same hour of each other \(about 7d 4h ago\): /u);
 });
 
 test("v1.17.7: manual search finds the ISP and the change log", () => {
