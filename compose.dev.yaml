@@ -6,6 +6,6 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        HELMSMAN_VERSION: "1.17.9"
+        HELMSMAN_VERSION: "1.18.0"
         HELMSMAN_REVISION: "local"
-    image: "helmsman:1.17.9"
+    image: "helmsman:1.18.0"

@@ -30,7 +30,7 @@ import {
   toolDefinitions,
   untrusted,
   manualKeywords,
-  manualMatches,
+  manualLinesFor,
   shortenText,
   isApprovalMessage,
   withKind,
@@ -165,6 +165,24 @@ function localParts(now, timeZone) {
 
 // What a manual question asks about, as opposed to which host or app it
 // names: "and main?" after "what's the ip of norco?" borrows "ip" only.
+// "Did Radarr go down today?": the whole answer from its history line, not
+// only yes or no. Given the yes alone, models said "several problems" with
+// no count, or "it did not go down" after describing a warning.
+export function serviceVerdict(label, line) {
+  const match = /^- [^:]+: (\d+) problems?, (.+?) in total(?:, longest single problem (.+?)(?: \(([^)]*)\))?)?(, one still open)?(; it stayed reachable[^.]*)?\. (?:Latest: )?(.*)$/u.exec(line || "");
+  if (!match) return `${label} had no problems recorded in this period.`;
+  const [, count, total, longest, longestWhen, open, reachable, latest] = match;
+  const single = count === "1";
+  const first = latest.split("; ")[0].replace(/\.$/u, "").replace(/ \([^)]*\)$/u, "");
+  const what = single
+    ? `${label} had 1 problem in this period, ${total} long, ${first}`
+    : `${label} had ${count} problems in this period, ${total} in total; the longest lasted ${longest}${longestWhen ? `, ${longestWhen}` : ""}`;
+  const kind = reachable
+    ? ` It stayed reachable throughout, so ${single ? "it was a warning" : "these were warnings"}, not ${single ? "an outage" : "outages"}.`
+    : " So yes, it had problems (each is a time it was unhealthy or unreachable).";
+  return `${what}.${open ? " One is still open." : ""}${kind}`;
+}
+
 const MANUAL_TOPIC_WORDS = /^(?:ip|ips|address(?:es)?|subnet|gateway|dns|vlans?|mac|hostname|ports?|hardware|specs?|cpu|gpu|ram|memory|disks?|drives?|storage|backups?|stored|location|notes?|procedure|steps|restart|reboot|update|upgrade|password|layout|config(?:uration)?|version|model|serial|os)$/u;
 
 class RateWindow {
@@ -863,8 +881,7 @@ export async function createAgent(options) {
           const label = plainText((snapshot()?.services || []).find((service) => service.id === id)?.label
             || [...(snapshot()?.infrastructure?.environments || []), ...(snapshot()?.infrastructure?.services || [])].find((item) => item.id === id)?.displayName || id, 60);
           const line = historyMessage.content.split("\n").find((text) => text.startsWith(`- ${label}: `));
-          const count = /^- [^:]+: (\d+) problems?/u.exec(line || "")?.[1];
-          return count ? `${label} had ${count} problem${count === "1" ? "" : "s"} in this period, so yes, it had problems (each is a time it was unhealthy or unreachable).` : `${label} had no problems recorded in this period.`;
+          return serviceVerdict(label, line);
         });
         historyMessage.content += `\nFor the service${services.length === 1 ? "" : "s"} asked about, worked out by Helmsman: ${verdicts.join(" ")}`;
       }
@@ -952,7 +969,7 @@ export async function createAgent(options) {
           .flatMap((environment) => (environment.workloads || []).filter((workload) => String(workload.vmid) === id).map((workload) => plainText(workload.name, 40).toLowerCase())));
         words = [...new Set([...words, ...idNames.filter(Boolean)])].slice(0, 8);
         const markdown = `${manual?.() || ""}\n\n${HELMSMAN_HELP}`;
-        const hits = manualMatches(markdown, words);
+        const hits = manualLinesFor(markdown, prompt, words);
         // A port question about something the manual gives no port for says
         // so, or models filled in another service's port or a "default".
         const portless = asksPort ? portlessSubjects(snapshot(), prompt, services, hits, lookups) : [];

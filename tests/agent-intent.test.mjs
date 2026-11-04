@@ -419,8 +419,8 @@ test("Docker hosts matched to guests from the manual, ID ranges, neighbours of a
   const queries = (text) => workloadQueries(snapshot, text, { workloadWords: questionSeeds(text).workloads });
   assert.deepEqual(queries("List guests with IDs above 150."), [{ filter: "ids 151-999999999" }]);
   assert.deepEqual(queries("Which guests are in the 100 through 110 ID range?"), [{ filter: "ids 100-110" }]);
-  assert.deepEqual(queries("Which LXCs are colocated with Jelly-Arr?"), [{ filter: "Jelly-Arr" }, { filter: "beside jelly-arr" }], "a host that is also a guest adds what else is on its node");
-  assert.deepEqual(queries("What VMs share norco with haos-17.2?"), [{ filter: "haos-17.2" }, { filter: "beside haos-17.2" }]);
+  assert.deepEqual(queries("Which LXCs are colocated with Jelly-Arr?"), [{ filter: "Jelly-Arr" }, { filter: "beside lxcs jelly-arr" }], "a host that is also a guest adds what else is on its node");
+  assert.deepEqual(queries("What VMs share norco with haos-17.2?"), [{ filter: "haos-17.2" }, { filter: "beside vms haos-17.2" }]);
   assert.deepEqual(queries("What else shares the Docker host with radarr?"), [{ filter: "radarr" }, { filter: "beside radarr" }]);
   assert.deepEqual(queries("How many docker-named VMs are running?").slice(0, 1), [{ filter: "docker" }], "docker-named is the name docker");
   assert.deepEqual(queries("Which guest on Main is closest to its memory limit?"), [{ filter: "memory main" }], "closest to a limit is use, not size");

@@ -214,6 +214,15 @@ function measuresIn(question) {
 
 // "What else is on the same node as frigate", "what runs alongside radarr":
 // the named thing's node or Docker host, with everything on it.
+// "Which VMs share a node with Kasm": only the VMs ("vms "), or only the
+// LXCs ("lxcs "), as the prefix of a "beside" filter. A plural or "which
+// VM" asks for the kind; "docker VM 109" only names the subject.
+function guestKindAsked(question) {
+  const wantsVms = /\b(?:vms|virtual machines|(?:which|what|other|any) vm)\b/u.test(question);
+  const wantsLxcs = /\b(?:lxcs|(?:which|what|other|any) lxc)\b/u.test(question);
+  return wantsVms !== wantsLxcs && !/\bguests?\b/u.test(question) ? (wantsVms ? "vms " : "lxcs ") : "";
+}
+
 export const COLOCATED = /\b(?:co-?located|same (?:[a-z-]+ )?(?:node|host|machine|server|vm|environment) as|alongside|next to|neighbou?rs?|shar(?:e|es|ed|ing) (?:[a-z0-9._-]+ ){0,3}with|shar(?:e|es|ed|ing) (?:a |the |its |that |this |the same )?(?:node|host|machine|environment)|what else (?:is|runs|lives) on)\b/u;
 
 /** "IDs above 150", "the 100 through 110 ID range": that range as "ids 151-999999999". */
@@ -326,7 +335,7 @@ export function workloadQueries(snapshot, text, { workloadWords = false, namesOn
   // adds that guest's node, with everything on it.
   if (hosts.length && !namesOnly && !ids.length && !things.length && COLOCATED.test(question)) {
     const guestHosts = hosts.filter((host) => homeOf(snapshot, host).some((home) => home.toLowerCase() !== host.toLowerCase()));
-    if (guestHosts.length) return [...hosts.slice(0, 2), ...guestHosts.slice(0, 2).map((host) => `beside ${host.toLowerCase()}`)].map((filter) => ({ filter }));
+    if (guestHosts.length) return [...hosts.slice(0, 2), ...guestHosts.slice(0, 2).map((host) => `beside ${guestKindAsked(question)}${host.toLowerCase()}`)].map((filter) => ({ filter }));
   }
   if (hosts.length && !namesOnly && !ids.length && !things.length) {
     return hosts.slice(0, 2).map((host) => ({ filter: hostDetail ? `containers ${hostDetail[0]} ${host.toLowerCase()}` : host }));
@@ -361,7 +370,8 @@ export function workloadQueries(snapshot, text, { workloadWords = false, namesOn
     // node is its Docker host's, so the guests there, not its neighbour containers.
     const askNode = /\b(?:nodes?|guests?|vms?|lxcs?|proxmox)\b/u.test(question);
     const guestNames = new Set((snapshot?.infrastructure?.environments || []).flatMap((environment) => (environment.workloads || []).map((workload) => String(workload.name || "").toLowerCase())));
-    const besideFilter = (subject) => (askNode && !/^\d+$/u.test(subject) && !guestNames.has(subject.toLowerCase()) ? `node of ${subject.toLowerCase()}` : `beside ${subject.toLowerCase()}`);
+    const kind = guestKindAsked(question);
+    const besideFilter = (subject) => (askNode && !/^\d+$/u.test(subject) && !guestNames.has(subject.toLowerCase()) ? `node of ${subject.toLowerCase()}` : `beside ${guestNames.has(subject.toLowerCase()) || /^\d+$/u.test(subject) ? kind : ""}${subject.toLowerCase()}`);
     if (subjects.length) return [...filters.slice(0, 2), ...subjects.map(besideFilter)].map((filter) => ({ filter }));
   }
   if (filters.length) {

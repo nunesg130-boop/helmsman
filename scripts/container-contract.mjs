@@ -202,7 +202,7 @@ if (existsSync(join(root, "Dockerfile"))) {
   );
 
   record(
-    /^ARG HELMSMAN_VERSION=1\.17\.9$/mu.test(dockerfile)
+    /^ARG HELMSMAN_VERSION=1\.18\.0$/mu.test(dockerfile)
       && /^ARG HELMSMAN_REVISION=unknown$/mu.test(dockerfile)
       && /org\.opencontainers\.image\.title="Helmsman"/u.test(dockerfile)
       && /org\.opencontainers\.image\.licenses="AGPL-3\.0-only"/u.test(dockerfile)
@@ -270,7 +270,7 @@ if (existsSync(join(root, "Dockerfile"))) {
 if (existsSync(join(root, "server/broker.mjs"))) {
   const broker = read("server/broker.mjs");
   record(
-    /const DEFAULT_VERSION = "1\.17\.9"/u.test(broker)
+    /const DEFAULT_VERSION = "1\.18\.0"/u.test(broker)
       && /process\.env\.HELMSMAN_VERSION/u.test(broker)
       && /\^\[0-9A-Za-z\]\[0-9A-Za-z\.\+-\]\{0,63\}\$/u.test(broker),
     "runtime version follows the validated immutable v1.17.9 image metadata"
@@ -457,9 +457,9 @@ if (existsSync(join(root, "compose.dev.yaml"))) {
       && /^\s{4}build:\s*$/mu.test(developmentCompose)
       && /^\s{6}context:\s*[.]\s*$/mu.test(developmentCompose)
       && /^\s{6}dockerfile:\s*Dockerfile\s*$/mu.test(developmentCompose)
-      && /HELMSMAN_VERSION:\s*["']1\.17\.9["']/u.test(developmentCompose)
+      && /HELMSMAN_VERSION:\s*["']1\.18\.0["']/u.test(developmentCompose)
       && /HELMSMAN_REVISION:\s*["']local["']/u.test(developmentCompose)
-      && /image:\s*["']helmsman:1\.17\.9["']/u.test(developmentCompose),
+      && /image:\s*["']helmsman:1\.18\.0["']/u.test(developmentCompose),
     "developer Compose override keeps source builds separate from the production pull contract"
   );
 }

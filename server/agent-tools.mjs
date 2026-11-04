@@ -986,15 +986,32 @@ function stackLines(snapshot, stackName) {
  * node's whole list, models left out stopped guests, listed the guest
  * itself, or said "three others" and named four.
  */
-function besideLines(snapshot, subject) {
+// "Which VMs share a node with Kasm": only the VMs, or models listed the
+// LXCs too. `onlyKind` is "qemu" (VMs) or "lxc".
+function besideLines(snapshot, subject, onlyKind = null) {
   const wanted = subject.toLowerCase();
   const byId = /^\d{1,9}$/u.test(wanted);
   const lines = [];
+  const kindWord = onlyKind === "lxc" ? "LXC" : onlyKind === "qemu" ? "VM" : null;
   for (const environment of snapshot.infrastructure?.environments || []) {
     const guests = guestsOf(environment);
     for (const guest of guests.filter((workload) => (byId ? String(workload.vmid) === wanted : String(workload.name || "").toLowerCase() === wanted))) {
       const label = `${untrusted(guest.name, 40)} (${guest.type === "lxc" ? "LXC" : "VM"} ${guest.vmid})`;
-      const others = guests.filter((workload) => workload.node === guest.node && workload.vmid !== guest.vmid);
+      const sameNode = guests.filter((workload) => workload.node === guest.node && workload.vmid !== guest.vmid);
+      const others = kindWord ? sameNode.filter((workload) => (onlyKind === "lxc") === (workload.type === "lxc")) : sameNode;
+      if (kindWord) {
+        const describeKind = (workload) => `${untrusted(workload.name, 40)} (${kindWord} ${workload.vmid})`;
+        const runningKind = others.filter((workload) => workload.status === "running").map(describeKind);
+        const stoppedKind = others.filter((workload) => workload.status !== "running").map((workload) => `${describeKind(workload)} ${untrusted(workload.status, 20)}`);
+        const rest = sameNode.length - others.length;
+        const restNote = rest ? ` The node's other ${rest} guest${rest === 1 ? " is" : "s are"} ${onlyKind === "lxc" ? "VMs" : "LXCs"}, not asked about.` : "";
+        lines.push(others.length
+          ? `${label} shares node ${untrusted(guest.node, 40)} with ${others.length} other ${kindWord}${others.length === 1 ? "" : "s"}. `
+            + `Running (${runningKind.length}): ${runningKind.length ? runningKind.join(", ") : "none"}.`
+            + `${stoppedKind.length ? ` Not running (${stoppedKind.length}): ${stoppedKind.join(", ")}.` : " None are stopped."}${restNote}`
+          : `No other ${kindWord} is on node ${untrusted(guest.node, 40)} with ${label}.${restNote}`);
+        continue;
+      }
       const describe = (workload) => `${untrusted(workload.name, 40)} (${workload.type === "lxc" ? "LXC" : "VM"} ${workload.vmid})`;
       const running = others.filter((workload) => workload.status === "running").map(describe);
       const stopped = others.filter((workload) => workload.status !== "running").map((workload) => `${describe(workload)} ${untrusted(workload.status, 20)}`);
@@ -1009,7 +1026,7 @@ function besideLines(snapshot, subject) {
         + `${stopped.length ? ` Not running (${stopped.length}): ${stopped.join(", ")}.` : " None are stopped."}`);
     }
   }
-  if (!byId) {
+  if (!byId && !kindWord) {
     for (const [host, containers] of containersByHost(snapshot)) {
       if (!containers.some((container) => String(container.name || "").toLowerCase() === wanted)) continue;
       const others = containers.filter((container) => String(container.name || "").toLowerCase() !== wanted);
@@ -1037,8 +1054,8 @@ function listWorkloads(snapshot, _context, args) {
   if (serviceHost) return serviceHostLines(snapshot, serviceHost.trim()).join("\n");
   const hostNode = /^node of (.+)$/u.exec(filter)?.[1];
   if (hostNode) return (hostNodeLines(snapshot, hostNode.trim()) || besideLines(snapshot, hostNode.trim())).join("\n");
-  const beside = /^beside (.+)$/u.exec(filter)?.[1];
-  if (beside) return besideLines(snapshot, beside.trim()).join("\n");
+  const beside = /^beside (?:(vms|lxcs) )?(.+)$/u.exec(filter);
+  if (beside) return besideLines(snapshot, beside[2].trim(), beside[1] === "vms" ? "qemu" : beside[1] === "lxcs" ? "lxc" : null).join("\n");
   // "What's using port 5432": every container with that port, published or not.
   const port = /^port (\d{1,5})$/u.exec(filter)?.[1];
   if (port) return portLines(snapshot, Number(port)).join("\n");
@@ -1323,12 +1340,51 @@ export function manualMatches(markdown, words, limit = 6) {
   return hits.sort((left, right) => right.score - left.score || left.index - right.index).slice(0, limit).map(({ text }) => text);
 }
 
+// "What changed in the last manual update?", "what's in the change log?":
+// the newest change-log entries. Word matching ranked them below any line
+// that happened to say "changes" ("written from v2.7.2 plus later changes"),
+// so the model said the manual has no change log.
+export const CHANGE_LOG_QUESTION = /\b(?:change ?logs?|what(?:'s| has| have)? changed|(?:last|latest|newest|most recent|recent) (?:manual |notes? )?(?:updates?|changes?|edits?|versions?|revisions?)|manual (?:updates?|versions?|changes?|revisions?))\b/iu;
+
+/** The newest entries under a "Change log" heading, highest version first. */
+export function manualChangeLog(markdown, limit = 3) {
+  let inLog = false;
+  let heading = "";
+  const entries = [];
+  for (const raw of String(markdown || "").split("\n")) {
+    const line = raw.trim();
+    if (/^#{1,4}\s/u.test(line)) {
+      heading = line.replace(/^#+\s*/u, "");
+      inLog = /\b(?:change ?log|changes|revision history|version history)\b/iu.test(heading);
+      continue;
+    }
+    if (!inLog || !/^[-*]\s+\S/u.test(line)) continue;
+    const version = /\bv?(\d+)\.(\d+)(?:\.(\d+))?\b/u.exec(line);
+    entries.push({ index: entries.length, text: `[${untrusted(heading, 40)}] ${untrusted(line, 200)}`, key: version ? [Number(version[1]), Number(version[2]), Number(version[3] || 0)] : null });
+  }
+  // By version when every entry has one; otherwise the manual's own order,
+  // which is usually newest first.
+  if (entries.length && entries.every((entry) => entry.key)) {
+    entries.sort((left, right) => right.key[0] - left.key[0] || right.key[1] - left.key[1] || right.key[2] - left.key[2] || left.index - right.index);
+  }
+  return entries.slice(0, limit).map(({ text }) => text);
+}
+
+/** Manual lines for a question: the newest change-log entries first when it asks what changed. */
+export function manualLinesFor(markdown, question, words, limit = 6) {
+  const hits = manualMatches(markdown, words, limit);
+  if (!CHANGE_LOG_QUESTION.test(String(question || ""))) return hits;
+  const log = manualChangeLog(markdown);
+  if (!log.length) return hits;
+  return [...log.map((text, index) => (index ? text : `${text} (the newest change-log entry)`)), ...hits.filter((text) => !log.includes(text))].slice(0, limit + log.length);
+}
+
 function searchManual(_snapshot, context, args) {
   // Helmsman's own help is searched too, after the owner's notes.
   const markdown = `${context.manual?.() || ""}\n\n${HELMSMAN_HELP}`;
   const words = manualKeywords(args.query, 6);
-  if (!words.length) return "Give one or more words to search for.";
-  const hits = manualMatches(markdown, words);
+  if (!words.length && !CHANGE_LOG_QUESTION.test(String(args.query || ""))) return "Give one or more words to search for.";
+  const hits = manualLinesFor(markdown, args.query, words);
   if (!hits.length) return `The manual has nothing about ${words.join(" ")}.`;
   return hits.map((text) => `- ${text}`).join("\n");
 }

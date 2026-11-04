@@ -1344,7 +1344,7 @@ test("questions about a period get Helmsman's own history, and gaps are named", 
   // "Did Sonarr go down?": the yes or no for the named service, worked out by code.
   await api(agent, "POST", "/api/v2/agent/ask", { question: "Did Sonarr have any problems in the past 24 hours?" });
   const verdict = context.modelCalls[2].messages.find((message) => message.tool_call_id === "seed-history").content;
-  assert.match(verdict, /For the service asked about, worked out by Helmsman: Sonarr had 1 problem in this period, so yes, it had problems/u);
+  assert.match(verdict, /For the service asked about, worked out by Helmsman: Sonarr had 1 problem in this period, 10 min long, Oct 20, 10:00–10:10\. So yes, it had problems/u);
   await api(agent, "POST", "/api/v2/agent/ask", { question: "Did Radarr have any problems in the past 24 hours?" });
   assert.match(context.modelCalls[3].messages.find((message) => message.tool_call_id === "seed-history").content, /Radarr had no problems recorded in this period\./u);
   // A follow-up about the same period gets the same history.

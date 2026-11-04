@@ -138,6 +138,10 @@ function unionLength(intervals) {
  * `openIncidents` are the incidents open right now; `nameOf(serviceId)` gives
  * a display name; `format(iso)` a local time.
  */
+// A media service's checks other than "status": a problem in these is a
+// warning while Helmsman still reaches the service.
+const WARNING_CAPABILITIES = new Set(["health", "queue", "indexers"]);
+
 export function buildHistory({ from, to, label: windowLabel, healthEvents = [], actionEvents = [], appEvents = [], openIncidents = [], monitored = [], nameOf = (id) => id, format = (iso) => iso, oldestEventAt = null, restartNow = undefined }) {
   const incidents = new Map();
   for (const event of [...healthEvents].sort((left, right) => String(left.at).localeCompare(String(right.at)))) {
@@ -202,12 +206,17 @@ export function buildHistory({ from, to, label: windowLabel, healthEvents = [], 
     });
     const longestEpisode = entry.episodes.reduce((best, episode) => (episode.end - episode.start > best.end - best.start ? episode : best));
     const longest = longestEpisode.end - longestEpisode.start;
-    // When it happened too, unless it is among the latest shown: asked for
-    // "Radarr's longest outage", models gave its length with a made-up date.
-    const longestWhen = count > 3 && !entry.episodes.slice(0, 3).includes(longestEpisode)
+    // When it happened too, always: asked for "Radarr's longest outage",
+    // models gave its length with a made-up date, or "during the week" when
+    // it was the latest one and its times were only in the latest list.
+    const longestWhen = count > 1
       ? ` (${format(new Date(longestEpisode.start).toISOString())}${longestEpisode.ongoing ? " until now" : `–${format(new Date(longestEpisode.end).toISOString()).replace(/^.*?, /u, "")}`})`
       : "";
-    lines.push(`- ${nameOf(entry.service)}: ${count} problem${count === 1 ? "" : "s"}, ${minutes(entry.total)} in total${count > 1 ? `, longest single problem ${minutes(longest)}${longestWhen}` : ""}${ongoing ? ", one still open" : ""}. ${count > 3 ? "Latest: " : ""}${latest.join("; ")}.`);
+    // "Did Prowlarr go down": health warnings are problems but not outages.
+    // Only the status check says whether Helmsman could reach the service.
+    // A node or container problem is not a warning about a reachable service.
+    const reachable = entry.episodes.every((episode) => WARNING_CAPABILITIES.has(episode.capability));
+    lines.push(`- ${nameOf(entry.service)}: ${count} problem${count === 1 ? "" : "s"}, ${minutes(entry.total)} in total${count > 1 ? `, longest single problem ${minutes(longest)}${longestWhen}` : ""}${ongoing ? ", one still open" : ""}${reachable ? `; it stayed reachable throughout, so ${count === 1 ? "it was a warning, not an outage" : "these were warnings, not outages"}` : ""}. ${count > 3 ? "Latest: " : ""}${latest.join("; ")}.`);
   }
   if (services.length > 8) lines.push(`- ${services.length - 8} more services also had problems.`);
   // "Which lasted longest" means one problem, not a service's total.
