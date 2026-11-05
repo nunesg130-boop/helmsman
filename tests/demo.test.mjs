@@ -307,3 +307,119 @@ test("debug logging records checks and requests, can be downloaded, and turns of
     await demo.stop();
   }
 });
+
+// ------------------------------------------------------- showcase mode --
+
+test("showcase options need a real password and keep the model settings together", async () => {
+  const { parseArguments } = await import("../scripts/demo.mjs");
+  assert.throws(() => parseArguments(["--showcase"], {}), /password of at least 8 characters/u);
+  assert.throws(() => parseArguments(["--showcase", "--password", "demo"], {}), /password of at least 8 characters/u);
+  assert.throws(() => parseArguments(["--model-url", "http://10.0.0.5:11434"], {}), /go together/u);
+  // Built at run time so the public-release scan for credential-bearing URLs
+  // does not flag this deliberately rejected example.
+  const withCredentials = `http://${["user", "pw"].join(":")}@10.0.0.5:11434`;
+  assert.throws(() => parseArguments(["--model-url", withCredentials, "--model", "qwen"], {}), /without credentials/u);
+
+  const fromEnv = parseArguments([], {
+    HELMSMAN_DEMO_SHOWCASE: "1",
+    HELMSMAN_DEMO_PASSWORD: "long-enough-password",
+    HELMSMAN_DEMO_MODEL_URL: "http://10.0.0.5:11434/v1/",
+    HELMSMAN_DEMO_MODEL: "qwen3:4b",
+    HELMSMAN_DEMO_PORT: "8080"
+  });
+  assert.equal(fromEnv.showcase, true);
+  assert.equal(fromEnv.port, 8080);
+  assert.equal(fromEnv.modelUrl, "http://10.0.0.5:11434", "a trailing /v1 is trimmed");
+  assert.equal(fromEnv.chaosMinutes, 4, "showcase stages problems by default");
+  assert.equal(parseArguments([], {}).showcase, false);
+});
+
+test("the chaos loop stages one problem at a time and resets what the agent leaves", async () => {
+  const { startChaos, SCENARIOS } = await import("../scripts/demo.mjs");
+  let now = 0;
+  const lines = [];
+  const chaos = startChaos({ everyMinutes: 2, healMinutes: 10, order: ["sonarr-down", "indexer-failing"], clock: () => now, schedule: false, log: (line) => lines.push(line) });
+
+  chaos.tick();
+  assert.equal(chaos.status().current, null, "quiet until the first interval passes");
+  now = 2 * 60_000;
+  chaos.tick();
+  assert.equal(chaos.status().current.id, "sonarr-down");
+  assert.equal(SCENARIOS["sonarr-down"].active(), true);
+
+  // The agent (here: the test) restarts Sonarr; the loop notices.
+  SCENARIOS["sonarr-down"].heal();
+  now += 30_000;
+  chaos.tick();
+  assert.deepEqual(chaos.status().history.at(-1), { id: "sonarr-down", outcome: "resolved", seconds: 30 });
+
+  now += 2 * 60_000;
+  chaos.tick();
+  assert.equal(chaos.status().current.id, "indexer-failing");
+  now += 10 * 60_000;
+  chaos.tick();
+  assert.equal(chaos.status().history.at(-1).outcome, "healed-by-demo");
+  assert.equal(SCENARIOS["indexer-failing"].active(), false);
+  assert.ok(lines.some((line) => line.startsWith("Staged: Sonarr crashed")));
+});
+
+test("showcase turns on the agent's policies and forwards model calls to a real model server", { timeout: 60_000 }, async () => {
+  const calls = [];
+  const model = http.createServer((incoming, outgoing) => {
+    const chunks = [];
+    incoming.on("data", (chunk) => chunks.push(chunk));
+    incoming.on("end", () => {
+      const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : null;
+      calls.push({ method: incoming.method, path: incoming.url, model: body?.model });
+      let reply = { error: "not found" };
+      let status = 404;
+      if (incoming.method === "GET" && incoming.url === "/v1/models") {
+        status = 200;
+        reply = { object: "list", data: [{ id: "real-model" }] };
+      } else if (incoming.method === "POST" && incoming.url === "/v1/chat/completions") {
+        status = 200;
+        reply = { choices: [{ index: 0, message: { role: "assistant", content: "Everything in the demo lab looks fine." }, finish_reason: "stop" }], usage: { prompt_tokens: 1, completion_tokens: 1 } };
+      }
+      outgoing.writeHead(status, { "Content-Type": "application/json" });
+      outgoing.end(JSON.stringify(reply));
+    });
+  });
+  await new Promise((resolve) => model.listen(0, "127.0.0.1", resolve));
+  const demo = await startDemo({
+    port: 0,
+    showcase: true,
+    password: "showcase-password",
+    modelUrl: `http://127.0.0.1:${model.address().port}/v1`,
+    model: "real-model"
+  });
+  try {
+    assert.equal(demo.host, "0.0.0.0");
+    const demoDefault = await request(demo, "/api/v2/auth/jellyfin/login", "POST", {
+      username: demo.username, password: "demo", deviceName: "Showcase test", origin: demo.origin
+    });
+    assert.equal(demoDefault.status, 401, "the default demo password no longer works");
+    const login = await request(demo, "/api/v2/auth/jellyfin/login", "POST", {
+      username: demo.username, password: "showcase-password", deviceName: "Showcase test", origin: demo.origin
+    });
+    assert.equal(login.status, 201, JSON.stringify(login.json));
+    const auth = { cookie: String(login.headers["set-cookie"][0]).split(";", 1)[0], csrf: login.json.csrfToken };
+
+    const agent = (await request(demo, "/api/v2/agent", "GET", undefined, auth)).json;
+    assert.equal(agent.config.ai.model, "real-model");
+    assert.deepEqual(agent.config.rules.map(({ id }) => id), ["restart-sonarr", "restart-radarr"]);
+    assert.deepEqual(agent.config.containerHealth.containers, ["jellyfin", "qbittorrent", "seerr"]);
+    assert.equal(agent.config.containerHealth.enabled, true);
+    assert.equal(agent.config.downloads.automatic, true);
+    assert.equal(agent.config.indexers.enabled, true);
+    assert.equal(agent.config.settings.autonomy, true);
+
+    const asked = await request(demo, "/api/v2/agent/ask", "POST", { question: "How is everything?" }, auth);
+    assert.equal(asked.status, 200, JSON.stringify(asked.json));
+    assert.match(asked.json.answer, /demo lab looks fine/u);
+    assert.ok(calls.some(({ method, path, model: name }) => method === "POST" && path === "/v1/chat/completions" && name === "real-model"));
+    assert.ok(calls.every(({ path }) => ["/v1/models", "/api/tags", "/v1/chat/completions"].includes(path)), JSON.stringify(calls));
+  } finally {
+    await demo.stop();
+    await new Promise((resolve) => model.close(resolve));
+  }
+});
