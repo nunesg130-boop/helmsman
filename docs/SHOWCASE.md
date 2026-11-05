@@ -24,7 +24,7 @@ inside the demo process with made-up data.
   | Sonarr crashes | Reports it, then its rule restarts the container on its own |
   | Radarr crashes | Reports it and suggests starting it; your visitor approves the suggestion |
   | qBittorrent's health check fails | Restarts it; warns instead once it keeps happening |
-  | A download stalls with no seeds | Blocklists it and searches again (after about 10 minutes) |
+  | A download stalls with no seeds | Removes it and searches again, blocklisting it if the same release stalls again (after about 10 minutes) |
   | An indexer starts failing | Tests it, then reports it |
 
   Anything the agent hasn't fixed after 20 minutes is put right by the demo

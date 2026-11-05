@@ -937,7 +937,7 @@ export const SCENARIOS = Object.freeze({
   // incident with a restart, which does nothing for a stalled download.
   "download-stalled": {
     label: "A Radarr download stalled with no seeds",
-    handledBy: "stuck downloads (blocklist and search again)",
+    handledBy: "stuck downloads (remove it and search again)",
     start: () => stallDownload("radarr"),
     active: () => stalledQueues.has("radarr"),
     heal: () => stalledQueues.delete("radarr")
