@@ -406,7 +406,7 @@ test("showcase turns on the agent's policies and forwards model calls to a real 
 
     const agent = (await request(demo, "/api/v2/agent", "GET", undefined, auth)).json;
     assert.equal(agent.config.ai.model, "real-model");
-    assert.deepEqual(agent.config.rules.map(({ id }) => id), ["restart-sonarr", "restart-radarr"]);
+    assert.deepEqual(agent.config.rules.map(({ id }) => id), ["restart-sonarr"]);
     assert.deepEqual(agent.config.containerHealth.containers, ["jellyfin", "qbittorrent", "seerr"]);
     assert.equal(agent.config.containerHealth.enabled, true);
     assert.equal(agent.config.downloads.automatic, true);

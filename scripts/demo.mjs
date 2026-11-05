@@ -913,9 +913,11 @@ export const SCENARIOS = Object.freeze({
     active: () => faults.has("sonarr"),
     heal: () => repairContainer(containerNamed("sonarr"))
   },
+  // Radarr has no restart rule on purpose: the agent suggests starting it
+  // and the visitor gets to approve that in the dashboard.
   "radarr-down": {
     label: "Radarr crashed (its container exited)",
-    handledBy: "the restart-radarr rule",
+    handledBy: "a suggestion to approve (Helmy proposes starting the container)",
     start: () => breakService("radarr"),
     active: () => faults.has("radarr"),
     heal: () => repairContainer(containerNamed("radarr"))
@@ -927,12 +929,15 @@ export const SCENARIOS = Object.freeze({
     active: () => /unhealthy/u.test(containerNamed("qbittorrent").Status),
     heal: () => repairContainer(containerNamed("qbittorrent"))
   },
+  // Stalled on Radarr, not Sonarr: a stalled item degrades the service's
+  // queue check, and the Sonarr restart rule would answer any Sonarr
+  // incident with a restart, which does nothing for a stalled download.
   "download-stalled": {
-    label: "A Sonarr download stalled with no seeds",
+    label: "A Radarr download stalled with no seeds",
     handledBy: "stuck downloads (blocklist and search again)",
-    start: () => stallDownload("sonarr"),
-    active: () => stalledQueues.has("sonarr"),
-    heal: () => stalledQueues.delete("sonarr")
+    start: () => stallDownload("radarr"),
+    active: () => stalledQueues.has("radarr"),
+    heal: () => stalledQueues.delete("radarr")
   },
   "indexer-failing": {
     label: "An indexer started failing in Prowlarr",
@@ -1180,9 +1185,7 @@ async function configure(context) {
     maxPerDay
   });
   await expectOk(apiRequest(context, "/api/v2/agent/rules", "PUT", {
-    rules: context.showcase
-      ? [restartRule("sonarr", 10, 10), restartRule("radarr", 10, 10)]
-      : [restartRule("sonarr", 30, 3)]
+    rules: [context.showcase ? restartRule("sonarr", 10, 10) : restartRule("sonarr", 30, 3)]
   }, owner), "Adding the sample agent rules");
   if (context.showcase) {
     // The policies the chaos scenarios exercise, at their quickest settings.

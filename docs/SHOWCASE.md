@@ -15,13 +15,14 @@ inside the demo process with made-up data.
   containers, a sample manual and a network map.
 - The agent turned on, with autonomy and three of its policies enabled:
   restarting unhealthy containers, cleaning up stuck downloads, and testing
-  failing indexers, plus restart rules for Sonarr and Radarr.
+  failing indexers, plus a rule that restarts Sonarr when it goes down.
 - A new problem every few minutes, one at a time, each handled by those
   policies:
 
   | Problem staged | What the agent does |
   | --- | --- |
-  | Sonarr or Radarr crashes | Reports it, suggests a start, then its rule restarts the container |
+  | Sonarr crashes | Reports it, then its rule restarts the container on its own |
+  | Radarr crashes | Reports it and suggests starting it; your visitor approves the suggestion |
   | qBittorrent's health check fails | Restarts it; warns instead once it keeps happening |
   | A download stalls with no seeds | Blocklists it and searches again (after about 10 minutes) |
   | An indexer starts failing | Tests it, then reports it |
