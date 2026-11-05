@@ -1,0 +1,66 @@
+# Helmsman showcase demo, to show Helmsman and its agent to someone without
+# exposing your real services. It runs next to your real Helmsman and shares
+# nothing with it: no volume and no credentials. Every service it shows is
+# invented and answered inside the container; the only outbound call it makes
+# is to the model server, if you set one.
+#
+# From the repository root (the build uses this checkout's scripts/demo.mjs):
+#   HELMSMAN_DEMO_PASSWORD='pick-something-long' docker compose -f deploy/compose.demo.yaml up -d --build
+#
+# Sign in as `demo` with that password. Sign-in needs HTTPS (or localhost),
+# so publish it through your reverse proxy, for example in Caddy:
+#
+#   demo.example.com {
+#       reverse_proxy 127.0.0.1:4190
+#   }
+#
+# Every restart starts over from a fresh fake lab. Stop it when you're done:
+#   docker compose -f deploy/compose.demo.yaml down
+
+name: helmsman-demo
+
+services:
+  helmsman-demo:
+    build:
+      context: ..
+      dockerfile: deploy/demo/Dockerfile
+      args:
+        HELMSMAN_IMAGE: "${HELMSMAN_IMAGE:-ghcr.io/nunesg130-boop/helmsman:1.18.2}"
+    image: "helmsman-demo:local"
+    restart: unless-stopped
+    user: "10001:10001"
+    ports:
+      # Loopback by default: let the reverse proxy on this host publish it.
+      - "${HELMSMAN_DEMO_BIND_IP:-127.0.0.1}:${HELMSMAN_DEMO_HOST_PORT:-4190}:8080/tcp"
+    environment:
+      HELMSMAN_DEMO_PASSWORD: "${HELMSMAN_DEMO_PASSWORD:?Set HELMSMAN_DEMO_PASSWORD to 8+ characters}"
+      # Optional: a real OpenAI-compatible model for the agent, such as Ollama.
+      # Leave both empty for the scripted stand-in model.
+      HELMSMAN_DEMO_MODEL_URL: "${HELMSMAN_DEMO_MODEL_URL:-}"
+      HELMSMAN_DEMO_MODEL: "${HELMSMAN_DEMO_MODEL:-}"
+      HELMSMAN_DEMO_MODEL_CONTEXT: "${HELMSMAN_DEMO_MODEL_CONTEXT:-8192}"
+      # Quiet minutes between staged problems.
+      HELMSMAN_DEMO_CHAOS_MINUTES: "${HELMSMAN_DEMO_CHAOS_MINUTES:-4}"
+    read_only: true
+    tmpfs:
+      # The demo's data directory lives here and is discarded on restart.
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 320m
+    cpus: "0.50"
+    stop_grace_period: 10s
+    healthcheck:
+      test: ["CMD", "node", "server/index.mjs", "healthcheck"]
+      interval: 30s
+      timeout: 3s
+      start_period: 20s
+      retries: 3
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "2"

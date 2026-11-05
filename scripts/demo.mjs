@@ -11,8 +11,18 @@
 // upstream services are fake. They answer from fixed, invented data in this
 // process, so no network traffic leaves the machine.
 //
-// This is a development tool. It lives in scripts/, which the container image
-// does not include, and it only listens on loopback.
+// This is a development tool. It lives in scripts/, which the production
+// container image does not include, and by default it only listens on
+// loopback.
+//
+// Showcase mode (`--showcase`, or the separate demo image built from
+// deploy/demo/Dockerfile) is for showing Helmsman to someone else: it listens on all
+// interfaces, requires a non-default password, turns on the agent's container
+// health, stuck-download and indexer policies, and keeps staging believable
+// problems so there is always something for the agent to handle. It can also
+// forward the agent's model calls to a real OpenAI-compatible model server
+// (`--model-url`, `--model`). Nothing in it can reach real infrastructure:
+// every upstream except that one model server is answered in this process.
 
 import http from "node:http";
 import { mkdtemp, rm, mkdir } from "node:fs/promises";
@@ -26,26 +36,91 @@ import { MANUAL_TEMPLATE } from "../src/ui/manual-markdown.js";
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const DEMO_USERNAME = "demo";
-const DEMO_PASSWORD = "demo";
+const DEFAULT_DEMO_PASSWORD = "demo";
 const DEMO_SUBNET = "10.77.0.0/24";
 const DAY = 86_400_000;
+const MINUTE = 60_000;
+
+// The owner password the fake Jellyfin accepts. Set by startDemo().
+let demoPassword = DEFAULT_DEMO_PASSWORD;
 
 // ---------------------------------------------------------------- options --
 
-function parseArguments(argv) {
-  const options = { port: 4180, data: null };
+function envFlag(value) {
+  return ["1", "true", "yes", "on"].includes(String(value || "").trim().toLowerCase());
+}
+
+/**
+ * Reads options from the command line, with HELMSMAN_DEMO_* environment
+ * variables as defaults so the demo container can be configured from
+ * compose. The password is best given through HELMSMAN_DEMO_PASSWORD so it
+ * does not appear in the process list.
+ */
+export function parseArguments(argv, env = process.env) {
+  const options = {
+    port: env.HELMSMAN_DEMO_PORT ? Number(env.HELMSMAN_DEMO_PORT) : 4180,
+    data: env.HELMSMAN_DEMO_DATA || null,
+    showcase: envFlag(env.HELMSMAN_DEMO_SHOWCASE),
+    password: env.HELMSMAN_DEMO_PASSWORD || null,
+    modelUrl: env.HELMSMAN_DEMO_MODEL_URL || null,
+    model: env.HELMSMAN_DEMO_MODEL || null,
+    modelContextTokens: env.HELMSMAN_DEMO_MODEL_CONTEXT ? Number(env.HELMSMAN_DEMO_MODEL_CONTEXT) : null,
+    chaosMinutes: env.HELMSMAN_DEMO_CHAOS_MINUTES ? Number(env.HELMSMAN_DEMO_CHAOS_MINUTES) : null
+  };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === "--port") options.port = Number(argv[++index]);
     else if (argument === "--data") options.data = argv[++index];
     else if (argument === "--outage") options.outage = true;
+    else if (argument === "--showcase") options.showcase = true;
+    else if (argument === "--password") options.password = argv[++index];
+    else if (argument === "--model-url") options.modelUrl = argv[++index];
+    else if (argument === "--model") options.model = argv[++index];
+    else if (argument === "--model-context") options.modelContextTokens = Number(argv[++index]);
+    else if (argument === "--chaos-minutes") options.chaosMinutes = Number(argv[++index]);
     else if (argument === "--help" || argument === "-h") options.help = true;
     else throw new Error(`Unknown option ${argument}. Try --help.`);
   }
   if (!Number.isInteger(options.port) || options.port < 1 || options.port > 65_535) {
     throw new Error("--port must be a TCP port from 1 to 65535.");
   }
+  if (options.chaosMinutes !== null && (!Number.isFinite(options.chaosMinutes) || options.chaosMinutes < 1 || options.chaosMinutes > 120)) {
+    throw new Error("--chaos-minutes must be from 1 to 120.");
+  }
+  if (Boolean(options.modelUrl) !== Boolean(options.model)) {
+    throw new Error("--model-url and --model go together: the model server and the model name to use on it.");
+  }
+  if (options.modelUrl) options.modelUrl = validModelUrl(options.modelUrl);
+  if (options.modelContextTokens !== null
+    && (!Number.isInteger(options.modelContextTokens) || options.modelContextTokens < 2_048 || options.modelContextTokens > 131_072)) {
+    throw new Error("--model-context must be a whole number of tokens from 2048 to 131072.");
+  }
+  if (options.showcase) {
+    if (!options.password || options.password === DEFAULT_DEMO_PASSWORD || options.password.length < 8) {
+      throw new Error("Showcase mode listens on the network, so it needs a password of at least 8 characters (HELMSMAN_DEMO_PASSWORD).");
+    }
+    options.chaosMinutes ??= 4;
+  }
   return options;
+}
+
+// The real model server the agent's calls go to, when one is configured.
+// Only the three model endpoints the agent uses are forwarded.
+let realModel = null;
+
+function validModelUrl(value) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error("--model-url must be a URL such as http://192.168.0.50:11434.");
+  }
+  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
+    throw new Error("--model-url must be a plain http or https URL without credentials or a query.");
+  }
+  // The agent asks for /v1/..., so a base URL that already ends in /v1 is
+  // trimmed back to the server root.
+  return url.origin + url.pathname.replace(/\/+$/u, "").replace(/\/v1$/u, "");
 }
 
 // ------------------------------------------------------------- fake world --
@@ -205,7 +280,7 @@ function jellyfin(upstreamPath, method, body) {
   if (upstreamPath === "/Users/AuthenticateByName" && method === "POST") {
     let credentials = {};
     try { credentials = JSON.parse(body.toString("utf8")); } catch { /* treated as wrong */ }
-    if (credentials.Username !== DEMO_USERNAME || credentials.Pw !== DEMO_PASSWORD) return { status: 401, json: {} };
+    if (credentials.Username !== DEMO_USERNAME || credentials.Pw !== demoPassword) return { status: 401, json: {} };
     return { AccessToken: OWNER_TOKEN, ServerId: SERVER_ID, User: jellyfinUser() };
   }
   if (upstreamPath === "/Users/Me") return jellyfinUser();
@@ -550,7 +625,10 @@ async function dispatchUpstream({ route, request, body }) {
 // Media actions (retry, search, blocklist) are accepted. Blocklisting a
 // stalled download clears it, as the replacement search would.
 async function dispatchMediaAction({ route } = {}) {
-  if (route?.operation === "blocklistAndSearch") stalledQueues.delete(route.service);
+  // A repeat stall is blocklisted (blocklistAndSearch); a first one is
+  // removed without a blocklist, which the broker sends as removeFromQueue
+  // followed by a search. Either clears the item, as the new search would.
+  if (["blocklistAndSearch", "removeFromQueue"].includes(route?.operation)) stalledQueues.delete(route.service);
   return { status: 201, body: Buffer.from("{}", "utf8"), contentType: "application/json", cookies: [] };
 }
 
@@ -712,8 +790,37 @@ function json(status, value) {
   return { status, json: status >= 200 && status < 300 ? value ?? null : null, bytes };
 }
 
+const FORWARDED_MODEL_ROUTES = new Set(["GET /v1/models", "GET /api/tags", "POST /v1/chat/completions"]);
+
+// Sends one of the agent's model calls to the real model server. Helmsman
+// saved the demo host, so its own network policy never sees this address;
+// the demo process makes the call and returns the answer as if the demo
+// host had given it.
+async function forwardToRealModel(method, requestPath, body) {
+  if (!FORWARDED_MODEL_ROUTES.has(`${method} ${requestPath}`)) return json(404, {});
+  let response;
+  try {
+    response = await fetch(`${realModel.url}${requestPath}`, {
+      method,
+      headers: { Accept: "application/json", ...(method === "POST" ? { "Content-Type": "application/json" } : {}) },
+      body: method === "POST" ? JSON.stringify(body ?? {}) : undefined,
+      redirect: "error",
+      signal: AbortSignal.timeout(290_000)
+    });
+  } catch (error) {
+    throw Object.assign(new Error(`The demo could not reach the model server: ${error.message}`), { code: "UPSTREAM_UNREACHABLE", status: 502 });
+  }
+  const text = await response.text();
+  if (text.length > 8 * 1024 * 1024) return json(502, {});
+  let value = null;
+  try { value = text ? JSON.parse(text) : null; } catch { value = null; }
+  if (response.ok && value === null) return json(502, {});
+  return json(response.status, value);
+}
+
 async function dispatchAgent({ targetResolution, method, path: requestPath, body, bearerToken }) {
   const host = targetResolution?.target?.hostname;
+  if (host === "ai.helmsman-demo.test" && realModel) return forwardToRealModel(method, requestPath, body);
   if (host === "ai.helmsman-demo.test") {
     if (method === "GET" && requestPath === "/v1/models") return json(200, { object: "list", data: [{ id: DEMO_MODEL }, { id: "qwen2.5:3b" }] });
     // Ollama's own list, for the size and quantization the Model dropdown shows.
@@ -787,6 +894,110 @@ function repairContainer(container) {
   container.State = "running";
   container.Status = "Up Less than a second";
   faults.delete(container.Names[0].slice(1));
+}
+
+// ---------------------------------------------------------------- chaos --
+//
+// Showcase mode keeps staging one believable problem at a time, each one
+// something the agent's real policies handle. A scenario that is still
+// unresolved after `healMinutes` is put right by the demo itself, so the
+// world never stays broken, and the next one starts `everyMinutes` after the
+// last one ended.
+
+function containerNamed(name) {
+  return CONTAINERS.find((entry) => entry.Names[0] === `/${name}`);
+}
+
+export const SCENARIOS = Object.freeze({
+  "sonarr-down": {
+    label: "Sonarr crashed (its container exited)",
+    handledBy: "the restart-sonarr rule",
+    start: () => breakService("sonarr"),
+    active: () => faults.has("sonarr"),
+    heal: () => repairContainer(containerNamed("sonarr"))
+  },
+  // Radarr has no restart rule on purpose: the agent suggests starting it
+  // and the visitor gets to approve that in the dashboard.
+  "radarr-down": {
+    label: "Radarr crashed (its container exited)",
+    handledBy: "a suggestion to approve (Helmy proposes starting the container)",
+    start: () => breakService("radarr"),
+    active: () => faults.has("radarr"),
+    heal: () => repairContainer(containerNamed("radarr"))
+  },
+  "qbittorrent-unhealthy": {
+    label: "qBittorrent's health check is failing",
+    handledBy: "container health (restart unhealthy containers)",
+    start: () => makeUnhealthy("qbittorrent"),
+    active: () => /unhealthy/u.test(containerNamed("qbittorrent").Status),
+    heal: () => repairContainer(containerNamed("qbittorrent"))
+  },
+  // Stalled on Radarr, not Sonarr: a stalled item degrades the service's
+  // queue check, and the Sonarr restart rule would answer any Sonarr
+  // incident with a restart, which does nothing for a stalled download.
+  "download-stalled": {
+    label: "A Radarr download stalled with no seeds",
+    handledBy: "stuck downloads (remove it and search again)",
+    start: () => stallDownload("radarr"),
+    active: () => stalledQueues.has("radarr"),
+    heal: () => stalledQueues.delete("radarr")
+  },
+  "indexer-failing": {
+    label: "An indexer started failing in Prowlarr",
+    handledBy: "indexer testing (test, then notify)",
+    start: () => failIndexer(),
+    active: () => failingIndexers.size > 0,
+    // The agent only tests indexers, it never changes them, so this one is
+    // always ended by the demo once the agent has had time to report it.
+    heal: () => recoverIndexer()
+  }
+});
+
+/**
+ * Starts the scenario loop. `clock` and `schedule` exist for tests. Returns
+ * { stop, tick, status }.
+ */
+export function startChaos({ everyMinutes = 4, healMinutes = 20, order = Object.keys(SCENARIOS), log = () => {}, clock = Date.now, schedule = true } = {}) {
+  let index = 0;
+  let current = null;
+  let idleSince = clock();
+  const history = [];
+
+  const tick = () => {
+    const now = clock();
+    if (current) {
+      const scenario = SCENARIOS[current.id];
+      const ageMs = now - current.startedAt;
+      if (!scenario.active()) {
+        const outcome = { id: current.id, outcome: "resolved", seconds: Math.round(ageMs / 1000) };
+        history.push(outcome);
+        log(`Resolved: ${scenario.label}, after ${outcome.seconds}s.`);
+        current = null;
+        idleSince = now;
+      } else if (ageMs >= healMinutes * MINUTE) {
+        scenario.heal();
+        history.push({ id: current.id, outcome: "healed-by-demo", seconds: Math.round(ageMs / 1000) });
+        log(`Reset by the demo: ${scenario.label}.`);
+        current = null;
+        idleSince = now;
+      }
+      return;
+    }
+    if (now - idleSince < everyMinutes * MINUTE) return;
+    const id = order[index % order.length];
+    index += 1;
+    SCENARIOS[id].start();
+    current = { id, startedAt: now };
+    log(`Staged: ${SCENARIOS[id].label}. Expect ${SCENARIOS[id].handledBy}.`);
+  };
+
+  const timer = schedule ? setInterval(tick, 15_000) : null;
+  timer?.unref();
+  return {
+    tick,
+    stop() { if (timer) clearInterval(timer); },
+    status: () => ({ current: current ? { ...current } : null, history: [...history] })
+  };
 }
 
 async function lookup(hostname) {
@@ -912,7 +1123,7 @@ async function configure(context) {
 
   const enrolled = await expectOk(apiRequest(context, "/api/v2/auth/jellyfin/enroll", "POST", {
     username: DEMO_USERNAME,
-    password: DEMO_PASSWORD,
+    password: demoPassword,
     deviceName: "Demo setup",
     origin: context.origin
   }, auth), "Jellyfin owner enrollment");
@@ -953,12 +1164,14 @@ async function configure(context) {
     revision: map.json?.networkMap?.revision ?? null
   }, owner), "Saving the sample network map");
 
+  // With a real model the agent still points at the demo host; the demo
+  // forwards those calls (see forwardToRealModel).
   await expectOk(apiRequest(context, "/api/v2/agent/ai", "PUT", {
     url: "http://ai.helmsman-demo.test:11434",
-    model: DEMO_MODEL,
-    contextTokens: 4096,
-    timeoutSeconds: 30
-  }, owner), "Connecting the demo model");
+    model: realModel ? realModel.model : DEMO_MODEL,
+    contextTokens: realModel ? realModel.contextTokens : 4096,
+    timeoutSeconds: realModel ? 240 : 30
+  }, owner), realModel ? `Connecting the model ${realModel.model}` : "Connecting the demo model");
   await expectOk(apiRequest(context, "/api/v2/agent/notify", "PUT", {
     url: "http://ha.helmsman-demo.test:8123",
     service: DEMO_NOTIFY_SERVICE,
@@ -966,16 +1179,29 @@ async function configure(context) {
   }, owner), "Connecting the demo Home Assistant");
   const portainerServer = (await expectOk(apiRequest(context, "/api/v2/infrastructure/services", "GET", undefined, owner), "Reading Portainer"))
     .json.services.find((service) => service.type === "portainer");
+  const restartRule = (service, cooldownMinutes, maxPerDay) => ({
+    id: `restart-${service}`,
+    enabled: true,
+    when: { service, minutes: 1 },
+    then: { kind: "container", serviceId: portainerServer.id, containerName: service, operation: "restart" },
+    cooldownMinutes,
+    maxPerDay
+  });
   await expectOk(apiRequest(context, "/api/v2/agent/rules", "PUT", {
-    rules: [{
-      id: "restart-sonarr",
-      enabled: true,
-      when: { service: "sonarr", minutes: 1 },
-      then: { kind: "container", serviceId: portainerServer.id, containerName: "sonarr", operation: "restart" },
-      cooldownMinutes: 30,
-      maxPerDay: 3
-    }]
-  }, owner), "Adding the sample agent rule");
+    rules: [context.showcase ? restartRule("sonarr", 10, 10) : restartRule("sonarr", 30, 3)]
+  }, owner), "Adding the sample agent rules");
+  if (context.showcase) {
+    // The policies the chaos scenarios exercise, at their quickest settings.
+    await expectOk(apiRequest(context, "/api/v2/agent/container-health", "PUT", {
+      enabled: true, scope: "only", containers: ["jellyfin", "qbittorrent", "seerr"], minutes: 1, repeatCount: 3, repeatHours: 24
+    }, owner), "Turning on container health");
+    await expectOk(apiRequest(context, "/api/v2/agent/downloads", "PUT", {
+      enabled: true, minutes: 10, automatic: true
+    }, owner), "Turning on stuck-download clean-up");
+    await expectOk(apiRequest(context, "/api/v2/agent/indexers", "PUT", {
+      enabled: true, tests: 2, spacingMinutes: 5
+    }, owner), "Turning on indexer testing");
+  }
   await expectOk(apiRequest(context, "/api/v2/agent/settings", "PUT", {
     enabled: true,
     timeZone: "America/New_York",
@@ -995,6 +1221,14 @@ async function configure(context) {
  */
 export async function startDemo(options = {}) {
   const port = options.port ?? 4180;
+  // Module state is set per start, so tests can start demos one after another.
+  demoPassword = options.password || DEFAULT_DEMO_PASSWORD;
+  realModel = options.modelUrl
+    ? { url: validModelUrl(options.modelUrl), model: options.model, contextTokens: options.modelContextTokens || 8_192 }
+    : null;
+  // Showcase listens on every interface for a reverse proxy or a LAN peer.
+  // Setup still runs over loopback, which first-time setup requires.
+  const host = options.showcase ? "0.0.0.0" : "127.0.0.1";
   let dataDir;
   let temporary = false;
   if (options.data) {
@@ -1022,14 +1256,22 @@ export async function startDemo(options = {}) {
   const server = createHttpServer(broker.handler);
   await new Promise((resolve, reject) => {
     server.once("error", reject);
-    server.listen(port, "127.0.0.1", resolve);
+    server.listen(port, host, resolve);
   });
   const actualPort = server.address().port;
-  const context = { broker, port: actualPort, origin: `http://127.0.0.1:${actualPort}`, autonomy: options.autonomy };
+  const context = {
+    broker,
+    port: actualPort,
+    origin: `http://127.0.0.1:${actualPort}`,
+    autonomy: options.autonomy,
+    showcase: Boolean(options.showcase)
+  };
 
   let stopped = null;
+  let chaos = null;
   const stop = () => {
     stopped ??= (async () => {
+      chaos?.stop();
       broker.beginShutdown();
       await new Promise((resolve) => server.close(resolve));
       await broker.drain();
@@ -1044,12 +1286,18 @@ export async function startDemo(options = {}) {
     await stop();
     throw error;
   }
+  if (options.chaosMinutes) {
+    chaos = startChaos({ everyMinutes: options.chaosMinutes, log: options.chaosLog || (() => {}) });
+  }
   return {
     ...context,
     dataDir,
     temporary,
     username: DEMO_USERNAME,
-    password: DEMO_PASSWORD,
+    password: demoPassword,
+    host,
+    showcase: context.showcase,
+    chaos: () => chaos?.status() ?? null,
     stop,
     breakService,
     makeUnhealthy,
@@ -1069,21 +1317,32 @@ async function main() {
   if (options.help) {
     process.stdout.write([
       "Usage: npm run demo -- [--port 4180] [--data DIR] [--outage]",
+      "       npm run demo -- --showcase [--model-url URL --model NAME] [--chaos-minutes 4]",
       "",
       "Runs Helmsman against built-in fake services on http://127.0.0.1:PORT.",
-      `Sign in with ${DEMO_USERNAME} / ${DEMO_PASSWORD}.`,
+      `Sign in with ${DEMO_USERNAME} / ${DEFAULT_DEMO_PASSWORD}.`,
       "Without --data, a temporary data directory is created and removed on exit.",
       "--outage stops Sonarr a minute after start so you can watch the agent react.",
+      "",
+      "--showcase is for showing Helmsman to someone else. It listens on all",
+      "interfaces, needs a password of 8+ characters (HELMSMAN_DEMO_PASSWORD or",
+      "--password), turns on the agent's container-health, stuck-download and",
+      "indexer policies, and stages a new problem every few minutes.",
+      "--model-url and --model send the agent's model calls to a real",
+      "OpenAI-compatible server, for example Ollama at http://HOST:11434.",
+      "--chaos-minutes sets the quiet time between staged problems (1-120).",
+      "Every option also has a HELMSMAN_DEMO_* environment variable.",
       ""
     ].join("\n"));
     return;
   }
-  const demo = await startDemo(options);
+  const say = (line) => process.stdout.write(`\n  Demo: ${line}\n`);
+  const demo = await startDemo({ ...options, chaosLog: say });
   demo.printNotifications(true);
   if (options.outage) {
     setTimeout(() => {
       demo.breakService("sonarr");
-      process.stdout.write("\n  Demo: Sonarr has been stopped. Watch for the agent's notifications.\n");
+      say("Sonarr has been stopped. Watch for the agent's notifications.");
     }, 60_000).unref();
   }
   const shutdown = async () => {
@@ -1092,12 +1351,17 @@ async function main() {
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
+  const where = demo.showcase
+    ? `http://<this machine>:${demo.port} (listening on all interfaces; put HTTPS in front before sharing)`
+    : demo.origin;
   process.stdout.write([
     "",
-    "Helmsman demo is running with built-in fake services.",
+    `Helmsman demo is running with built-in fake services${demo.showcase ? " in showcase mode" : ""}.`,
     "",
-    `  Open      ${demo.origin}`,
-    `  Sign in   ${demo.username} / ${demo.password}`,
+    `  Open      ${where}`,
+    `  Sign in   ${demo.username} / ${demo.showcase ? "(the password you set)" : demo.password}`,
+    `  Model     ${realModel ? `${realModel.model} at ${realModel.url}` : "scripted stand-in"}`,
+    `  Problems  ${options.chaosMinutes ? `a new one every ~${options.chaosMinutes} min after the last clears` : "none staged"}`,
     `  Data      ${demo.dataDir}${demo.temporary ? " (removed on exit)" : ""}`,
     "",
     "Press Ctrl+C to stop.",
