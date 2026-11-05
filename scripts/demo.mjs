@@ -625,7 +625,10 @@ async function dispatchUpstream({ route, request, body }) {
 // Media actions (retry, search, blocklist) are accepted. Blocklisting a
 // stalled download clears it, as the replacement search would.
 async function dispatchMediaAction({ route } = {}) {
-  if (route?.operation === "blocklistAndSearch") stalledQueues.delete(route.service);
+  // A repeat stall is blocklisted (blocklistAndSearch); a first one is
+  // removed without a blocklist, which the broker sends as removeFromQueue
+  // followed by a search. Either clears the item, as the new search would.
+  if (["blocklistAndSearch", "removeFromQueue"].includes(route?.operation)) stalledQueues.delete(route.service);
   return { status: 201, body: Buffer.from("{}", "utf8"), contentType: "application/json", cookies: [] };
 }
 
