@@ -123,7 +123,7 @@ test("containers are grouped per host, and same-named guests are both shown", as
   const all = await runTool("list_workloads", {}, context(snapshot));
   assert.match(all, /^Containers on local \(Portainer Docker host\): 6, 5 running; /mu);
   assert.match(all, /^Containers on second \(Portainer Docker host\): 1, 1 running, none stopped or unhealthy\.$/mu);
-  assert.match(await runTool("list_workloads", { filter: "docker" }, context(snapshot)), /^Note: 2 guests are named docker: VM 109 on node alpha, VM 201 on node beta\.$/mu);
+  assert.match(await runTool("list_workloads", { filter: "docker" }, context(snapshot)), /^Note: 2 separate guests share the exact name docker: VM 109 on node alpha, VM 201 on node beta\. Only the guest ID tells them apart; without one, answer for each by its ID\.$/mu);
 });
 
 test("Proxmox, Portainer and nicknamed services get their own status, not a workload list", () => {
@@ -203,7 +203,7 @@ test("an exact name is that guest, a Portainer host gets its containers, and gue
   );
   const run = (filter) => runTool("list_workloads", { filter }, context(snapshot));
   const docker = await run("docker");
-  assert.match(docker, /^Note: 2 guests are named docker: VM 109 on node alpha, VM 201 on node alpha\.$/mu);
+  assert.match(docker, /^Note: 2 separate guests share the exact name docker: VM 109 on node alpha, VM 201 on node alpha\./mu);
   assert.doesNotMatch(docker, /^container docker-socket-proxy/mu, "not every container containing the word");
   assert.match(docker, /^Docker containers, in case those are meant: local \(Portainer Docker host\) 6, 5 running .*Main Docker \(Portainer Docker host\) 2, 1 running \(not running: docker-socket-proxy \(exited\)\)/mu);
   const host = await run("Main Docker");
@@ -300,7 +300,7 @@ test("guests by number, several names at once, and rankings for one node", async
   assert.match(await runTool("list_workloads", { filter: "109" }, context(snapshot)), /^vm 109 docker \(a VM named docker, not a container\) on node norco: running/u);
   assert.match(await runTool("list_workloads", { filter: "999" }, context(snapshot)), /^There is no VM or LXC with ID 999\.$/u);
   assert.deepEqual(queries("Is seerr or wizarr using more CPU?"), [{ filter: "seerr" }, { filter: "wizarr" }], "both names, not only the first");
-  assert.deepEqual(queries("Rank pihole, ollama, and haos-17.2 by current CPU usage."), [{ filter: "pihole" }, { filter: "ollama" }, { filter: "haos-17.2" }]);
+  assert.deepEqual(queries("Rank pihole, ollama, and haos-17.2 by current CPU usage."), [{ filter: "pihole" }, { filter: "ollama" }, { filter: "haos-17.2" }, { filter: "cpu" }], "their lines and the ranking, sorted by code");
   assert.deepEqual(queries("Rank VMs on norco by current CPU usage."), [{ filter: "cpu vms norco" }]);
   assert.deepEqual(queries("Show the newest backup for every guest on Main."), [{ filter: "backups main" }]);
   assert.deepEqual(queries("compare the current CPU load on Main and norco."), [{ filter: "main" }, { filter: "norco" }]);
