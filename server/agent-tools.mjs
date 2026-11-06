@@ -686,7 +686,8 @@ function workloadSummary(snapshot, only = null) {
 
 const WORKLOAD_METRICS = Object.freeze({
   memory: "memory", ram: "memory", cpu: "cpu", backup: "backup", backups: "backup",
-  uptime: "uptime", cores: "cores", allocated: "allocated", allocation: "allocated"
+  uptime: "uptime", cores: "cores", allocated: "allocated", allocation: "allocated",
+  unused: "unused", memorypercore: "memorypercore", allocatedpercore: "allocatedpercore", coresused: "coresused"
 });
 
 /**
@@ -695,7 +696,10 @@ const WORKLOAD_METRICS = Object.freeze({
  * kind ("memory vms"), only that kind: asked "which VM is busiest", models
  * named the busiest LXC when the list mixed both.
  */
-function workloadMetric(snapshot, metric, kind = null, node = null) {
+function workloadMetric(snapshot, requested, kind = null, node = null) {
+  // "coresused": the CPU ranking, with whole cores in use worked out beside it.
+  const cpuCores = requested === "coresused";
+  const metric = cpuCores ? "cpu" : requested;
   const environments = snapshot.infrastructure?.environments || [];
   const all = environments.flatMap((environment) => guestsOf(environment));
   const guests = all.filter((workload) => (!kind || (workload.type === "lxc" ? "lxc" : "vm") === kind)
@@ -721,6 +725,14 @@ function workloadMetric(snapshot, metric, kind = null, node = null) {
       const ranges = [["under 1 day old", 0, day], ["1 to 7 days old", day, 7 * day], ["7 to 30 days old", 7 * day, 30 * day], ["over 30 days old", 30 * day, Infinity]]
         .map(([label, from, to]) => [label, backed.filter((workload) => (workload.backup.ageSeconds ?? 0) >= from && (workload.backup.ageSeconds ?? 0) < to).length]);
       parts.push(`Latest backup ages: ${ranges.map(([label, count]) => `${count} ${label}`).join(", ")}.`);
+      // Said by code: asked "which guest's latest backup is the oldest", models
+      // named the newest; asked for success and failure counts, they guessed.
+      const failed = backed.filter((workload) => workload.backup.status !== "success");
+      parts.push(`Latest results: ${backed.length - failed.length} succeeded, ${failed.length} did not${failed.length ? ` (${failed.map((workload) => `${name(workload)} ${untrusted(workload.backup.status, 20)}`).join(", ")})` : ""}, ${none.length} have none.`);
+      if (backed.length > 1) {
+        const newest = backed.at(-1);
+        parts.push(`Oldest latest backup: ${name(backed[0])}, ${ago(backed[0].backup.ageSeconds)}. Newest: ${name(newest)}, ${ago(newest.backup.ageSeconds)}.`);
+      }
       parts.push(`These have a backup (oldest first): ${backed.map((workload) => `${name(workload)}: ${untrusted(workload.backup.status, 20)} ${ago(workload.backup.ageSeconds)}${backupAgeWords(workload.backup.ageSeconds)}`).join(", ")}.`);
     }
     if (none.length) parts.push(`These have no backup recorded at all: ${none.map(name).join(", ")}.`);
@@ -750,9 +762,42 @@ function workloadMetric(snapshot, metric, kind = null, node = null) {
       ? `${sorted.reduce((sum, workload) => sum + Math.max(0, size(workload)), 0)} cores`
       : `${gigabytes(sorted.reduce((sum, workload) => sum + Math.max(0, size(workload)), 0)) || "?"} GB`;
     const lines = sorted.map((workload) => `${name(workload)} ${shown(workload)}${workload.status === "running" ? "" : ` (${workload.status})`}`);
-    return [...notes, `${metric === "cores" ? "CPU cores" : "Memory"} assigned to each ${noun}${onNode}, most first (what each was given, not what it uses), ${total} in total: ${lines.join(", ")}.`].join("\n");
+    // "Three lightest LXCs by assigned memory" with four at 0.5 GB: said as a tie.
+    const tied = [];
+    for (const [label, edge] of metric === "allocated" ? [["most", sorted[0]], ["least", sorted.at(-1)]] : []) {
+      const same = sorted.filter((workload) => shown(workload) === shown(edge));
+      if (same.length > 1 && same.length < sorted.length) tied.push(`${same.length} tie for the ${label} at ${shown(edge)}: ${same.map(name).join(", ")}.`);
+    }
+    return [...notes, `${metric === "cores" ? "CPU cores" : "Memory"} assigned to each ${noun}${onNode}, most first (what each was given, not what it uses), ${total} in total: ${lines.join(", ")}.${tied.length ? ` ${tied.join(" ")}` : ""}`].join("\n");
   }
   const running = guests.filter((workload) => workload.status === "running");
+  // "Most unused assigned RAM in GB", "biggest gap between allocation and
+  // use": worked out by code. Models subtracted from the percent ranking and
+  // named the guest with the lowest percent instead of the most GB.
+  if (metric === "unused") {
+    const known = running.filter((workload) => Number.isFinite(workload.memoryUsedBytes) && workload.memoryTotalBytes > 0);
+    if (!known.length) return `No ${noun}${onNode} is running with a memory reading.${stoppedNote}`;
+    const unused = (workload) => Math.max(0, workload.memoryTotalBytes - workload.memoryUsedBytes);
+    const short = (workload) => `${untrusted(workload.name, 40)} (${workload.type === "lxc" ? "LXC" : "VM"} ${workload.vmid})`;
+    const share = (workload) => Math.round((unused(workload) / workload.memoryTotalBytes) * 100);
+    const byGb = [...known].sort((left, right) => unused(right) - unused(left))
+      .map((workload, index) => `${index + 1}. ${short(workload)}: ${gigabytes(unused(workload)) || "under 0.1"} GB unused of ${gigabytes(workload.memoryTotalBytes)} GB (uses ${gigabytes(workload.memoryUsedBytes) || "under 0.1"} GB, ${share(workload)}% unused)`);
+    const byShare = [...known].sort((left, right) => share(right) - share(left)).map((workload) => `${short(workload)} ${share(workload)}%`);
+    return [...notes, `Memory each running ${noun}${onNode} is given but not using (allowance minus use), most GB first: ${byGb.join(", ")}.`,
+      `The same as a share of each one's allowance, most unused first: ${byShare.join(", ")}.${stoppedNote}`].join("\n");
+  }
+  // "Memory per core": GB in use, or GB assigned, divided by assigned cores.
+  if (metric === "memorypercore" || metric === "allocatedpercore") {
+    const assignedOnly = metric === "allocatedpercore";
+    const pool = (assignedOnly ? guests : running).filter((workload) => Number.isSafeInteger(workload.cpuCores) && workload.cpuCores > 0
+      && Number.isFinite(assignedOnly ? workload.memoryTotalBytes : workload.memoryUsedBytes));
+    if (!pool.length) return `No ${noun}${onNode} has the readings for this.`;
+    const per = (workload) => (assignedOnly ? workload.memoryTotalBytes : workload.memoryUsedBytes) / workload.cpuCores;
+    const perGb = (workload) => (per(workload) / 1024 ** 3).toFixed(per(workload) >= 1024 ** 3 ? 1 : 2);
+    const lines = [...pool].sort((left, right) => per(right) - per(left)).map((workload, index) => (
+      `${index + 1}. ${name(workload)}: ${perGb(workload)} GB per core (${gigabytes(assignedOnly ? workload.memoryTotalBytes : workload.memoryUsedBytes) || "under 0.1"} GB ${assignedOnly ? "assigned" : "in use"}, ${workload.cpuCores} core${workload.cpuCores === 1 ? "" : "s"})`));
+    return [...notes, `Memory ${assignedOnly ? "assigned" : "in use"} per assigned CPU core for each ${assignedOnly ? "" : "running "}${noun}${onNode}, most first: ${lines.join(", ")}.${assignedOnly ? "" : stoppedNote}`].join("\n");
+  }
   if (metric === "uptime") {
     const up = (workload) => (Number.isFinite(workload.uptimeSeconds) ? workload.uptimeSeconds : -1);
     const order = [...running].sort((left, right) => up(right) - up(left));
@@ -805,7 +850,22 @@ function workloadMetric(snapshot, metric, kind = null, node = null) {
     const tied = sorted.filter((workload) => shownValue(workload) === shownValue(edge));
     if (tied.length > 1 && tied.length < sorted.length) ties.push(`${tied.length} tie for ${label} at ${shownValue(edge)}: ${tied.map(short).join(", ")}.`);
   }
-  return [...notes, `${metric === "cpu" ? "CPU" : "Memory"} use of each running ${noun}${onNode}, highest first (percent of its own allowance): ${ranked.join(", ")}.${ties.length ? ` ${ties.join(" ")}` : ""}${stoppedNote}`].join("\n");
+  // The other way to read the same numbers, sorted by code. Asked for "the
+  // biggest RAM consumer" or "used RAM in GB", models gave the top percent
+  // (a small guest nearly full); asked "busiest per core", they divided wrong.
+  const extra = [];
+  if (metric === "memory") {
+    const gb = [...sorted].filter((workload) => Number.isFinite(workload.memoryUsedBytes))
+      .sort((left, right) => right.memoryUsedBytes - left.memoryUsedBytes)
+      .map((workload) => `${short(workload)} ${gigabytes(workload.memoryUsedBytes) || "under 0.1"} GB`);
+    if (gb.length > 1) extra.push(`By memory in use in GB, most first (for "most RAM used", "biggest consumer", "in GB"): ${gb.join(", ")}.`);
+  } else if (cpuCores) {
+    const coresUsed = (workload) => (Number.isFinite(workload.cpuPercent) && Number.isSafeInteger(workload.cpuCores) ? (workload.cpuPercent / 100) * workload.cpuCores : -1);
+    const whole = [...sorted].filter((workload) => coresUsed(workload) >= 0).sort((left, right) => coresUsed(right) - coresUsed(left))
+      .map((workload) => `${short(workload)} ${coresUsed(workload).toFixed(2)}`);
+    if (whole.length > 1) extra.push(`The percent is already per core (a share of each one's own cores). In whole cores in use (percent × cores), most first: ${whole.join(", ")}.`);
+  }
+  return [...notes, `${metric === "cpu" ? "CPU" : "Memory"} use of each running ${noun}${onNode}, highest first (percent of its own allowance): ${ranked.join(", ")}.${ties.length ? ` ${ties.join(" ")}` : ""}${stoppedNote}`, ...extra].join("\n");
 }
 
 /** The node's own line and the guests on it, for "what's running on <node>". */
@@ -950,6 +1010,38 @@ function containerDetails(snapshot, detail, hostFilter = null) {
     }
     const guest = hostGuest(snapshot, host);
     lines.push(`Docker host ${host}${guest ? ` (${guest})` : ""}, ${containers.length} containers: ${items.join("; ")}.`);
+  }
+  // Across every host, worked out by code: asked "which use ghcr.io images",
+  // "how many distinct images" or "how many lack a healthcheck", models
+  // counted host by host and got it wrong.
+  const all = [...byHost.values()].flat();
+  if (detail === "images") {
+    const parsed = all.filter((container) => container.image).map((container) => {
+      const image = String(container.image).replace(/@sha256:.*$/u, "");
+      const first = image.split("/")[0];
+      const registry = image.includes("/") && /[.:]/u.test(first) && !/^(?:docker\.io|index\.docker\.io)$/u.test(first) ? first : "docker.io (Docker Hub)";
+      const repo = image.replace(/:[^:/]+$/u, "").replace(/^(?:docker\.io\/)?(?:library\/)?/u, "");
+      return { name: name(container), image: image.replace(/^(?:docker\.io\/)?(?:library\/)?/u, ""), registry, repo };
+    });
+    const registries = new Map();
+    for (const item of parsed) registries.set(item.registry, [...(registries.get(item.registry) || []), item.name]);
+    lines.push(`By registry: ${[...registries].sort((left, right) => right[1].length - left[1].length).map(([registry, members]) => `${untrusted(registry, 40)} ${members.length} (${members.join(", ")})`).join("; ")}.`);
+    const repos = new Map();
+    for (const item of parsed) repos.set(item.repo, [...(repos.get(item.repo) || []), item]);
+    const shared = [...repos].filter(([, members]) => members.length > 1);
+    lines.push(shared.length
+      ? `Same image repository on more than one container: ${shared.map(([repo, members]) => `${untrusted(repo, 60)}: ${members.map((item) => `${item.name} (${untrusted(item.image.split(":").length > 1 ? item.image.split(":").pop() : "latest", 30)})`).join(", ")}`).join("; ")}.`
+      : "No two containers use the same image repository.");
+    lines.push(`Distinct images (repository and tag): ${new Set(parsed.map((item) => item.image.includes(":") ? item.image : `${item.image}:latest`)).size}, across ${all.length} containers.`);
+  } else if (detail === "health") {
+    const count = (test) => all.filter(test).length;
+    lines.push(`Across all hosts: ${count((container) => container.state === "running")} running, of which ${count((container) => container.state === "running" && healthOf(container) === "healthy")} report healthy, ${count((container) => container.state === "running" && healthOf(container) === "unhealthy")} unhealthy and ${count((container) => container.state === "running" && healthOf(container) === "no healthcheck")} have no health check; ${count((container) => container.state !== "running")} not running.`);
+  } else if (detail === "uptime") {
+    // "Up 4 hours", "Up 30 minutes", "Up About an hour": under a day.
+    const fresh = all.filter((container) => container.state === "running" && /^up (?:less than a second|\d+ seconds?|about a minute|\d+ minutes?|about an hour|\d+ hours?)\b/iu.test(String(container.status || "")));
+    lines.push(fresh.length
+      ? `Up less than a day: ${fresh.map((container) => `${name(container)} (${untrusted(container.status, 40)})`).join(", ")}; every other running container has been up longer.`
+      : "No running container has been up less than a day.");
   }
   const what = {
     ports: "Published ports (host->container) of each container",
@@ -1132,7 +1224,14 @@ function listWorkloads(snapshot, _context, args) {
   const guests = (snapshot.infrastructure?.environments || []).flatMap((environment) => (environment.workloads || [])
     .filter((workload) => !workload.template && String(workload.name || "").toLowerCase() === filter));
   if (guests.length > 1) {
-    lines.unshift(`Note: ${guests.length} guests are named ${untrusted(filter, 40)}: ${guests.map((workload) => `${workload.type === "lxc" ? "LXC" : "VM"} ${workload.vmid} on node ${untrusted(workload.node, 30)}`).join(", ")}.`);
+    // With the Docker host each one is, so "Main Docker" and "PVE-2" are
+    // tied to the right ID, and how to answer: models picked one, or said
+    // the two were the same VM.
+    const portainerName = (workload) => containerHostNames(snapshot).find((hostName) => hostGuestWorkload(snapshot, hostName)?.guest === workload);
+    lines.unshift(`Note: ${guests.length} separate guests share the exact name ${untrusted(filter, 40)}: ${guests.map((workload) => {
+      const host = portainerName(workload);
+      return `${workload.type === "lxc" ? "LXC" : "VM"} ${workload.vmid} on node ${untrusted(workload.node, 30)}${host ? ` (Helmsman's Docker host ${untrusted(host, 40)})` : ""}`;
+    }).join(", ")}. Only the guest ID tells them apart; without one, answer for each by its ID.`);
   }
   // A guest named after a kind ("docker"): the containers might be meant
   // too, so their counts per host follow, without the names.
@@ -1143,6 +1242,81 @@ function listWorkloads(snapshot, _context, args) {
     }
   }
   return lines.join("\n");
+}
+
+/**
+ * "Do grafana and loki share a Portainer environment?", "are the paperless
+ * database and webserver hosted together?": where each of two named things
+ * runs, compared by code. Models answered "No" with both lines in front of
+ * them saying the same Docker host. Null unless two things are named and
+ * placed.
+ */
+export function placementVerdict(snapshot, text) {
+  const question = String(text || "").toLowerCase();
+  const guests = (snapshot?.infrastructure?.environments || []).flatMap((environment) => guestsOf(environment));
+  const byHost = containersByHost(snapshot);
+  const containers = [...byHost].flatMap(([host, list]) => list.map((container) => ({ host, container })));
+  const escape = (value) => value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const said = (word) => word.length >= 3 && new RegExp(`(^|[^a-z0-9])${escape(word)}(?=$|[^a-z0-9])`, "u").test(question);
+  const subjects = [];
+  const add = (subject) => {
+    if (subjects.length < 2 && !subjects.some((item) => item.key === subject.key || (item.at === subject.at && item.word === subject.word))) subjects.push(subject);
+  };
+  const candidates = [];
+  for (const { host, container } of containers) {
+    const name = String(container.name || "").toLowerCase();
+    for (const word of new Set([name, name.replace(/[-_]\d+$/u, "")])) {
+      if (said(word)) candidates.push({ key: `container:${name}`, word, at: question.search(new RegExp(escape(word), "u")), label: untrusted(container.name, 60), host });
+    }
+  }
+  for (const stack of containerStackNames(snapshot)) {
+    const lower = stack.toLowerCase();
+    const spaced = lower.replace(/stack$/u, " stack");
+    const word = said(lower) ? lower : spaced !== lower && question.includes(spaced) ? spaced : null;
+    const hosts = [...new Set(containers.filter(({ container }) => String(container.stack || "").toLowerCase() === lower).map(({ host }) => host))];
+    if (word && hosts.length === 1) candidates.push({ key: `stack:${lower}`, word, at: question.indexOf(word), label: `the ${untrusted(stack, 40)} stack`, host: hosts[0] });
+  }
+  for (const guest of guests) {
+    const name = String(guest.name || "").toLowerCase();
+    if (!said(name) || guests.filter((other) => String(other.name || "").toLowerCase() === name).length > 1) continue;
+    candidates.push({ key: `guest:${guest.vmid}`, word: name, at: question.search(new RegExp(escape(name), "u")), label: `${untrusted(guest.name, 40)} (${guest.type === "lxc" ? "LXC" : "VM"} ${guest.vmid})`, guest });
+  }
+  // Longer names first, so "paperless-db-1" wins over a stack word inside it,
+  // then in the order the question says them.
+  candidates.sort((left, right) => right.word.length - left.word.length);
+  const kept = [];
+  for (const candidate of candidates) {
+    if (kept.some((item) => item.key === candidate.key || (item.at <= candidate.at && candidate.at < item.at + item.word.length))) continue;
+    kept.push(candidate);
+  }
+  kept.sort((left, right) => left.at - right.at).forEach(add);
+  if (subjects.length !== 2) return null;
+  const place = (subject) => {
+    if (subject.guest) return { node: subject.guest.node, guest: subject.guest };
+    const found = hostGuestWorkload(snapshot, subject.host);
+    return { host: subject.host, node: found?.guest?.node || null, guest: found?.guest || null, fromManual: Boolean(found?.fromManual) };
+  };
+  const [first, second] = subjects;
+  const [a, b] = [place(first), place(second)];
+  const hostText = (where) => `Docker host ${where.host}${where.guest ? ` (${where.guest.type === "lxc" ? "LXC" : "VM"} ${where.guest.vmid} ${untrusted(where.guest.name, 40)} on node ${untrusted(where.guest.node, 40)}${where.fromManual ? ", per your manual" : ""})` : ""}`;
+  let verdict;
+  if (a.host && b.host) {
+    if (a.host === b.host) verdict = `Yes: ${first.label} and ${second.label} both run on ${hostText(a)}.`;
+    else {
+      const sameNode = a.node && b.node && a.node === b.node;
+      verdict = `No: ${first.label} runs on ${hostText(a)} and ${second.label} on ${hostText(b)}.${sameNode ? ` Those two Docker hosts are both on node ${untrusted(a.node, 40)}, so they share a node but not a host.` : ""}`;
+    }
+  } else if (a.host || b.host) {
+    const [box, boxPlace, other, otherPlace] = a.host ? [first, a, second, b] : [second, b, first, a];
+    if (boxPlace.guest && boxPlace.guest === otherPlace.guest) verdict = `${box.label} runs inside ${other.label}: ${other.label} is its Docker host.`;
+    else if (boxPlace.node) verdict = `${box.label} runs on ${hostText(boxPlace)}; ${other.label} is a separate guest on node ${untrusted(otherPlace.node, 40)}. ${boxPlace.node === otherPlace.node ? "So they share a node, but not a machine." : "So they are on different nodes."}`;
+    else return null;
+  } else {
+    verdict = a.node === b.node
+      ? `Yes: ${first.label} and ${second.label} are both on node ${untrusted(a.node, 40)}, as separate guests.`
+      : `No: ${first.label} is on node ${untrusted(a.node, 40)} and ${second.label} on node ${untrusted(b.node, 40)}.`;
+  }
+  return `Where these run, worked out by Helmsman: ${verdict}`;
 }
 
 /** Names of the VMs, LXCs and containers, for matching a question to them. */
@@ -1284,7 +1458,10 @@ const MANUAL_STOP_WORDS = new Set(("a an and any are as at be can could did do d
   // Time and "what happened" words describe when, not what: matching them pulls
   // unrelated notes such as "memtest86+ overnight" into a history question.
   + "anything something everything happen happened happening going on today tonight yesterday overnight night morning "
-  + "afternoon evening week weekend month lately recently recent past last since hour hours day days ago now current currently").split(" "));
+  + "afternoon evening week weekend month lately recently recent past last since hour hours day days ago now current currently "
+  // Words about the asking, not the thing: "what IP do my notes list for X"
+  // ranked lines that say "note" or "list" above X's own row.
+  + "notes documented according supposed recorded meant rather corresponds").split(" "));
 
 /** Words worth searching for in a question or query, most specific first. */
 export function manualKeywords(text, limit = 8) {
@@ -1300,14 +1477,17 @@ export function manualKeywords(text, limit = 8) {
   return words.slice(0, limit);
 }
 
-const MANUAL_SYNONYMS = [["isp", "internet"], ["provider", "internet"], ["update", "change"], ["updated", "change"], ["updates", "change"], ["wifi", "wi-fi"]];
+const MANUAL_SYNONYMS = [["isp", "internet"], ["provider", "internet"], ["update", "change"], ["updated", "change"], ["updates", "change"], ["wifi", "wi-fi"],
+  // "What motherboard does norco use": the manual says "board" in a "hardware" line.
+  ["motherboard", "board"], ["motherboard", "hardware"], ["chassis", "case"], ["chassis", "hardware"], ["processor", "cpu"],
+  ["processor", "hardware"], ["cpu", "hardware"], ["nvr", "cameras"], ["nvr", "recordings"]];
 
 /**
  * Lines of the manual that mention the words, best first. A word matches a
  * whole word in the line, or the start of one for words of four letters or
  * more, so "ip" does not match "pipeline" but "proxmo" matches "proxmox".
  */
-export function manualMatches(markdown, words, limit = 6) {
+export function manualMatches(markdown, words, limit = 6, { subjects = [] } = {}) {
   if (!words.length) return [];
   // Hyphens and dots don't separate names: "pihole" finds "Pi-hole".
   const loose = (value) => value.replace(/[._-]/gu, "");
@@ -1351,9 +1531,29 @@ export function manualMatches(markdown, words, limit = 6) {
     }
     // Lines with every word first.
     if (found === wanted.length && wanted.length > 1) score *= 1.5;
-    if (score) hits.push({ score, index, text: `${lineHeading ? `[${untrusted(lineHeading, 40)}] ` : ""}${untrusted(line, 200)}` });
+    // A line about the thing the question names comes before lines that only
+    // share its other words, and that thing's own row ("- Jelly-Arr: VM 100
+    // ... 192.168.0.7") first of all: "what IP do my notes list for
+    // Jelly-Arr" got six lines saying "IP" or "notes" and not its row.
+    const about = subjects.filter((subject) => namesSubject(line, subject));
+    const own = about.some((subject) => ownRow(line, subject));
+    if (score) hits.push({ score: score * (own ? 3 : about.length ? 2 : 1), about: about.length > 0, index, text: `${lineHeading ? `[${untrusted(lineHeading, 40)}] ` : ""}${untrusted(line, 200)}` });
   });
-  return hits.sort((left, right) => right.score - left.score || left.index - right.index).slice(0, limit).map(({ text }) => text);
+  return hits.sort((left, right) => Number(right.about) - Number(left.about) || right.score - left.score || left.index - right.index).slice(0, limit).map(({ text }) => text);
+}
+
+// "Management-VM" is "Management VM" in prose; a short name ("sure") only as a whole word.
+const squash = (value) => String(value || "").toLowerCase().replace(/[^a-z0-9]/gu, "");
+function namesSubject(line, subject) {
+  const wanted = squash(subject);
+  if (wanted.length < 3) return false;
+  if (wanted.length >= 6) return squash(line).includes(wanted);
+  return line.toLowerCase().split(/[^a-z0-9]+/u).some((token) => token === wanted)
+    || new RegExp(`(^|[^a-z0-9])${String(subject).toLowerCase().replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}(?=$|[^a-z0-9])`, "u").test(line.toLowerCase());
+}
+function ownRow(line, subject) {
+  const start = line.replace(/^[-*|\s]+/u, "").replace(/^\*\*/u, "");
+  return squash(start.slice(0, String(subject).length + 4)).startsWith(squash(subject));
 }
 
 // "What changed in the last manual update?", "what's in the change log?":
@@ -1387,8 +1587,8 @@ export function manualChangeLog(markdown, limit = 3) {
 }
 
 /** Manual lines for a question: the newest change-log entries first when it asks what changed. */
-export function manualLinesFor(markdown, question, words, limit = 6) {
-  const hits = manualMatches(markdown, words, limit);
+export function manualLinesFor(markdown, question, words, limit = 6, { subjects = [] } = {}) {
+  const hits = manualMatches(markdown, words, limit, { subjects });
   if (!CHANGE_LOG_QUESTION.test(String(question || ""))) return hits;
   const log = manualChangeLog(markdown);
   if (!log.length) return hits;

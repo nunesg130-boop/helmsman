@@ -1800,6 +1800,30 @@ test("yes/no backup questions get the answer worked out by code", async (t) => {
   assert.equal(await verdict("when was resolver last backed up?"), null, "not a yes/no question");
 });
 
+test("v1.18.3: what Helmsman can't see is said once, and a job question gets no Yes from the backup age", async (t) => {
+  const { agent, context, publish } = await harness(t, { modelReplies: () => ({ content: "ok" }) });
+  await configure(agent, { autonomy: false });
+  const snapshot = snapshotAt(context.now);
+  snapshot.infrastructure.environments[0].workloads.push(
+    { vmid: 106, type: "lxc", name: "resolver", node: "pve-1", status: "running", template: false, uptimeSeconds: 3 * 86_400, backup: { status: "success", ageSeconds: 14 * 3600 } }
+  );
+  await publish(snapshot);
+  const ask = async (question) => {
+    context.modelCalls.length = 0;
+    await api(agent, "POST", "/api/v2/agent/ask", { question });
+    return context.modelCalls[0].messages;
+  };
+  let messages = await ask("is resolver included in a configured backup job?");
+  assert.match(messages.find((message) => message.tool_call_id === "seed-limits")?.content || "", /cannot see, worked out by Helmsman: backup jobs and schedules/u);
+  assert.ok(!messages.some((message) => /The answer, worked out by Helmsman from these lines: Yes\./u.test(message.content || "")), "no Yes from the backup age");
+  messages = await ask("is resolver's backup recent?");
+  assert.ok(!messages.some((message) => message.tool_call_id === "seed-limits"), "nothing missing, nothing said");
+  messages = await ask("when did resolver last start?");
+  const started = messages.find((message) => message.tool_call_id === "seed-limits")?.content || "";
+  assert.match(started, /^Last started, worked out by Helmsman from uptime .*: resolver \(LXC 106\) about /u);
+  assert.doesNotMatch(started, /cannot see/u, "a start date it can give is not called unknown");
+});
+
 test("guest ID questions say which number is the ID", async (t) => {
   const { agent, context, publish } = await harness(t, { modelReplies: () => ({ content: "ok" }) });
   await configure(agent, { autonomy: false });

@@ -200,14 +200,33 @@ function measuresIn(question) {
   const only = vms && !lxcs ? " vms" : lxcs && !vms ? " lxcs" : "";
   // About nodes alone ("is norco busy", "node cpu"), not guests: the node's lines answer it.
   const nodesOnly = /\bnodes?\b/u.test(question) && !/\b(?:guests?|vms?|lxcs?)\b/u.test(question);
-  const allocation = ALLOCATION.test(question) && !/\b(?:using|uses|used|use|usage|consum\w*|hog\w*|close to|closest|near|busy|busiest|load|free)\b/u.test(question);
+  // "Most assigned RAM, regardless of current use": the use is ruled out.
+  const asked = question.replace(/\b(?:regardless of|rather than|not|instead of|ignoring)(?: the)? (?:current |actual |observed )?(?:use|usage)\b/gu, "");
+  const allocation = ALLOCATION.test(asked) && !/\b(?:using|uses|used|use|usage|consum\w*|hog\w*|close to|closest|near|busy|busiest|load|free)\b/u.test(asked);
+  // "Most unused assigned RAM", "biggest gap between allocation and use",
+  // "memory per vCPU": their own lists, worked out by code.
+  const memoryWords = /\b(?:memory|ram|gb)\b/u.test(question);
+  const unused = memoryWords && /\b(?:unused|spare|headroom|left ?over|gap between|out of proportion|wasted|available memory|not using)\b/u.test(question);
+  const PER_CORE = /\bper (?:assigned |configured |allocated )?(?:cores?|vcpus?|cpus?)\b/u;
+  const perCore = memoryWords && PER_CORE.test(question);
+  // "Assigned RAM per vCPU" divides what was given; "memory usage per configured core" what is used.
+  const perCoreAllocation = ALLOCATION.test(asked.replace(PER_CORE, "")) && !/\b(?:using|uses|used|use|usage|consum\w*)\b/u.test(asked);
+  // "CPU per core", "spare CPU capacity": whole cores in use, worked out.
+  const coresUsed = !memoryWords && /\b(?:per (?:assigned |configured )?(?:cores?|vcpus?)|per-vcpu|spare (?:cpu|cores?|capacity)|whole cores|cores in use|relative to (?:its |their )?(?:assigned )?(?:cpu|core|vcpu) count)\b/u.test(question);
   const containers = /\b(?:containers?|docker|portainer|stacks?)\b/u.test(question) && !/\b(?:vms?|lxcs?|guests?)\b/u.test(question);
   return MEASURES
     .filter(([metric, pattern]) => pattern.test(question)
       && !(metric === "backups" && /\b(?:stored|where|location|kept)\b/u.test(question))
       && !(metric === "uptime" && containers)
       && !(metric !== "backups" && nodesOnly))
-    .map(([metric, pattern]) => ({ metric: allocation ? { cpu: "cores", memory: "allocated" }[metric] || metric : metric, at: question.search(pattern) }))
+    .filter(([metric]) => !(perCore && metric === "cpu"))
+    .map(([metric, pattern]) => ({
+      metric: metric === "memory" && perCore ? (perCoreAllocation ? "allocatedpercore" : "memorypercore")
+        : metric === "memory" && unused ? "unused"
+          : metric === "cpu" && coresUsed ? "coresused"
+          : allocation ? { cpu: "cores", memory: "allocated" }[metric] || metric : metric,
+      at: question.search(pattern)
+    }))
     .sort((left, right) => left.at - right.at)
     .map(({ metric }) => `${metric}${only}`);
 }
@@ -376,8 +395,16 @@ export function workloadQueries(snapshot, text, { workloadWords = false, namesOn
   }
   if (filters.length) {
     // "Where does ollama rank for memory": its line and the ranking.
-    const ranking = /\b(?:rank(?:s|ed|ing)?|top|highest|lowest|most|least|busiest|order|sit|outrank)\b/u.test(question.replace(/\bmost recent(?:ly)?\b/gu, ""));
-    return [...filters.slice(0, 4), ...(ranking && filters.length === 1 ? measures.slice(0, 1) : [])].map((filter) => ({ filter }));
+    // "Rank pihole, caddy and cloudflared by CPU", "which of Kasm and haos
+    // has more memory assigned": their lines and the ranking, up to three.
+    const plain = question.replace(/\bmost recent(?:ly)?\b/gu, "");
+    const ranking = /\b(?:rank(?:s|ed|ing)?|top|highest|lowest|most|least|busiest|order|sit|outrank)\b/u.test(plain);
+    // Two compared on CPU or memory use read their own lines; on what they
+    // were given, or anything worked out, the ranking says it.
+    const compared = /\b(?:more|less|larger|smaller|bigger|busier)\b/u.test(plain) && measures.length && !/^(?:cpu|memory)\b/u.test(measures[0]);
+    return (filters.length === 1 ? ranking : ranking || compared) && measures.length && filters.length <= 3
+      ? [...filters.slice(0, 3), measures[0]].map((filter) => ({ filter }))
+      : filters.slice(0, 4).map((filter) => ({ filter }));
   }
   if (nodes.length) return nodes.slice(0, 2).map((filter) => ({ filter }));
   if (!workloadWords || namesOnly) return [];
@@ -401,7 +428,7 @@ export function workloadQueries(snapshot, text, { workloadWords = false, namesOn
 /** Whether a lookup names one thing ("seerr", "109") rather than a kind or a ranking. */
 export function namesSomething(query) {
   const filter = String(query?.filter || "").toLowerCase();
-  return Boolean(filter) && !/^(?:containers?|vms|lxcs|nodes|memory|cpu|backups|uptime|cores|allocated|ids)\b/u.test(filter);
+  return Boolean(filter) && !/^(?:containers?|vms|lxcs|nodes|memory|cpu|backups|uptime|cores|allocated|unused|memorypercore|allocatedpercore|coresused|ids)\b/u.test(filter);
 }
 
 /**

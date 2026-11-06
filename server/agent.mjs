@@ -35,12 +35,16 @@ import {
   isApprovalMessage,
   withKind,
   parseActionCommand,
-  sharedNameNotes
+  sharedNameNotes,
+  workloadNames,
+  containerHostNames,
+  placementVerdict
 } from "./agent-tools.mjs";
 import { chatCompletion, estimateTokens, listModelDetails, listModels, LlmError, validModelId } from "./llm-client.mjs";
 import { questionWindow } from "./agent-history.mjs";
 import { COLOCATED, guestIds, HELMSMAN_HELP, isFollowUp, mergeSeeds, namedServices, namesSomething, nicknameHints, questionSeeds, withoutWorkloadNames, workloadQueries } from "./agent-intent.mjs";
 import { createConversationStore } from "./agent-conversations.mjs";
+import { asksUntrackedBackup, startDates, untrackedNote, untrackedTopics } from "./agent-untracked.mjs";
 import { createSelfTest, SelfTestError } from "./selftest.mjs";
 import { checkQuestionFile, UPLOAD_MAX_BYTES } from "./selftest-upload.mjs";
 import { parseServiceUrl, resolveAndAuthorizeExplicitTarget, resolveAndAuthorizeTarget } from "./network.mjs";
@@ -78,6 +82,8 @@ const LIST_REPLY_TOKENS = 900;
 const LIST_QUESTION = /\b(?:rank(?:ed|ing)?|list|every|all (?:the )?(?:guests?|vms?|lxcs?|containers?)|order (?:them|by)|sort(?:ed)? by)\b/u;
 // Yes/no backup questions, and the window they give, for backupVerdicts.
 const YES_NO = /^\s*(?:is|was|were|are|does|did|has|have|do)\b/u;
+// "Same host as", "hosted together", "share a Portainer environment".
+const SAME_PLACE = /\b(?:same (?:docker |proxmox |portainer )?(?:host|node|server|machine|vm|environment|box)|together|shar(?:e|es|ed|ing) (?:a |an |the |one )?(?:docker |portainer |proxmox )?(?:hosts?|nodes?|environments?|machines?|vms?)|both (?:on|in|run)|co-?located|alongside)\b/u;
 const MAX_NOTE_CHARS = 1_500;
 const MAX_PUSH_CHARS = 480;
 const MAX_QUESTION_CHARS = 1_000;
@@ -687,6 +693,17 @@ export async function createAgent(options) {
   // text (or anything else) cannot switch them off.
   // The exact list of what Helmsman watches, so the model can tell what it
   // does not know.
+  // Guest, container, Docker host and node names, so "is caddy tagged?" is
+  // known to be about a guest.
+  function untrackedNames() {
+    const current = snapshot() || {};
+    return [
+      ...workloadNames(current),
+      ...containerHostNames(current),
+      ...(current.infrastructure?.environments || []).flatMap((item) => (item.nodes || []).map((node) => node?.name))
+    ].filter((name) => typeof name === "string" && name);
+  }
+
   function monitoredLine() {
     const current = snapshot() || {};
     const names = [
@@ -720,6 +737,9 @@ export async function createAgent(options) {
       "You are the Helmsman agent, a homelab assistant.",
       monitoredLine(),
       "It does not monitor anything else, such as the internet connection, ISP, Wi-Fi, router, network speed, temperatures, Plex or other devices. If asked about those, say Helmsman does not monitor them.",
+      // Asked "show caddy's state changes", models said Helmsman doesn't
+      // monitor caddy, an LXC it reports on in every lookup.
+      "It does see every VM, LXC and Docker container on those (state, CPU, memory, uptime, latest backup), so never say it doesn't monitor one of them; it only keeps no history for them.",
       "Your tools look up health, containers, VMs and LXCs, history, the media queue and the owner's manual.",
       // Kept out of a tiny context, where they would crowd out the lookups.
       ...(roomy ? [
@@ -931,7 +951,9 @@ export async function createAgent(options) {
         const days = numbered ? Number(numbered[1])
           : /\b(?:today|(?:last|past) (?:day|24 hours))\b/u.test(question) ? 1
             : /\b(?:recent(?:ly)?|this week|(?:the )?(?:last|past) (?:week|7 days|seven days)|within (?:a|the last) week)\b/u.test(question) ? 7 : null;
-        if (days || YES_NO.test(question)) {
+        // Not for what Helmsman can't see ("is caddy in a backup job?"): a
+        // "Yes. caddy's last backup succeeded" there answered the wrong question.
+        if ((days || YES_NO.test(question)) && !asksUntrackedBackup(prompt, untrackedNames())) {
           const verdicts = backupVerdicts(snapshot(), workloads.map((query) => query.filter), days);
           if (verdicts.length) lastWorkloads.content += `\nThe answer, worked out by Helmsman from these lines: ${verdicts.join(" ")}`;
         }
@@ -943,6 +965,17 @@ export async function createAgent(options) {
         && /\b(?:re)?(?:start|boot)(?:ed|s)?\b|\breboot(?:ed)?\b|\bcame (?:back )?up\b/u.test(String(prompt).toLowerCase())) {
         const newest = lookups.join("\n").match(/Started or restarted most recently[^.]*\.(?:[^.]*the next most recent has been up [^.]*\.)?/u)?.[0];
         if (newest) lastWorkloads.content += `\nThe answer, worked out by Helmsman from these lines: ${newest} Helmsman sees only uptime, so it can't tell a restart from a first start.`;
+      }
+      // "Do grafana and loki share a Portainer environment?": the yes or no,
+      // compared by code from where each runs.
+      if (SAME_PLACE.test(String(prompt).toLowerCase())) {
+        const verdict = placementVerdict(snapshot(), prompt) || (followUp ? placementVerdict(snapshot(), `${earlierQuestion}\n${prompt}`) : null);
+        if (verdict) {
+          messages.push(
+            { role: "assistant", content: "", tool_calls: [{ id: "seed-placement", type: "function", function: { name: "list_workloads", arguments: "{}" } }] },
+            { role: "tool", tool_call_id: "seed-placement", content: verdict }
+          );
+        }
       }
       if (seeds.media) await seed("media_queue", {});
       // Manual lines only for questions about addresses, procedures and
@@ -963,6 +996,20 @@ export async function createAgent(options) {
           const scope = /\b(?:nodes?|guests?|vms?|lxcs?|proxmox)\b/u.test(String(prompt).toLowerCase()) ? "node" : "host";
           if (label) await seed("list_workloads", { filter: `service ${scope} ${plainText(label, 40).toLowerCase()}` });
         }
+      }
+      // What the question asks that Helmsman can't see, said once, last, so
+      // it is the freshest thing the model reads: backup jobs, restart
+      // counts, CPU history and the like were answered "none" or "no".
+      const topics = untrackedTopics(prompt, untrackedNames());
+      const started = topics.some((topic) => topic.key === "start-history") ? startDates(snapshot(), prompt, clock(), settings.timeZone) : "";
+      // "When did Main last boot?" is answered by the date from its uptime,
+      // so it isn't also said to be unknown.
+      const limits = [untrackedNote(prompt, untrackedNames(), { skip: started ? ["start-history"] : [] }), started].filter(Boolean).join("\n");
+      if (limits) {
+        messages.push(
+          { role: "assistant", content: "", tool_calls: [{ id: "seed-limits", type: "function", function: { name: "overview", arguments: "{}" } }] },
+          { role: "tool", tool_call_id: "seed-limits", content: limits }
+        );
       }
       if ((seeds.manual || seeds.help || placedByManual) && !period) {
         let words = manualKeywords(prompt);
@@ -985,7 +1032,14 @@ export async function createAgent(options) {
           .flatMap((environment) => (environment.workloads || []).filter((workload) => String(workload.vmid) === id).map((workload) => plainText(workload.name, 40).toLowerCase())));
         words = [...new Set([...words, ...idNames.filter(Boolean)])].slice(0, 8);
         const markdown = `${manual?.() || ""}\n\n${HELMSMAN_HELP}`;
-        const hits = manualLinesFor(markdown, prompt, words);
+        // The guests, containers and nodes the question names, whose own
+        // manual rows come first.
+        const namedIn = (text) => [...new Set(untrackedNames())].filter((name) => name.length >= 3
+          && new RegExp(`(^|[^a-z0-9])${name.toLowerCase().replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}(?=$|[^a-z0-9])`, "u").test(String(text).toLowerCase())).slice(0, 4);
+        // "Is Seerr's hostname listed?" then "what internal endpoint does it point to?": Seerr's row.
+        const ownSubjects = namedIn(prompt);
+        const subjects = ownSubjects.length || !followUp ? ownSubjects : namedIn(earlierQuestion);
+        const hits = manualLinesFor(markdown, prompt, words, 6, { subjects });
         // A port question about something the manual gives no port for says
         // so, or models filled in another service's port or a "default".
         const portless = asksPort ? portlessSubjects(snapshot(), prompt, services, hits, lookups) : [];
