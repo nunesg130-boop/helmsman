@@ -271,7 +271,7 @@ export function validateLaunchpad(doc) {
       desktop: rect(COLUMNS.desktop),
       tablet: rect(COLUMNS.tablet),
       phone: rect(COLUMNS.phone)
-    }, { required: ["desktop"] }) ?? undefined;
+    }) ?? undefined;
   }
 
   function style(node, path) {

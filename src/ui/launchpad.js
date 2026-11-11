@@ -99,7 +99,8 @@ export function createLaunchpadController(deps) {
       } finally {
         loading = null;
       }
-      render();
+      // Don't repaint over a drag or a field the owner is typing in.
+      if (!editor?.isBusy?.()) render();
     })();
     return loading;
   }
@@ -304,7 +305,8 @@ export function createLaunchpadController(deps) {
           ? page.groups.map((group) => groupMarkup(page, group, liveData)).join("")
           : `<section class="lp-empty"><h3>This page has no groups yet</h3>${view.editing ? "" : "<p>Choose Edit layout to add one.</p>"}</section>`
         : "";
-    return `<div class="page lp-page lp-root${view.editing ? " is-editing" : ""}" data-density="${escapeHtml(density)}" data-breakpoint="${escapeHtml(view.editing && editor.previewBreakpoint?.() ? editor.previewBreakpoint() : view.breakpoint)}">
+    const editorPanel = view.editing ? editor.panel() : "";
+    return `<div class="page lp-page lp-root${view.editing ? " is-editing" : ""}${editorPanel ? " has-panel" : ""}" data-density="${escapeHtml(density)}" data-breakpoint="${escapeHtml(view.editing && editor.previewBreakpoint?.() ? editor.previewBreakpoint() : view.breakpoint)}">
         <section class="page-intro lp-intro">
           <div><span class="section-kicker">Launchpad</span><h2>${escapeHtml(page?.title || "Launchpad")}</h2></div>
           <div class="lp-intro__actions">${editToggle}</div>
@@ -313,7 +315,7 @@ export function createLaunchpadController(deps) {
         ${view.editing ? editor.toolbar() : ""}
         ${pageTabs(pages)}
         <div class="lp-groups">${body}</div>
-        ${view.editing ? editor.panel() : ""}
+        ${editorPanel}
       </div>`;
   }
 
@@ -343,10 +345,13 @@ export function createLaunchpadController(deps) {
 
   function render() {
     if (!root) return;
-    const focusedId = globalThis.document?.activeElement?.id;
+    const active = globalThis.document?.activeElement;
+    const focusedId = active?.id;
+    const focusedTileId = !focusedId && active?.classList?.contains("lp-tile") ? active.dataset.id : null;
     setMarkup(root, markup());
     applyLayout();
     watchIframes();
+    if (focusedTileId) root.querySelector(`.lp-tile[data-id="${focusedTileId}"]`)?.focus({ preventScroll: true });
     if (focusedId) {
       const again = globalThis.document.getElementById(focusedId);
       if (again && root.contains(again)) {
@@ -455,6 +460,10 @@ export function createLaunchpadController(deps) {
     }
   }
 
+  function onFocusOut(event) {
+    if (editor && view.editing) editor.handleFocusOut?.(event);
+  }
+
   function onPointerDown(event) {
     if (editor && view.editing) editor.handlePointerDown(event);
   }
@@ -495,6 +504,7 @@ export function createLaunchpadController(deps) {
     ["submit", onSubmit, false],
     ["keydown", onKeyDown, false],
     ["pointerdown", onPointerDown, false],
+    ["focusout", onFocusOut, false],
     ["error", onError, true],
     ["load", onLoad, true]
   ];
@@ -544,8 +554,9 @@ export function createLaunchpadController(deps) {
       root = null;
     },
 
-    attachEditor(factory) {
+    attachEditor(factory, extra = {}) {
       editor = factory({
+        ...extra,
         view,
         api,
         toast,

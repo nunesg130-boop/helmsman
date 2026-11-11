@@ -21,6 +21,7 @@ import {
   searchManualEntries
 } from "./ui/manual-markdown.js";
 import { createLaunchpadController } from "./ui/launchpad.js";
+import { createLaunchpadEditor } from "./ui/launchpad-editor.js";
 import { createNetworkMapController } from "./ui/network-map.js";
 
 const main = document.querySelector("#main-content");
@@ -7595,6 +7596,22 @@ function launchpadLiveInventory() {
 
 let launchpadControllerInstance = null;
 
+// Icon uploads are raw image bytes, not JSON, so they bypass api().
+async function uploadLaunchpadIcon(file) {
+  if (!file || file.size > 512 * 1024) throw new Error("Icons can be at most 512 KB");
+  const response = await fetch("/api/v2/launchpad/icons", {
+    method: "POST",
+    headers: { Accept: "application/json", "Content-Type": "application/octet-stream", "X-Helmsman-CSRF": state.csrfToken || "" },
+    body: await file.arrayBuffer(),
+    credentials: "same-origin",
+    cache: "no-store",
+    redirect: "error"
+  });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok || typeof payload?.ref !== "string") throw new Error(payload?.message || "That image could not be uploaded");
+  return payload.ref;
+}
+
 function launchpadController() {
   if (!launchpadControllerInstance) {
     launchpadControllerInstance = createLaunchpadController({
@@ -7613,6 +7630,7 @@ function launchpadController() {
         disabled: Boolean(state.actionMutation)
       })
     });
+    launchpadControllerInstance.attachEditor(createLaunchpadEditor, { uploadIcon: uploadLaunchpadIcon });
   }
   return launchpadControllerInstance;
 }

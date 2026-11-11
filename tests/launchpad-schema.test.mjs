@@ -143,7 +143,9 @@ pages:
 });
 
 test("layout rules", () => {
-  errorsFor(oneTile(LINK().replace("layout: { desktop: { x: 0, y: 0, w: 2, h: 1 } }", "layout: { phone: { x: 0, y: 0, w: 2, h: 1 } }")));
+  // A tile with no desktop rect is auto-placed on desktop, so a phone-only
+  // layout is valid (the editor writes these when a phone layout is customized).
+  assert.deepEqual(check(oneTile(LINK().replace("layout: { desktop: { x: 0, y: 0, w: 2, h: 1 } }", "layout: { phone: { x: 0, y: 0, w: 2, h: 1 } }"))).errors, []);
   errorsFor(oneTile(LINK().replace("w: 2", "w: 13")));
   errorsFor(oneTile(LINK("").replace("h: 1 } }", "h: 1 }, phone: { x: 0, y: 0, w: 3, h: 1 } }")));
   errorsFor(oneTile(LINK().replace("h: 1", "h: 9")));

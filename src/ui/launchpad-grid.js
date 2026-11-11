@@ -94,3 +94,39 @@ export function breakpointForWidth(width) {
   if (width >= 640) return "tablet";
   return "phone";
 }
+
+const MAX_TILE_HEIGHT = 8;
+
+/**
+ * Puts `movedId` at `rect` (clamped to the columns and to 8 rows tall) and
+ * pushes any tile it now overlaps further down, in reading order, until
+ * nothing overlaps. Tiles only ever move down. Returns just the rects that
+ * changed, the moved tile included, so one save carries the whole drop.
+ */
+export function placeWithPushDown(rects, movedId, rect, columns) {
+  const moved = clampRect({ ...rect, h: Math.min(MAX_TILE_HEIGHT, rect.h) }, columns);
+  const settled = [moved];
+  const changed = new Map([[movedId, moved]]);
+  const others = [...rects.entries()]
+    .filter(([id]) => id !== movedId)
+    .sort(([, left], [, right]) => left.y - right.y || left.x - right.x);
+  for (const [id, original] of others) {
+    const current = { ...original };
+    for (let guard = 0; guard < 10_000; guard += 1) {
+      const blockers = settled.filter((other) => overlaps(other, current));
+      if (!blockers.length) break;
+      current.y = Math.max(...blockers.map((other) => other.y + other.h));
+    }
+    settled.push(current);
+    if (current.y !== original.y) changed.set(id, current);
+  }
+  return changed;
+}
+
+/** Maps a pointer position to the grid cell under it. */
+export function pointerToCell({ clientX, clientY }, box, columns, rowHeight, gap) {
+  const columnWidth = (box.width - gap * (columns - 1)) / columns;
+  const x = Math.floor((clientX - box.left) / (columnWidth + gap));
+  const y = Math.floor((clientY - box.top) / (rowHeight + gap));
+  return { x: Math.max(0, Math.min(columns - 1, x)), y: Math.max(0, y) };
+}
