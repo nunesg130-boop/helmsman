@@ -508,3 +508,20 @@ export function validateLaunchpad(doc) {
     errors: []
   };
 }
+
+/** Distinct origins of the model's iframe tiles, in file order, for the shell's CSP frame-src. */
+export function launchpadFrameOrigins(model) {
+  const origins = [];
+  for (const page of model?.pages || []) {
+    for (const group of page.groups || []) {
+      for (const tile of group.tiles || []) {
+        if (tile.type !== "iframe") continue;
+        const url = canonicalLaunchUrl(tile.url);
+        if (!url) continue;
+        const { origin } = new URL(url);
+        if (!origins.includes(origin)) origins.push(origin);
+      }
+    }
+  }
+  return origins;
+}

@@ -19,7 +19,9 @@ import {
 import { tokenMatches } from "./state.mjs";
 import { isReportId } from "./acknowledgements.mjs";
 import { isCardId } from "./ui-preferences.mjs";
-import { canonicalLaunchUrl, launchpadKey } from "./launchpad.mjs";
+import { LaunchpadIconError, MAX_ICON_BYTES } from "./launchpad-icons.mjs";
+import { LaunchpadStoreError } from "./launchpad-store.mjs";
+import { buildLaunchpadCss } from "./launchpad-theme.mjs";
 import { MANUAL_LIMITS } from "./manual.mjs";
 import { NETWORK_MAP_LIMITS } from "./network-map.mjs";
 import { resolveLimits } from "./limits.mjs";
@@ -1160,10 +1162,14 @@ export async function createControlPlane(options) {
       ? options.acknowledgements
       : null;
   const launchpadStore = options.launchpad
-    && typeof options.launchpad.list === "function"
-    && typeof options.launchpad.set === "function"
-    && typeof options.launchpad.remove === "function"
+    && typeof options.launchpad.snapshot === "function"
+    && typeof options.launchpad.apply === "function"
       ? options.launchpad
+      : null;
+  const launchpadIconStore = options.launchpadIcons
+    && typeof options.launchpadIcons.get === "function"
+    && typeof options.launchpadIcons.saveUpload === "function"
+      ? options.launchpadIcons
       : null;
   const uiPreferenceStore = options.uiPreferences
     && typeof options.uiPreferences.collapsedCards === "function"
@@ -5109,21 +5115,6 @@ export async function createControlPlane(options) {
     sendJson(response, 200, operationsResponse(snapshot));
   }
 
-  function launchpadTargetExists(state, kind, id) {
-    if (kind === "media") return Object.hasOwn(state.connections, id);
-    if (kind === "environment") return Object.hasOwn(state.infrastructureTargets, id);
-    if (kind === "service") return Object.hasOwn(state.infrastructureServices, id);
-    return false;
-  }
-
-  function currentLaunchpadLinks() {
-    if (!launchpadStore) return [];
-    const state = stateStore.snapshot();
-    return launchpadStore.list().filter((link) => launchpadTargetExists(state, link.kind, link.id));
-  }
-
-  // Optional browser-facing addresses for the Launchpad. Helmsman never
-  // requests these addresses; they are returned only to signed-in sessions.
   // Which Settings cards are folded, kept by Helmsman so every browser
   // sees the same. GET lists them; PUT /api/v2/ui/cards/<id> folds or opens one.
   async function uiCardsApi(request, response, cardId) {
@@ -5150,44 +5141,135 @@ export async function createControlPlane(options) {
     sendJson(response, 200, { collapsed });
   }
 
-  async function launchpadApi(request, response, kind, id) {
-    if (kind === null && request.method === "GET") {
+  // Launchpad v2. launchpad.yaml is the single source of truth (see
+  // server/launchpad-store.mjs); the browser reads the model and sends one
+  // small operation per edit, naming the revision it was looking at.
+  const LAUNCHPAD_STORE_STATUS = {
+    LAUNCHPAD_CHANGED: 409,
+    LAUNCHPAD_INVALID: 423,
+    LAUNCHPAD_SCHEMA: 400,
+    INVALID_OP: 400,
+    NOT_FOUND: 404,
+    LIMIT: 409
+  };
+
+  function requireLaunchpadStore() {
+    if (!launchpadStore) fail(503, "LAUNCHPAD_UNAVAILABLE", "The Launchpad is temporarily unavailable.");
+    return launchpadStore;
+  }
+
+  async function launchpadApi(request, response, route) {
+    if (route === "model" || route === "revision" || route === "theme") {
+      if (request.method !== "GET") fail(405, "METHOD_NOT_ALLOWED", "That method is not allowed.");
       await authenticate(request, false);
-      sendJson(response, 200, { links: currentLaunchpadLinks() });
+      const { revision, model, error } = requireLaunchpadStore().snapshot();
+      if (route === "model") {
+        sendJson(response, 200, { revision, model, error });
+        return;
+      }
+      if (route === "revision") {
+        sendJson(response, 200, { revision, error });
+        return;
+      }
+      const etag = `"lp-${revision}"`;
+      setApiHeaders(response);
+      response.setHeader("Cache-Control", "private, no-cache");
+      response.removeHeader("Pragma");
+      response.removeHeader("Expires");
+      response.setHeader("ETag", etag);
+      if (request.headers["if-none-match"] === etag) {
+        response.statusCode = 304;
+        response.end();
+        return;
+      }
+      const body = Buffer.from(buildLaunchpadCss(model), "utf8");
+      response.setHeader("Content-Type", "text/css; charset=utf-8");
+      response.setHeader("Content-Length", String(body.length));
+      response.statusCode = 200;
+      response.end(body);
       return;
     }
-    if (kind === null || !["PUT", "DELETE"].includes(request.method)) {
-      fail(405, "METHOD_NOT_ALLOWED", "That method is not allowed.");
-    }
-    const authenticated = await authenticate(request, true);
-    if (!launchpadStore) fail(503, "LAUNCHPAD_UNAVAILABLE", "Saving Launchpad addresses is temporarily unavailable.");
-    if (!launchpadKey(kind, id)) fail(404, "NOT_FOUND", "Not found.");
-    let url = null;
-    if (request.method === "PUT") {
+    if (route === "ops") {
+      if (request.method !== "POST") fail(405, "METHOD_NOT_ALLOWED", "That method is not allowed.");
+      const authenticated = await authenticate(request, true);
+      const store = requireLaunchpadStore();
       const body = await readBoundedJson(request);
-      requireExactKeys(body, ["url"]);
-      url = canonicalLaunchUrl(body.url);
-      if (!url) {
-        fail(400, "INVALID_LAUNCH_URL", "Enter an http or https address without a user name or password.");
-      }
-    }
-    await serializeServiceMutation(async () => {
+      requireExactKeys(body, ["revision", "op"]);
+      if (!Number.isInteger(body.revision) || body.revision < 0) fail(400, "INVALID_REQUEST", "Say which launchpad revision this change is for.");
       await recheckMutationSession(request, authenticated);
-      if (!launchpadTargetExists(stateStore.snapshot(), kind, id)) {
-        fail(404, "LAUNCHPAD_TARGET_NOT_FOUND", "That connection no longer exists.");
-      }
-      if (url) {
-        try {
-          await launchpadStore.set(kind, id, url);
-        } catch (error) {
-          if (error?.code === "LAUNCHPAD_LIMIT") fail(409, "LAUNCHPAD_LIMIT", error.message);
-          fail(400, "INVALID_LAUNCH_URL", "Enter an http or https address without a user name or password.");
+      try {
+        sendJson(response, 200, await store.apply(body.revision, body.op));
+      } catch (error) {
+        if (error instanceof LaunchpadStoreError && Object.hasOwn(LAUNCHPAD_STORE_STATUS, error.code)) {
+          const status = LAUNCHPAD_STORE_STATUS[error.code];
+          const code = error.code === "LIMIT" ? "LAUNCHPAD_LIMIT" : error.code;
+          if (error.errors) {
+            sendJson(response, status, { code, message: error.message, errors: error.errors.slice(0, 20) });
+            return;
+          }
+          fail(status, code, error.message);
         }
-      } else {
-        await launchpadStore.remove(kind, id);
+        throw error;
       }
-    });
-    sendJson(response, 200, { links: currentLaunchpadLinks() });
+      return;
+    }
+    fail(404, "NOT_FOUND", "Not found.");
+  }
+
+  async function readBoundedBytes(request, maxBytes) {
+    const encoding = request.headers["content-encoding"];
+    if (encoding && String(encoding).toLowerCase() !== "identity") {
+      fail(415, "CONTENT_ENCODING_NOT_ALLOWED", "Compressed request bodies are not accepted.");
+    }
+    const declared = request.headers["content-length"];
+    if (declared !== undefined && (!/^\d+$/u.test(String(declared)) || Number(declared) > maxBytes)) {
+      request.resume();
+      fail(413, "REQUEST_TOO_LARGE", "Icons can be at most 512 KB.");
+    }
+    const chunks = [];
+    let total = 0;
+    for await (const value of request) {
+      const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+      total += chunk.length;
+      if (total > maxBytes) {
+        request.resume();
+        fail(413, "REQUEST_TOO_LARGE", "Icons can be at most 512 KB.");
+      }
+      chunks.push(chunk);
+    }
+    return Buffer.concat(chunks, total);
+  }
+
+  async function launchpadIconApi(request, response, ref) {
+    if (ref === null) {
+      if (request.method !== "POST") fail(405, "METHOD_NOT_ALLOWED", "That method is not allowed.");
+      const authenticated = await authenticate(request, true);
+      if (!launchpadIconStore) fail(503, "LAUNCHPAD_UNAVAILABLE", "Icon uploads are temporarily unavailable.");
+      const bytes = await readBoundedBytes(request, MAX_ICON_BYTES);
+      await recheckMutationSession(request, authenticated);
+      try {
+        sendJson(response, 201, { ref: await launchpadIconStore.saveUpload(bytes) });
+      } catch (error) {
+        if (error instanceof LaunchpadIconError) {
+          fail(error.code === "ICON_TOO_LARGE" ? 413 : 415, error.code, error.message);
+        }
+        throw error;
+      }
+      return;
+    }
+    if (request.method !== "GET") fail(405, "METHOD_NOT_ALLOWED", "That method is not allowed.");
+    await authenticate(request, false);
+    const icon = launchpadIconStore ? await launchpadIconStore.get(ref) : null;
+    if (!icon) fail(404, "NOT_FOUND", "That icon is not available.");
+    setApiHeaders(response);
+    response.removeHeader("Pragma");
+    response.removeHeader("Expires");
+    response.setHeader("Cache-Control", "private, max-age=86400");
+    response.setHeader("Content-Security-Policy", "default-src 'none'; sandbox");
+    response.setHeader("Content-Type", icon.contentType);
+    response.setHeader("Content-Length", String(icon.bytes.length));
+    response.statusCode = 200;
+    response.end(icon.bytes);
   }
 
   // The Helmsman agent's settings, notes, questions and proposals. Every
@@ -5548,12 +5630,32 @@ export async function createControlPlane(options) {
         await uiCardsApi(request, response, uiCardMatch?.[1] ?? null);
         return true;
       }
-      const launchpadMatch = url.pathname.match(
-        /^\/api\/v2\/launchpad\/(media|environment|service)\/([a-z0-9-]{1,64})$/u
-      );
-      if (url.pathname === "/api/v2/launchpad" || launchpadMatch) {
+      const launchpadRoutes = {
+        "/api/v2/launchpad": "model",
+        "/api/v2/launchpad/revision": "revision",
+        "/api/v2/launchpad/theme.css": "theme",
+        "/api/v2/launchpad/ops": "ops"
+      };
+      if (Object.hasOwn(launchpadRoutes, url.pathname)) {
+        // theme.css may carry a cache-busting ?r=<revision>; nothing else takes a query.
+        if (url.search && !(launchpadRoutes[url.pathname] === "theme" && /^\?r=\d{1,12}$/u.test(url.search))) {
+          fail(404, "NOT_FOUND", "Not found.");
+        }
+        await launchpadApi(request, response, launchpadRoutes[url.pathname]);
+        return true;
+      }
+      const launchpadIconMatch = url.pathname.match(/^\/api\/v2\/launchpad\/icons(?:\/([A-Za-z0-9%._-]{1,200}))?$/u);
+      if (launchpadIconMatch) {
         if (url.search) fail(404, "NOT_FOUND", "Not found.");
-        await launchpadApi(request, response, launchpadMatch?.[1] ?? null, launchpadMatch?.[2] ?? null);
+        let ref = null;
+        if (launchpadIconMatch[1] !== undefined) {
+          try {
+            ref = decodeURIComponent(launchpadIconMatch[1]);
+          } catch {
+            fail(404, "NOT_FOUND", "Not found.");
+          }
+        }
+        await launchpadIconApi(request, response, ref);
         return true;
       }
       if (url.pathname === "/api/v2/agent" || url.pathname.startsWith("/api/v2/agent/")) {
