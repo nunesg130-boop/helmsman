@@ -26,7 +26,7 @@ generic proxy or shell.
 | File | What to add |
 |---|---|
 | `server/state.mjs` | The id in `SERVICE_IDS`, so stored connections of this type are accepted. |
-| `server/launchpad.mjs` | The id in `MEDIA_SERVICE_IDS`. |
+| `server/launchpad-schema.mjs` | The id in `MEDIA_SERVICE_IDS`. |
 | `server/control-plane.mjs` | An entry in `SERVICE_DEFINITIONS`: display name, role, `authMode`, credential field and hints, and `authOptions` if more than one sign-in method is offered. Add credential format checks next to the existing qBittorrent check if the service's keys have a fixed shape. |
 | `server/routes.mjs` | The bridge allowlist for the service (exact paths and allowed prefixes), next to the existing entries. Only list what the probes and any actions call. |
 | `server/broker.mjs` | `monitorCredentialHeaders()` if the service authenticates with anything other than an `X-Api-Key` header. |

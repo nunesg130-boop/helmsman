@@ -67,6 +67,27 @@ normalization and secret-pattern redaction. Restrict access to the authenticated
 screenshots. Grafana is optional and has its own access-control and data-handling
 boundary when deployed.
 
+## Launchpad
+
+`launchpad.yaml` in the data volume holds the Launchpad layout. It contains
+addresses, text and layout only, never credentials, and anyone who can read
+the data volume can read it. Helmsman never requests the addresses on tiles;
+the browser opens them. Three things widen what the browser may load, each
+only as far as the owner's own configuration:
+
+- **Embed tiles** add their origins to the shell's `frame-src`. With no embed
+  tiles, nothing may be framed. Embedded pages are sandboxed and get no
+  referrer.
+- **Icons** named `dashboard-icons:<name>` or `mdi:<name>` are fetched by the
+  Helmsman server from one fixed host, `cdn.jsdelivr.net`, never from a
+  user-supplied address. They are checked by content, capped at 512 KB,
+  cached in `/data/icons`, and served same-origin. Uploaded icons follow the
+  same rules. SVGs are served with a sandboxing CSP and shown only through
+  `<img>`, so script inside them never runs.
+- **Custom CSS** is served as a generated same-origin stylesheet. `@import`,
+  `image-set()` and any `url()` that points off-site are removed, so a
+  stylesheet cannot load remote content or leak data through requests.
+
 ## Deployment boundary
 
 Keep the published container port private or restricted to a trusted HTTPS

@@ -89,6 +89,18 @@ test("the demo configures itself and every fake service reports healthy", { time
     assert.match(manual.json.manual.markdown, /^# Homelab manual/u);
     const map = await request(demo, "/api/v2/network-map", "GET", undefined, auth);
     assert.ok(map.json.networkMap.map.items.length > 5);
+
+    // The demo seeds a launchpad that shows every tile type, unmanaged
+    // services beside managed ones, and a linked container.
+    const launchpad = await request(demo, "/api/v2/launchpad", "GET", undefined, auth);
+    assert.equal(launchpad.status, 200);
+    assert.equal(launchpad.json.error, null);
+    const tiles = launchpad.json.model.pages.flatMap((page) => page.groups.flatMap((group) => group.tiles));
+    assert.deepEqual([...new Set(tiles.map((tile) => tile.type))].sort(), ["folder", "iframe", "link", "note", "search"]);
+    assert.ok(tiles.some((tile) => tile.managed?.kind === "container" && tile.managed.name === "sonarr"));
+    assert.ok(tiles.some((tile) => tile.managed?.kind === "workload"));
+    assert.ok(tiles.some((tile) => tile.type === "link" && !tile.managed), "an unmanaged service is on the launchpad");
+    assert.ok(!JSON.stringify(launchpad.json.model).includes("emoji:"), "the demo follows the no-emoji design rule");
   } finally {
     await demo.stop();
   }
