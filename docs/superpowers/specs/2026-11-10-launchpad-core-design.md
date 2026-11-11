@@ -24,7 +24,7 @@ Rebuild Helmsman's existing Launchpad (v1.18.3: auto-listed connected services w
 | Customization | Drag-drop + resize grid; pages and collapsible groups; per-tile styling; owner custom CSS and theme tokens. |
 | Tile types | `link`, `folder` (bookmark list), `note` (Markdown), `search`, `iframe`. No custom HTML. |
 | Config | `/data/launchpad.yaml` is the single source of truth, two-way live sync with the UI. |
-| YAML library | Vendor the `yaml` package (ISC) in `src/vendor`, pinned, using its Document API to preserve comments. |
+| YAML library | Vendor the `yaml` package (ISC) in `server/vendor/yaml` (server-only), pinned, using its Document API to preserve comments. |
 | Responsive | Desktop layout required; tablet/phone auto-reflow until the owner customizes them. |
 | Conflicts | Hand edit wins; a stale UI save gets 409 and reloads. |
 | Icons | dashboard-icons fetched from one fixed host and cached; uploads; emoji; mdi; existing built-in service icons. |
@@ -94,7 +94,12 @@ pages:
   - `note`: `markdown`, max 4 KB, rendered with the Manual's existing sanitized Markdown renderer.
   - `search`: `engine` is either the literal `tiles` or an https URL template containing exactly one `{query}`.
   - `iframe`: `url` (required). Optional `managed` not allowed.
-- `managed`: `{ kind, id }` using the existing `launchpadKey` identity rules (`media` + known service id; `environment` / `service` + UUID). If the target no longer exists, the tile stays and renders as a plain link with a "linked service not found" note.
+- `managed` (amended 2026-11-10 during planning — actions exist only for containers and guests, not connections):
+  - `{ kind: media, id }` / `{ kind: environment, id }` / `{ kind: service, id }` — a connection (existing `launchpadKey` rules). Health only; no actions.
+  - `{ kind: container, service: <portainer uuid>, environment: <int>, name: <container name> }` — matched by container **name** in the current Portainer inventory (IDs change on recreate). Actions: start / restart / stop.
+  - `{ kind: workload, environment: <proxmox uuid>, vmid: <int> }` — node resolved from the current inventory (survives migration). Actions: start / reboot / shutdown.
+  - If the target no longer exists, the tile stays and renders as a plain link with a "linked service not found" note.
+  - Health and action targets are resolved in the browser from the operations snapshot it already loads; actions call the existing action routes, which re-verify everything server-side.
 - URLs (`url`, folder links, search engine): today's `canonicalLaunchUrl` rules — http(s) only, no userinfo, no control characters, ≤ 500 chars.
 - `icon`: `dashboard-icons:<slug>`, `upload:<filename>`, `emoji:<single emoji>`, `mdi:<slug>`, or absent (built-in service icon for linked tiles, else first-letter badge).
 - `style`: `accent` / any color as `#rgb` or `#rrggbb`; `background` ∈ `glass | solid | none`; `hideLabel` boolean.
@@ -115,7 +120,7 @@ pages:
 | `server/launchpad-migrate.mjs` | One-time import from `launchpad.json` + connected services. |
 | `server/launchpad-icons.mjs` | dashboard-icons fetch/cache from the fixed host; upload storage and serving. |
 | `server/launchpad-theme.mjs` | Generate `theme.css` from tokens, tile styles and custom CSS. |
-| `src/vendor/yaml/` | Vendored, pinned `yaml` package + LICENSE. |
+| `server/vendor/yaml/` | Vendored, pinned `yaml` 2.9.1 (ESM build) + LICENSE. Server-only, so it is never served to browsers. Anchors/aliases are rejected. |
 
 `control-plane.mjs` routes call the store; session, CSRF and origin enforcement are reused unchanged.
 
@@ -123,7 +128,7 @@ pages:
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/v2/launchpad` | Normalized model + revision + current error (if file invalid) + managed health for linked tiles. |
+| GET | `/api/v2/launchpad` | Normalized model + revision + current error (if file invalid). |
 | GET | `/api/v2/launchpad/revision` | `{ revision, error? }` — cheap poll target. |
 | POST | `/api/v2/launchpad/ops` | `{ revision, op }` → apply one operation; 409 `LAUNCHPAD_CHANGED` if stale; 423 `LAUNCHPAD_INVALID` if file currently invalid. |
 | GET | `/api/v2/launchpad/theme.css` | Generated stylesheet (ETag = revision). |
