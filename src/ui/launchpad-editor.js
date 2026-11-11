@@ -46,6 +46,9 @@ export function createLaunchpadEditor(ctx) {
   let pendingDelete = null;
   let queue = Promise.resolve();
   let pending = 0;
+  // Bumped on a conflict: changes queued before it were computed from the
+  // old layout, so they are dropped rather than applied to the newer file.
+  let generation = 0;
   let renderDeferred = false;
   const textTimers = new Map();
 
@@ -89,14 +92,17 @@ export function createLaunchpadEditor(ctx) {
 
   function send(op, { quiet = false } = {}) {
     pending += 1;
+    const queuedIn = generation;
     const run = queue.then(async () => {
       try {
+        if (queuedIn !== generation) return false;
         const result = await api("/api/v2/launchpad/ops", { method: "POST", body: { revision: view.revision, op } });
         ctx.adopt({ ...result, error: null });
         return true;
       } catch (error) {
         if (error?.code === "LAUNCHPAD_CHANGED") {
-          toast("launchpad.yaml was edited outside Helmsman, so the latest version was loaded", "info");
+          generation += 1;
+          toast("The launchpad changed elsewhere, so the latest version was loaded", "info");
           await ctx.reload();
         } else if (error?.code === "LAUNCHPAD_INVALID") {
           toast("Fix launchpad.yaml before editing here", "danger");
@@ -456,11 +462,23 @@ export function createLaunchpadEditor(ctx) {
   }
 
   function scheduleText(key, fn) {
-    clearTimeout(textTimers.get(key));
-    textTimers.set(key, setTimeout(() => {
+    clearTimeout(textTimers.get(key)?.timer);
+    textTimers.set(key, {
+      fn,
+      timer: setTimeout(() => {
+        textTimers.delete(key);
+        fn();
+      }, TEXT_DEBOUNCE_MS)
+    });
+  }
+
+  // Saves text still waiting for its debounce, e.g. when edit mode closes.
+  function flushText() {
+    for (const [key, { timer, fn }] of textTimers) {
+      clearTimeout(timer);
       textTimers.delete(key);
       fn();
-    }, TEXT_DEBOUNCE_MS));
+    }
   }
 
   function tilePatchFor(name, element, tile) {
@@ -612,7 +630,10 @@ export function createLaunchpadEditor(ctx) {
       start: pointerToCell(event, metrics.box, columns, metrics.rowHeight, metrics.gap),
       startRect: rects.get(entry.tile.id),
       preview: null,
-      targetGroupId: entry.group.id
+      targetGroupId: entry.group.id,
+      // Group boxes as they were when the drag began, so the source grid
+      // growing under the preview can't hide the group being dropped on.
+      groupBoxes: [...ctx.root().querySelectorAll("[data-lp-grid]")].map((element) => ({ id: element.dataset.lpGrid, box: element.getBoundingClientRect() }))
     };
     tileElement.classList.add("is-dragging");
     const root = ctx.root();
@@ -622,8 +643,27 @@ export function createLaunchpadEditor(ctx) {
     root.addEventListener("pointercancel", onPointerCancel, { once: true });
   }
 
+  function groupUnderPointer(event) {
+    const hit = drag.groupBoxes.find(({ box }) => (
+      event.clientX >= box.left && event.clientX <= box.right && event.clientY >= box.top && event.clientY <= box.bottom
+    ));
+    return hit?.id || drag.groupId;
+  }
+
   function onPointerMove(event) {
     if (!drag) return;
+    drag.targetGroupId = drag.mode === "move" ? groupUnderPointer(event) : drag.groupId;
+    const root = ctx.root();
+    for (const grid of root?.querySelectorAll?.("[data-lp-grid]") || []) {
+      grid.classList.toggle("is-drop-target", drag.targetGroupId !== drag.groupId && grid.dataset.lpGrid === drag.targetGroupId);
+    }
+    if (drag.targetGroupId !== drag.groupId) {
+      // Over another group: leave the source layout as it was.
+      drag.preview = null;
+      drag.changed = null;
+      ctx.applyLayout();
+      return;
+    }
     const cell = pointerToCell(event, drag.metrics.box, drag.columns, drag.metrics.rowHeight, drag.metrics.gap);
     const dx = cell.x - drag.start.x;
     const dy = cell.y - drag.start.y;
@@ -633,8 +673,6 @@ export function createLaunchpadEditor(ctx) {
     const changed = placeWithPushDown(drag.rects, drag.tileId, rect, drag.columns);
     drag.changed = changed;
     drag.preview = new Map([...drag.rects, ...changed]);
-    const over = globalThis.document?.elementFromPoint?.(event.clientX, event.clientY)?.closest?.("[data-lp-grid]");
-    drag.targetGroupId = drag.mode === "move" && over ? over.dataset.lpGrid : drag.groupId;
     ctx.applyLayout();
   }
 
@@ -642,6 +680,7 @@ export function createLaunchpadEditor(ctx) {
     const root = ctx.root();
     root?.removeEventListener("pointermove", onPointerMove);
     root?.querySelector(".lp-tile.is-dragging")?.classList.remove("is-dragging");
+    root?.querySelectorAll?.(".is-drop-target").forEach((grid) => grid.classList.remove("is-drop-target"));
     const finished = drag;
     drag = null;
     return finished;
@@ -659,8 +698,17 @@ export function createLaunchpadEditor(ctx) {
         const metrics = gridMetrics(grid);
         const cell = pointerToCell(event, metrics.box, finished.columns, metrics.rowHeight, metrics.gap);
         const rect = { ...finished.startRect, x: Math.min(cell.x, finished.columns - finished.startRect.w), y: cell.y };
+        // Move first, then place it in the new group, pushing that group's
+        // tiles down so nothing overlaps.
         send({ op: "moveTile", tileId: finished.tileId, toPageId: page.id, toGroupId: target.id, index: target.tiles.length })
-          .then((ok) => ok && send({ op: "setLayout", tileId: finished.tileId, breakpoint: breakpoint(), rect }));
+          .then((ok) => {
+            if (!ok) return false;
+            const moved = activePage()?.groups.find((candidate) => candidate.id === target.id);
+            if (!moved) return false;
+            const rects = groupRects(moved);
+            const changed = placeWithPushDown(rects, finished.tileId, rect, finished.columns);
+            return commitRects(moved, changed, new Map([...rects, ...changed]));
+          });
         return;
       }
     }
@@ -682,10 +730,9 @@ export function createLaunchpadEditor(ctx) {
       previewBreakpoint = null;
     },
     exit() {
+      flushText();
       selection = null;
       previewBreakpoint = null;
-      for (const timer of textTimers.values()) clearTimeout(timer);
-      textTimers.clear();
     },
     isBusy: () => Boolean(drag || keyPreview || pending > 0 || textTimers.size || panelHasFocus() || selection?.kind === "new-tile"),
     handleFocusOut(event) {

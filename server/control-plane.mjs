@@ -5638,7 +5638,7 @@ export async function createControlPlane(options) {
       };
       if (Object.hasOwn(launchpadRoutes, url.pathname)) {
         // theme.css may carry a cache-busting ?r=<revision>; nothing else takes a query.
-        if (url.search && !(launchpadRoutes[url.pathname] === "theme" && /^\?r=\d{1,12}$/u.test(url.search))) {
+        if (url.search && !(launchpadRoutes[url.pathname] === "theme" && /^\?r=\d{1,16}$/u.test(url.search))) {
           fail(404, "NOT_FOUND", "Not found.");
         }
         await launchpadApi(request, response, launchpadRoutes[url.pathname]);

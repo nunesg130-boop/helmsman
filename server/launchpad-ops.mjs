@@ -286,8 +286,17 @@ export function applyLaunchpadOp(doc, op) {
       const index = requireIndex(op.index);
       const { group } = findGroup(doc, requireId(op.toPageId, "The page id"), requireId(op.toGroupId, "The group id"));
       const source = findTile(doc, requireId(op.tileId, "The tile id"));
-      claimLeadingComment(source.tiles).items.splice(source.index, 1);
       const target = claimLeadingComment(ensureSeq(doc, group, "tiles"));
+      // Tablet and phone positions describe the old group's grid; in a new
+      // group the tile flows into free space there until it is placed.
+      if (source.tiles !== target) {
+        const layout = source.tile.get("layout", true);
+        if (isMap(layout)) {
+          layout.delete("tablet");
+          layout.delete("phone");
+        }
+      }
+      claimLeadingComment(source.tiles).items.splice(source.index, 1);
       target.items.splice(Math.min(index, target.items.length), 0, source.tile);
       return;
     }

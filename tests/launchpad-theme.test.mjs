@@ -43,3 +43,23 @@ test("expression() and closing tags are neutralized", () => {
   assert.doesNotMatch(sanitizeCustomCss("a { width: expression(alert(1)) }"), /expression\(/iu);
   assert.doesNotMatch(sanitizeCustomCss("a{}</style><script>x</script>"), /<\//u);
 });
+
+test("reviewer bypasses: quoted URLs with ) or ', and double escapes, are all blocked", () => {
+  for (const css of [
+    'a{background:url("https://evil.example/a)b")}',
+    "a{background:url(\"https://evil.example/'x\")}",
+    "a{background:\\5c 75rl(https://evil.example/x)}",
+    '@\\5c 69mport "https://evil.example/x.css";'
+  ]) {
+    const out = sanitizeCustomCss(css);
+    // Nothing the browser could decode into url(…) or @import may remain.
+    assert.doesNotMatch(out, /\\/u, `${css} -> ${out}`);
+    assert.doesNotMatch(out, /url\(\s*["']?https?:|@import/iu, `${css} -> ${out}`);
+  }
+});
+
+test("escapes inside strings are kept, so valid CSS stays valid", () => {
+  assert.equal(sanitizeCustomCss('a::before{content:"\\""}'), 'a::before{content:"\\""}');
+  assert.equal(sanitizeCustomCss('a::before{content:"x\\A y"}'), 'a::before{content:"x\\A y"}');
+  assert.equal(sanitizeCustomCss(".lp-tile[data-id=\"jellyfin\"] { color: #fff; }"), ".lp-tile[data-id=\"jellyfin\"] { color: #fff; }");
+});

@@ -3,8 +3,9 @@
 // v1.18 listed every connected service automatically and kept optional
 // external addresses in launchpad.json. v1.19 is manual-only, so on first
 // start each service that page showed becomes an ordinary tile linked to its
-// connection. launchpad.json is renamed (not deleted) so a rollback to v1.18
-// still finds it, and the rename doubles as the marker that the import ran.
+// connection. launchpad.json is renamed, not deleted: renaming it back
+// restores v1.18's addresses after a rollback, and the renamed file is the
+// marker that the import ran.
 
 import { constants as fsConstants } from "node:fs";
 import { access, chmod, open, rename, unlink } from "node:fs/promises";

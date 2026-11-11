@@ -152,3 +152,19 @@ test("addTile beyond 500 is LIMIT", () => {
   assert.throws(() => applyLaunchpadOp(document, { op: "addTile", pageId: "p", groupId: "g", tile: NEW_TILE }),
     (error) => error.code === "LIMIT");
 });
+
+test("moving a tile to another group drops its tablet and phone rects, which belonged to the old grid", () => {
+  const document = doc();
+  applyLaunchpadOp(document, { op: "moveTile", tileId: "jellyfin", toPageId: "home", toGroupId: "infra", index: 0 });
+  const { model } = validateLaunchpad(parseLaunchpadYaml(stringifyDocument(document)));
+  const moved = model.pages[0].groups[1].tiles[0];
+  assert.equal(moved.id, "jellyfin");
+  assert.deepEqual(moved.layout.desktop, { x: 0, y: 0, w: 2, h: 1 });
+  assert.equal(moved.layout.phone, undefined);
+  assert.equal(moved.layout.tablet, undefined);
+  // Reordering inside the same group keeps them.
+  const same = doc();
+  applyLaunchpadOp(same, { op: "moveTile", tileId: "jellyfin", toPageId: "home", toGroupId: "media", index: 1 });
+  const kept = validateLaunchpad(parseLaunchpadYaml(stringifyDocument(same))).model.pages[0].groups[0].tiles[1];
+  assert.deepEqual(kept.layout.phone, { x: 0, y: 0, w: 2, h: 1 });
+});

@@ -14,7 +14,6 @@ import { breakpointForWidth, effectiveRects } from "./launchpad-grid.js";
 import { resolveManaged } from "./launchpad-managed.js";
 
 const POLL_MS = 5000;
-const IFRAME_TIMEOUT_MS = 8000;
 const THEME_LINK_ID = "launchpad-theme-stylesheet";
 
 export function iconUrl(ref) {
@@ -50,6 +49,19 @@ export function launchpadTiles(model) {
   return tiles;
 }
 
+function originOf(href) {
+  try {
+    return new URL(href).origin;
+  } catch {
+    return "";
+  }
+}
+
+/** Origins of a model's embed tiles. */
+export function embedOrigins(model) {
+  return launchpadTiles(model).filter(({ tile }) => tile.type === "iframe").map(({ tile }) => originOf(tile.url)).filter(Boolean);
+}
+
 export function createLaunchpadController(deps) {
   const { setMarkup, escapeHtml, icon, toast, api, live, serviceIconMarkup, statusLabel, renderInline, controlState } = deps;
 
@@ -65,14 +77,17 @@ export function createLaunchpadController(deps) {
     openMenuTileId: null,
     openFolderTileId: null,
     collapsed: new Set(),
-    editing: false
+    editing: false,
+    searchDrafts: new Map()
   };
   let root = null;
   let pollTimer = null;
   let resizeObserver = null;
   let loading = null;
   let editor = null;
-  const iframeTimers = new Map();
+  // Origins of embed tiles when this page first loaded. The shell's CSP was
+  // built from the same file, so an embed added since needs a page reload.
+  let frameOriginsAtLoad = null;
 
   // ---- data -------------------------------------------------------------
 
@@ -85,6 +100,7 @@ export function createLaunchpadController(deps) {
     view.loadError = "";
     const pages = view.model.pages || [];
     if (!pages.some((page) => page.id === view.activePageId)) view.activePageId = pages[0]?.id ?? null;
+    if (!frameOriginsAtLoad) frameOriginsAtLoad = new Set(embedOrigins(view.model));
     syncThemeStylesheet();
   }
 
@@ -234,14 +250,15 @@ export function createLaunchpadController(deps) {
       const local = tile.engine === "tiles";
       return `<form class="lp-tile__surface lp-tile__surface--search" data-lp-search-form data-lp-tile="${escapeHtml(tile.id)}" role="search">
           ${icon("search")}<label class="sr-only" for="lp-search-${escapeHtml(tile.id)}">${escapeHtml(title || (local ? "Find a tile" : "Search the web"))}</label>
-          <input id="lp-search-${escapeHtml(tile.id)}" type="search" autocomplete="off" spellcheck="false" maxlength="200" placeholder="${escapeHtml(title || (local ? "Find a tile" : "Search the web"))}" ${local ? `data-lp-filter value="${escapeHtml(view.filter)}"` : "data-lp-engine-input"} />
+          <input id="lp-search-${escapeHtml(tile.id)}" type="search" autocomplete="off" spellcheck="false" maxlength="200" placeholder="${escapeHtml(title || (local ? "Find a tile" : "Search the web"))}" ${local ? `data-lp-filter value="${escapeHtml(view.filter)}"` : `data-lp-engine-input value="${escapeHtml(view.searchDrafts.get(tile.id) || "")}"`} />
         </form>`;
     }
     if (tile.type === "iframe") {
       const href = safeHref(tile.url);
       return `<div class="lp-tile__surface lp-tile__surface--iframe">
-          <iframe src="${escapeHtml(href)}" title="${escapeHtml(title || hostLabel(href))}" loading="lazy" referrerpolicy="no-referrer" sandbox="allow-scripts allow-same-origin allow-forms allow-popups" data-lp-iframe="${escapeHtml(tile.id)}"></iframe>
-          <p class="lp-iframe-blocked" hidden>This site refuses to be embedded. <a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">Open it in a new tab</a>.</p>
+          ${frameOriginsAtLoad && !frameOriginsAtLoad.has(originOf(href))
+            ? `<p class="lp-iframe-blocked">Reload Helmsman to show this embed. <button class="button button--compact" type="button" data-lp-action="reload-page">Reload</button></p>`
+            : `<iframe src="${escapeHtml(href)}" title="${escapeHtml(title || hostLabel(href))}" loading="lazy" referrerpolicy="no-referrer" sandbox="allow-scripts allow-same-origin allow-forms allow-popups" data-lp-iframe="${escapeHtml(tile.id)}"></iframe>`}
         </div>`;
     }
     return "";
@@ -350,7 +367,6 @@ export function createLaunchpadController(deps) {
     const focusedTileId = !focusedId && active?.classList?.contains("lp-tile") ? active.dataset.id : null;
     setMarkup(root, markup());
     applyLayout();
-    watchIframes();
     if (focusedTileId) root.querySelector(`.lp-tile[data-id="${focusedTileId}"]`)?.focus({ preventScroll: true });
     if (focusedId) {
       const again = globalThis.document.getElementById(focusedId);
@@ -358,18 +374,6 @@ export function createLaunchpadController(deps) {
         again.focus({ preventScroll: true });
         if (typeof again.value === "string" && again.setSelectionRange) again.setSelectionRange(again.value.length, again.value.length);
       }
-    }
-  }
-
-  function watchIframes() {
-    for (const timer of iframeTimers.values()) clearTimeout(timer);
-    iframeTimers.clear();
-    for (const frame of root?.querySelectorAll?.("iframe[data-lp-iframe]") || []) {
-      const id = frame.dataset.lpIframe;
-      iframeTimers.set(id, setTimeout(() => {
-        frame.hidden = true;
-        frame.parentElement?.querySelector(".lp-iframe-blocked")?.removeAttribute("hidden");
-      }, IFRAME_TIMEOUT_MS));
     }
   }
 
@@ -418,6 +422,8 @@ export function createLaunchpadController(deps) {
       view.activePageId = target.dataset.lpPage;
       view.filter = "";
       render();
+    } else if (action === "reload-page") {
+      globalThis.location?.reload();
     } else if (action === "toggle-edit" && editor) {
       if (view.error) return;
       view.editing = !view.editing;
@@ -431,6 +437,11 @@ export function createLaunchpadController(deps) {
 
   function onInput(event) {
     if (editor && view.editing && editor.handleInput(event)) return;
+    if (event.target?.matches?.("[data-lp-engine-input]")) {
+      const id = event.target.closest("[data-lp-search-form]")?.dataset.lpTile;
+      if (id) view.searchDrafts.set(id, String(event.target.value || "").slice(0, 200));
+      return;
+    }
     if (event.target?.matches?.("[data-lp-filter]")) {
       view.filter = String(event.target.value || "").slice(0, 200);
       applyFilter();
@@ -480,14 +491,6 @@ export function createLaunchpadController(deps) {
     }
   }
 
-  function onLoad(event) {
-    const frame = event.target;
-    if (frame?.tagName === "IFRAME" && frame.dataset?.lpIframe) {
-      clearTimeout(iframeTimers.get(frame.dataset.lpIframe));
-      iframeTimers.delete(frame.dataset.lpIframe);
-    }
-  }
-
   function onResize(entries) {
     const width = entries?.[0]?.contentRect?.width ?? root?.clientWidth ?? 1200;
     const next = breakpointForWidth(width);
@@ -505,8 +508,7 @@ export function createLaunchpadController(deps) {
     ["keydown", onKeyDown, false],
     ["pointerdown", onPointerDown, false],
     ["focusout", onFocusOut, false],
-    ["error", onError, true],
-    ["load", onLoad, true]
+    ["error", onError, true]
   ];
 
   // ---- public -----------------------------------------------------------
@@ -534,8 +536,26 @@ export function createLaunchpadController(deps) {
       return root === element && Boolean(element?.isConnected ?? true);
     },
 
+    // Monitor updates change only health and controls, so only linked link
+    // tiles are redrawn. Embeds, search boxes and notes are left alone, so a
+    // dashboard in an embed doesn't reload every 30 seconds.
     refreshLive() {
-      if (root && view.model && !editor?.isBusy?.()) render();
+      if (!root || !view.model || editor?.isBusy?.()) return;
+      const liveData = live();
+      for (const { tile } of launchpadTiles(view.model)) {
+        if (tile.type !== "link" || !tile.managed) continue;
+        const current = root.querySelector(`.lp-tile[data-id="${tile.id}"]`);
+        if (!current) continue;
+        const holder = globalThis.document.createElement("ul");
+        setMarkup(holder, tileMarkup(tile, liveData));
+        const next = holder.firstElementChild;
+        if (!next) continue;
+        next.style.gridColumn = current.style.gridColumn;
+        next.style.gridRow = current.style.gridRow;
+        const hadFocus = current.contains(globalThis.document.activeElement);
+        current.replaceWith(next);
+        if (hadFocus) next.querySelector("a, button")?.focus({ preventScroll: true });
+      }
     },
 
     unmount() {
@@ -545,8 +565,6 @@ export function createLaunchpadController(deps) {
       resizeObserver = null;
       clearInterval(pollTimer);
       pollTimer = null;
-      for (const timer of iframeTimers.values()) clearTimeout(timer);
-      iframeTimers.clear();
       if (view.editing) {
         view.editing = false;
         editor?.exit();

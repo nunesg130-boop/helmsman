@@ -6,7 +6,7 @@ import test from "node:test";
 
 import { createLaunchpadDocumentStore, LaunchpadStoreError } from "../server/launchpad-store.mjs";
 
-const FAST = { pollMs: 40, debounceMs: 10 };
+const FAST = { pollMs: 40, debounceMs: 10, initialRevision: 0 };
 const ADD_HOME = { op: "addPage", page: { id: "home", title: "Home", groups: [] } };
 
 const VALID = `# hand written
@@ -166,3 +166,19 @@ test("an op that breaks the schema is LAUNCHPAD_SCHEMA and nothing is written", 
   assert.equal(await readFile(file, "utf8"), before);
   await rejectsWith(store.apply(1, { op: "removePage", pageId: "missing" }), "NOT_FOUND");
 }));
+
+test("revisions keep rising across restarts, so a stale tab or cached theme can't match", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "helmsman-launchpad-boot-"));
+  try {
+    const first = await createLaunchpadDocumentStore({ dataDir: root, pollMs: 40, debounceMs: 10 });
+    const { revision } = await first.apply(first.snapshot().revision, ADD_HOME);
+    await first.close();
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const second = await createLaunchpadDocumentStore({ dataDir: root, pollMs: 40, debounceMs: 10 });
+    assert.ok(second.snapshot().revision > revision, `${second.snapshot().revision} > ${revision}`);
+    assert.ok(Number.isSafeInteger(second.snapshot().revision));
+    await second.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

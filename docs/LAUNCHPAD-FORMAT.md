@@ -150,7 +150,17 @@ and aliases (`&name`, `*name`) are not supported.
 ## Upgrading from v1.18
 
 The first start of v1.19 turns the services the old Launchpad listed into
-linked tiles, keeping any external addresses you had saved. `launchpad.json`
-is renamed to `launchpad.json.migrated`, so v1.18 still finds its data after a
-rollback. The import runs once: deleting `launchpad.yaml` later gives an empty
-Launchpad, not a second import.
+linked tiles, keeping any external addresses you had saved, and renames
+`launchpad.json` to `launchpad.json.migrated`. The import runs once: deleting
+`launchpad.yaml` later gives an empty Launchpad, not a second import.
+
+To roll back to v1.18 and keep its saved external addresses, rename
+`launchpad.json.migrated` back to `launchpad.json` in the data volume before
+starting v1.18. v1.18 ignores `launchpad.yaml`.
+
+## Mounting
+
+Mount the whole data directory (`/data`), as the Compose files do. Helmsman
+saves `launchpad.yaml` by writing a new file and renaming it into place, and
+it watches the directory for hand edits, so a bind mount of `launchpad.yaml`
+on its own breaks saving from Helmsman and can hide edits made on the host.

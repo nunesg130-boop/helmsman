@@ -660,3 +660,5 @@ html[data-transparency="reduced"] .lp-tabs [role="tablist"] {
 /* Previewing a smaller breakpoint while editing shows it at that width. */
 .lp-root.is-editing[data-breakpoint="tablet"] .lp-groups { max-width: 820px; }
 .lp-root.is-editing[data-breakpoint="phone"] .lp-groups { max-width: 420px; }
+
+.lp-grid.is-drop-target { outline: 1px dashed var(--line-strong); outline-offset: 4px; border-radius: 12px; }

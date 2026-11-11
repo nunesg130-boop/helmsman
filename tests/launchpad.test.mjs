@@ -52,7 +52,7 @@ async function start() {
   const store = new StateStore(root);
   await store.initialize();
   const setupToken = await store.rotateUnclaimedSetupToken();
-  const launchpad = await createLaunchpadDocumentStore({ dataDir: root, pollMs: 40, debounceMs: 10 });
+  const launchpad = await createLaunchpadDocumentStore({ dataDir: root, pollMs: 40, debounceMs: 10, initialRevision: 0 });
   const launchpadIcons = await createLaunchpadIconStore({
     dataDir: root,
     fetchImpl: async (url) => (String(url) === `${DASHBOARD_ICONS_BASE}/svg/jellyfin.svg`

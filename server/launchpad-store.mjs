@@ -96,7 +96,12 @@ export async function createLaunchpadDocumentStore(options = {}) {
   const filePath = path.join(dataDir, LAUNCHPAD_FILE_NAME);
   const listeners = new Set();
 
-  let revision = 0;
+  // Revisions start from the boot time in milliseconds, so they keep rising
+  // across restarts: a tab or cached theme.css from before a restart can
+  // never name the same revision as different content after it.
+  let revision = Number.isSafeInteger(options.initialRevision) && options.initialRevision >= 0
+    ? options.initialRevision
+    : Date.now();
   let model = emptyLaunchpadModel();
   let error = null;
   let goodDoc = parseLaunchpadYaml("");
