@@ -285,3 +285,13 @@ test("icon upload stores by content and caps size", () => withSession(async (con
   const wrong = await request(context.port, "/api/v2/launchpad/icons", { method: "POST", ...session, raw: Buffer.from("not an image") });
   assert.equal(wrong.status, 415);
 }));
+
+test("index.html's meta CSP leaves iframe origins to the response header", async () => {
+  // Browsers enforce both the meta and the header policy. Without frame-src
+  // here, default-src 'self' would block every Launchpad iframe tile no
+  // matter what the header allows; the header narrows it to configured origins.
+  const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
+  const meta = html.match(/http-equiv="Content-Security-Policy"\s+content="([^"]+)"/u)?.[1] || "";
+  assert.match(meta, /(?:^|; )frame-src http: https:(?:;|$)/u);
+  assert.match(meta, /default-src 'self'/u);
+});
