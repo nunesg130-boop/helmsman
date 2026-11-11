@@ -1,0 +1,42 @@
+version: 2
+theme:
+  tokens: { accent: "#7c5cff", radius: 14, density: comfortable }
+  css: |
+    .lp-tile[data-id="jellyfin"] { backdrop-filter: blur(20px); }
+pages:
+  - id: home
+    title: Home
+    icon: mdi:home
+    visibility: owner
+    groups:
+      - id: media
+        title: Media
+        collapsed: false
+        tiles:
+          - id: jellyfin
+            type: link
+            title: Jellyfin
+            url: https://jellyfin.example.com
+            icon: dashboard-icons:jellyfin
+            style: { accent: "#00a4dc", background: glass, hideLabel: false }
+            open: newTab
+            managed: { kind: media, id: jellyfin }
+            visibility: owner
+            layout:
+              desktop: { x: 0, y: 0, w: 2, h: 1 }
+              phone:   { x: 0, y: 0, w: 2, h: 1 }
+          - id: router
+            type: folder
+            title: Network
+            links:
+              - { title: ER605, url: http://192.168.0.1 }
+          - id: todo
+            type: note
+            markdown: "**Swap UPS battery** before December"
+          - id: web
+            type: search
+            engine: "https://duckduckgo.com/?q={query}"   # or the literal `tiles`
+          - id: grafana-embed
+            type: iframe
+            url: http://192.168.0.213:3000/d/abc
+            layout: { desktop: { x: 0, y: 1, w: 6, h: 4 } }

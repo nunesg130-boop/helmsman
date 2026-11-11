@@ -966,6 +966,9 @@ async function configure(context) {
   }, owner), "Connecting the demo Home Assistant");
   const portainerServer = (await expectOk(apiRequest(context, "/api/v2/infrastructure/services", "GET", undefined, owner), "Reading Portainer"))
     .json.services.find((service) => service.type === "portainer");
+  const proxmoxEnvironment = (await expectOk(apiRequest(context, "/api/v2/infrastructure/targets", "GET", undefined, owner), "Reading Proxmox"))
+    .json.targets.find((target) => target.type === "proxmox");
+  await seedLaunchpad(context, owner, portainerServer.id, proxmoxEnvironment.id);
   await expectOk(apiRequest(context, "/api/v2/agent/rules", "PUT", {
     rules: [{
       id: "restart-sonarr",
@@ -985,6 +988,30 @@ async function configure(context) {
   await expectOk(apiRequest(context, "/api/v2/operations/refresh", "POST", {}, owner), "First monitoring cycle");
   // The setup browser session is not needed once everything is saved.
   await apiRequest(context, "/api/v2/session", "DELETE", {}, owner).catch(() => {});
+}
+
+// A sample launchpad through the same operations the editor sends: managed
+// containers and guests beside services Helmsman doesn't manage, and one of
+// every tile type.
+async function seedLaunchpad(context, owner, portainerId, proxmoxId) {
+  let revision = (await expectOk(apiRequest(context, "/api/v2/launchpad", "GET", undefined, owner), "Reading the launchpad")).json.revision;
+  const apply = async (op, label) => {
+    revision = (await expectOk(apiRequest(context, "/api/v2/launchpad/ops", "POST", { revision, op }, owner), label)).json.revision;
+  };
+  const container = (name) => ({ kind: "container", service: portainerId, environment: 1, name });
+  const tiles = [
+    ["media", { id: "jellyfin-app", type: "link", title: "Jellyfin", url: "https://jellyfin.helmsman-demo.test", managed: container("jellyfin"), icon: "dashboard-icons:jellyfin", layout: { desktop: { x: 0, y: 0, w: 3, h: 1 } } }],
+    ["media", { id: "sonarr-app", type: "link", title: "Sonarr", url: "https://sonarr.helmsman-demo.test", managed: container("sonarr"), icon: "dashboard-icons:sonarr", layout: { desktop: { x: 3, y: 0, w: 3, h: 1 } } }],
+    ["media", { id: "bazarr-app", type: "link", title: "Bazarr", url: "https://bazarr.helmsman-demo.test", managed: container("bazarr"), icon: "dashboard-icons:bazarr", layout: { desktop: { x: 6, y: 0, w: 3, h: 1 } } }],
+    ["media", { id: "find", type: "search", title: "Find a tile", engine: "tiles", layout: { desktop: { x: 9, y: 0, w: 3, h: 1 } } }],
+    ["infrastructure", { id: "media-vm", type: "link", title: "Media VM", url: "https://pve.helmsman-demo.test:8006", managed: { kind: "workload", environment: proxmoxId, vmid: 100 }, layout: { desktop: { x: 0, y: 0, w: 3, h: 1 } } }],
+    ["infrastructure", { id: "router", type: "link", title: "Router", url: "http://192.168.50.1", style: { accent: "#9aa0ff" }, layout: { desktop: { x: 3, y: 0, w: 3, h: 1 } } }],
+    ["infrastructure", { id: "network", type: "folder", title: "Network pages", links: [{ title: "Switch", url: "http://192.168.50.2" }, { title: "Access point", url: "http://192.168.50.3" }], layout: { desktop: { x: 6, y: 0, w: 3, h: 1 } } }],
+    ["infrastructure", { id: "ups-note", type: "note", title: "Reminder", markdown: "**Replace the UPS battery** before winter.\n\n- Check the fans\n- Clean the dust filters", layout: { desktop: { x: 9, y: 0, w: 3, h: 1 } } }],
+    ["infrastructure", { id: "web", type: "search", title: "Search the web", engine: "https://duckduckgo.com/?q={query}", layout: { desktop: { x: 0, y: 1, w: 6, h: 1 } } }],
+    ["infrastructure", { id: "status-page", type: "iframe", title: "Status page", url: "https://status.helmsman-demo.test", layout: { desktop: { x: 6, y: 1, w: 6, h: 2 } } }]
+  ];
+  for (const [groupId, tile] of tiles) await apply({ op: "addTile", pageId: "home", groupId, tile }, `Adding the ${tile.title} launchpad tile`);
 }
 
 // -------------------------------------------------------------------- main --

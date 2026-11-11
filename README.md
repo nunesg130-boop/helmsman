@@ -1,4 +1,4 @@
-# Helmsman v1.18.3
+# Helmsman v1.19.0
 
 Helmsman is a self-hosted operations center for a homelab's media services and infrastructure. It runs as one portable Linux container on Docker Desktop, Linux, macOS, compatible NAS platforms, AMD64, and ARM64.
 
@@ -14,6 +14,17 @@ Helmsman is a self-hosted operations center for a homelab's media services and i
 This Helmsman is the media and infrastructure dashboard in this repository. It
 is not affiliated with or derived from the existing Kubernetes project also
 named [Helmsman](https://github.com/mkubaczyk/helmsman).
+
+## v1.19.0
+
+**A Launchpad you build yourself.** The Launchpad no longer lists connected services automatically. It shows what you put on it, managed by Helmsman or not, arranged how you want.
+
+- **Edit layout** turns on drag-to-move and drag-to-resize on a grid, with keyboard moves (arrow keys) and resizing (Shift + arrow keys). Desktop, tablet and phone each keep their own layout once you customize them; until then, tablet and phone reflow from desktop.
+- **Pages, groups and five tile types:** links, folders of links, Markdown notes, search boxes (filter this page or search the web) and embedded pages.
+- **Per-tile style:** icon (Dashboard Icons, Material Design Icons or an upload), accent colour, background, and hidden titles. A **Theme** panel sets the corner radius, density and accent, and takes your own CSS.
+- **Linked tiles:** a tile can be linked to a media connection, a Portainer container or a Proxmox guest. It then shows that thing's health, and containers and guests get their start, stop and restart controls in the tile's menu, with Helmsman's usual confirmation. Containers are matched by name, so the link survives an image update.
+- **`launchpad.yaml` is the source of truth.** It lives in the data volume and stays in two-way sync with the editor: hand edits appear within a few seconds, and saves from Helmsman keep your comments. An invalid hand edit leaves the last good layout showing, with the error and line number. [docs/LAUNCHPAD-FORMAT.md](docs/LAUNCHPAD-FORMAT.md) describes the format.
+- **Upgrading:** the first start imports what the old Launchpad listed as linked tiles, keeping saved external addresses, and renames `launchpad.json` to `launchpad.json.migrated`.
 
 ## v1.18.3
 
@@ -581,7 +592,7 @@ Helmsman's project-owned logging mark. Original generic VM/container workload
 drawings are also bundled. See
 [the asset notices](assets/services/THIRD_PARTY_NOTICES.md).
 
-Helmsman v1.18.3 combines built-in logging, optional Loki search, Portainer monitoring, a private persistent state/artwork cache, and a small, fixed set of confirmed recovery actions under Infrastructure with targeted media recovery actions and Helmsman's cluster-aware Proxmox model:
+Helmsman v1.19.0 combines built-in logging, optional Loki search, Portainer monitoring, a private persistent state/artwork cache, and a small, fixed set of confirmed recovery actions under Infrastructure with targeted media recovery actions and Helmsman's cluster-aware Proxmox model:
 
 - Media and Infrastructure are separate workspaces inside the same authenticated application, and only the selected workspace's navigation is shown;
 - the desktop sidebar collapses to an icon rail, remembers that preference, keeps its navigation scrollable at high browser zoom, and keeps its collapse control in the sidebar's brand row (under the brand mark when collapsed);
@@ -627,7 +638,7 @@ Helmsman v1.18.3 combines built-in logging, optional Loki search, Portainer moni
 
 ## Deploy the published container
 
-Helmsman is distributed as the public Linux AMD64/ARM64 image `ghcr.io/nunesg130-boop/helmsman`. The `v1.18.3` Git tag runs the contracts and architecture smoke tests, publishes the version, `latest`, and full-commit image tags, and creates a GitHub Release containing ready-to-use `compose.yaml`, `container.env.example`, and `SHA256SUMS` assets. The release deployment files pin `ghcr.io/nunesg130-boop/helmsman` to the exact multi-architecture manifest digest (`@sha256:...`).
+Helmsman is distributed as the public Linux AMD64/ARM64 image `ghcr.io/nunesg130-boop/helmsman`. The `v1.19.0` Git tag runs the contracts and architecture smoke tests, publishes the version, `latest`, and full-commit image tags, and creates a GitHub Release containing ready-to-use `compose.yaml`, `container.env.example`, and `SHA256SUMS` assets. The release deployment files pin `ghcr.io/nunesg130-boop/helmsman` to the exact multi-architecture manifest digest (`@sha256:...`).
 
 Download those three files from the matching [GitHub Release](https://github.com/nunesg130-boop/helmsman/releases) into one directory, verify the two deployment files against `SHA256SUMS`, open a terminal there, and make sure Docker Desktop or Docker Engine is running. No source checkout, Dockerfile, Node.js installation, or server-side image build is required.
 

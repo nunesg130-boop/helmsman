@@ -45,6 +45,11 @@
 !src/ui/retro.css
 !src/ui/obsidian-glass.css
 !src/ui/network-map.css
+!src/ui/launchpad.css
+!src/ui/launchpad.js
+!src/ui/launchpad-grid.js
+!src/ui/launchpad-managed.js
+!src/ui/launchpad-editor.js
 !src/ui/selftest.css
 !src/ui/logging.css
 !src/ui/agent-helper-3d.js

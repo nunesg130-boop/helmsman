@@ -30,7 +30,10 @@ import { normalizeSeerrSeriesSeasons } from "./seerr-series-seasons.mjs";
 import { createOperationsMonitor } from "./monitor.mjs";
 import { createPersistentCache } from "./persistent-cache.mjs";
 import { createAcknowledgementStore } from "./acknowledgements.mjs";
-import { createLaunchpadStore } from "./launchpad.mjs";
+import { createLaunchpadIconStore } from "./launchpad-icons.mjs";
+import { migrateLegacyLaunchpad } from "./launchpad-migrate.mjs";
+import { launchpadFrameOrigins } from "./launchpad-schema.mjs";
+import { createLaunchpadDocumentStore } from "./launchpad-store.mjs";
 import { createUiPreferenceStore } from "./ui-preferences.mjs";
 import { createManualStore } from "./manual.mjs";
 import { createAgent } from "./agent.mjs";
@@ -59,7 +62,7 @@ import {
 import { generateSecretToken, hashToken, StateStore, tokenMatches } from "./state.mjs";
 import { anySignal } from "./abort-signals.mjs";
 
-const DEFAULT_VERSION = "1.18.3";
+const DEFAULT_VERSION = "1.19.0";
 const requestedVersion = String(process.env.HELMSMAN_VERSION || DEFAULT_VERSION);
 const VERSION = /^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/u.test(requestedVersion)
   ? requestedVersion
@@ -110,6 +113,16 @@ const MIME_TYPES = Object.freeze({
 });
 
 const SHELL_CSP = "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self'; trusted-types helmsman-render; require-trusted-types-for 'script'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; media-src 'self' blob:; worker-src 'self'; manifest-src 'self'";
+const FRAME_ORIGIN = /^https?:\/\/[a-z0-9.:[\]-]+$/u;
+
+/**
+ * The shell's CSP. Frames are allowed only from the origins of the owner's
+ * Launchpad iframe tiles; with none configured, nothing may be framed.
+ */
+export function shellCsp(frameOrigins = []) {
+  const allowed = (Array.isArray(frameOrigins) ? frameOrigins : []).filter((origin) => typeof origin === "string" && FRAME_ORIGIN.test(origin));
+  return `${SHELL_CSP}; frame-src ${allowed.length ? allowed.join(" ") : "'none'"}`;
+}
 const API_CSP = "default-src 'none'; frame-ancestors 'none'; sandbox";
 
 class BrokerError extends Error {
@@ -1537,7 +1550,7 @@ function acceptsGzip(header) {
   return false;
 }
 
-async function serveStatic(request, response, rootDir, pathname) {
+async function serveStatic(request, response, rootDir, pathname, frameOrigins = []) {
   if (!["GET", "HEAD"].includes(request.method || "GET")) {
     throw new BrokerError(405, "METHOD_NOT_ALLOWED", "That method is not allowed.");
   }
@@ -1558,7 +1571,7 @@ async function serveStatic(request, response, rootDir, pathname) {
   if (!file) throw new BrokerError(404, "NOT_FOUND", "Not found.");
   const extension = path.extname(realCandidate).toLowerCase();
   setCommonSecurityHeaders(response);
-  response.setHeader("Content-Security-Policy", SHELL_CSP);
+  response.setHeader("Content-Security-Policy", shellCsp(frameOrigins));
   response.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()");
   response.setHeader("Content-Type", MIME_TYPES[extension] || "application/octet-stream");
   response.removeHeader("Pragma");
@@ -1588,6 +1601,31 @@ async function serveStatic(request, response, rootDir, pathname) {
   response.setHeader("Content-Length", String(body.length));
   response.statusCode = 200;
   response.end(request.method === "HEAD" ? undefined : body);
+}
+
+const LEGACY_MEDIA_ORDER = ["jellyfin", "seerr", "radarr", "sonarr", "prowlarr", "qbittorrent", "bazarr"];
+const LEGACY_MEDIA_NAMES = {
+  jellyfin: "Jellyfin",
+  seerr: "Seerr",
+  radarr: "Radarr",
+  sonarr: "Sonarr",
+  prowlarr: "Prowlarr",
+  qbittorrent: "qBittorrent",
+  bazarr: "Bazarr"
+};
+
+// What the v1.18 Launchpad listed, in its order, for the one-time import.
+function legacyLaunchpadEntries(state) {
+  const media = LEGACY_MEDIA_ORDER
+    .filter((id) => Object.hasOwn(state?.connections || {}, id))
+    .map((id) => ({ kind: "media", id, name: LEGACY_MEDIA_NAMES[id], url: state.connections[id]?.url || "" }));
+  const environments = Object.entries(state?.infrastructureTargets || {})
+    .filter(([, target]) => target?.type === "proxmox" && target.enabled !== false)
+    .map(([id, target]) => ({ kind: "environment", id, name: target.displayName || "Proxmox VE", url: target.url || "" }));
+  const services = Object.entries(state?.infrastructureServices || {})
+    .filter(([, service]) => service?.type === "portainer" && service.enabled !== false)
+    .map(([id, service]) => ({ kind: "service", id, name: service.displayName || "Portainer", url: service.url || "" }));
+  return [...media, ...environments, ...services];
 }
 
 export async function createBroker(options = {}) {
@@ -1628,9 +1666,22 @@ export async function createBroker(options = {}) {
   let launchpad = options.launchpad || null;
   if (!launchpad) {
     try {
-      launchpad = await createLaunchpadStore({ dataDir, guard: options.stateGuard });
+      await migrateLegacyLaunchpad({ dataDir, connected: legacyLaunchpadEntries(store.snapshot()) });
     } catch {
-      log("Helmsman Launchpad address storage is unavailable; the Launchpad will use connection addresses.");
+      log("Helmsman could not import the previous Launchpad; starting with an empty one.");
+    }
+    try {
+      launchpad = await createLaunchpadDocumentStore({ dataDir, guard: options.stateGuard });
+    } catch {
+      log("Helmsman Launchpad storage is unavailable; the Launchpad cannot be shown or edited.");
+    }
+  }
+  let launchpadIcons = options.launchpadIcons || null;
+  if (!launchpadIcons) {
+    try {
+      launchpadIcons = await createLaunchpadIconStore({ dataDir, guard: options.stateGuard });
+    } catch {
+      log("Helmsman Launchpad icon storage is unavailable; tiles will show letter badges.");
     }
   }
   let uiPreferences = options.uiPreferences || null;
@@ -3123,6 +3174,7 @@ export async function createBroker(options = {}) {
     dataDir,
     acknowledgements,
     launchpad,
+    launchpadIcons,
     uiPreferences,
     manual,
     networkMap,
@@ -3750,7 +3802,7 @@ export async function createBroker(options = {}) {
         throw new BrokerError(404, "NOT_FOUND", "Not found.");
       }
       normalizedHostHeader(request);
-      await serveStatic(request, response, rootDir, url.pathname);
+      await serveStatic(request, response, rootDir, url.pathname, launchpadFrameOrigins(launchpad?.snapshot?.().model));
     } catch (error) {
       logRequestError(request, error);
       if (!response.headersSent) sendError(response, error);
@@ -3819,6 +3871,7 @@ export async function createBroker(options = {}) {
       await recordEvent(finalEvent);
     }
     await eventJournal.close();
+    await launchpad?.close?.();
     await persistentCache?.close?.();
     if (controlPlaneError) throw controlPlaneError;
   };
