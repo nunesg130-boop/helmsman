@@ -1,0 +1,348 @@
+/* ======================================================================
+ * Shared by both glass themes
+ * ====================================================================== */
+
+:root[data-theme^="glass-"] {
+  --glass-blur: 40px;
+  --glass-saturation: 165%;
+  --radius-sm: 12px;
+  --radius: 16px;
+  --radius-lg: 22px;
+  --radius-xl: 28px;
+  /* Where the light sits on a pane; src/ui/glass-motion.js moves these. */
+  --glass-light-x: 22%;
+  --glass-light-y: -10%;
+  --glass-drift: 0px;
+  /* Pressed things spring back with a slight overshoot (the "flex").
+   * Things that arrive ease out and settle without one. */
+  --glass-spring: cubic-bezier(0.3, 1.45, 0.45, 1);
+  --glass-settle: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+html[data-theme^="glass-"],
+html[data-theme^="glass-"] body {
+  background-color: var(--glass-page);
+}
+
+/* The scene behind the glass: deep green light, fixed to the window. */
+html[data-theme^="glass-"] body {
+  background-image: none;
+}
+
+html[data-theme^="glass-"] body::before,
+html[data-theme^="glass-"] body::after {
+  position: fixed;
+  z-index: -1;
+  inset: -12vh -8vw;
+  display: block;
+  width: auto;
+  height: auto;
+  border-radius: 0;
+  content: "";
+  filter: none;
+  mask-image: none;
+  pointer-events: none;
+}
+
+html[data-theme^="glass-"] body::before {
+  z-index: -2;
+  background:
+    radial-gradient(42rem 36rem at 82% 12%, var(--glass-blob-a), transparent 70%),
+    radial-gradient(46rem 40rem at 6% 92%, var(--glass-blob-b), transparent 70%),
+    radial-gradient(30rem 26rem at 46% 48%, var(--glass-blob-c), transparent 72%);
+  background-size: auto;
+  transform: translate3d(0, calc(var(--glass-drift) * -0.06), 0);
+}
+
+html[data-theme^="glass-"] body::after {
+  background:
+    radial-gradient(26rem 22rem at 30% 8%, var(--glass-blob-c), transparent 70%),
+    radial-gradient(34rem 30rem at 96% 78%, var(--glass-blob-b), transparent 72%);
+  transform: translate3d(0, calc(var(--glass-drift) * 0.04), 0);
+}
+
+/* Two slabs: the sidebar, and the sheet holding the top bar and the page. */
+html[data-theme^="glass-"] .sidebar,
+html[data-theme^="glass-"] .topbar,
+html[data-theme^="glass-"] .main-content,
+html[data-theme^="glass-"] .mobile-nav {
+  background: var(--glass-slab);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturation));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturation));
+}
+
+/* The sidebar keeps its exact box (nothing inside it moves). Its glass is
+ * drawn 10px in from that box: the clip rounds it into a free-standing
+ * slab and the 11px inset ring leaves a 1px bright edge inside the clip. */
+html[data-theme^="glass-"] .sidebar {
+  border: 0;
+  border-radius: calc(var(--radius-xl) + 10px);
+  box-shadow: inset 0 0 0 11px var(--glass-edge);
+  clip-path: inset(10px 4px 10px 10px round var(--radius-xl));
+}
+
+html[data-theme^="glass-"] .topbar {
+  border-color: var(--glass-edge);
+  border-bottom-color: var(--line);
+  box-shadow: inset 0 1px var(--glass-rim);
+}
+
+html[data-theme^="glass-"] .main-content {
+  border-color: var(--glass-edge);
+  box-shadow: var(--glass-slab-shadow);
+}
+
+/* Layers that float above the page get their own, stronger glass. */
+html[data-theme^="glass-"] :is(
+  .modal-card,
+  .standard-modal,
+  .control-confirm-modal,
+  .drawer-body,
+  .toast,
+  .helmsman-search__panel,
+  .agent-helper__panel
+) {
+  border-color: var(--glass-edge);
+  background: var(--glass-float);
+  box-shadow: var(--shadow-modal), inset 0 1px var(--glass-rim);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturation));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturation));
+}
+
+/* Panes inside the sheet: a thin bright edge and a soft lift. They carry
+ * no blur of their own; the sheet behind them already frosts the scene,
+ * and a second blur per card is what makes glass slow on weak devices. */
+html[data-theme^="glass-"] :is(
+  .media-home-card,
+  .operations-overall,
+  .operations-panel,
+  .infrastructure-overview-card,
+  .infrastructure-assessment-card,
+  .glass-panel,
+  .settings-card-v5,
+  .connection-category,
+  .pipeline-panel,
+  .activity-panel,
+  .event-timeline-section,
+  .calendar-upcoming,
+  .request-list,
+  .download-list,
+  .service-table,
+  .week-grid,
+  .logging-source-card,
+  .logging-results,
+  .portainer-panel,
+  .portainer-hero,
+  .proxmox-section,
+  .proxmox-storage-panel,
+  .infrastructure-workload-panel,
+  .service-card-v5,
+  .environment-card,
+  .infrastructure-node-card,
+  .infrastructure-target,
+  .portainer-environment-card,
+  .portainer-stack-card,
+  .portainer-connection-card,
+  .system-overview-hero,
+  .system-overview-card,
+  .lp-tile__surface
+) {
+  border-color: var(--glass-edge);
+  box-shadow: var(--glass-pane-shadow), inset 0 1px var(--glass-rim);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+/* Reduced transparency: solid panels, no blur, in both glass themes. */
+html[data-theme^="glass-"][data-transparency="reduced"] :is(
+  .sidebar,
+  .topbar,
+  .main-content,
+  .mobile-nav,
+  .modal-card,
+  .standard-modal,
+  .control-confirm-modal,
+  .drawer-body,
+  .toast,
+  .helmsman-search__panel,
+  .agent-helper__panel
+) {
+  background: var(--surface-solid);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  html[data-theme^="glass-"] :is(
+    .sidebar,
+    .topbar,
+    .main-content,
+    .mobile-nav,
+    .modal-card,
+    .standard-modal,
+    .control-confirm-modal,
+    .drawer-body,
+    .toast,
+    .helmsman-search__panel,
+    .agent-helper__panel
+  ) {
+    background: var(--surface-solid);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
+/* ======================================================================
+ * Motion (both glass themes). src/ui/glass-motion.js sets data-glass-motion
+ * only when the visitor has not asked for reduced motion or transparency,
+ * so every rule below is already opt-out by the operating system and by
+ * Settings > Appearance.
+ * ====================================================================== */
+
+/* Light on the pane under the pointer: a soft pool plus a bright rim arc,
+ * drawn by one fixed layer that is moved over whichever pane is hovered. */
+.glass-sheen {
+  position: fixed;
+  z-index: 2147483000;
+  top: 0;
+  left: 0;
+  width: var(--sheen-width, 0);
+  height: var(--sheen-height, 0);
+  border-radius: var(--sheen-radius, 0);
+  opacity: 0;
+  pointer-events: none;
+  transform: translate3d(var(--sheen-left, 0), var(--sheen-top, 0), 0);
+  transition: opacity 260ms ease;
+  contain: strict;
+}
+
+.glass-sheen::before,
+.glass-sheen::after {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  content: "";
+}
+
+.glass-sheen::before {
+  background: radial-gradient(22rem circle at var(--sheen-x, 50%) var(--sheen-y, 0), var(--glass-sheen-pool), transparent 62%);
+}
+
+/* The rim: the same light, masked down to a 1.5px ring at the pane edge. */
+.glass-sheen::after {
+  padding: 1.5px;
+  background: radial-gradient(16rem circle at var(--sheen-x, 50%) var(--sheen-y, 0), var(--glass-sheen-rim), transparent 70%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+}
+
+html[data-glass-motion="on"] .glass-sheen.is-lit {
+  opacity: 1;
+}
+
+/* The scene drifts a little against the glass while the page scrolls. */
+html[data-glass-motion="on"] body::before,
+html[data-glass-motion="on"] body::after {
+  transition: transform 500ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  will-change: transform;
+}
+
+/* Things you press flex and spring back. */
+html[data-glass-motion="on"] :is(
+  .button,
+  .icon-button,
+  .filter-chip,
+  .world-option,
+  .nav-item,
+  .profile-button,
+  .media-overview-card-link,
+  .system-overview-link,
+  .theme-option,
+  .poster-card,
+  .lp-tile__surface,
+  .service-card-v5
+) {
+  transition:
+    transform 460ms var(--glass-spring),
+    background-color 180ms ease,
+    border-color 180ms ease,
+    box-shadow 260ms ease,
+    color 180ms ease;
+}
+
+html[data-glass-motion="on"] :is(
+  .button,
+  .icon-button,
+  .filter-chip,
+  .world-option,
+  .nav-item,
+  .profile-button,
+  .media-overview-card-link,
+  .system-overview-link,
+  .theme-option
+):active {
+  transform: scale(0.955);
+  transition-duration: 90ms, 180ms, 180ms, 260ms, 180ms;
+}
+
+html[data-glass-motion="on"] :is(.poster-card, .lp-tile__surface, .service-card-v5):active {
+  transform: scale(0.982);
+  transition-duration: 90ms, 180ms, 180ms, 260ms, 180ms;
+}
+
+/* Views, dialogs, drawers, toasts and the chat panel condense out of
+ * blur instead of sliding in. These replace the Default entry animations
+ * by name, and only while this stylesheet is loaded. */
+@keyframes glass-materialize {
+  from {
+    opacity: 0;
+    filter: blur(14px);
+    transform: scale(0.972);
+  }
+
+  60% {
+    opacity: 1;
+    filter: blur(0);
+  }
+
+  to {
+    opacity: 1;
+    filter: none;
+    transform: none;
+  }
+}
+
+html[data-glass-motion="on"].glass-entering .main-content > * {
+  animation: glass-materialize 520ms var(--glass-settle) both;
+}
+
+html[data-glass-motion="on"] :is(
+  .modal-layer.is-open .modal-card,
+  .modal-layer.is-open .standard-modal,
+  .control-confirm-layer.is-open .control-confirm-modal,
+  .drawer-layer.is-open .drawer-body,
+  .toast,
+  .helmsman-search__panel:not([hidden]),
+  .agent-helper__panel
+) {
+  animation: glass-materialize 460ms var(--glass-settle) both;
+}
+
+/* Lensing (Chromium): floating glass bends what lies behind its rim. */
+.glass-lens-defs {
+  position: absolute;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+
+html[data-glass-lens="on"] :is(.toast, .helmsman-search__panel, .agent-helper__panel, .modal-card, .standard-modal, .control-confirm-modal, .drawer-body) {
+  -webkit-backdrop-filter: url("#glass-lens-filter") blur(18px) saturate(var(--glass-saturation));
+  backdrop-filter: url("#glass-lens-filter") blur(18px) saturate(var(--glass-saturation));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .glass-sheen {
+    display: none;
+  }
+}

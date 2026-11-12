@@ -6716,8 +6716,112 @@ const SETTINGS_TABS = Object.freeze([
   Object.freeze({ id: "notifications", label: "Notifications" }),
   Object.freeze({ id: "automation", label: "Automation" }),
   Object.freeze({ id: "logging", label: "Logging" }),
+  Object.freeze({ id: "appearance", label: "Appearance" }),
   Object.freeze({ id: "about", label: "About" })
 ]);
+
+// Visual themes. The server keeps the choice (/api/v2/ui/theme) and writes it
+// into the page as <html data-theme>, so every browser wears the same theme
+// from the first paint. A theme only restyles; it never changes what a view
+// does. To add one: list it here and in server/ui-preferences.mjs, then give
+// it rules in src/ui/themes.css.
+const UI_THEMES = Object.freeze([
+  Object.freeze({ id: "default", label: "Default", detail: "Obsidian Glass, the original near-black console.", themeColor: "#09090b" }),
+  Object.freeze({ id: "glass-dark", label: "Glass Dark", detail: "Frosted dark panels floating over a deep green glow.", themeColor: "#050806" }),
+  Object.freeze({ id: "glass-light", label: "Glass Light", detail: "Frosted white panels over a soft green wash.", themeColor: "#e9efe9" })
+]);
+const TRANSPARENCY_KEY = "helmsman.transparency";
+
+function currentUiTheme() {
+  const id = document.documentElement.dataset.theme || "default";
+  return UI_THEMES.some((theme) => theme.id === id) ? id : "default";
+}
+
+// Each theme other than Default is its own stylesheet. It is linked only
+// while that theme is chosen, and the page switches once it has loaded so
+// there is never a half-styled moment.
+function loadUiThemeStylesheet(id) {
+  const current = document.getElementById("theme-stylesheet");
+  if (id === "default") return Promise.resolve();
+  const href = `./src/ui/theme-${id}.css`;
+  if (current?.getAttribute("href") === href) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.href = href;
+    link.addEventListener("load", () => {
+      current?.remove();
+      link.id = "theme-stylesheet";
+      resolve();
+    }, { once: true });
+    link.addEventListener("error", () => {
+      link.remove();
+      reject(new Error("The theme could not be loaded"));
+    }, { once: true });
+    (current || document.querySelector('link[href$="themes.css"]') || document.head.lastElementChild).after(link);
+  });
+}
+
+async function applyUiTheme(id) {
+  const theme = UI_THEMES.find((candidate) => candidate.id === id) || UI_THEMES[0];
+  await loadUiThemeStylesheet(theme.id);
+  if (theme.id === "default") {
+    delete document.documentElement.dataset.theme;
+    document.getElementById("theme-stylesheet")?.remove();
+  } else {
+    document.documentElement.dataset.theme = theme.id;
+  }
+  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", theme.themeColor);
+}
+
+async function chooseUiTheme(id) {
+  if (!UI_THEMES.some((theme) => theme.id === id) || id === currentUiTheme()) return;
+  const previous = currentUiTheme();
+  try {
+    await applyUiTheme(id);
+    rerenderSettings();
+    const payload = await api("/api/v2/ui/theme", { method: "PUT", body: { theme: id } });
+    await applyUiTheme(payload?.theme);
+    showToast("Theme saved", "success");
+  } catch (error) {
+    await applyUiTheme(previous).catch(() => {});
+    showToast(error?.message || "The theme could not be saved", "error");
+  }
+  rerenderSettings();
+}
+
+function transparencyReduced() {
+  return document.documentElement.dataset.transparency === "reduced";
+}
+
+// Kept per browser, not by the server: it is about what this device can
+// draw smoothly. src/theme-boot.js applies it before the first paint.
+function setTransparencyReduced(reduced) {
+  if (reduced) document.documentElement.dataset.transparency = "reduced";
+  else delete document.documentElement.dataset.transparency;
+  try {
+    if (reduced) globalThis.localStorage?.setItem(TRANSPARENCY_KEY, "reduced");
+    else globalThis.localStorage?.removeItem(TRANSPARENCY_KEY);
+  } catch {
+    // A private window may block storage; the choice lasts until reload.
+  }
+}
+
+function rerenderSettings() {
+  if (currentRoute() !== "settings") return;
+  state.lastMarkup = "";
+  renderPage({ force: true, preserveFocus: true });
+}
+
+function renderAppearanceSettings() {
+  const active = currentUiTheme();
+  const options = UI_THEMES.map((theme) => `<button class="theme-option ${theme.id === active ? "is-active" : ""}" type="button" role="radio" aria-checked="${theme.id === active ? "true" : "false"}" data-action="set-theme" data-theme-id="${theme.id}"><span class="theme-swatch theme-swatch--${theme.id}" aria-hidden="true"><i></i><i></i></span><span class="theme-option__text"><strong>${escapeHtml(theme.label)}</strong><small>${escapeHtml(theme.detail)}</small></span><span class="theme-option__mark" aria-hidden="true">${icon("check")}</span></button>`).join("");
+  return `<div class="settings-grid-v5">
+    <section class="glass-panel settings-card-v5"><header><div><span class="section-kicker">Look</span><h3>Theme</h3></div>${icon("settings")}</header><div class="settings-card-v5__body"><p>Themes change colours and surfaces only. Every view works the same in each one. The choice is kept by Helmsman, so every browser shows the same theme.</p><div class="theme-options" role="radiogroup" aria-label="Theme">${options}</div></div></section>
+    <section class="glass-panel settings-card-v5"><header><div><span class="section-kicker">This browser</span><h3>Transparency</h3></div>${icon("settings")}</header><div class="settings-card-v5__body"><label class="check-row"><input type="checkbox" data-appearance-transparency ${transparencyReduced() ? "checked" : ""}/><span><strong>Reduce transparency</strong><small>Replaces blurred glass with solid panels. Use it on a device that scrolls slowly or when text is hard to read. Kept for this browser only.</small></span></label></div></section>
+  </div>`;
+}
+
 const SETTINGS_TAB_KEY = "helmsman.settingsTab";
 
 function settingsTab() {
@@ -6874,6 +6978,7 @@ function renderSettingsPage() {
     notifications: renderAgentNotificationsTab(),
     automation: renderAgentAutomationTab(),
     logging: renderLoggingSettings(),
+    appearance: renderAppearanceSettings(),
     about: `<div class="settings-grid-v5"><section class="glass-panel settings-card-v5"><header><div><span class="section-kicker">About</span><h3>Helmsman release</h3></div>${icon("logs")}</header><div class="settings-card-v5__body app-version-v5"><p>Include this exact version when reporting a problem or checking release notes.</p><dl><div><dt>Version</dt><dd data-app-version>${escapeHtml(appVersion)}</dd></div></dl><nav class="button-row app-version-v5__links" aria-label="Helmsman project resources"><a class="button button--compact" href="https://github.com/nunesg130-boop/helmsman" target="_blank" rel="noopener noreferrer" aria-label="Source code (opens in a new tab)">Source</a><a class="button button--compact" href="https://github.com/nunesg130-boop/helmsman/blob/main/LICENSE" target="_blank" rel="noopener noreferrer" aria-label="AGPL-3.0 license (opens in a new tab)">AGPL-3.0 License</a><a class="button button--compact" href="https://github.com/nunesg130-boop/helmsman/blob/main/assets/services/THIRD_PARTY_NOTICES.md" target="_blank" rel="noopener noreferrer" aria-label="Third-party icon notices (opens in a new tab)">Third-party icon notices</a></nav></div></section></div>`
   };
   return `
@@ -12148,6 +12253,10 @@ document.addEventListener("click", async (event) => {
     rerenderAgent();
     return;
   }
+  if (action === "set-theme") {
+    await chooseUiTheme(String(target.dataset.themeId || ""));
+    return;
+  }
   if (action === "settings-tab") {
     setSettingsTab(String(target.dataset.settingsTab || ""), { focus: Boolean(target.closest?.(".settings-tabs")) });
     if (currentRoute() !== "settings") location.hash = "#/settings";
@@ -12314,6 +12423,10 @@ document.addEventListener("click", async (event) => {
 });
 
 document.addEventListener("change", (event) => {
+  if (event.target?.matches?.("[data-appearance-transparency]")) {
+    setTransparencyReduced(event.target.checked);
+    return;
+  }
   if (event.target?.id === "agent-selftest-file") {
     void chooseSelfTestFile(event.target);
     return;

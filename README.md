@@ -1,4 +1,4 @@
-# Helmsman v1.19.0
+# Helmsman v1.20.0
 
 Helmsman is a self-hosted operations center for a homelab's media services and infrastructure. It runs as one portable Linux container on Docker Desktop, Linux, macOS, compatible NAS platforms, AMD64, and ARM64.
 
@@ -14,6 +14,19 @@ Helmsman is a self-hosted operations center for a homelab's media services and i
 This Helmsman is the media and infrastructure dashboard in this repository. It
 is not affiliated with or derived from the existing Kubernetes project also
 named [Helmsman](https://github.com/mkubaczyk/helmsman).
+
+## v1.20.0
+
+**Three themes.** **Settings** has a new **Appearance** tab with a theme picker. Themes change colours, surfaces and motion only; every view works the same in each one.
+
+- **Default** is the Obsidian Glass look Helmsman has had, unchanged.
+- **Glass Dark** floats frosted dark panels over a deep green glow. The sidebar and the main sheet are separate slabs of glass with a thin bright edge, and corners are rounder.
+- **Glass Light** is the same glass in daylight: frosted white panels over a soft green wash, with dark text and forest-green accents.
+- **Motion in the glass themes:** light follows the pointer across a panel, the scene drifts as the page scrolls, buttons and tiles flex when pressed, and views, dialogs and toasts condense out of blur. Chromium browsers also bend what lies behind floating glass. All of it turns off with the operating system's reduced-motion setting.
+- **The theme is kept by Helmsman**, so every browser shows the same one, including the sign-in screen. The server writes it into the page, so there is no flash of another theme while loading.
+- **Reduce transparency** on the same tab replaces blurred glass with solid panels on that browser. Use it on a device that scrolls slowly. The operating system's reduced-transparency setting does the same.
+- Text in both glass themes meets WCAG AA contrast. Launchpad accents and custom CSS from `launchpad.yaml` still apply on top of any theme.
+- **For contributors:** each glass theme is a generated stylesheet (`src/ui/theme-glass-dark.css`, `src/ui/theme-glass-light.css`), loaded only while that theme is chosen. After changing colours in any stylesheet, run `node scripts/build-glass-themes.mjs`; the test suite fails if the generated files are out of date. Hand-written theme rules live in `scripts/themes/`.
 
 ## v1.19.0
 
@@ -592,7 +605,7 @@ Helmsman's project-owned logging mark. Original generic VM/container workload
 drawings are also bundled. See
 [the asset notices](assets/services/THIRD_PARTY_NOTICES.md).
 
-Helmsman v1.19.0 combines built-in logging, optional Loki search, Portainer monitoring, a private persistent state/artwork cache, and a small, fixed set of confirmed recovery actions under Infrastructure with targeted media recovery actions and Helmsman's cluster-aware Proxmox model:
+Helmsman v1.20.0 combines built-in logging, optional Loki search, Portainer monitoring, a private persistent state/artwork cache, and a small, fixed set of confirmed recovery actions under Infrastructure with targeted media recovery actions and Helmsman's cluster-aware Proxmox model:
 
 - Media and Infrastructure are separate workspaces inside the same authenticated application, and only the selected workspace's navigation is shown;
 - the desktop sidebar collapses to an icon rail, remembers that preference, keeps its navigation scrollable at high browser zoom, and keeps its collapse control in the sidebar's brand row (under the brand mark when collapsed);
@@ -638,7 +651,7 @@ Helmsman v1.19.0 combines built-in logging, optional Loki search, Portainer moni
 
 ## Deploy the published container
 
-Helmsman is distributed as the public Linux AMD64/ARM64 image `ghcr.io/nunesg130-boop/helmsman`. The `v1.19.0` Git tag runs the contracts and architecture smoke tests, publishes the version, `latest`, and full-commit image tags, and creates a GitHub Release containing ready-to-use `compose.yaml`, `container.env.example`, and `SHA256SUMS` assets. The release deployment files pin `ghcr.io/nunesg130-boop/helmsman` to the exact multi-architecture manifest digest (`@sha256:...`).
+Helmsman is distributed as the public Linux AMD64/ARM64 image `ghcr.io/nunesg130-boop/helmsman`. The `v1.20.0` Git tag runs the contracts and architecture smoke tests, publishes the version, `latest`, and full-commit image tags, and creates a GitHub Release containing ready-to-use `compose.yaml`, `container.env.example`, and `SHA256SUMS` assets. The release deployment files pin `ghcr.io/nunesg130-boop/helmsman` to the exact multi-architecture manifest digest (`@sha256:...`).
 
 Download those three files from the matching [GitHub Release](https://github.com/nunesg130-boop/helmsman/releases) into one directory, verify the two deployment files against `SHA256SUMS`, open a terminal there, and make sure Docker Desktop or Docker Engine is running. No source checkout, Dockerfile, Node.js installation, or server-side image build is required.
 

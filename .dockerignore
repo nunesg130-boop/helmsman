@@ -51,6 +51,11 @@
 !src/ui/launchpad-managed.js
 !src/ui/launchpad-editor.js
 !src/ui/selftest.css
+!src/ui/themes.css
+!src/ui/theme-glass-dark.css
+!src/ui/theme-glass-light.css
+!src/ui/glass-motion.js
+!src/theme-boot.js
 !src/ui/logging.css
 !src/ui/agent-helper-3d.js
 !src/vendor

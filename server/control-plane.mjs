@@ -18,7 +18,7 @@ import {
 } from "./session-auth.mjs";
 import { tokenMatches } from "./state.mjs";
 import { isReportId } from "./acknowledgements.mjs";
-import { isCardId } from "./ui-preferences.mjs";
+import { DEFAULT_UI_THEME, UI_THEMES, isCardId, isUiTheme } from "./ui-preferences.mjs";
 import { LaunchpadIconError, MAX_ICON_BYTES } from "./launchpad-icons.mjs";
 import { LaunchpadStoreError } from "./launchpad-store.mjs";
 import { buildLaunchpadCss } from "./launchpad-theme.mjs";
@@ -5141,6 +5141,26 @@ export async function createControlPlane(options) {
     sendJson(response, 200, { collapsed });
   }
 
+  // The dashboard's visual theme, kept by Helmsman so every browser sees
+  // the same. GET names the theme in use and the ones on offer; PUT picks one.
+  async function uiThemeApi(request, response) {
+    const current = () => (typeof uiPreferenceStore?.theme === "function" ? uiPreferenceStore.theme() : DEFAULT_UI_THEME);
+    const themes = UI_THEMES.map(({ id, label, scheme }) => ({ id, label, scheme }));
+    if (request.method === "GET") {
+      await authenticate(request, false);
+      sendJson(response, 200, { theme: current(), themes });
+      return;
+    }
+    if (request.method !== "PUT") fail(405, "METHOD_NOT_ALLOWED", "That method is not allowed.");
+    const authenticated = await authenticate(request, true);
+    if (typeof uiPreferenceStore?.setTheme !== "function") fail(503, "UI_PREFERENCES_UNAVAILABLE", "Saving the theme is temporarily unavailable.");
+    const body = await readBoundedJson(request);
+    requireExactKeys(body, ["theme"]);
+    if (!isUiTheme(body.theme)) fail(400, "INVALID_THEME", "Choose one of the available themes.");
+    await recheckMutationSession(request, authenticated);
+    sendJson(response, 200, { theme: await uiPreferenceStore.setTheme(body.theme), themes });
+  }
+
   // Launchpad v2. launchpad.yaml is the single source of truth (see
   // server/launchpad-store.mjs); the browser reads the model and sends one
   // small operation per edit, naming the revision it was looking at.
@@ -5628,6 +5648,11 @@ export async function createControlPlane(options) {
       if (url.pathname === "/api/v2/ui/cards" || uiCardMatch) {
         if (url.search) fail(404, "NOT_FOUND", "Not found.");
         await uiCardsApi(request, response, uiCardMatch?.[1] ?? null);
+        return true;
+      }
+      if (url.pathname === "/api/v2/ui/theme") {
+        if (url.search) fail(404, "NOT_FOUND", "Not found.");
+        await uiThemeApi(request, response);
         return true;
       }
       const launchpadRoutes = {

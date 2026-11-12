@@ -34,7 +34,7 @@ import { createLaunchpadIconStore } from "./launchpad-icons.mjs";
 import { migrateLegacyLaunchpad } from "./launchpad-migrate.mjs";
 import { launchpadFrameOrigins } from "./launchpad-schema.mjs";
 import { createLaunchpadDocumentStore } from "./launchpad-store.mjs";
-import { createUiPreferenceStore } from "./ui-preferences.mjs";
+import { DEFAULT_UI_THEME, UI_THEMES, createUiPreferenceStore } from "./ui-preferences.mjs";
 import { createManualStore } from "./manual.mjs";
 import { createAgent } from "./agent.mjs";
 import { createNetworkMapStore } from "./network-map.mjs";
@@ -62,7 +62,7 @@ import {
 import { generateSecretToken, hashToken, StateStore, tokenMatches } from "./state.mjs";
 import { anySignal } from "./abort-signals.mjs";
 
-const DEFAULT_VERSION = "1.19.0";
+const DEFAULT_VERSION = "1.20.0";
 const requestedVersion = String(process.env.HELMSMAN_VERSION || DEFAULT_VERSION);
 const VERSION = /^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/u.test(requestedVersion)
   ? requestedVersion
@@ -1550,7 +1550,34 @@ function acceptsGzip(header) {
   return false;
 }
 
-async function serveStatic(request, response, rootDir, pathname, frameOrigins = []) {
+// The chosen theme is written into the page itself, as <html data-theme>,
+// so the first paint (sign-in and setup included) already wears it. The
+// CSP allows no inline script, and a fetch would flash the default first.
+// The default theme serves index.html byte for byte as it is on disk.
+const SHELL_HTML_TAG = '<html lang="en">';
+const SHELL_THEME_COLOR = '<meta name="theme-color" content="#09090b" />';
+const SHELL_THEMES_LINK = '<link rel="stylesheet" href="./src/ui/themes.css" />';
+
+function themedShell(file, themeId) {
+  const theme = UI_THEMES.find((candidate) => candidate.id === themeId);
+  if (!theme || theme.id === DEFAULT_UI_THEME) return file;
+  file.themed ||= new Map();
+  let entry = file.themed.get(theme.id);
+  if (!entry) {
+    const html = file.bytes.toString("utf8");
+    if (!html.includes(SHELL_HTML_TAG) || !html.includes(SHELL_THEMES_LINK)) return file;
+    // Each theme is its own stylesheet, linked only while it is chosen.
+    const bytes = Buffer.from(html
+      .replace(SHELL_HTML_TAG, `<html lang="en" data-theme="${theme.id}">`)
+      .replace(SHELL_THEMES_LINK, `${SHELL_THEMES_LINK}\n    <link rel="stylesheet" id="theme-stylesheet" href="./src/ui/theme-${theme.id}.css" />`)
+      .replace(SHELL_THEME_COLOR, `<meta name="theme-color" content="${theme.themeColor}" />`), "utf8");
+    entry = { bytes, etag: `"${createHash("sha256").update(bytes).digest("base64url")}"`, gzip: null };
+    file.themed.set(theme.id, entry);
+  }
+  return entry;
+}
+
+async function serveStatic(request, response, rootDir, pathname, frameOrigins = [], themeId = DEFAULT_UI_THEME) {
   if (!["GET", "HEAD"].includes(request.method || "GET")) {
     throw new BrokerError(405, "METHOD_NOT_ALLOWED", "That method is not allowed.");
   }
@@ -1567,8 +1594,9 @@ async function serveStatic(request, response, rootDir, pathname, frameOrigins = 
   if (realCandidate !== realRoot && !realCandidate.startsWith(`${realRoot}${path.sep}`)) {
     throw new BrokerError(404, "NOT_FOUND", "Not found.");
   }
-  const file = await staticFile(realCandidate).catch(() => null);
+  let file = await staticFile(realCandidate).catch(() => null);
   if (!file) throw new BrokerError(404, "NOT_FOUND", "Not found.");
+  if (relative === "index.html") file = themedShell(file, themeId);
   const extension = path.extname(realCandidate).toLowerCase();
   setCommonSecurityHeaders(response);
   response.setHeader("Content-Security-Policy", shellCsp(frameOrigins));
@@ -3802,7 +3830,8 @@ export async function createBroker(options = {}) {
         throw new BrokerError(404, "NOT_FOUND", "Not found.");
       }
       normalizedHostHeader(request);
-      await serveStatic(request, response, rootDir, url.pathname, launchpadFrameOrigins(launchpad?.snapshot?.().model));
+      await serveStatic(request, response, rootDir, url.pathname, launchpadFrameOrigins(launchpad?.snapshot?.().model),
+        typeof uiPreferences?.theme === "function" ? uiPreferences.theme() : DEFAULT_UI_THEME);
     } catch (error) {
       logRequestError(request, error);
       if (!response.headersSent) sendError(response, error);
