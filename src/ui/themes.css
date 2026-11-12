@@ -1,0 +1,136 @@
+/*
+ * Helmsman themes: shared pieces that every theme needs.
+ *
+ * The Default theme is the rest of the stylesheets, untouched. Each other
+ * theme is its own file (src/ui/theme-<id>.css), loaded only while that
+ * theme is chosen, so the Default theme carries none of their rules.
+ */
+
+/* Appearance picker (Settings > Appearance). It exists only on that tab
+ * and is drawn from the active theme's own tokens. */
+
+.theme-options {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.theme-option {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) 18px;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 160ms ease, background 160ms ease;
+}
+
+.theme-option:is(:hover, :focus-visible) {
+  border-color: var(--line-strong);
+  background: var(--surface-hover);
+}
+
+.theme-option.is-active {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+}
+
+.theme-option__text {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.theme-option__text strong {
+  font-size: 12px;
+  font-weight: 620;
+}
+
+.theme-option__text small {
+  color: var(--text-soft);
+  font-size: 11px;
+}
+
+.theme-option__mark svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0;
+}
+
+.theme-option.is-active .theme-option__mark svg {
+  opacity: 1;
+}
+
+/* A small picture of each theme: page colour, one panel, one accent bar. */
+.theme-swatch {
+  position: relative;
+  display: block;
+  width: 64px;
+  height: 42px;
+  overflow: hidden;
+  border: 1px solid rgba(127, 127, 127, 0.35);
+  border-radius: 7px;
+  background: #070708;
+}
+
+.theme-swatch i {
+  position: absolute;
+  display: block;
+}
+
+.theme-swatch i:first-child {
+  inset: 7px 7px 7px 18px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  background: #141417;
+}
+
+.theme-swatch i:last-child {
+  top: 13px;
+  left: 24px;
+  width: 20px;
+  height: 4px;
+  border-radius: 2px;
+  background: #5ce395;
+}
+
+.theme-swatch--glass-dark {
+  background:
+    radial-gradient(circle at 85% 15%, rgba(31, 138, 78, 0.9), transparent 62%),
+    radial-gradient(circle at 10% 95%, rgba(18, 96, 56, 0.9), transparent 60%),
+    #030504;
+}
+
+.theme-swatch--glass-dark i:first-child {
+  border-color: rgba(235, 255, 244, 0.22);
+  border-radius: 6px;
+  background: rgba(14, 18, 16, 0.55);
+}
+
+.theme-swatch--glass-light {
+  background:
+    radial-gradient(circle at 85% 15%, rgba(63, 160, 104, 0.75), transparent 62%),
+    radial-gradient(circle at 10% 95%, rgba(104, 190, 140, 0.7), transparent 60%),
+    #e6efe8;
+}
+
+.theme-swatch--glass-light i:first-child {
+  border-color: rgba(255, 255, 255, 0.9);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.74);
+}
+
+.theme-swatch--glass-light i:last-child {
+  background: #17623b;
+}

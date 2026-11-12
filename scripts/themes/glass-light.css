@@ -1,0 +1,74 @@
+/* ======================================================================
+ * Glass Light
+ * ====================================================================== */
+
+:root[data-theme="glass-light"] {
+  color-scheme: light;
+  --glass-page: #e6efe8;
+  --glass-blob-a: rgba(58, 158, 100, 0.5);
+  --glass-blob-b: rgba(96, 186, 134, 0.46);
+  --glass-blob-c: rgba(150, 214, 176, 0.42);
+  --glass-slab: linear-gradient(140deg, rgba(255, 255, 255, 0.5), transparent 46%), rgba(250, 253, 251, 0.62);
+  --glass-float: rgba(252, 254, 253, 0.86);
+  --glass-rim: rgba(255, 255, 255, 0.9);
+  --glass-sheen-pool: rgba(255, 255, 255, 0.55);
+  --glass-sheen-rim: rgba(255, 255, 255, 1);
+  --glass-slab-shadow: 0 24px 60px rgba(22, 68, 44, 0.14);
+  --glass-pane-shadow: 0 8px 24px rgba(22, 68, 44, 0.08);
+  --bg: #e6efe8;
+  --bg-raised: rgba(255, 255, 255, 0.7);
+  --surface: rgba(255, 255, 255, 0.72);
+  --surface-solid: #f7faf8;
+  --surface-strong: rgba(226, 236, 230, 0.9);
+  --surface-hover: rgba(22, 68, 44, 0.06);
+  --glass: rgba(255, 255, 255, 0.66);
+  --glass-strong: rgba(255, 255, 255, 0.86);
+  --glass-hover: rgba(22, 68, 44, 0.07);
+  --glass-highlight: rgba(255, 255, 255, 0.7);
+  --glass-edge: rgba(255, 255, 255, 0.85);
+  --line: rgba(20, 60, 40, 0.13);
+  --line-strong: rgba(20, 60, 40, 0.24);
+  --text: #0f1a14;
+  --text-soft: #33443a;
+  --muted: #55665c;
+  --accent: #17623b;
+  --accent-strong: #124f2f;
+  --accent-soft: rgba(23, 98, 59, 0.1);
+  --accent-border: rgba(23, 98, 59, 0.34);
+  --accent-glow: rgba(23, 98, 59, 0.16);
+  --success: #17623b;
+  --success-soft: rgba(23, 98, 59, 0.1);
+  --success-glow: rgba(23, 98, 59, 0.16);
+  --danger: #b3232f;
+  --warning: #7a5600;
+  --info: #3346b8;
+  --state-partial: #55665c;
+  --shadow: 0 16px 44px rgba(22, 68, 44, 0.12);
+  --shadow-float: 0 18px 52px rgba(22, 68, 44, 0.16);
+  --shadow-modal: 0 32px 90px rgba(22, 68, 44, 0.24);
+}
+
+/* Artwork keeps its dark scrim and light text in Glass Light, as in every
+ * theme: these boxes sit on a picture, not on the page. */
+html[data-theme="glass-light"] :is(.media-overview-resume, .discover-feature, .poster-art, .media-overview-poster, .drawer-poster) {
+  --text: #f5f5f6;
+  --text-soft: #c2c2c8;
+  --muted: #a4a5ad;
+  --accent: #5ce395;
+  --accent-strong: #35bf78;
+  --success: #5ce395;
+  --line: rgba(255, 255, 255, 0.07);
+  --line-strong: rgba(255, 255, 255, 0.13);
+  color: var(--text);
+}
+
+/* Marks drawn in white for dark pages are turned to ink; their accent
+ * colour survives the round trip. */
+html[data-theme="glass-light"] img[src$="portainer.svg"] {
+  filter: invert(1) hue-rotate(180deg);
+}
+
+html[data-theme="glass-light"] .discover-feature {
+  border-color: rgba(20, 60, 40, 0.2);
+  background: #0c1210;
+}

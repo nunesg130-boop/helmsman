@@ -4,7 +4,8 @@ import { randomBytes } from "node:crypto";
 import path from "node:path";
 
 // Dashboard layout choices kept by Helmsman itself, so every browser the
-// owner signs in from sees the same: which Settings cards are folded shut.
+// owner signs in from sees the same: which Settings cards are folded shut,
+// and which visual theme the dashboard wears.
 //
 // The store lives beside state.json in its own file so the security-critical
 // broker state schema is untouched. It holds only card names; never
@@ -15,6 +16,20 @@ const FILE_VERSION = 1;
 const MAX_CARDS = 200;
 const MAX_FILE_BYTES = 32 * 1024;
 const CARD_ID = /^[a-z0-9][a-z0-9-]{0,95}$/u;
+
+// The visual themes. "default" is the original Obsidian Glass look and is
+// never written to disk; a new theme is one more entry here plus its rules
+// in src/ui/themes.css.
+export const UI_THEMES = Object.freeze([
+  Object.freeze({ id: "default", label: "Default", scheme: "dark", themeColor: "#09090b" }),
+  Object.freeze({ id: "glass-dark", label: "Glass Dark", scheme: "dark", themeColor: "#050806" }),
+  Object.freeze({ id: "glass-light", label: "Glass Light", scheme: "light", themeColor: "#e9efe9" })
+]);
+export const DEFAULT_UI_THEME = "default";
+
+export function isUiTheme(value) {
+  return typeof value === "string" && UI_THEMES.some((theme) => theme.id === value);
+}
 
 export const UI_PREFERENCE_LIMITS = Object.freeze({ cards: MAX_CARDS });
 
@@ -79,6 +94,7 @@ export async function createUiPreferenceStore(options = {}) {
   const filePath = path.join(dataDir, FILE_NAME);
   // Only folded cards are kept; a card not listed is open.
   const collapsed = new Set();
+  let theme = DEFAULT_UI_THEME;
   let writeChain = Promise.resolve();
 
   await guard();
@@ -86,10 +102,12 @@ export async function createUiPreferenceStore(options = {}) {
   const loaded = await readFileSafely(filePath);
   if (isPlainObject(loaded) && loaded.version === FILE_VERSION && Array.isArray(loaded.collapsedCards)) {
     for (const id of loaded.collapsedCards.slice(0, MAX_CARDS)) if (isCardId(id)) collapsed.add(id);
+    if (isUiTheme(loaded.theme)) theme = loaded.theme;
   }
 
   function persist() {
     const snapshot = { version: FILE_VERSION, collapsedCards: [...collapsed] };
+    if (theme !== DEFAULT_UI_THEME) snapshot.theme = theme;
     const operation = writeChain.catch(() => {}).then(async () => {
       await guard();
       await atomicWrite(dataDir, filePath, snapshot);
@@ -116,6 +134,25 @@ export async function createUiPreferenceStore(options = {}) {
       else collapsed.delete(id);
       await persist();
       return this.collapsedCards();
+    },
+
+    theme() {
+      return theme;
+    },
+
+    /** Chooses the dashboard's visual theme. Returns the theme now in use. */
+    async setTheme(id) {
+      if (!isUiTheme(id)) throw new TypeError("That theme is not available.");
+      if (id === theme) return theme;
+      const previous = theme;
+      theme = id;
+      try {
+        await persist();
+      } catch (error) {
+        theme = previous;
+        throw error;
+      }
+      return theme;
     }
   };
 }
