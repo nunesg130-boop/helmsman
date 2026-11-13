@@ -1,7 +1,7 @@
 # Helmsman Security — Phase 1 (See everything) — Design
 
 Date: 2026-11-12
-Status: Draft from brainstorming; awaiting owner approval
+Status: Written after brainstorming; awaiting owner approval
 Scope: Phase 1 of 5. Phases 2 (vulnerabilities), 3 (detection), 4 (compliance) and 5 (safe remediation) get their own specs.
 Background: project brief `homelab-security-ops-platform.md` and research report `homelab-security-platform-foundations-research.md` (both in the owner's claude.ai "Infrastructure Projects" project).
 
@@ -53,7 +53,7 @@ CVE matching, exposure reasoning and the posture score (phase 2); intrusion/even
 ```
   [Wazuh agents on hosts/guests] ──▶ Wazuh 5.x (VM on norco) ──▶ Wazuh API
   [Proxmox API (PVEAuditor)] ───────────────────────────────────┐   │
-  [Portainer API (read-only)] ──────────────────────────────────┤   │
+  [Docker API via read-only proxy] ─────────────────────────────┤   │
   [endoflife.date dataset] ─────────────────────────────────────┤   │
                                                                 ▼   ▼
                                             helmsman-security engine (LXC on norco, LAN-only)
@@ -80,7 +80,7 @@ CVE matching, exposure reasoning and the posture score (phase 2); intrusion/even
   - **API port** (LAN): serves only the GET API in 4.7 over HTTPS with a self-signed certificate. Helmsman connects directly and pins that certificate, the same way the Proxmox connector does. Every request needs the read-only bearer token. This port serves no admin routes at all.
   - **Admin port** (holds, credentials, manual asset links): bound to `127.0.0.1` inside the LXC and reached only through Caddy `tls internal` + Authentik forward auth via a tunnel-free reverse proxy rule. The engine also checks Authentik's forwarded user header against a configured owner, so being on the LAN is never enough to reach admin functions.
 - Multi-tenant from the start: every row carries `tenant_id`. A single default tenant in practice. There are tests proving one tenant cannot read another's rows.
-- Credentials (Wazuh API user, Proxmox token, Portainer key) are encrypted at rest with a master key held outside the database. Pattern copied from Helmsman's `server/secrets.mjs`.
+- Credentials (Wazuh API user, Wazuh indexer user, Proxmox token) are encrypted at rest with a master key held outside the database. Pattern copied from Helmsman's `server/secrets.mjs`.
 - Crash safety: SQLite in WAL mode, and every collector run is a single transaction. After a power loss the engine starts, marks any run left open as failed (so the evidence it would have produced is unknown, not old-and-green) and continues.
 
 ### 4.3 Collectors (phase 1)
@@ -144,7 +144,7 @@ GET-only, read-only bearer token, bounded responses (paged, size-capped):
 - Write tests first for every check, the identity-linking rules and the staleness logic. Collector tests run against recorded fixtures, including malformed, empty, auth-failure and timeout responses, all of which must yield `unknown`.
 - Power-loss test: kill the engine mid-run and restart; no check may turn `ok` from the interrupted run.
 - Tenant-isolation tests.
-- Deploy gate (engine repo CI): tests + lint + a smoke run against the demo fixtures. Releases are tagged and the container image is pinned by digest. Every third-party software artifact (Wazuh packages, the socket proxy image, base images) is version-pinned and checksum-verified. Live data feeds such as endoflife.date can't be checksummed, so they're tracked by age instead, because the Trivy compromise in March 2026 showed security tools are themselves targets.
+- Deploy gate (engine repo CI): tests + lint + a smoke run against the demo fixtures. Releases are tagged and the container image is pinned by digest. Every third-party software artifact (Wazuh packages, the socket proxy image, base images) is version-pinned and checksum-verified. The Trivy compromise in March 2026 showed security tools are themselves targets. Live data feeds such as endoflife.date can't be checksummed, so they're tracked by age instead.
 - The soak test against a copy of the live database begins in phase 2, once there's a database worth copying. In phase 1 the engine runs read-only against the real lab for at least a week before phase 2 starts.
 
 ## 6. Rollout (owner steps are copy-paste, guided)
