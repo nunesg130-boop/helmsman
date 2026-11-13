@@ -51,7 +51,7 @@ CVE matching, exposure reasoning and the posture score (phase 2); intrusion/even
 ## 4. Architecture
 
 ```
-  [Wazuh agents on hosts/guests] ──▶ Wazuh 5.x (VM on norco) ──▶ Wazuh API
+  [Wazuh agents on hosts/guests] ──▶ Wazuh 4.14 (VM on norco) ──▶ Wazuh API
   [Proxmox API (PVEAuditor)] ───────────────────────────────────┐   │
   [Docker API via read-only proxy] ─────────────────────────────┤   │
   [endoflife.date dataset] ─────────────────────────────────────┤   │
@@ -64,8 +64,8 @@ CVE matching, exposure reasoning and the posture score (phase 2); intrusion/even
 ```
 
 ### 4.1 Wazuh (sensor layer)
-- Wazuh **5.x** all-in-one (manager + indexer + dashboard) in its own **VM** on norco: 4 vCPU, 8 GB RAM, 80 GB disk. A VM rather than an LXC because the indexer (OpenSearch) needs kernel settings (`vm.max_map_count`) that unprivileged LXCs can't set.
-- Version: Wazuh 5.0 is at release candidate as of 2026-11-12, and there is no upgrade path from 4.x. **Decision: install 5.0 GA. If GA isn't out when phase 1 reaches this step, use the latest 5.0 RC and treat the Wazuh deployment as rebuildable** (agents re-enroll; no history worth keeping in phase 1).
+- Wazuh **4.14** all-in-one (manager + indexer + dashboard) in its own **VM** on norco: 4 vCPU, 8 GB RAM, 80 GB disk. A VM rather than an LXC because the indexer (OpenSearch) needs kernel settings (`vm.max_map_count`) that unprivileged LXCs can't set.
+- Version (owner's decision): **install the current stable 4.14 now and move to 5.x later.** 5.0 is at release candidate as of 2026-11-12, and there is no in-place upgrade from 4.x. The move will be a fresh 5.x server with agents re-enrolled. To keep that cheap, the engine talks to Wazuh only through a **Wazuh adapter** with a version-neutral interface (agents, OS, packages, hotfixes, ports, processes, hardware). Phase 1 ships a 4.14 adapter, and 5.x gets a second adapter when we migrate. Nothing else in the engine knows which Wazuh version is running.
 - Wazuh's optional AI assistant stays off.
 - Agents go on: both Proxmox hosts (norco, Main), the QDevice laptop, every long-lived Linux VM/LXC, and two **roaming** personal devices: the owner's laptop (Lenovo Legion, Fedora → Linux agent) and a family MacBook (macOS agent). No Windows machines are in scope, so the Windows-only checks ship as code but read "not applicable" everywhere today.
 - **Roaming devices** are a separate asset class. When they're away from home, Wazuh will show the agent as disconnected. That's expected, not an issue: their checks read unknown with "away since …" and they don't count toward issue totals. *(Builder's call)* Agents reach the manager over the LAN only. Reaching it over Tailscale while away is a possible later addition, not phase 1. Appliance guests that can't take an agent (e.g. Home Assistant OS) are listed as "no agent possible" and stay **unknown** for host-level checks, with that reason.
@@ -80,7 +80,7 @@ CVE matching, exposure reasoning and the posture score (phase 2); intrusion/even
   - **API port** (LAN): serves only the GET API in 4.7 over HTTPS with a self-signed certificate. Helmsman connects directly and pins that certificate, the same way the Proxmox connector does. Every request needs the read-only bearer token. This port serves no admin routes at all.
   - **Admin port** (holds, credentials, manual asset links): bound to `127.0.0.1` inside the LXC and reached only through Caddy `tls internal` + Authentik forward auth via a tunnel-free reverse proxy rule. The engine also checks Authentik's forwarded user header against a configured owner, so being on the LAN is never enough to reach admin functions.
 - Multi-tenant from the start: every row carries `tenant_id`. A single default tenant in practice. There are tests proving one tenant cannot read another's rows.
-- Credentials (Wazuh API user, Wazuh indexer user, Proxmox token) are encrypted at rest with a master key held outside the database. Pattern copied from Helmsman's `server/secrets.mjs`.
+- Credentials (Wazuh API user, Proxmox token) are encrypted at rest with a master key held outside the database. Pattern copied from Helmsman's `server/secrets.mjs`.
 - Crash safety: SQLite in WAL mode, and every collector run is a single transaction. After a power loss the engine starts, marks any run left open as failed (so the evidence it would have produced is unknown, not old-and-green) and continues.
 
 ### 4.3 Collectors (phase 1)
@@ -88,7 +88,7 @@ Each collector declares its **capabilities** (what checks it can feed) and a **s
 
 | Collector | Credential | Feeds |
 |---|---|---|
-| Wazuh server API + Wazuh indexer | Dedicated Wazuh API user with a read-only RBAC role, **and** a read-only indexer user (in 5.x, inventory data lives in the indexer) | Agent list + status + last keep-alive; inventory: OS, packages, hotfixes (Windows), network ports, processes, hardware |
+| Wazuh server API (4.14 adapter) | Dedicated Wazuh API user with a read-only RBAC role. A read-only indexer user gets added in phase 2 (vulnerability states) and for 5.x, where inventory moves into the indexer. | Agent list + status + last keep-alive; syscollector inventory: OS, packages, hotfixes (Windows), network ports, processes, hardware |
 | Proxmox VE API | New token with role **PVEAuditor** (separate from Helmsman's start/stop/restart token) | Nodes, guests (VM/LXC), storage, node time, disk SMART (`/nodes/{n}/disks/list`, `/disks/smart`), backups: scheduled job definitions, vzdump task results on **both** nodes, and backup files present on the backup storage (`/nodes/{n}/storage/{s}/content?content=backup`). Backups are Proxmox scheduled jobs writing to a drive on norco that's shared to Main. |
 | Docker Engine API via a read-only socket proxy | None stored. *(Builder's call)* Each Docker host runs a socket proxy (e.g. `tecnativa/docker-socket-proxy`, version-pinned) that allows only `GET` on containers, images, info and version, and only from the engine's IP. Portainer CE was rejected because it can't issue a truly read-only credential. | Containers, images, image digests, published ports |
 | endoflife.date | none (public dataset, cached locally) | EOL dates for OS and known products |
@@ -149,9 +149,9 @@ GET-only, read-only bearer token, bounded responses (paged, size-capped):
 
 ## 6. Rollout (owner steps are copy-paste, guided)
 1. Owner creates the empty GitHub repo `helmsman-security`; Claude attaches it.
-2. Create the Wazuh VM on norco, install Wazuh 5.x, put the dashboard behind Caddy + Authentik.
+2. Create the Wazuh VM on norco, install Wazuh 4.14 (version-pinned), put the dashboard behind Caddy + Authentik.
 3. Install agents on the hosts and guests (guided per OS).
-4. Create read-only credentials: Wazuh API user + role, Wazuh indexer read-only user, Proxmox PVEAuditor token. Deploy the read-only Docker socket proxy on each Docker host.
+4. Create read-only credentials: Wazuh API user + role, Proxmox PVEAuditor token. Deploy the read-only Docker socket proxy on each Docker host.
 5. Create the engine LXC, deploy the container, enter credentials in the engine's LAN UI.
 6. Update Helmsman (new version) with the Security connector; connect it to the engine with its read-only token.
 7. Run for a week, review Unknowns with Claude, fix coverage gaps.
